@@ -1,0 +1,27 @@
+{
+  "id": "7f7416a633499b2b0eb930bfc18affad4e94dfb5fbae73d09cb0986014ebc627",
+  "pubkey": "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d",
+  "created_at": 1792889128,
+  "kind": 1,
+  "tags": [
+    [
+      "e",
+      "467582b31c955404836ef7274722bb8d3d73882f0c5d42825b6980279c369b64",
+      "",
+      "root"
+    ],
+    [
+      "e",
+      "6e4262862d2d462329bf9088c86dff7acd1a2cf29d751daf24e45ab9365198d3",
+      "wss://pyramid.fiatjaf.com/inbox",
+      "reply",
+      "02ee3ed9d0cfa87db6af07528051127ae26bbadcaa7311eebc39c60ad0df10ec"
+    ],
+    [
+      "p",
+      "02ee3ed9d0cfa87db6af07528051127ae26bbadcaa7311eebc39c60ad0df10ec"
+    ]
+  ],
+  "content": "This is a good summary, thank you.",
+  "sig": "50fc05241c04a80a5f81adfe2e8657a025173ee9d232f08c811950da73d6f9eaefa16ae7b8fea72b9ceee2a96e6773fc65ee7288db563b465ceda0e3f472e55c"
+}
