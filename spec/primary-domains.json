@@ -1,0 +1,22 @@
+{
+  "description": "Primary sources a critical may cite. A host matches exactly, or with a leading 'www.'; other subdomains do not match, because forums and community sites on these domains carry user-written posts. URLs must be https on the default port with no userinfo. A host with 'paths' also restricts the URL path to one pattern: a pattern without '*' is a path prefix that must be followed by at least one more non-empty segment; '*/security/advisories/' matches /<owner>/<repo>/security/advisories/<id> only for an owner listed in 'owners' (case-insensitive), because any repository owner can publish an advisory in their own repository. Paths containing '%', a backslash, an empty segment, or a '.' or '..' segment never match a path pattern. go.dev is path-restricted because it hosts user-shared playground programs, python.org because it hosts user-submitted job listings and community pages.",
+  "domains": [
+    {"host": "cisa.gov"},
+    {"host": "kb.cert.org"},
+    {"host": "osv.dev"},
+    {"host": "support.apple.com"},
+    {"host": "nodejs.org"},
+    {"host": "python.org", "paths": ["/news/security/", "/dev/security/", "/downloads/release/"]},
+    {"host": "go.dev", "paths": ["/security/", "/doc/security/", "/doc/devel/", "/blog/"]},
+    {"host": "ubuntu.com"},
+    {"host": "debian.org"},
+    {"host": "tailscale.com"},
+    {"host": "openssh.com"},
+    {"host": "docs.docker.com"},
+    {"host": "cursor.com"},
+    {"host": "openai.com"},
+    {"host": "anthropic.com"},
+    {"host": "blog.google"},
+    {"host": "github.com", "paths": ["/advisories/", "*/security/advisories/"], "owners": ["anthropics", "openai", "google-gemini", "nousresearch", "openclaw", "modelcontextprotocol", "nodejs", "python", "golang", "rust-lang", "docker", "moby", "containerd", "opencontainers", "tailscale", "git", "openssh"]}
+  ]
+}

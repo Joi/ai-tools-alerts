@@ -1,0 +1,11 @@
+{
+  "description": "The fixed action vocabulary. A post may carry only these verbs; the CLI rejects any other and the skill treats it as notify-only. Actions are verbs with arguments, never commands.",
+  "verbs": [
+    {"verb": "upgrade", "meaning": "Upgrade the product to at least the fixed version.", "target": "product name", "value": "minimum version (optional; products[].fixed is authoritative)"},
+    {"verb": "disable_skill", "meaning": "Disable or remove an installed agent skill.", "target": "skill name", "value": null},
+    {"verb": "remove_mcp_server", "meaning": "Remove an MCP server from every client configuration.", "target": "MCP server name", "value": null},
+    {"verb": "rotate_credential", "meaning": "Rotate a credential that may have been exposed.", "target": "which credential (kind, never the value)", "value": null},
+    {"verb": "stop_using", "meaning": "Stop installing from or using a marketplace or package.", "target": "marketplace or package name", "value": null},
+    {"verb": "review_setting", "meaning": "Review a configuration setting by hand.", "target": "setting path", "value": "recommended value (optional)"}
+  ]
+}
