@@ -11,6 +11,8 @@ Pre-handoff review: — (not repoman-managed)
 ## Scorecards
 Pass 1 [spec]: 0B/5S/0C/1R · fixed -/- · velocity = (—→6, escalation no)   # fresheyes gpt-6-astra; reported "major" x6, graded: 5 substantive (cache copy, cleanup paths, vector coverage, mint-twice order, leaky secret check), 1 rebutted (snapshot commit message)
 Pass 1 [plan]: 1B/6S/0C/1R · fixed -/- · velocity = (—→8, escalation no)   # fresheyes gpt-6-astra; critical: secret check printing matches → fixed; majors fixed except snapshot commit message (rebutted)
+Pass 2 [spec+plan delta]: 1B/4S/0C/0R · fixed 12/12 prior · velocity ↓ (14→5, escalation no)   # critical: trap aborted on nested cache dir → cleanup set +e, find -type f, verified by selftest; majors: -I vs PYTHONPATH, rm -P no-op on macOS (dd overwrite+unlink), existing-key recovery derives root.pub, leak check covers ignored files + whole object store (selftested). All fixed; last pass for these artifacts.
+passes: spec 2, plan 2 (delta combined) · elapsed ~15 min
 
 ## Chunks
 - [ ] chunk 1 — package scaffold + nostr primitives + tests + gate script
