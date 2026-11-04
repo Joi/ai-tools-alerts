@@ -19,6 +19,7 @@ VECTORS = _bip340_vectors()
 
 
 def test_bip340_vector_1():
+    # The plan's name for this test; it checks row index 0 of the BIP-340 table.
     v = VECTORS[0]
     assert v["public key"] == "F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9"
     sec = bytes.fromhex(v["secret key"])
@@ -164,3 +165,44 @@ def test_sign_event_rejects_bad_key_and_shape():
     sec, _ = nostr.keygen()
     with pytest.raises(ValueError):
         nostr.sign_event(sec, dict(_template(), tags=[[1]]))
+
+
+def test_serialization_matches_javascript_json_stringify():
+    # Expected id computed independently with Node's JSON.stringify + sha256,
+    # which is what nostr-tools and most relays use. Covers short escapes,
+    # \u00XX control characters, DEL and U+2028 passed through, non-ASCII and
+    # an astral-plane character.
+    ev = {
+        "pubkey": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+        "created_at": 1730764800,
+        "kind": 1,
+        "tags": [["t", "caf\u00e9"], ["e", "x", "", "reply"]],
+        "content": "line1\nline2\t\"quoted\" back\\slash \r \b \f \u0001 \u001f \u007f \u2028 \u00e9 \u2603 \U0001f600 </script>",
+    }
+    assert nostr.event_id(ev) == "a2f4c7cb1a0140e05abc04f6da69097beb0e1f6f5b179528fa66daa32927534b"
+
+
+def test_correctly_signed_event_with_empty_tag_is_rejected():
+    sec = bytes.fromhex(VECTORS[1]["secret key"])
+    ev = {"pubkey": nostr.pubkey_gen(sec).hex(), "created_at": 1, "kind": 1, "tags": [[]], "content": "x"}
+    ev["id"] = nostr.event_id(ev)
+    ev["sig"] = nostr.schnorr_sign(bytes.fromhex(ev["id"]), sec, bytes(32)).hex()
+    assert nostr.schnorr_verify(bytes.fromhex(ev["id"]), bytes.fromhex(ev["pubkey"]), bytes.fromhex(ev["sig"]))
+    assert nostr.verify_event(ev) is False
+    with pytest.raises(ValueError):
+        nostr.sign_event(sec.hex(), {"created_at": 1, "kind": 1, "tags": [[]], "content": "x"})
+
+
+def test_signed_event_does_not_share_tag_lists_with_input():
+    sec, _ = nostr.keygen()
+    tmpl = _template()
+    ev = nostr.sign_event(sec, tmpl)
+    tmpl["tags"][0].append("later")
+    assert nostr.verify_event(ev) is True
+
+
+def test_bech32_rejects_invalid_keys():
+    with pytest.raises(ValueError):
+        nostr.nsec_to_hex(nostr.nsec("00" * 32))
+    with pytest.raises(ValueError):
+        nostr.npub_to_hex(nostr.npub("ff" * 32))

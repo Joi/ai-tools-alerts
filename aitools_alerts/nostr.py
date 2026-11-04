@@ -246,7 +246,7 @@ def sign_event(sec_hex: str, event: dict) -> dict:
         "pubkey": pubkey_gen(sec).hex(),
         "created_at": event["created_at"],
         "kind": event["kind"],
-        "tags": event["tags"],
+        "tags": [list(t) for t in event["tags"]] if isinstance(event["tags"], list) else event["tags"],
         "content": event["content"],
     }
     _check_shape(out)
@@ -266,9 +266,9 @@ def _check_shape(event: dict) -> None:
         raise ValueError("kind must be an integer in 0..65535")
     tags = event.get("tags")
     if not isinstance(tags, list) or not all(
-        isinstance(t, list) and all(isinstance(v, str) for v in t) for t in tags
+        isinstance(t, list) and t and all(isinstance(v, str) for v in t) for t in tags
     ):
-        raise ValueError("tags must be a list of lists of strings")
+        raise ValueError("tags must be a list of non-empty lists of strings")
     if not isinstance(event.get("content"), str):
         raise ValueError("content must be a string")
 
@@ -372,7 +372,10 @@ def npub(pub_hex: str) -> str:
 
 
 def npub_to_hex(npub_str: str) -> str:
-    return _bech32_decode("npub", npub_str).hex()
+    raw = _bech32_decode("npub", npub_str)
+    if _lift_x(_int_from_bytes(raw)) is None:
+        raise ValueError("npub is not a valid x-only public key")
+    return raw.hex()
 
 
 def nsec(sec_hex: str) -> str:
@@ -382,4 +385,7 @@ def nsec(sec_hex: str) -> str:
 
 
 def nsec_to_hex(nsec_str: str) -> str:
-    return _bech32_decode("nsec", nsec_str).hex()
+    raw = _bech32_decode("nsec", nsec_str)
+    if not (1 <= _int_from_bytes(raw) <= N - 1):
+        raise ValueError("nsec is not a valid secret key")
+    return raw.hex()
