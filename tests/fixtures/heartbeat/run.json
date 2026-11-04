@@ -22,7 +22,7 @@
       "observed_at": "2026-10-28T04:21:38.265101+00:00",
       "action": "Prioritize supported macOS security update; no remediation performed",
       "source": "https://support.apple.com/en-us/149228",
-      "kata": "jibot-code#5f3x",
+      "kata": "tracker#aaa1",
       "alert_decision": "unchanged; accepted prior alert deduplicated, delivery unverified"
     },
     "CVE-2026-112697|host-B|WebKit": {
@@ -51,14 +51,14 @@
       "confidence": "high for installed version and active component; in-memory build unverified",
       "observed_at": "2026-10-30T23:38:36.982668+00:00",
       "source": "https://support.apple.com/en-us/149521",
-      "kata": "jibot-code#wbgd"
+      "kata": "tracker#aaa2"
     },
     "WordPress-7.1.4": {
       "observed_at": "2026-11-03T23:49:27.404279+00:00",
       "local_severity": "Unknown",
       "exposure": "unknown",
       "source": "https://wordpress.org/news/2026/10/wordpress-7-1-4/",
-      "kata": "jibot-code#w3xq",
+      "kata": "tracker#aaa3",
       "aliases": [
         "CVE-2026-119977"
       ],

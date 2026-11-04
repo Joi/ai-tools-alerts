@@ -72,7 +72,7 @@ def test_heartbeat_adapter_never_emits_hosts_or_evidence():
     blob = json.dumps([c.to_dict() for c in from_heartbeat(HEARTBEAT)]).lower()
     for name in sorted(hosts) + list(FLEET_NAMES):
         assert name.lower() not in blob, name
-    for marker in ("/users/", "evidence", "jibot-code#", "alert_decision", "prioritize"):
+    for marker in ("/users/", "evidence", "tracker#", "alert_decision", "prioritize"):
         assert marker not in blob, marker
 
 
@@ -85,7 +85,7 @@ def test_heartbeat_scrubs_hosts_in_text_and_drops_host_urls(tmp_path):
                 "source": "https://example.com/a",
                 "fixed": "8.1 (host-b has 8.0)",
             },
-            "CVE-2026-2": {"product": "tool on node-9", "source": "https://node-7.example.net/x"},
+            "CVE-2026-2": {"product": "tool", "source": "https://node-7.example.net/x"},
             "node-7": {"source": "https://example.com/b"},
         },
     }
@@ -93,7 +93,7 @@ def test_heartbeat_scrubs_hosts_in_text_and_drops_host_urls(tmp_path):
     by = _by_id(cands)
     c = by["CVE-2026-1"]
     assert c.product_text == "curl"
-    assert c.advisory_severity == "RCE seen on a fleet host and a fleet host"
+    assert c.advisory_severity is None  # a free-text field naming a host is dropped
     assert c.fixed is None  # the heartbeat never fills fixed/affected
     assert "CVE-2026-2" not in by  # only source named a host: dropped, so no source
     assert cands.skipped["no source"] == 1
@@ -237,6 +237,7 @@ def test_fixtures_contain_no_fleet_names():
         for name in FLEET_NAMES:
             assert name not in text, (p.name, name)
         assert "/users/" not in text, p.name
+        assert "jibot-code#" not in text, p.name
 
 
 PRIVATE = {
@@ -304,13 +305,120 @@ def test_collector_private_values_in_retained_fields():
 def test_kev_private_values_in_notes_and_fields():
     kev = {"items": [
         {"cveID": "CVE-2026-0050", "dateAdded": "2026-11-02", "vendorProject": "V",
-         "product": "P on host-b", "notes": " ".join(PRIVATE_SOURCES[:3]) + " https://example.com/ok"},
+         "product": "P", "notes": " ".join(PRIVATE_SOURCES[:3]) + " https://example.com/ok"},
+        {"cveID": "CVE-2026-0052", "dateAdded": "2026-11-02", "vendorProject": "V",
+         "product": "P on host-b"},
         {"cveID": "CVE-2026-0051", "dateAdded": "2026-11-02", "vendorProject": "V",
          "product": "see /Users/op/x"},
     ]}
     out = from_kev(kev, "2026-11-01")
     assert [c.id for c in out] == ["CVE-2026-0050"]
-    assert out[0].product_text == "V P on a fleet host"
+    assert out[0].product_text == "V P"
     assert [s.url for s in out[0].sources] == [KEV_CATALOG_URL, "https://example.com/ok"]
-    assert out.skipped["no product"] == 1
+    assert out.skipped["no product"] == 2
     _assert_clean(out)
+
+
+@pytest.mark.parametrize("field, value", [
+    ("product", "Claude Code at `/Users/op/private.txt`"),
+    ("product", "Claude Code 9.8p1 installed on node-7"),
+    ("product", "Claude Code on %6Eode-7"),
+    ("id", "CVE-2026-1|`~/notes`"),
+])
+def test_private_detail_in_product_or_id_drops_the_item(field, value):
+    f = {"id": "CVE-2026-70", "product": "P", "sources": [{"url": "https://example.com/a"}]}
+    f[field] = value
+    record = {"schema_version": 1, "host_coverage": [{"host": "node-7"}], "findings": [f]}
+    out = from_collector(record)
+    assert list(out) == [] and sum(out.skipped.values()) == 1
+
+
+@pytest.mark.parametrize("url", [
+    "https://example.com/?host=%6Eode-7",
+    "https://example.com/?file=%2FUsers%2Fop%2Fprivate.txt",
+    "https://example.com/?issue=jibot-code%23ab12",
+    "https://example.com/%2575sers/x?f=%252FUsers%252Fop",
+    "https://example.com/a/%7E/notes",
+])
+def test_percent_encoded_private_detail_in_source_url_is_dropped(url):
+    record = {"schema_version": 1, "host_coverage": [{"host": "node-7"}], "findings": [
+        {"id": "CVE-2026-71", "product": "P",
+         "sources": [{"url": url}, {"url": "https://example.com/clean"}]},
+    ]}
+    out = from_collector(record)
+    assert [s.url for s in out[0].sources] == ["https://example.com/clean"]
+
+
+@pytest.mark.parametrize("fixed", ["1.x", "2.*", "unknown", "no fix", "v", "1.2.3 or later"])
+def test_fixed_rejects_placeholders(fixed):
+    record = {"schema_version": 1, "findings": [
+        {"id": "CVE-2026-72", "product": "P", "sources": [{"url": "https://example.com/a"}],
+         "injection_exec": True, "fixed": fixed},
+    ]}
+    assert from_collector(record)[0].fixed is None
+
+
+def test_affected_range_parser_is_linear():
+    import time
+    hostile = "1" + "  1" * 60 + "?"
+    record = {"schema_version": 1, "findings": [
+        {"id": "CVE-2026-73", "product": "P", "sources": [{"url": "https://example.com/a"}],
+         "affected": hostile},
+        {"id": "CVE-2026-74", "product": "P", "sources": [{"url": "https://example.com/a"}],
+         "affected": ">= 1.0, < 2.0 || 3.x"},
+    ]}
+    start = time.monotonic()
+    out = _by_id(from_collector(record))
+    assert time.monotonic() - start < 1.0
+    assert out["CVE-2026-73"].affected is None
+    assert out["CVE-2026-74"].affected == ">= 1.0, < 2.0 || 3.x"
+
+
+def test_heartbeat_deeply_nested_json_never_raises(tmp_path):
+    deep = "[" * 100000 + "]" * 100000
+    (tmp_path / "run.json").write_text('{"x": ' + deep + ', "findings": {}}')
+    out = from_heartbeat(tmp_path)  # a decoder RecursionError is caught; newer decoders parse it
+    assert list(out) == []
+
+
+@pytest.mark.parametrize("url", [
+    "http://localhost:8080/evidence",
+    "http://127.0.0.1/x",
+    "http://100.101.102.103/x",
+    "http://10.0.0.5/x",
+    "http://[fd7a:115c:a1e0::1]/x",
+    "https://studio.tail1234.ts.net/x",
+    "https://ops-vm.example/x",
+    "https://printer.local/x",
+    "https://intranet/x",
+])
+def test_internal_source_hosts_are_dropped(url):
+    record = {"schema_version": 1, "findings": [
+        {"id": "CVE-2026-75", "product": "P",
+         "sources": [{"url": url}, {"url": "https://example.com/clean"}]},
+    ]}
+    assert [s.url for s in from_collector(record)[0].sources] == ["https://example.com/clean"]
+
+
+@pytest.mark.parametrize("severity", [
+    "see /users/joi/x", "log>/home/user/x", "file:///home/user/x", "a|/home/op/x",
+    "tracked in Jibot-Code#ab12", "bad \ud800 surrogate", "rtl \u202e text", "bell \x07",
+])
+def test_private_or_unsafe_text_is_dropped(severity):
+    record = {"schema_version": 1, "findings": [
+        {"id": "CVE-2026-76", "product": "P", "sources": [{"url": "https://example.com/a"}],
+         "advisory_severity": severity, "observed_at": "2026-99-99T99:99Z"},
+    ]}
+    c = from_collector(record)[0]
+    assert c.advisory_severity is None and c.observed_at is None
+
+
+def test_hosts_named_in_other_shapes_are_scrubbed(tmp_path):
+    record = {"host_coverage": ["str-host"], "findings": {
+        "CVE-2026-77|node-9": {"advisory_severity": "seen on node-9", "source": "https://example.com/a"},
+        "CVE-2026-78": {"host": {"host": "zz-box"}, "advisory_severity": "zz-box and str-host",
+                        "source": "https://example.com/b"},
+    }}
+    by = _by_id(from_heartbeat(_write_run(tmp_path, record)))
+    assert by["CVE-2026-77"].advisory_severity is None
+    assert by["CVE-2026-78"].advisory_severity is None

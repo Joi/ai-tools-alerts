@@ -45,8 +45,9 @@ Kata: ai-tools-alerts#6j8x. One chunk; one commit
   - `test_kev_catalog_shape_and_notes_urls`: `vulnerabilities` key, notes with two
     URLs and junk, bad cveID and bad dateAdded skipped and counted.
   - `test_kev_rejects_bad_since_date`: `ValueError`.
-  - `test_from_collector_maps_fixture`: ids, aliases, sources, exploited from the
-    boolean, hint, no affected_hosts/rationale in output.
+  - `test_from_collector_maps_fixture`: ids, aliases, sources, hint, and
+    `exploited` False even where the fixture says `true` (KEV-only); no
+    affected_hosts/rationale in output.
   - `test_collector_untrusted_input`: wrong schema_version, non-list findings,
     string `exploited: "true"` stays False, overlong id skipped, too many aliases capped.
   - `test_fixtures_contain_no_fleet_names`: read all three fixture files as text.
@@ -58,6 +59,11 @@ Kata: ai-tools-alerts#6j8x. One chunk; one commit
     survives; the test asserts the survivor's fields are dropped or normalized and
     the serialized output holds none of the markers. The fixture-level checks stay,
     but they are not the runtime privacy proof.
+  - Added after the whole-branch code review (fresheyes pass 1 on 1e1cf71):
+    backtick-wrapped paths, percent-encoded host/path/kata ref in source URLs, a
+    host in product text, `fixed` wildcards, a hostile `affected` range timed under
+    one second, deeply nested `run.json`; fixture kata refs replaced by
+    `tracker#aaaN` and checked absent.
 - [ ] 3. Run `python3 -m pytest -q tests/poster` → fails on import.
 - [ ] 4. Implement `candidates.py` per the spec.
 - [ ] 5. Run `scripts/test-gate.sh` → all pass. Run
@@ -66,8 +72,11 @@ Kata: ai-tools-alerts#6j8x. One chunk; one commit
 
 ### Acceptance
 
-- Gate green; import line exits 0; fixture-name test green; diff under 600 lines
-  excluding the three run artifacts (`git diff --stat origin/main`).
+- Gate green; import line exits 0; fixture-name test green.
+- Size: the 600-line rule is exceeded (code and tests about 800 after two rounds of
+  privacy hardening the reviews required; fixtures about 320). decided on
+  ai-tools-alerts#6j8x: one module and its tests do not split into separately
+  landable pieces.
 
 ### Verification commands
 

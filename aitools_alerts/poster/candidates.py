@@ -3,27 +3,30 @@
 Three adapters feed the poster: the security-watch heartbeat's ``run.json``,
 the CISA KEV JSON and the collector run record (schema_version 1). All input is
 untrusted: unknown keys are ignored, wrong types are skipped and counted, and
-nothing raises past an adapter. Private fleet detail (host names, evidence
-paths, kata refs, owners, rationale text) never enters a Candidate.
+nothing raises past an adapter. Private fleet detail (host names, local paths,
+kata refs) never enters a Candidate: a text field that carries one is dropped,
+and an id, product or source URL that carries one drops the item.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
+import ipaddress
 import json
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 KEV_CATALOG_URL = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
 
 # Generic fleet names, already public in the fleet's open repos. Each adapter adds
 # the host names its own input record names.
 FLEET_HOSTS = ("host-a", "host-b", "host-d", "host-e", "host-f", "host-c")
-HOST_PLACEHOLDER = "a fleet host"
 
+MAX_RUN_BYTES = 16 * 1024 * 1024
 MAX_ID = 200
 MAX_TEXT = 500
 MAX_ALIASES = 32
@@ -33,16 +36,25 @@ _CVE = re.compile(r"CVE-\d{4}-\d{4,}")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})?)?")
 _BAD_URL_CHARS = re.compile(r"[\s\x00-\x1f\x7f]")
+# A concrete release: digits first, no wildcard component ("1.x", "2.*").
 _VERSION = re.compile(r"v?\d[0-9A-Za-z.+_-]{0,63}")
-_VTOKEN = r"[<>=!~^]{0,2}\s*v?\d[0-9A-Za-z.+_*-]*"
-_VERSION_RANGE = re.compile(rf"(?=.{{1,200}}$)\s*{_VTOKEN}(?:\s*(?:,|\|\||\s)\s*{_VTOKEN})*\s*")
-# Local paths and kata refs: private fleet detail that must never reach a post.
+_WILDCARD = re.compile(r"(?:^|[.\-+_])[xX*](?:$|[.\-+_])")
+# One token of a version range; ranges are split before matching, so no regex
+# below has nested or adjacent unbounded repeats (no catastrophic backtracking).
+_RANGE_TOKEN = re.compile(r"[<>=!~^]{0,2}v?\d[0-9A-Za-z.+_*-]{0,63}")
+_RANGE_SPLIT = re.compile(r",|\|\||\s+")
+_OP_SPACE = re.compile(r"([<>=!~^]{1,2}) +")
+# Local paths and kata refs, matched anywhere (markdown or quotes around them do
+# not hide them). Over-matching drops a field, which is the safe failure.
 _PRIVATE = re.compile(
-    r"(?:^|[\s\"'(=:,;\[])(?:/Users/|/home/|/private/|/var/|/tmp/|/etc/|~/)"
+    r"/Users/|/home/|/private/|/var/|/tmp/|/etc/|~/"
     r"|\b[A-Za-z]:\\"
-    r"|\b[a-z][a-z0-9-]*#[0-9a-z]{4}\b"
+    r"|\b[a-z][a-z0-9-]*#[0-9a-z]{4}\b",
+    re.I,
 )
-_PRIVATE_URL_PATH = re.compile(r"/(?:Users|home)/")
+# Source hosts that only resolve inside a network: never a public advisory.
+_INTERNAL_SUFFIXES = (".local", ".internal", ".lan", ".home.arpa", ".ts.net", ".vm.example", ".localhost")
+_PRIVATE_URL_PATH = re.compile(r"/(?:Users|home)/|~/")
 HINTS = frozenset({"critical", "high", "medium", "low", "none", "not_affected", "out_of_scope"})
 
 
@@ -89,8 +101,11 @@ def _str(v, limit: int = MAX_TEXT) -> str | None:
     """A stripped, length-capped string, or None for anything else or empty."""
     if not isinstance(v, str):
         return None
-    v = v.strip()
-    return v[:limit] if v else None
+    v = v.strip()[:limit]
+    # Control, format (bidi overrides) and lone surrogate characters never reach a post.
+    if not v or any(unicodedata.category(ch) in ("Cc", "Cf", "Cs") for ch in v):
+        return None
+    return v
 
 
 def _flag(v) -> bool:
@@ -101,12 +116,6 @@ def _private(s: str | None) -> bool:
     return s is not None and bool(_PRIVATE.search(s))
 
 
-def _text(v, limit: int = MAX_TEXT) -> str | None:
-    """Free text with private content dropped."""
-    s = _str(v, limit)
-    return None if _private(s) else s
-
-
 def _hint(v) -> str | None:
     s = _str(v)
     s = s.lower() if s else None
@@ -115,12 +124,40 @@ def _hint(v) -> str | None:
 
 def _timestamp(v) -> str | None:
     s = _str(v, 100)
-    return s if s and _TIMESTAMP.fullmatch(s) else None
+    if not s or not _TIMESTAMP.fullmatch(s):
+        return None
+    try:
+        _dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return s
 
 
-def _version(v, pattern) -> str | None:
+def _fixed(v) -> str | None:
+    s = _str(v, 65)
+    if not s or not _VERSION.fullmatch(s) or _WILDCARD.search(s):
+        return None
+    return s
+
+
+def _affected(v) -> str | None:
     s = _str(v, 201)
-    return s if s and pattern.fullmatch(s) else None
+    if not s or len(s) > 200:
+        return None
+    tokens = [t for t in _RANGE_SPLIT.split(_OP_SPACE.sub(r"\1", s)) if t]
+    if not tokens or not all(_RANGE_TOKEN.fullmatch(t) for t in tokens):
+        return None
+    return s
+
+
+def _decoded(s: str) -> str:
+    """Percent-decode until stable (bounded), so encoded names are seen."""
+    for _ in range(3):
+        d = unquote(s)
+        if d == s:
+            break
+        s = d
+    return s
 
 
 def _url(v) -> str | None:
@@ -135,9 +172,28 @@ def _url(v) -> str | None:
         return None
     if parts.username is not None or parts.password is not None:
         return None
-    if _PRIVATE_URL_PATH.search(parts.path) or _private(parts.query):
+    if _internal_host(parts.hostname):
         return None
-    return parts._replace(fragment="").geturl()
+    parts = parts._replace(fragment="")
+    if _url_private(parts.geturl()):
+        return None
+    return parts.geturl()
+
+
+def _internal_host(host: str) -> bool:
+    host = host.rstrip(".").lower()
+    try:
+        return not ipaddress.ip_address(host).is_global
+    except ValueError:
+        pass
+    return "." not in host or host == "localhost" or host.endswith(_INTERNAL_SUFFIXES)
+
+
+def _url_private(url: str) -> bool:
+    # Split first, then decode each part: a decoded %23 must not hide in a fragment.
+    parts = urlsplit(url)
+    path, query = _decoded(parts.path), _decoded(parts.query)
+    return bool(_PRIVATE_URL_PATH.search(path)) or _private(query) or _private(path)
 
 
 def _host_names(v) -> list[str]:
@@ -151,16 +207,14 @@ def _host_names(v) -> list[str]:
                 out.append(h)
             elif isinstance(h, dict) and isinstance(h.get("host"), str):
                 out.append(h["host"])
+    elif isinstance(v, dict) and isinstance(v.get("host"), str):
+        out.append(v["host"])
     return [h.strip() for h in out if h.strip()]
 
 
 def _record_hosts(record: dict) -> set[str]:
     hosts = set(FLEET_HOSTS)
-    cov = record.get("host_coverage")
-    if isinstance(cov, list):
-        for h in cov:
-            if isinstance(h, dict):
-                hosts.update(_host_names([h]))
+    hosts.update(_host_names(record.get("host_coverage")))
     return hosts
 
 
@@ -171,27 +225,31 @@ def _finding_hosts(f: dict) -> set[str]:
     return hosts
 
 
-class _Scrubber:
+class _Hosts:
+    """Case-insensitive host-name detector; checks percent-decoded text too."""
+
     def __init__(self, hosts):
         names = sorted({h for h in hosts if h}, key=len, reverse=True)
         self._re = re.compile("|".join(re.escape(h) for h in names), re.I) if names else None
 
     def hit(self, s: str) -> bool:
-        return bool(self._re and self._re.search(s))
-
-    def text(self, s: str | None) -> str | None:
-        if s is None or self._re is None:
-            return s
-        return self._re.sub(HOST_PLACEHOLDER, s)
+        return bool(self._re and (self._re.search(s) or self._re.search(_decoded(s))))
 
 
-def _aliases(values, exclude: str, scrub: _Scrubber) -> tuple[str, ...]:
+def _clean(s: str | None, hosts: _Hosts) -> str | None:
+    """A text field, or None when it names a host or carries private detail."""
+    if s is None or hosts.hit(s) or _private(s) or _private(_decoded(s)):
+        return None
+    return s
+
+
+def _aliases(values, exclude: str, hosts: _Hosts) -> tuple[str, ...]:
     out: list[str] = []
     if not isinstance(values, list):
         return ()
     for a in values:
-        a = _str(a, MAX_ID + 1)
-        if a is None or len(a) > MAX_ID or a == exclude or a in out or scrub.hit(a) or _private(a):
+        a = _clean(_str(a, MAX_ID + 1), hosts)
+        if a is None or len(a) > MAX_ID or a == exclude or a in out:
             continue
         out.append(a)
         if len(out) >= MAX_ALIASES:
@@ -199,11 +257,11 @@ def _aliases(values, exclude: str, scrub: _Scrubber) -> tuple[str, ...]:
     return tuple(out)
 
 
-def _sources(raw: list, scrub: _Scrubber) -> tuple[Source, ...]:
+def _sources(raw: list, hosts: _Hosts) -> tuple[Source, ...]:
     out: list[Source] = []
     for url, published in raw:
         url = _url(url)
-        if url is None or scrub.hit(url) or any(s.url == url for s in out):
+        if url is None or hosts.hit(url) or any(s.url == url for s in out):
             continue
         out.append(Source(url, _timestamp(published)))
         if len(out) >= MAX_SOURCES:
@@ -211,17 +269,16 @@ def _sources(raw: list, scrub: _Scrubber) -> tuple[Source, ...]:
     return tuple(out)
 
 
-def _build(cid, aliases, product, sources, f: dict, scrub: _Scrubber, out: CandidateList, *,
+def _build(cid, aliases, product, sources, f: dict, hosts: _Hosts, out: CandidateList, *,
            exploited: bool = False, fixed: str | None = None, affected: str | None = None) -> None:
-    """Shared tail: validate, scrub and append one candidate, or count a skip."""
+    """Shared tail: validate and append one candidate, or count a skip."""
     if cid is None or len(cid) > MAX_ID:
         out.skipped["no id"] += 1
         return
-    if scrub.hit(cid) or _private(cid):
+    if _clean(cid, hosts) is None:
         out.skipped["id names a host or private detail"] += 1
         return
-    product = scrub.text(product)
-    if product is None or _private(product):
+    if _clean(product, hosts) is None:
         out.skipped["no product"] += 1
         return
     if not sources:
@@ -231,22 +288,34 @@ def _build(cid, aliases, product, sources, f: dict, scrub: _Scrubber, out: Candi
         id=cid,
         aliases=aliases,
         product_text=product,
-        advisory_severity=scrub.text(_text(f.get("advisory_severity"))),
+        advisory_severity=_clean(_str(f.get("advisory_severity")), hosts),
         local_level_hint=_hint(f.get("local_severity")),
         exploited=exploited,
         trojanized=_flag(f.get("trojanized")),
         injection_exec=_flag(f.get("injection_exec")),
-        fixed=None if fixed is None or scrub.hit(fixed) else fixed,
-        affected=None if affected is None or scrub.hit(affected) else affected,
+        fixed=_clean(fixed, hosts),
+        affected=_clean(affected, hosts),
         sources=sources,
         observed_at=_timestamp(f.get("observed_at")),
     )
     # Backstop: no field, present or future, may carry a host or private detail.
-    blob = json.dumps(c.to_dict())
-    if scrub.hit(blob) or _private(blob):
+    d = c.to_dict()
+    urls = [s.pop("url") for s in d["sources"]]
+    blob = json.dumps(d, ensure_ascii=False)
+    if hosts.hit(blob) or _private(blob) or any(hosts.hit(u) or _url_private(u) for u in urls):
         out.skipped["private content"] += 1
         return
     out.append(c)
+
+
+def _each(items, out: CandidateList, fn) -> CandidateList:
+    """Run fn per item; an unexpected error skips that item, never the call."""
+    for item in items:
+        try:
+            fn(item)
+        except Exception:  # untrusted input must never raise past the adapter
+            out.skipped["item error"] += 1
+    return out
 
 
 # ---------------------------------------------------------------- adapters
@@ -256,8 +325,12 @@ def from_heartbeat(run_dir: Path) -> CandidateList:
     """Candidates from a heartbeat run directory's ``run.json``."""
     out = CandidateList()
     try:
-        record = json.loads((Path(run_dir) / "run.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
+        path = Path(run_dir) / "run.json"
+        if path.stat().st_size > MAX_RUN_BYTES:
+            out.skipped["run.json too large"] += 1
+            return out
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, RecursionError):
         out.skipped["run.json unreadable"] += 1
         return out
     if not isinstance(record, dict):
@@ -272,19 +345,22 @@ def from_heartbeat(run_dir: Path) -> CandidateList:
         out.skipped["findings not a dict or list"] += 1
         return out
 
-    hosts = _record_hosts(record)
+    names = _record_hosts(record)
     for key, f in items:
         if isinstance(f, dict):
-            hosts |= _finding_hosts(f)
+            names |= _finding_hosts(f)
         if isinstance(key, str):
-            parts = key.split("|")
-            hosts.update(p.strip() for p in parts[1:-1] if p.strip())
-    scrub = _Scrubber(hosts)
+            # <id>|<host>|<component>, or <id>|<host>: every segment after the id
+            # but the component is treated as a host (over-scrubbing is safe).
+            segs = key.split("|")
+            names.update(p.strip() for p in (segs[1:] if len(segs) == 2 else segs[1:-1]) if p.strip())
+    hosts = _Hosts(names)
 
-    for key, f in items:
+    def one(item):
+        key, f = item
         if not isinstance(f, dict):
             out.skipped["finding not an object"] += 1
-            continue
+            return
         parts = key.split("|") if isinstance(key, str) else []
         ids = [i.strip() for i in f.get("ids", []) if isinstance(i, str) and i.strip()] \
             if isinstance(f.get("ids"), list) else []
@@ -298,9 +374,11 @@ def from_heartbeat(run_dir: Path) -> CandidateList:
         if product is None:
             product = cid
         alias_in = (f.get("aliases") if isinstance(f.get("aliases"), list) else []) + ids
-        sources = _sources([(f.get("source"), f.get("published_at"))], scrub)
-        _build(cid, _aliases(alias_in, cid, scrub), product, sources, f, scrub, out)
-    return out
+        sources = _sources([(f.get("source"), f.get("published_at"))], hosts)
+        # fixed/affected stay None: heartbeat records mix in host-observed versions.
+        _build(cid, _aliases(alias_in, cid, hosts), product, sources, f, hosts, out)
+
+    return _each(items, out, one)
 
 
 def _date(v) -> str | None:
@@ -330,32 +408,34 @@ def from_kev(kev_json: dict, since_date: str) -> CandidateList:
     if not isinstance(items, list):
         out.skipped["kev items not a list"] += 1
         return out
-    scrub = _Scrubber(FLEET_HOSTS)
-    for it in items:
+    hosts = _Hosts(FLEET_HOSTS)
+
+    def one(it):
         if not isinstance(it, dict):
             out.skipped["kev item not an object"] += 1
-            continue
+            return
         cve = it.get("cveID")
-        if not isinstance(cve, str) or not _CVE.fullmatch(cve) or len(cve) > MAX_ID:
+        if not isinstance(cve, str) or len(cve) > MAX_ID or not _CVE.fullmatch(cve):
             out.skipped["bad cveID"] += 1
-            continue
+            return
         added = _date(it.get("dateAdded"))
         if added is None:
             out.skipped["bad dateAdded"] += 1
-            continue
+            return
         if added < since_date:
-            continue
+            return
         vendor, product = _str(it.get("vendorProject")), _str(it.get("product"))
         if vendor is None or product is None:
             out.skipped["no product"] += 1
-            continue
+            return
         raw = [(KEV_CATALOG_URL, added)]
         notes = it.get("notes")
         if isinstance(notes, str):
-            raw += [(tok.strip(), None) for tok in re.split(r"[;\s]+", notes[:5000]) if tok.strip()]
-        f = {"observed_at": added}
-        _build(cve, (), f"{vendor} {product}", _sources(raw, scrub), f, scrub, out, exploited=True)
-    return out
+            raw += [(tok, None) for tok in re.split(r"[;\s]+", notes[:5000]) if tok]
+        _build(cve, (), f"{vendor} {product}", _sources(raw, hosts), {"observed_at": added},
+               hosts, out, exploited=True)
+
+    return _each(items, out, one)
 
 
 def from_collector(record: dict) -> CandidateList:
@@ -369,21 +449,23 @@ def from_collector(record: dict) -> CandidateList:
     if not isinstance(findings, list):
         out.skipped["findings not a list"] += 1
         return out
-    hosts = _record_hosts(record)
+    names = _record_hosts(record)
     for f in findings:
         if isinstance(f, dict):
-            hosts |= _finding_hosts(f)
-    scrub = _Scrubber(hosts)
-    for f in findings:
+            names |= _finding_hosts(f)
+    hosts = _Hosts(names)
+
+    def one(f):
         if not isinstance(f, dict):
             out.skipped["finding not an object"] += 1
-            continue
+            return
         cid = _str(f.get("id"), MAX_ID + 1)
         raw = []
         if isinstance(f.get("sources"), list):
             raw = [(s.get("url"), s.get("published_at")) for s in f["sources"] if isinstance(s, dict)]
-        _build(cid, _aliases(f.get("aliases"), cid, scrub), _str(f.get("product")),
-               _sources(raw, scrub), f, scrub, out,
-               fixed=_version(f.get("fixed"), _VERSION),
-               affected=_version(f.get("affected"), _VERSION_RANGE))
-    return out
+        # exploited is ignored here: only from_kev establishes KEV membership.
+        _build(cid, _aliases(f.get("aliases"), cid, hosts), _str(f.get("product")),
+               _sources(raw, hosts), f, hosts, out,
+               fixed=_fixed(f.get("fixed")), affected=_affected(f.get("affected")))
+
+    return _each(findings, out, one)
