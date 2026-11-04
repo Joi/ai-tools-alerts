@@ -10,6 +10,8 @@ Under construction; nothing here is ready to install yet. The design is `docs/de
 
 Done: the pure-Python Nostr primitives (`aitools_alerts/nostr.py`: BIP-340 signatures, NIP-01 event ids, NIP-19 keys) and the trust root. The trust root's public key is `trust/root.pub`; it signs only the manifest that lists who may post alerts, and the CLI pins it as `TRUST_ROOT_PUBKEY`.
 
+The two channels exist on `buzz.ai-tools.md`; their UUIDs are in `spec/channels.json`, and `ops/vm/README.md` says what this service keeps on the relay VM, including the `buzz-send` wrapper. Buzz cannot restrict who posts in an open channel, so `#security-critical` is open: only keys in the trust manifest are trusted by the CLI, and anyone may reply.
+
 Trust root public key (x-only hex), the same value as `trust/root.pub`:
 
 ```

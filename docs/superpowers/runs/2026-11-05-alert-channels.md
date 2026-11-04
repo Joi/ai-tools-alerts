@@ -14,10 +14,11 @@ Pass 2 [spec+plan delta]: 3B/0S/0C/0R · fixed 6/6 prior · velocity ↓ (6→3,
 passes: spec 2, plan 2 (combined) · elapsed ~12 min
 
 ## Chunks
-- [ ] chunk 1 — ops/vm/buzz-send wrapper + tests (repo only)
-- [ ] chunk 2 — live VM: channels, owner, wrapper install, setup message sent and deleted
-- [ ] chunk 3 — spec/channels.json, tests/test_channels.py, ops/vm/README.md, README Status
+- [x] chunk 1 — ops/vm/buzz-send wrapper + tests (repo only) (687d39c; Agency evaluator 90)
+- [x] chunk 2 — live VM: channels feed 599adb9f-…, critical ac446e7a-…, Joi owner, wrapper sha 1733a443… installed, setup message 8041594b… sent and deleted (notice comment on wpbd)
+- [x] chunk 3 — spec/channels.json, tests/test_channels.py, ops/vm/README.md, README Status (gate 74 passed)
 
 ## Notes
+- Code review runs once over the whole branch (Stage 1 ∥ Stage 2) after chunk 3, per the Review Cycle's one-review rule, rather than once per chunk; the live wrapper install in chunk 2 preceded that review, so the ending re-verifies the installed sha against landed main and reinstalls on a mismatch.
 - Prior work: kata search "buzz-send channels security-feed" found nothing; capability-search buzz-send hit cell-fleet ops/buzz/acp-spike/buzz-send (a socket-activated grammar-checking signer for the ACP spike, different trust boundary — kept, not reused; see spec Alternatives). Parent decision gr5b c:8qna4r: wrapper source of truth is this repo.
 - Probe 2026-11-05 on the VM: `buzz channels add-member --role owner|admin|member|guest|bot`; no `--version`. Write access (buzz-auth access.rs check_write_access, buzz-relay ingest.rs check_channel_membership): member OR open-visibility channel; no role-gated posting, Guest not enforced on ingest. So security-critical cannot be write-restricted.
