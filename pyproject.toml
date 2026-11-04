@@ -18,7 +18,7 @@ dev = ["pytest"]
 Homepage = "https://github.com/Joi/ai-tools-alerts"
 
 [tool.setuptools]
-packages = ["aitools_alerts"]
+packages = ["aitools_alerts", "aitools_alerts.poster"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,37 @@
+{
+  "cisa-kev": {
+    "version": "2026.11.03",
+    "items": [
+      {
+        "cveID": "CVE-2026-119977",
+        "dateAdded": "2026-11-03",
+        "vendorProject": "WordPress",
+        "product": "WordPress Core"
+      }
+    ]
+  },
+  "hackernews-discussion": {
+    "items": [
+      {
+        "created_at": "2026-11-04T12:06:15Z",
+        "title": "Forthcoming security update of Node.js; November 11, 2026",
+        "url": "https://nodejs.org/en/blog/vulnerability/november-2026-security-releases"
+      },
+      {
+        "created_at": "2026-11-04T11:52:17Z",
+        "title": "AI is forcing us to pay off 40 years of technical debt",
+        "url": "https://spectrum.ieee.org/ai-in-cybersecurity-php2shell-vulnerability"
+      },
+      {
+        "created_at": "2026-11-04T08:53:46Z",
+        "title": "Better Auth Critical Vulnerabilities",
+        "url": "https://better-auth.com/blog/security-release-2026-11-03"
+      },
+      {
+        "created_at": "2026-11-04T08:16:29Z",
+        "title": "Ask HN: How to Keep the Edge as an Engineer?",
+        "url": null
+      }
+    ]
+  }
+}

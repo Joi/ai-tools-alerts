@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "run_id": "2026-10-26T06-00Z",
+  "started_at": "2026-10-26T05:40:00Z",
+  "finished_at": "2026-10-26T06:00:00Z",
+  "status": "complete",
+  "source_coverage": [
+    {
+      "source": "cisa-kev",
+      "success": true,
+      "error": null,
+      "last_success": "2026-10-26T05:45:00Z"
+    },
+    {
+      "source": "github-advisories",
+      "success": true,
+      "error": null,
+      "last_success": "2026-10-26T05:50:00Z"
+    }
+  ],
+  "host_coverage": [
+    {
+      "host": "host-C",
+      "owner": "joi",
+      "status": "checked",
+      "observed_at": "2026-10-26T05:55:00Z"
+    },
+    {
+      "host": "host-A",
+      "owner": "joi",
+      "status": "checked",
+      "observed_at": "2026-10-26T05:56:00Z"
+    },
+    {
+      "host": "host-N",
+      "owner": "guest",
+      "status": "out_of_scope",
+      "observed_at": null
+    }
+  ],
+  "findings": [
+    {
+      "id": "CVE-2026-1001",
+      "aliases": [
+        "GHSA-aaaa-bbbb-cccc"
+      ],
+      "product": "OpenSSH",
+      "sources": [
+        {
+          "url": "https://www.cisa.gov/known-exploited-vulnerabilities-catalog",
+          "published_at": "2026-10-25T20:00:00Z"
+        }
+      ],
+      "observed_at": "2026-10-26T05:55:00Z",
+      "owner": "joi",
+      "affected_hosts": [
+        {
+          "host": "host-C",
+          "service": "sshd"
+        }
+      ],
+      "advisory_severity": "critical",
+      "local_severity": "critical",
+      "confidence": "high",
+      "exposure": "confirmed",
+      "exploited": true,
+      "rationale": "sshd is reachable on the tailnet on host-C; KEV lists active exploitation.",
+      "recommended_action": "Restart sshd on the patched package today."
+    },
+    {
+      "id": "GHSA-dddd-eeee-ffff",
+      "aliases": [],
+      "product": "Tailscale",
+      "sources": [
+        {
+          "url": "https://tailscale.com/security-bulletins",
+          "published_at": "2026-10-25T12:00:00Z"
+        }
+      ],
+      "observed_at": "2026-10-26T05:56:00Z",
+      "owner": "joi",
+      "affected_hosts": [
+        "host-A"
+      ],
+      "advisory_severity": "high",
+      "local_severity": "high",
+      "confidence": "medium",
+      "exposure": "plausible",
+      "rationale": "Tailscale SSH is enabled; running version not read because the CLI and daemon disagree.",
+      "recommended_action": "Update Tailscale on host-A and confirm the daemon version."
+    },
+    {
+      "id": "CVE-2026-2002",
+      "aliases": [],
+      "product": "Docker Engine",
+      "sources": [
+        {
+          "url": "https://docs.docker.com/security/",
+          "published_at": "2026-10-24T09:00:00Z"
+        }
+      ],
+      "observed_at": "2026-10-26T05:57:00Z",
+      "owner": "guest",
+      "affected_hosts": [
+        "host-N"
+      ],
+      "advisory_severity": "critical",
+      "local_severity": "high",
+      "confidence": "medium",
+      "exposure": "out_of_scope",
+      "rationale": "Guest-managed cell; not inspected.",
+      "recommended_action": "None for Joi; guest maintains it."
+    },
+    {
+      "id": "CVE-2026-6006",
+      "aliases": [],
+      "product": "OpenSSL",
+      "sources": [
+        {
+          "url": "https://openssl-library.org/news/vulnerabilities/",
+          "published_at": "2026-10-21T00:00:00Z"
+        }
+      ],
+      "observed_at": "2026-10-26T05:55:00Z",
+      "owner": "joi",
+      "affected_hosts": [
+        "host-C"
+      ],
+      "advisory_severity": "medium",
+      "local_severity": "not_affected",
+      "confidence": "high",
+      "exposure": "not_affected",
+      "rationale": "Backported fix present in the installed package.",
+      "recommended_action": "None."
+    }
+  ]
+}

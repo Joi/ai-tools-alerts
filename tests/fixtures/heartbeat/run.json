@@ -1,0 +1,149 @@
+{
+  "schema": 1,
+  "automation_id": "security-news-and-fleet-exposure-watch",
+  "last_attempt": "2026-11-04T17:50:14.622Z",
+  "last_success": "2026-11-04T17:53:48.765821+00:00",
+  "source_watermarks": {
+    "cisa-kev": "2026-11-04T17:53:48.765821+00:00",
+    "tailscale-bulletins": "2026-11-04T11:49:39.074091+00:00",
+    "apple-security": "2026-10-28T04:21:38.265101+00:00"
+  },
+  "findings": {
+    "CVE-2026-86950|host-A|CoreGraphics": {
+      "id": "CVE-2026-86950",
+      "hosts": [
+        "host-A"
+      ],
+      "owner": "joi",
+      "local_severity": null,
+      "advisory_severity": "code execution; exploitation reported on iOS",
+      "exposure": "remediated",
+      "confidence": "high",
+      "observed_at": "2026-10-28T04:21:38.265101+00:00",
+      "action": "Prioritize supported macOS security update; no remediation performed",
+      "source": "https://support.apple.com/en-us/149228",
+      "kata": "jibot-code#5f3x",
+      "alert_decision": "unchanged; accepted prior alert deduplicated, delivery unverified"
+    },
+    "CVE-2026-112697|host-B|WebKit": {
+      "id": "CVE-2026-112697",
+      "aliases": [
+        "CVE-2026-112655",
+        "CVE-2026-112651",
+        "CVE-2026-112623",
+        "CVE-2026-112659",
+        "CVE-2026-112637",
+        "CVE-2026-112626",
+        "CVE-2026-112639"
+      ],
+      "hosts": [
+        "host-C",
+        "host-D",
+        "host-E",
+        "host-F",
+        "host-G",
+        "host-H"
+      ],
+      "owner": "joi",
+      "local_severity": "High",
+      "advisory_severity": "web content arbitrary code execution",
+      "exposure": "plausible",
+      "confidence": "high for installed version and active component; in-memory build unverified",
+      "observed_at": "2026-10-30T23:38:36.982668+00:00",
+      "source": "https://support.apple.com/en-us/149521",
+      "kata": "jibot-code#wbgd"
+    },
+    "WordPress-7.1.4": {
+      "observed_at": "2026-11-03T23:49:27.404279+00:00",
+      "local_severity": "Unknown",
+      "exposure": "unknown",
+      "source": "https://wordpress.org/news/2026/10/wordpress-7-1-4/",
+      "kata": "jibot-code#w3xq",
+      "aliases": [
+        "CVE-2026-119977"
+      ],
+      "exploitation": "CISA KEV added November 3"
+    },
+    "Tailworm": {
+      "local_severity": "Unknown",
+      "exposure": "partial prerequisite checks",
+      "hosts": [
+        "host-H",
+        "host-F",
+        "host-G",
+        "host-I",
+        "host-J",
+        "host-K",
+        "host-A",
+        "host-L",
+        "host-D",
+        "host-M",
+        "host-C",
+        "host-E"
+      ],
+      "source": "https://tailscale.com/security-bulletins",
+      "observed_at": "2026-10-31T11:37:19.558768+00:00",
+      "host-C": "Running daemon verified on this host; fixed-version match recorded."
+    },
+    "other-leads": {
+      "local_severity": "Unknown",
+      "exposure": "unknown"
+    }
+  },
+  "alerts": {},
+  "status": "partial",
+  "source_coverage": {
+    "osv": {
+      "status": "unknown",
+      "attempted_at": "2026-11-04T17:53:48.765821+00:00",
+      "previous_watermark": null,
+      "overlap_hours": 24,
+      "scope": "Not refreshed or unavailable; indexed social results insufficient"
+    },
+    "tailscale-bulletins": {
+      "status": "unknown",
+      "attempted_at": "2026-11-04T17:53:48.765821+00:00",
+      "previous_watermark": "2026-11-04T11:49:39.074091+00:00",
+      "overlap_hours": 24,
+      "scope": "Not refreshed or unavailable; indexed social results insufficient"
+    }
+  },
+  "host_coverage": [
+    {
+      "host": "host-H",
+      "owner": "joi",
+      "status": "unknown",
+      "observed_at": "2026-11-04T17:53:48.765821+00:00"
+    },
+    {
+      "host": "host-F",
+      "owner": "joi",
+      "status": "partial",
+      "observed_at": "2026-11-04T17:50:41.132457+00:00"
+    },
+    {
+      "host": "host-G",
+      "owner": "joi",
+      "status": "partial",
+      "observed_at": "2026-11-04T17:50:41.122476+00:00"
+    },
+    {
+      "host": "host-I",
+      "owner": "joi",
+      "status": "partial",
+      "observed_at": "2026-11-04T17:50:42.252696+00:00"
+    },
+    {
+      "host": "host-J",
+      "owner": "joi",
+      "status": "partial",
+      "observed_at": "2026-11-04T17:50:46.040799+00:00"
+    },
+    {
+      "host": "host-K",
+      "owner": "joi",
+      "status": "partial",
+      "observed_at": "2026-11-04T17:50:42.456905+00:00"
+    }
+  ]
+}
