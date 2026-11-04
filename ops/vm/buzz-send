@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# buzz-send — run the Buzz CLI as jibot against the ai-tools relay, with the
+# key read from its file so it is never on any argv.
+#
+# Installed on the relay VM (relay-vm.example) at /home/relay/bin/buzz-send,
+# mode 700, owner relayuser. Source of truth: ops/vm/buzz-send in the
+# ai-tools-alerts repo (jibot-code#gr5b decision c:8qna4r); ops/vm/README.md
+# says how to install and verify it.
+#
+# Caller contract: buzz-send <buzz CLI arguments>, for example
+#   printf '%s' "$text" | buzz-send messages send --channel <uuid> --content - [--reply-to <id>]
+# Message text goes on stdin (--content -). The wrapper refuses --private-key
+# and --relay anywhere in its arguments, including as a --content value, so
+# text that contains those strings must come in on stdin.
+#
+# The key reaches the CLI only in its environment (BUZZ_PRIVATE_KEY), which
+# ps does not show; /proc/<pid>/environ is readable by the same uid only, and
+# that uid can read the key file anyway. BUZZ_RELAY_URL is pinned to the
+# relay (NIP-42 derives its scheme and host from it) and BUZZ_AUTH_TAG is
+# cleared, whatever the caller set.
+#
+# The key file is checked before the CLI starts: a regular readable file, an
+# nsec (bech32 checksum, 32-byte payload) or 64 lowercase hex, and a secret
+# scalar in 1..n-1. The check runs in python3 with the key on stdin. Every
+# failure prints one JSON error line naming the path, never the contents, and
+# exits 1 without starting the CLI.
+#
+# BUZZ_SEND_KEY_FILE and BUZZ_SEND_BUZZ override the two paths for the tests;
+# the only caller is the key's own uid, so they grant nothing new.
+#
+# Never add `set -x` here.
+set -euo pipefail
+umask 077
+
+KEY_FILE="${BUZZ_SEND_KEY_FILE:-/home/relay/.buzz-keys/agent.nsec}"
+BUZZ="${BUZZ_SEND_BUZZ:-/home/relay/buzz/target/release/buzz}"
+RELAY_URL="https://buzz.ai-tools.md"
+
+fail() {
+  local msg="${1//\\/\\\\}"
+  msg="${msg//\"/\\\"}"
+  printf '{"error":"user_error","message":"buzz-send: %s"}\n' "$msg" >&2
+  exit 1
+}
+
+for a in "$@"; do
+  case "$a" in
+    --private-key | --private-key=* | --relay | --relay=*) fail "refused flag ${a%%=*}" ;;
+  esac
+done
+
+# -f before any open: a FIFO or directory fails here instead of blocking a read.
+if [ ! -f "$KEY_FILE" ] || [ ! -r "$KEY_FILE" ]; then
+  fail "key file missing, not a regular file, or not readable: $KEY_FILE"
+fi
+key="$(<"$KEY_FILE")" 2>/dev/null || fail "key file read failed: $KEY_FILE"
+key="${key//[[:space:]]/}"
+
+if ! [[ "$key" =~ ^nsec1[02-9ac-hj-np-z]{58}$ || "$key" =~ ^[0-9a-f]{64}$ ]]; then
+  unset key
+  fail "key file malformed: $KEY_FILE"
+fi
+
+# The validator reads the key from stdin and prints nothing; only its exit
+# status is used. Mirrors aitools_alerts.nostr.nsec_to_hex.
+VALIDATOR='
+import sys
+N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+CS = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+def polymod(v):
+    g = [0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3]
+    c = 1
+    for x in v:
+        b = c >> 25
+        c = ((c & 0x1FFFFFF) << 5) ^ x
+        for i in range(5):
+            if (b >> i) & 1:
+                c ^= g[i]
+    return c
+def main():
+    s = sys.stdin.read()
+    if s.startswith("nsec1"):
+        hrp, rest = "nsec", s[5:]
+        if any(ch not in CS for ch in rest):
+            return 1
+        d = [CS.find(ch) for ch in rest]
+        if polymod([ord(x) >> 5 for x in hrp] + [0] + [ord(x) & 31 for x in hrp] + d) != 1:
+            return 1
+        acc = bits = 0
+        out = bytearray()
+        for v in d[:-6]:
+            acc = (acc << 5) | v
+            bits += 5
+            while bits >= 8:
+                bits -= 8
+                out.append((acc >> bits) & 0xFF)
+        if bits >= 5 or (acc << (8 - bits)) & 0xFF:
+            return 1
+        if len(out) != 32:
+            return 1
+        k = int.from_bytes(out, "big")
+    else:
+        if len(s) != 64 or any(ch not in "0123456789abcdef" for ch in s):
+            return 1
+        k = int(s, 16)
+    return 0 if 1 <= k < N else 1
+sys.exit(main())
+'
+if ! printf '%s' "$key" | python3 -I -c "$VALIDATOR" >/dev/null 2>&1; then
+  unset key
+  fail "key file malformed: $KEY_FILE"
+fi
+
+export BUZZ_PRIVATE_KEY="$key"
+unset key
+export BUZZ_RELAY_URL="$RELAY_URL"
+unset BUZZ_AUTH_TAG
+
+exec "$BUZZ" "$@"
