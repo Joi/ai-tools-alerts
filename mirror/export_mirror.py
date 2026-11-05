@@ -377,7 +377,7 @@ def atom_doc(events: list[dict], m, generated_at: str, mirror_url: str, lang: st
         # withdrawal, so a reader fetches the entry again.
         if ev["id"] not in last:
             return updated(ev)
-        return max(updated(ev), last[ev["id"]] + (ev["id"] in retraction))
+        return max(updated(ev), min(last[ev["id"]] + (ev["id"] in retraction), schema.MAX_TIMESTAMP))
 
     ET.register_namespace("", ATOM_NS)
     q = lambda tag: f"{{{ATOM_NS}}}{tag}"  # noqa: E731

@@ -641,7 +641,8 @@ def test_translation_merged_across_copies_and_long_title_falls_back(monkeypatch,
     m = Mirror()
     adv = advisory(posted_by="relay-bot")
     feed = m.root_post(m.bot_sec, adv, files=("feed.json",))
-    crit = m.root_post(m.bot_sec, adv, files=("critical.json",))
+    crit = m.root_post(m.bot_sec, adv, files=("critical.json",), created_at=T0 + 101)
+    assert feed["id"] != crit["id"]
     m.reply(m.bot_sec, feed, "lang: ja\n\n古い訳", created_at=T0 + 200)
     m.reply(m.bot_sec, crit, "lang: ja\n\n新しい訳", created_at=T0 + 300)
     monkeypatch.setenv(cli.TRUST_ROOT_ENV, m.root)
@@ -652,6 +653,7 @@ def test_translation_merged_across_copies_and_long_title_falls_back(monkeypatch,
     assert cli.main(["check"]) == 0
     out = capsys.readouterr().out
     assert "CRITICAL: 新しい訳 [Claude Code" in out and out.count("CRITICAL: ") == 1
+    assert f"threads {feed['id'][:12]}, {crit['id'][:12]}" in out
     acts = [Action("upgrade", "Claude Code", "99.0.0")] * 20
     pad = notify.MAX_TEXT - 50 - len(notify.format_text(advisory(actions=acts, sources=[])))
     big = advisory(sources=[Source("https://example.invalid/" + "a" * (pad - 33), None)], actions=acts)

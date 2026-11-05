@@ -883,3 +883,11 @@ def test_ja_atom_translates_a_plain_digest_root(env):
               for x in ET.parse(env[2] / "feed.ja.atom").getroot().findall(f"{ATOM}entry")}
     assert titles[f"urn:nostr:event:{digest['id']}:ja"] == ("今日のまとめ", "今日のまとめ\n本日は二件")
     assert titles[f"urn:nostr:event:{curated['id']}:ja"][0] == "Curator note"
+
+
+def test_ja_atom_survives_a_retraction_at_the_last_timestamp(env):
+    a = ev(BOT_SEC, advisory_post("Alpha", "x"), 1793865600)
+    run_export(env, rows_reader([a, ev(CUR_SEC, "retract", schema.MAX_TIMESTAMP,
+                                       tags=[("e", a["id"], "", "root")])]))
+    entry = ET.parse(env[2] / "feed.ja.atom").getroot().find(f"{ATOM}entry")
+    assert entry.findtext(f"{ATOM}title") == "撤回: Alpha"

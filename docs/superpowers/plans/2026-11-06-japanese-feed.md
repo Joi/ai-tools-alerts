@@ -12,14 +12,15 @@ Spec: docs/superpowers/specs/2026-11-06-japanese-feed-design.md. Budget: under
     `translation_title(text) -> str` per the spec; both in `__all__`.
   - `Thread` gains `translations: dict = field(default_factory=dict)`.
   - `advisories` becomes `threads_from(events, m)` (the exporter calls it too).
-    The root record gains `{lang: (text, at, by_curator)}` and the id of the
-    current version (the root, then the last reply that changed the advisory).
-    In the reply loop, AFTER the discussion check (a bot reply on a curator
-    thread is discussion, lang replies included): if
-    `_first_line(content).startswith("lang:")`, parse; if it parses, names the
-    current version (`of` or the root id), and does not replace a curator's
-    translation with a bot's, store it; `continue` in every case. A patch or
-    level change clears the translations and becomes the current version.
+    The root record gains `{target id: {lang: (text, at, by_curator)}}`, the
+    list of targets (the root, then each reply that changed the advisory) and
+    a retitled flag (a title or level change). In the reply loop, AFTER the
+    discussion check (a bot reply on a curator thread is discussion, lang
+    replies included): if `_first_line(content).startswith("lang:")`, parse;
+    if it parses, names a target (`of` or the root id), and does not replace
+    a curator's translation with a bot's, store it; `continue` in every case.
+    `_composed`: per language, the root's text then each change's, only when
+    every target has one; when retitled, the first line is the English title.
 - [ ] `aitools_alerts/config.py`: `LANGS = ("en", "ja")`; `Settings.lang = "en"`;
   `load` validates `lang`; TEMPLATE gains
   `# lang = "ja"   # show advisory text in Japanese where a translation exists`.
