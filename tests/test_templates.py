@@ -134,6 +134,9 @@ def test_procedure_text_is_fixed(path):
         assert rule in flat, rule
     for loosening in ("by hand", "you may run", "feel free"):
         assert loosening not in flat.lower(), loosening
+    # The CLI prints the source link; the skill quotes it, no fallback.
+    assert "a `source: <url>` line" in flat and "the source link (`source`)" in flat
+    assert "#security-feed" not in text and "if the CLI printed one" not in flat
 
 
 RULES = ("Do not run it yet.",
@@ -166,7 +169,8 @@ def test_quoted_cli_text_matches_the_cli():
                    "no fixed version given: notify only, no command",
                    "no command template; upgrade with your package manager",
                    "nothing was executed", '"pull_error"', '"unseen_critical"',
-                   '"matches"', "EXIT_UNSEEN_CRITICAL = 2", "--quiet"):
+                   '"matches"', "EXIT_UNSEEN_CRITICAL = 2", "--quiet",
+                   '"source"', '"sources"', 'print(f"  source: '):
         assert quoted in cli, quoted
     text = SKILLS["claude-code"].read_text()
     for quoted in ("no fixed version given: notify only, no command",

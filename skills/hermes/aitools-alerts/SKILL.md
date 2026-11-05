@@ -36,7 +36,9 @@ how to use it. The rules below are fixed; follow them exactly.
    - `matches`: one object per advisory that matches this machine:
      `thread` (the advisory id to pass to `plan`), `id`, `level`, `title`,
      `posted_by` (`curator` or `relay-bot`), `reason`, `installed` (name,
-     version), `product` (name, affected, fixed) and `actions`.
+     version), `product` (name, affected, fixed), `actions`, `sources`
+     (each `url`, `published_at`) and `source` (the link to give the
+     person: the first primary source, else the first source).
    - `unseen_critical`: thread ids of critical matches not shown before.
    Exit 2 means `unseen_critical` is not empty. Exit 0 or 1 with the JSON
    printed: nothing new is critical (1: a notification could not be sent).
@@ -46,11 +48,10 @@ how to use it. The rules below are fixed; follow them exactly.
    (the hook or the hourly job may have marked it seen already), tell the
    person first, before anything else, for each critical match: the level,
    the title, the affected product and the installed version, the action,
-   and the primary source link if the CLI printed one (if it did not, say
-   so and point them to `#security-feed` on the ai-tools Buzz relay).
+   and the source link (`source`).
    Report `high` and `notice` matches too when the person asked.
 3. Run `aitools-alerts plan <thread>` for each match you reported. It
-   prints the advisory, then up to two sections:
+   prints the advisory, a `source: <url>` line, then up to two sections:
    - `auto-apply (opted in):` actions the person opted into in
      `~/.config/aitools-alerts/config.toml` (`auto_apply`), from a curator
      post that matches this machine exactly;

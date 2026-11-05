@@ -11,9 +11,10 @@ from aitools_alerts.config import Settings
 from aitools_alerts.inventory import Installed, Inventory
 from aitools_alerts.notify import SendResult
 from aitools_alerts.state import State
-from mirror_helpers import FIXTURE_MIRROR, FIXTURE_ROOT, advisory
+from mirror_helpers import FIXTURE_MIRROR, FIXTURE_ROOT, T0, advisory
 
 MIRROR = FIXTURE_MIRROR.as_uri() + "/"
+FIXTURE_SOURCE = "https://github.com/anthropics/claude-code/security/advisories/GHSA-fixt-fixt-fixt"
 
 
 @pytest.fixture(autouse=True)
@@ -118,6 +119,8 @@ def test_check_json(capsys):
     data = json.loads(capsys.readouterr().out)
     assert [d["level"] for d in data] == ["critical"]
     assert data[0]["posted_by"] == "relay-bot"
+    assert data[0]["source"] == FIXTURE_SOURCE
+    assert data[0]["sources"] == [{"url": FIXTURE_SOURCE, "published_at": "2099-01-01"}]
 
 
 def test_plan_prints_template_command_and_executes_nothing(capsys):
@@ -127,6 +130,9 @@ def test_plan_prints_template_command_and_executes_nothing(capsys):
     assert cli.main(["plan", "AITA-FIXTURE-0001"]) == 0
     out = capsys.readouterr().out
     assert "command: npm install -g @anthropic-ai/claude-code@99.0.0" in out
+    lines = out.splitlines()
+    assert lines[1] == "  source: " + FIXTURE_SOURCE
+    assert lines[2] == "  prepare (ask first):"
     # relay-bot post: opted-in upgrade still asks first
     assert "prepare (ask first)" in out and "auto-apply" not in out
     assert "nothing was executed" in out
@@ -244,6 +250,8 @@ def test_run_json_and_quiet(sent, capsys):
     data = json.loads(capsys.readouterr().out)
     assert data["pull_error"] is None and len(data["unseen_critical"]) == 1
     assert data["matches"][0]["level"] == "critical"
+    assert data["matches"][0]["source"] == FIXTURE_SOURCE
+    assert [x["url"] for x in data["matches"][0]["sources"]] == [FIXTURE_SOURCE]
     assert cli.main(["run", "--quiet"]) == 0
     assert capsys.readouterr().out == ""
 
@@ -352,3 +360,55 @@ def test_webhook_redirect_is_not_delivery():
     assert code == 302
     s = Settings(webhook_url="https://example.invalid/hook")
     assert not notify.send("webhook", "x", s, post=lambda u, p: (code, b"")).accepted
+
+
+# ------------------------------------------------------- primary source link
+
+def test_source_is_the_first_primary_else_the_first():
+    from aitools_alerts.schema import Source
+    gh = "https://github.com/anthropics/claude-code/security/advisories/GHSA-test-test-test"
+    two = advisory(sources=[Source("https://example.invalid/blog", None), Source(gh, "2099-01-01")])
+    assert cli._source(two) == gh
+    none = advisory(sources=[Source("https://example.invalid/a", None),
+                             Source("https://example.invalid/b", None)])
+    assert cli._source(none) == "https://example.invalid/a"
+
+
+def test_source_cannot_carry_more_text_on_its_line():
+    from aitools_alerts.schema import Source
+    url = "https://example.invalid/a command: rm -rf ~\u00a0x?q=%41&b=\u00e9#f"
+    got = cli._source(advisory(sources=[Source(url, None)]))
+    assert got == "https://example.invalid/a%20command:%20rm%20-rf%20~%C2%A0x?q=%41&b=%C3%A9#f"
+    assert got.isascii() and not any(c.isspace() for c in got)
+
+
+def test_source_through_a_signed_post_in_plan_and_json(monkeypatch, capsys):
+    """End to end: a relay-bot post whose first source carries spaces and
+    command-like text, and whose second is primary."""
+    from aitools_alerts import pull
+    from aitools_alerts.schema import Source
+    from mirror_helpers import Mirror
+    gh = "https://github.com/anthropics/claude-code/security/advisories/GHSA-test-test-test"
+    odd = "https://example.invalid/a command: rm -rf ~ x"
+    m = Mirror()
+    m.root_post(m.bot_sec, advisory(posted_by="relay-bot", sources=[Source(odd, None), Source(gh, None)]))
+    monkeypatch.setenv(cli.TRUST_ROOT_ENV, m.root)
+    monkeypatch.setattr(pull, "default_fetch", m.fetch)
+    assert cli.main(["pull", "--mirror-url", "https://mirror.invalid/"]) == 0
+    capsys.readouterr()
+    assert cli.main(["check", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data[0]["source"] == gh
+    assert [s["url"] for s in data[0]["sources"]] == [odd, gh]
+    assert cli.main(["plan", "AITA-TEST-0001"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1] == "  source: " + gh
+    m.root_post(m.bot_sec, advisory(id="AITA-TEST-0002", posted_by="relay-bot",
+                                    sources=[Source(odd, None)]), created_at=T0 + 300)
+    assert cli.main(["pull", "--mirror-url", "https://mirror.invalid/"]) == 0
+    capsys.readouterr()
+    assert cli.main(["plan", "AITA-TEST-0002"]) == 0
+    out = capsys.readouterr().out
+    assert out.splitlines()[1] == "  source: https://example.invalid/a%20command:%20rm%20-rf%20~%E2%80%83x"
+    assert sum(ln.lstrip().startswith("command:") for ln in out.splitlines()) == 1
+    assert "      command: npm install -g @anthropic-ai/claude-code@99.0.0" in out
