@@ -306,6 +306,11 @@ def test_resolve_delivered_refuses_what_would_not_record(env):
     before = (env.ledger(), env.state())
     code, lines = main.resolve(T0, env.config, it["key"], delivered=known)  # another thread's id
     assert code == 2 and "already recorded" in lines[0] and (env.ledger(), env.state()) == before
+    st = env.state()  # another item sent and journaled, not yet recorded (a crash)
+    st["outbox"].append({**it, "key": "root:other:x:feed", "sent": "cd" * 32})
+    inputs.save_state(env.config.state, st)
+    assert main.resolve(T0, env.config, it["key"], delivered="cd" * 32)[0] == 2
+    inputs.save_state(env.config.state, before[1])
     with Ledger(env.config.ledger):  # the hourly run holds the lock
         assert main.resolve(T0, env.config, it["key"], delivered="ab" * 32)[0] == 1
         assert main.pending(T0, env.config)[0] == 1

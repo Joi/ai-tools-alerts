@@ -19,6 +19,11 @@ Pass 1 [spec+plan]: 1B/4S/1C/0R · fixed -/- · velocity = (—→6, escalation 
 Stage 1 [code:resolve-pending, uncommitted pre-fix diff]: 0B/2S/2C/0R (same-model subagent)
 - S1 (a wrong id journaled before `_record` refuses it stalls every hourly run, and the tool cannot undo it): fixed: the checks `_record` makes run before the save (root ids held by another thread; copy/reply with no thread), exit 2, nothing written.
 - S2 (an id already belonging to another thread is accepted, corrupting `thread()` lookups): fixed with `Ledger.has_event` + `digest_ids`; test `test_resolve_delivered_refuses_what_would_not_record`.
+Pass 1 [code:resolve-pending, whole branch fb0b0bfc1ba9df3cf54292a0f291a52ac91c75d2]: 1B/2S/0C/0R · fixed 7/7 prior · velocity ↓ (6→3, escalation no)
+- fresheyes gpt-6-astra, run 20261105-174655-1a7938; three "major".
+- B fixed (behaviour): an event id journaled as `sent` on another outbox item (sent, crashed before recording) was accepted; now refused, with a regression in `test_resolve_delivered_refuses_what_would_not_record`. Delta pass follows (`--since fb0b0bf`).
+- S fixed (plan only): the host-name grep used a placeholder pattern; now the concrete pattern, and a planted name prints 1.
+- S rebutted (a retried `--not-delivered` can expire a later attempt under the same key): it needs the resolve process to die after the expiry is saved, an hourly run to retry and get a second unknown outcome, and then the operator to re-run the same command 24 h or more later without re-reading `pending`. The operator procedure is `pending`, check the channel, `resolve`; the 24 h floor forces a fresh look at a new attempt. Binding to an attempt id would add a required flag to the interface the brief fixes (`resolve <key> (--delivered <id> | --not-delivered --reason <text>)`). Kept as is.
 - C (only LedgerError caught): fixed, any other exception is exit 1 with a one-line message. C (inline dict counter): left.
 
 ## Chunks

@@ -607,7 +607,8 @@ def resolve(now: int, config, key: str, *, delivered: str | None = None,
                     return refuse(f"the journal already holds event id {it['sent']}")
                 r = Run(now, config, led, state, {}, None, None)
                 if it["sent"] is None:  # the checks _record makes, before anything is written
-                    if led.has_event(delivered) or delivered in state["digest_ids"]:
+                    if led.has_event(delivered) or delivered in state["digest_ids"] \
+                            or any(o["sent"] == delivered for o in state["outbox"]):  # journaled, unrecorded
                         return refuse("that event id is already recorded for another post")
                     if it["kind"] == "root":
                         e = led.lookup(it["ids"], scope=it["scope"])
