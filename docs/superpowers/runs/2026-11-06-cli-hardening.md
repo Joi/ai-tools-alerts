@@ -1,6 +1,6 @@
 # Run: cli-hardening
 Instruction: ai-tools-alerts#8et2 per TASK-ai-tools-alerts#8et2.md — trust-root env override honoured only with trust_root_override = true in config.toml, otherwise ignored and named in --json as ignored_env; pull_error from a fixed set of strings, never server text; README two lines; under 150 changed lines. Dispatched as /do-it, starting rung floored at medium. Not repoman-managed; non-repoman ending (ff-merge to main, close issue). Security-shaped: FRESHEYES_GPT_MODEL=gpt-6-astra.
-Stage: verifying
+Stage: done
 Rung: heavy (start-floor heavy: hard-trigger auth/credential handling — the diff decides which signing key checks manifest signatures; BR1 REV1 NOV1 INT1 FC1 = 5; Lens: "Under 150 changed lines"), above the dispatch's medium floor
 Spec: docs/superpowers/specs/2026-11-06-cli-hardening-design.md   Plan: docs/superpowers/plans/2026-11-06-cli-hardening.md
 Agency project: — (executed inline, as the earlier tasks did)
@@ -24,3 +24,4 @@ No BLOCKER → no delta pass (Review Cycle); SUBSTANTIVE fixes take no further p
 - An accidental `fresheyes.sh --help` launched a review (the script has no help flag); killed by process group within a minute (pid 75211), never counted as a pass.
 - Code was written while the spec+plan pass ran (the review reads a frozen snapshot), as earlier tasks did.
 - kata search "trust root override pull_error": only 8et2 itself. capability-search "trust root override": no overlapping tool.
+- Gate (scripts/test-gate.sh) on f889cfb: 857 passed, 1 skipped. origin/main unmoved at 47f9d7a; fleet host-name grep on the diff: 0 hits. Follow-up filed: ai-tools-alerts#fsmb.
