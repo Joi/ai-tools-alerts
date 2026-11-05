@@ -212,3 +212,14 @@ def test_delta_fixes(tmp_path, monkeypatch):
         monkeypatch.undo()
         with pytest.raises(LedgerError):  # the context is unusable once disk and memory may differ
             led.lookup(["CVE-2026-0001"])
+
+
+def test_entries_since_and_has_pending(tmp_path):
+    with Ledger(tmp_path / "l.json") as led:
+        c = cand(fixed="2.1.0")
+        led.record_root(adv_for(c), "r1", {"feed": "r1"}, scope="Claude Code", exploited=False, now=T0)
+        assert [e.root_event_id for e in led.entries_since(T0 - 1)] == ["r1"]
+        assert led.entries_since(T0) == []
+        assert not led.has_pending("k")
+        led.pending("k", ["CVE-2026-0001"], now=T0)
+        assert led.has_pending("k")

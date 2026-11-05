@@ -173,6 +173,11 @@ class Ledger:
                 if _keys(e["aliases"]) & want and (scope is None or e["scope"] == scope)]
         return [Entry(**e) for e in sorted(hits, key=lambda e: e["posted_at"])]
 
+    def entries_since(self, t: int) -> list[Entry]:
+        """Every entry whose last change is after ``t``, oldest change first (the digest)."""
+        hits = [e for e in self._state()["entries"] if e["last_change"] > t]
+        return [Entry(**e) for e in sorted(hits, key=lambda e: e["last_change"])]
+
     def lookup(self, aliases, scope: str | None = None) -> Entry | None:
         """The oldest entry sharing any id, optionally for one scope."""
         hits = self.lookup_all(aliases, scope)
@@ -209,6 +214,15 @@ class Ledger:
         self._save()
         return Entry(**e)
 
+    def add_ids(self, root_event_id: str, ids) -> Entry:
+        """Learn more ids for a thread without a post (identity is not capped)."""
+        e = self._entry(root_event_id)
+        merged = _union(e["aliases"], ids)
+        if merged != e["aliases"]:
+            e["aliases"] = merged
+            self._save()
+        return Entry(**e)
+
     def record_reply(self, root_event_id: str, adv: schema.Advisory, reply_ids: dict, *,
                      now: int, exploited: bool = False, ids=()) -> Entry:
         if not _ids_map(reply_ids):
@@ -222,6 +236,9 @@ class Ledger:
         return Entry(**e)
 
     # ------------------------------------------------------------ in-flight sends
+
+    def has_pending(self, key: str) -> bool:
+        return any(p["key"] == key for p in self._state()["pending"])
 
     def pending_for(self, aliases) -> list[dict]:
         want = _keys(aliases)

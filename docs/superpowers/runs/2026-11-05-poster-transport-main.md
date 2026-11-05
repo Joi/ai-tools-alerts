@@ -27,9 +27,14 @@ Pass 1 [code:transport, whole branch d2f2fd7]: Stage 1 0B/4S/3C · fresheyes (gp
 Pass 2 [code:transport delta --since d2f2fd7]: 3B/0S/0C/0R · fixed 13/13 prior · velocity ↓ (13→3, escalation no)
 - run 20261105-105044-9d91d5. Fixed: the full-stderr test (60fe808); alias publication compared with prev (landing 3); compose's case-preserved guard (92b202f, landing 2). Landed 60fe808 on main 2026-11-05.
 
+Pass 1 [code:inputs, whole branch 9dd6636]: Stage 1 1B/6S/9C · fresheyes (run 20261105-105740-e39dfd) 6B/0S/0C · fixed 3/3 prior · velocity = (—→22, escalation no)
+- All BLOCKER and SUBSTANTIVE fixed in 5d6ccc0; ledger fsync filed as ai-tools-alerts#nyav. Behaviour changed: one delta.
+Pass 2 [code:inputs delta --since 9dd6636]: 2B/0S/0C/0R · fixed 13/13 prior · velocity ↓ (22→2, escalation no)
+- run 20261105-110529-32750b. Both fixed in fb37d7f. Rebased onto 2569460, landed 75c73ec on main.
+
 ## Chunks
 - [x] transport — `aitools_alerts/poster/transport.py`, `tests/poster/test_transport.py` (landing 1)
-- [ ] inputs — `aitools_alerts/poster/inputs.py`, `tests/poster/test_inputs.py`, `_PRIVATE` in candidates.py + tests (landing 2)
+- [x] inputs — `aitools_alerts/poster/inputs.py`, `tests/poster/test_inputs.py`, `_PRIVATE` in candidates.py + tests (landing 2)
 - [ ] run — `aitools_alerts/poster/main.py`, `tests/poster/test_main.py`, `Ledger.entries_since`/`has_pending` + test, `pyproject.toml` console script (landing 3)
 
 ## Notes

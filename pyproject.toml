@@ -17,6 +17,7 @@ curator = ["websockets>=12"]
 
 [project.scripts]
 aitools-alerts = "aitools_alerts.cli:main"
+aitools-alerts-poster = "aitools_alerts.poster.main:main"
 
 [project.urls]
 Homepage = "https://github.com/Joi/ai-tools-alerts"
