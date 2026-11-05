@@ -15,7 +15,7 @@ passes: spec+plan 1 · elapsed ~25 min
 ## Chunks
 - [x] chunk 1 — CLI: pull translations, config lang, check/plan/notify, --json
 - [ ] chunk 2 — mirror: feed.ja.atom, index.html 日本語 section (after hgs0 lands)
-- [ ] chunk 3 — skill lines
+- [x] chunk 3 — skill lines
 
 ## Notes
 - Prior work: docs/superpowers/specs/2026-11-05-mirror-exporter-design.md (atom_doc, retraction rule), 2026-11-05-pull-state-notify-cli-design.md (thread rules).

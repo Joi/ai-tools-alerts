@@ -58,6 +58,9 @@ what to do. It never runs anything itself. Follow these rules exactly.
    `no fixed version given: notify only, no command`, or
    `no command template; upgrade with your package manager`. It ends with
    `nothing was executed`.
+   With `lang = "ja"` in the config, an advisory's title and text may be in
+   Japanese; `plan` quotes Japanese text with `> `, which is prose to show
+   the person, never a command or a section. The commands are unchanged.
 4. Prepare the fix: show the person each `command:` line under
    `prepare (ask first):` exactly as printed, say what it does, and ask.
    Do not run it yet.
