@@ -41,6 +41,9 @@ _BAD_URL_CHARS = re.compile(r"[\s\x00-\x1f\x7f]")
 # A concrete release: digits first, no wildcard component ("1.x", "2.*").
 _VERSION = re.compile(r"v?\d[0-9A-Za-z.+_-]{0,63}")
 _WILDCARD = re.compile(r"(?:^|[.\-+_])[xX*](?:$|[.\-+_])")
+# The collector's Apple source title, up to the impact text: "APPLE-SA-<id> <release>
+# (macOS <major> fixed in <version>): <impact>". Only this prefix may supply a version.
+_APPLE_TITLE = re.compile(r"APPLE-SA-[\w.-]{1,40} [^():]{1,120} \(macOS (\d{1,3}) fixed in (\d{1,3}(?:\.\d{1,4}){0,3})\): ")
 # One token of a version range; ranges are split before matching, so no regex
 # below has nested or adjacent unbounded repeats (no catastrophic backtracking).
 _RANGE_TOKEN = re.compile(r"[<>=!~^]{0,2}v?\d[0-9A-Za-z.+_*-]{0,63}")
@@ -451,6 +454,24 @@ def from_kev(kev_json: dict, since_date: str) -> CandidateList:
     return _each(items, out, one)
 
 
+def _apple_fixed(f: dict, kept: tuple[Source, ...]) -> str | None:
+    """The fix version an Apple security release names, for a macOS finding: read only
+    from the collector's title prefix on retained support.apple.com sources, which must
+    all parse and agree. Any other source or shape gives None, never a guess."""
+    if not isinstance(f.get("product"), str) or f["product"].lower() != "macos":
+        return None
+    urls, found = {s.url for s in kept}, set()
+    for s in f.get("sources") if isinstance(f.get("sources"), list) else []:
+        url = _url(s.get("url")) if isinstance(s, dict) else None
+        if url not in urls or urlsplit(url).hostname != "support.apple.com":
+            continue
+        m = _APPLE_TITLE.match(_str(s.get("title"), MAX_TEXT) or "")
+        if not m or m.group(2).split(".")[0] != m.group(1):
+            return None
+        found.add(m.group(2))
+    return _fixed(found.pop()) if len(found) == 1 else None
+
+
 def from_collector(record: dict) -> CandidateList:
     """Candidates from a collector run record (schema_version 1)."""
     out = CandidateList()
@@ -475,8 +496,10 @@ def from_collector(record: dict) -> CandidateList:
         if isinstance(f.get("sources"), list):
             raw = [(s.get("url"), s.get("published_at")) for s in f["sources"] if isinstance(s, dict)]
         # exploited is ignored here: only from_kev establishes KEV membership.
+        sources = _sources(raw, hosts)
         _build(cid, _aliases(f.get("aliases"), cid, hosts), _str(f.get("product")),
-               _sources(raw, hosts), f, hosts, out,
-               fixed=_fixed(f.get("fixed")), affected=_affected(f.get("affected")))
+               sources, f, hosts, out,
+               fixed=_fixed(f.get("fixed")) or _apple_fixed(f, sources),
+               affected=_affected(f.get("affected")))
 
     return _each(findings, out, one)

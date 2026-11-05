@@ -489,3 +489,38 @@ def test_apple_developer_library_url_is_kept():
 def test_public_volume_docs_and_double_slash_schemes_are_kept(url):
     record = {"schema_version": 1, "findings": [{"id": "CVE-2026-73", "product": "P", "sources": [{"url": url}]}]}
     assert [s.url for s in from_collector(record)[0].sources] == [url]
+
+
+APPLE = "https://support.apple.com/en-us/149521"
+APPLE_TITLE = "APPLE-SA-2026-11-03-1 macOS Example 27.2 (macOS 27 fixed in 27.2): WebKit: a crafted page may run code"
+
+
+def _apple(*sources, product="macos", **kw):
+    f = {"id": "CVE-2099-0101", "product": product, "sources": list(sources), **kw}
+    return from_collector({"schema_version": 1, "findings": [f]})[0].fixed
+
+
+def _src(title, url=APPLE + "#CVE-2099-0101", role="primary"):
+    return {"url": url, "role": role, "title": title, "published_at": None}
+
+
+def test_collector_apple_release_title_gives_the_fix_version():
+    kev = _src("CISA KEV entry", url="https://www.cisa.gov/known-exploited-vulnerabilities-catalog")
+    assert _apple(_src(APPLE_TITLE)) == "27.2"
+    assert _apple(kev, _src(APPLE_TITLE)) == "27.2"  # other publishers state no version
+    assert _apple(_src(APPLE_TITLE), fixed="27.3") == "27.3"  # the record's own field wins
+
+
+@pytest.mark.parametrize("sources,product", [
+    ([_src(APPLE_TITLE), _src(APPLE_TITLE.replace("27.2", "27.1"), url="https://support.apple.com/en-us/149522")], "macos"),
+    ([_src(APPLE_TITLE), _src(None, url="https://support.apple.com/en-us/149522")], "macos"),
+    ([_src("APPLE-SA-1 macOS Example 27.2: WebKit (component fixed in 1.2): code")], "macos"),
+    ([_src("APPLE-SA-1 macOS Example 26.9 (macOS 27 fixed in 26.9): code")], "macos"),
+    ([_src(APPLE_TITLE)], "safari"),
+    ([_src(APPLE_TITLE, url="https://vendor.example.com/en-us/149521")], "macos"),
+    # A rejected source supplies nothing, though a public one keeps the candidate.
+    ([_src(APPLE_TITLE, url="https://support.apple.com/Users/alice/x"),
+      _src("CISA KEV entry", url="https://www.cisa.gov/known-exploited-vulnerabilities-catalog")], "macos"),
+])
+def test_collector_apple_title_fails_closed(sources, product):
+    assert _apple(*sources, product=product) is None
