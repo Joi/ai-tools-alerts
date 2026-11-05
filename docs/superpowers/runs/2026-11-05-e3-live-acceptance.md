@@ -1,11 +1,11 @@
 # Run: e3-live-acceptance
 Instruction: start at medium. Task: jibot-code#gs18 E3 live acceptance of the ai-tools alert service, per TASK-jibot-code#gs18.md in the worktree root. Repo ai-tools-alerts is NOT repoman-managed; the deliverable is evidence lines plus trust/manifest.json v2/v3 commits.
-Stage: code-review:C1 (delta)
+Stage: executing C1 (land v2)
 Rung: heavy (start-floor heavy: hard-trigger — set by the dispatch brief: a live deploy path (manifest ship to the relay VM) and signing-key handling (root key through Kura, a minted test curator key))
 Spec: docs/superpowers/specs/2026-11-05-e3-live-acceptance-design.md   Plan: docs/superpowers/plans/2026-11-05-e3-live-acceptance.md
 Agency project: — (see Notes)
 Kata: jibot-code#gs18
-Last reviewed: branch 5e6d4c31d650fd525dc3cfa3d215d706ef805207 (whole-branch pass 1); delta pending
+Last reviewed: branch 5e6d4c31d650fd525dc3cfa3d215d706ef805207 (pass 1), delta 66c0a7bbbbde55f518d5fc46d5a4624d85b5a247 (pass 2)
 Pre-handoff review: — (not repoman-managed)
 
 ## Scorecards
@@ -19,6 +19,11 @@ Pass 1 [branch: spec+plan+manifest v2+test, reviewed 5e6d4c31d650fd525dc3cfa3d21
 - S6 advisory fields underspecified: fixed (exact fields in C3; relay-bot fixed-version risk named in C4).
 - S7 test accepts the wrong release: fixed (pins exact version and poster tuples; updated at v3).
 - S8 spec implies full design coverage: fixed (Departures section).
+Pass 2 [delta --since 5e6d4c3 at 66c0a7b, rebuttals file, fresheyes gpt-6-astra high]: 3 major, plan wording (read as 0B/3S/0C/0R) · fixed 9/10 prior (S9 rebutted, not overturned) · velocity ↓ (10→3, escalation no)
+- D1 "no new process" fails in correct operation (inventory probes, osascript): fixed (assert no remediation instead).
+- D2 v3 test update must change the poster set and count: fixed.
+- D3 missing-Joi-retraction fallback contradicts close-out: fixed (run incomplete, gs18 stays open with needs-review).
+No further pass (ruling jibot-code#41e2).
 - S9 digest republishes synthetic content: rebutted — the brief requires the digest to list it, marked; it is plain text with no advisory block, so no reader acts on it.
 
 ## Chunks

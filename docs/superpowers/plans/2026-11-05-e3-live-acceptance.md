@@ -31,7 +31,7 @@ The hook and the skill are not added to the fleet-managed ~/.claude/settings.jso
 - [ ] Add the `[curator]` extra to the venv.
 - [ ] `notice:` on gs18: one SYNTHETIC TEST critical from the test key (Claude Code, affected `<=2.1.318`, fixed 2.1.999, action `upgrade:Claude Code:2.1.999`, alias CVE-2099-0001), retracted by advisory id in this session. Fixed 2.1.999 does not exist on npm, so even an agent that applied it would fail to install anything.
 - [ ] `curator post --dry-run`, then live. Record both root event ids.
-- [ ] After the next exporter cycle: `pull`; `check` lists it; `plan <advisory id>` with `auto_apply = []` (prepare) and with `auto_apply = ["upgrade"]` (auto-apply); `run` executes nothing (exit code, output, no new process). Restore `auto_apply = []`.
+- [ ] After the next exporter cycle: `pull`; `check` lists it; `plan <advisory id>` with `auto_apply = []` (prepare) and with `auto_apply = ["upgrade"]` (auto-apply); `run` executes no remediation: its output says nothing was executed, Claude Code's version is unchanged afterwards, and no npm or upgrade process ran (inventory probes and the desktop notification's osascript are expected subprocesses). Restore `auto_apply = []`.
 - [ ] `curator retract <advisory id>` (both roots); after the next exporter cycle `pull`; `check` no longer lists it. Evidence lines 4b and 5b.
 
 ## C4: akq9-dependent items (3, 4a, 5a, 6)
@@ -45,15 +45,15 @@ The hook and the skill are not added to the fleet-managed ~/.claude/settings.jso
 
 ## C5: manifest v3 and cleanup
 
-- [ ] Precondition: Joi's retraction of the relay-bot synthetic thread is on the mirror (C4). If it is not, v3 still ships (the test key must not stay trusted) and the resurrected thread is recorded as an open hand action on gs18.
-- [ ] Sign v3 (the v1 posters), update the pinned test to version 3, gate, land, ship, mirror serves v3; `pull` drops the test curator's events ("revoked" in the drop counts); `check` shows no synthetic advisory.
+- [ ] Precondition: Joi's retraction of the relay-bot synthetic thread is on the mirror (C4). If it is not, v3 still ships (the test key must not stay trusted), but the run is incomplete: the `check` assertion below fails for that thread, gs18 stays open with the retraction as a named hand action and `needs-review`, and C6 does not close it.
+- [ ] Sign v3 (the v1 posters), update the pinned test to version 3 with the poster set {Joi curator, jibot relay-bot} and a count of two, gate, land, ship, mirror serves v3; `pull` drops the test curator's events ("revoked" in the drop counts); `check` shows no synthetic advisory.
 - [ ] `buzz-send channels remove-member` for the test pubkey, each channel.
 - [ ] Delete the key file with `rm` (not `trash`: the Trash keeps the secret). Remove the venv, its link, ~/.config/aitools-alerts, ~/.local/state/aitools-alerts, the hook script and the scratch project. Evidence line 7.
 
 ## C6: close-out
 
 - [ ] Read `~/.local/state/security-watch/model-turns-<UTC date>` on host-b. Evidence line 8.
-- [ ] Post all lines on gr5b and gs18; close gs18 with `--test`; /finish-worktree.
+- [ ] Post all lines on gr5b and gs18; close gs18 with `--test` only if every synthetic thread is retracted by a curator who stays trusted and verified on `check`; otherwise leave it open with `needs-review` and the remaining action. /finish-worktree.
 
 ## Failure cleanup (any step after the v2 ship)
 
