@@ -19,16 +19,19 @@
 # relay (NIP-42 derives its scheme and host from it) and BUZZ_AUTH_TAG is
 # cleared, whatever the caller set.
 #
-# The key file is checked before the CLI starts: a regular readable file, an
-# nsec (bech32 checksum, 32-byte payload) or 64 lowercase hex, and a secret
-# scalar in 1..n-1. The check runs in python3 with the key on stdin. Every
+# The key file is checked before the CLI starts: a regular readable file, a
+# lowercase nsec (bech32 checksum, 32-byte payload) or 64 lowercase hex, and a
+# secret scalar in 1..n-1, with only leading and trailing whitespace allowed.
+# This is aitools_alerts.nostr.nsec_to_hex minus its all-uppercase form. The check runs in python3 with the key on stdin. Every
 # failure prints one JSON error line naming the path, never the contents, and
 # exits 1 without starting the CLI.
 #
 # BUZZ_SEND_KEY_FILE and BUZZ_SEND_BUZZ override the two paths for the tests;
 # the only caller is the key's own uid, so they grant nothing new.
 #
-# Never add `set -x` here.
+# Never add `set -x` here. The first command turns xtrace off, so neither
+# `bash -x buzz-send` nor SHELLOPTS=xtrace in the environment traces the key.
+set +x
 set -euo pipefail
 umask 077
 
@@ -37,7 +40,8 @@ BUZZ="${BUZZ_SEND_BUZZ:-/home/relay/buzz/target/release/buzz}"
 RELAY_URL="https://buzz.ai-tools.md"
 
 fail() {
-  local msg="${1//\\/\\\\}"
+  local msg="${1//[[:cntrl:]]/?}"
+  msg="${msg//\\/\\\\}"
   msg="${msg//\"/\\\"}"
   printf '{"error":"user_error","message":"buzz-send: %s"}\n' "$msg" >&2
   exit 1
@@ -53,8 +57,15 @@ done
 if [ ! -f "$KEY_FILE" ] || [ ! -r "$KEY_FILE" ]; then
   fail "key file missing, not a regular file, or not readable: $KEY_FILE"
 fi
+# Command substitution drops NUL bytes, so a key with NULs spliced in would
+# read as a valid key: compare the byte count with and without NULs first.
+total="$(wc -c <"$KEY_FILE" 2>/dev/null)" || fail "key file read failed: $KEY_FILE"
+nonul="$(tr -d '\000' <"$KEY_FILE" 2>/dev/null | wc -c)" || fail "key file read failed: $KEY_FILE"
+[ "$total" -eq "$nonul" ] || fail "key file malformed: $KEY_FILE"
 key="$(<"$KEY_FILE")" 2>/dev/null || fail "key file read failed: $KEY_FILE"
-key="${key//[[:space:]]/}"
+# Trim leading and trailing whitespace only; whitespace inside the key is malformed.
+key="${key#"${key%%[![:space:]]*}"}"
+key="${key%"${key##*[![:space:]]}"}"
 
 if ! [[ "$key" =~ ^nsec1[02-9ac-hj-np-z]{58}$ || "$key" =~ ^[0-9a-f]{64}$ ]]; then
   unset key

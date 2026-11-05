@@ -65,7 +65,14 @@ Do not use `--template`: it resolves desktop-app templates. The wrapper was then
 ## Recreating
 
 1. Install `buzz-send` as above.
-2. Check neither name exists: `buzz-send channels list | grep -o '"security-[a-z]*"'`.
+2. Check neither name exists. The listing must succeed and parse before its absence means anything; a failed listing is not permission to create:
+
+   ```bash
+   list="$(/home/relay/bin/buzz-send channels list --limit 500)" || { echo "listing failed; stop"; exit 1; }
+   echo "$list" | jq -e 'type == "array"' >/dev/null || { echo "listing not a JSON array; stop"; exit 1; }
+   echo "$list" | jq -e 'map(.name) | (index("security-feed") or index("security-critical")) | not' >/dev/null \
+     || { echo "a security channel already exists; stop"; exit 1; }
+   ```
 3. Run the create and add-member commands above (through `buzz-send`, or with the remote-side key export).
 4. New channels get new UUIDs: update `spec/channels.json`, this table, and tell the readers of `spec/channels.json` (the poster, the mirror exporter, the member CLI). Members must re-join.
 5. To remove: `buzz-send channels delete --channel <uuid>` for each, and delete `/home/relay/bin/buzz-send`.

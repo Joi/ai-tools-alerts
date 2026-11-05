@@ -6,6 +6,7 @@ Every key here is generated per test; no real key is ever read.
 import json
 import os
 import secrets
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -59,11 +60,26 @@ def env(tmp_path):
         pass
 
     e = Env()
+    # A python3 shim first on PATH records the validator's argv, so a test can
+    # prove the key never reaches an intermediate process's argv either.
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    real_python = shutil.which("python3")
+    assert real_python
+    shim = shim_dir / "python3"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\0' \"$@\" >> '{tmp_path}/python_argv'\n"
+        f"exec '{real_python}' \"$@\"\n"
+    )
+    shim.chmod(0o700)
+
     e.dir = stub_dir
+    e.tmp = tmp_path
     e.key = key
     e.key_file = key_file
     e.base = {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "PATH": f"{shim_dir}:" + os.environ.get("PATH", "/usr/bin:/bin"),
         "BUZZ_SEND_BUZZ": str(stub),
         "BUZZ_SEND_KEY_FILE": str(key_file),
     }
@@ -149,7 +165,22 @@ def _bad_cases():
         "npub": nostr.npub(nostr.pubkey_gen(bytes.fromhex(_sec_hex())).hex()) + "\n",
         "short_payload": _bech32_with_payload(bytes(31) + b"") + "\n",
         "uppercase_hex": _sec_hex().upper() + "\n",
+        "inner_space": good[:20] + " " + good[20:] + "\n",
+        "nonzero_padding": _nsec_with_padding_bits() + "\n",
+        "nul_inside": good[:20] + "\x00" + good[20:] + "\n",
+        "nul_after": good + "\x00\n",
+        "nul_before": "\x00" + good + "\n",
     }
+
+
+def _nsec_with_padding_bits() -> str:
+    """A 58-character nsec with a valid checksum whose 4 padding bits are not zero."""
+    five = nostr._convertbits(bytes.fromhex(_sec_hex()), 8, 5, True)
+    five[-1] |= 1  # the last group holds 1 data bit and 4 padding bits
+    values = nostr._hrp_expand("nsec") + five
+    pm = nostr._polymod(values + [0] * 6) ^ 1
+    checksum = [(pm >> 5 * (5 - i)) & 31 for i in range(6)]
+    return "nsec1" + "".join(nostr._CHARSET[d] for d in five + checksum)
 
 
 def _assert_fail_closed(e, r, secret_text=""):
@@ -205,21 +236,26 @@ def test_hex_key_accepted(env):
 
 
 def _nostr_accepts(text: str) -> bool:
+    """The reference verdict: nostr.nsec_to_hex on the trimmed text.
+
+    A hex key is judged by encoding it with nostr.nsec and decoding it again,
+    so the range check is nostr's, not a copy of the wrapper's rule.
+    """
     k = text.strip()
     try:
-        if k.startswith("nsec1"):
-            h = nostr.nsec_to_hex(k)
-        else:
-            if len(k) != 64 or any(c not in "0123456789abcdef" for c in k):
-                return False
-            h = k
-        return 1 <= int(h, 16) < N
+        if k.lower().startswith("nsec1"):
+            nostr.nsec_to_hex(k)
+            return True
+        nostr.nsec_to_hex(nostr.nsec(k))
+        return True
     except Exception:
         return False
 
 
 def test_validator_agrees_with_nostr(env):
     cases = [nostr.nsec(_sec_hex()) + "\n" for _ in range(20)]
+    cases += [_sec_hex() + "\n" for _ in range(5)]
+    cases += ["  \t" + nostr.nsec(_sec_hex()) + " \n\n"]
     cases += list(_bad_cases().values())
     for text in cases:
         env.key_file.write_text(text)
@@ -229,3 +265,44 @@ def test_validator_agrees_with_nostr(env):
                 p.unlink()
         r = run(env, SEND)
         assert (r.returncode == 0) == _nostr_accepts(text), text
+
+
+def test_uppercase_nsec_rejected_though_nostr_accepts_it(env):
+    """The one deliberate difference: the wrapper takes lowercase only."""
+    upper = nostr.nsec(_sec_hex()).upper()
+    assert _nostr_accepts(upper)
+    env.key_file.write_text(upper + "\n")
+    _assert_fail_closed(env, run(env, SEND), upper)
+
+
+def test_surrounding_whitespace_trimmed(env):
+    env.key_file.write_text("\n  " + env.key + "\t \n")
+    r = run(env, SEND)
+    assert r.returncode == 0, r.stderr
+    assert (env.dir / "key").read_text() == env.key
+
+
+def test_key_never_on_validator_argv(env):
+    r = run(env, SEND)
+    assert r.returncode == 0, r.stderr
+    argv = (env.tmp / "python_argv").read_bytes().decode()
+    assert argv  # the shim ran
+    assert env.key not in argv
+
+
+@pytest.mark.parametrize("valid", [True, False])
+@pytest.mark.parametrize("mode", ["bash_x", "shellopts"])
+def test_xtrace_never_prints_key(env, mode, valid):
+    if not valid:
+        # a malformed file is traced before it is rejected, if tracing is on
+        env.key_file.write_text(env.key[:-1] + ("q" if env.key[-1] != "q" else "p") + "\n")
+    environ = dict(env.base)
+    cmd = ["bash", str(WRAPPER), *SEND]
+    if mode == "bash_x":
+        cmd = ["bash", "-x", str(WRAPPER), *SEND]
+    else:
+        environ["SHELLOPTS"] = "xtrace"
+    r = subprocess.run(cmd, input=b"", env=environ, capture_output=True, timeout=10)
+    assert r.returncode == (0 if valid else 1), r.stderr
+    # the first 20 characters are shared by the valid and the corrupted key
+    assert env.key[:20].encode() not in r.stdout + r.stderr
