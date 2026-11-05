@@ -30,24 +30,31 @@ T0 = at(5, 6)  # 06:20 Tokyo: runs a few hours later stay before the digest hour
 
 
 class FakeSSH:
-    """Answers each send from a queue: ok, fail (exit 5, never sent), unknown (timeout)."""
+    """Answers each send from a queue: ok, fail (exit 5, never sent), unknown (timeout).
+    Japanese ``lang: ja`` replies go to ``ja`` and answer from ``ja_queue`` (default ok)."""
 
-    def __init__(self, *outcomes):
-        self.queue = list(outcomes)
-        self.calls = []
+    def __init__(self, *outcomes, ja=()):
+        self.queue, self.ja_queue = list(outcomes), list(ja)
+        self.calls, self.ja = [], []
 
     def __call__(self, argv, **kw):
         remote = shlex.split(argv[-1])
         ch = NAME[remote[remote.index("--channel") + 1]]
         reply = remote[remote.index("--reply-to") + 1] if "--reply-to" in remote else None
-        self.calls.append((ch, reply, kw["input"].decode()))
-        outcome = self.queue.pop(0) if self.queue else "ok"
+        text = kw["input"].decode()
+        is_ja = text.startswith("lang: ja\n")
+        (self.ja if is_ja else self.calls).append((ch, reply, text))
+        queue = self.ja_queue if is_ja else self.queue
+        outcome = queue.pop(0) if queue else "ok"
         if outcome == "unknown":
             raise subprocess.TimeoutExpired("ssh", 120)
         if outcome == "fail":
             return subprocess.CompletedProcess(argv, 5, b"", b"conflict: write refused")
+        eid = next(_EVENT_IDS)
+        if not is_ja:
+            self.ids = getattr(self, "ids", []) + [eid]  # event ids of the English sends, in order
         return subprocess.CompletedProcess(
-            argv, 0, json.dumps({"accepted": True, "event_id": next(_EVENT_IDS)}).encode(), b"")
+            argv, 0, json.dumps({"accepted": True, "event_id": eid}).encode(), b"")
 
 
 class FakeKEV:
@@ -257,7 +264,7 @@ def test_resolve_delivered_records_as_a_send_would(env):
     eid = "ab" * 32
     assert main.resolve(T0 + 600, env.config, it["key"], delivered=eid)[0] == 0
     entries, pending = env.ledger()
-    assert pending == [] and env.state()["outbox"] == []
+    assert pending == [] and [it["kind"] for it in env.state()["outbox"]] == ["ja"]  # sent next run
     assert entries[0]["root_event_id"] == eid and entries[0]["channel_ids"] == {"feed": eid}
     env.collector([finding()])
     code, _, ssh = env.run(now=T0 + 3600)  # neither resent nor re-recorded
@@ -324,7 +331,8 @@ def test_resolve_delivered_acknowledges_a_digest(env):
     (it,) = env.state()["outbox"]
     assert main.resolve(at(5, 10), env.config, it["key"], delivered="ab" * 32)[0] == 0
     st = env.state()
-    assert st["outbox"] == [] and st["held"] == [] and st["digest_ids"] == ["ab" * 32]
+    assert [o["root"] for o in st["outbox"]] == ["ab" * 32]  # its Japanese reply, sent next run
+    assert st["held"] == [] and st["digest_ids"] == ["ab" * 32]
     assert st["digest_date"] == "2026-11-05" and env.ledger()[1] == []
 
 
@@ -1038,3 +1046,97 @@ def test_deferred_candidate_dropped_by_scope_reaches_the_review_list(env, monkey
     with Ledger(env.config.ledger) as led:
         texts = [r["text"] for r in led._state()["review"]]
     assert "Npm package System Information Library for Node.JS" in texts
+
+
+# ---------------------------------------------------------------- Japanese lang: ja replies (rd8t)
+
+
+@pytest.mark.parametrize("critical", [False, True])
+def test_root_gets_a_japanese_reply_in_each_channel(env, critical):
+    env.kev.catalog = {"vulnerabilities": [kev_item()] if critical else []}
+    env.collector([] if critical else [finding()])
+    code, summary, ssh = env.run()
+    chs = ["critical", "feed"] if critical else ["feed"]
+    assert code == 0 and f"ja={len(chs)} ja_failed=0" in summary and env.state()["outbox"] == []
+    assert [(c[0], c[1]) for c in ssh.ja] == list(zip(chs, ssh.ids))  # each replies to its own root
+    head = "緊急" if critical else "重要"
+    assert all(c[2].startswith(f"lang: ja\n\n{head}: Claude Code: ") and "```" not in c[2] for c in ssh.ja)
+
+
+def test_change_reply_japanese_names_it_in_of(env):
+    first = finding(fid="CVE-2026-0001", fixed=None)
+    first["affected"] = "<2.0.0"
+    env.kev.catalog = {"vulnerabilities": [kev_item()]}
+    env.collector([first])
+    _, _, ssh0 = env.run()
+    roots = dict(zip(["critical", "feed"], ssh0.ids))
+    corrected = finding(fid="CVE-2026-0001", fixed=None)
+    corrected["affected"] = "<2.5.0"
+    env.collector([corrected])
+    code, summary, ssh = env.run(now=T0 + 3600)
+    assert code == 0 and "replies=2" in summary and "ja=2" in summary
+    for (ch, reply_to, text), (ech, _, _), eid in zip(ssh.ja, ssh.calls, ssh.ids):
+        assert ch == ech and reply_to == roots[ch]
+        assert text.startswith(f"lang: ja\nof: {eid}\n\n") and "（2.5.0 未満）" in text
+        assert "\n\n緊急: Claude Code: 悪用が確認された脆弱性 (CVE-2026-0001)\n" in text  # the current version
+
+
+def test_digest_gets_a_japanese_reply(env):
+    env.collector([MAC])
+    env.run()
+    code, _, ssh = env.run(now=at(5, 9))
+    assert code == 0 and len(ssh.calls) == 1
+    ((ch, reply_to, text),) = ssh.ja
+    assert (ch, reply_to) == ("feed", ssh.ids[0])
+    assert text.startswith("lang: ja\n\n2026-11-05 のデイリーダイジェスト: 1 件。") and "CVE-2026-5000" in text
+
+
+def test_failed_japanese_send_retries_next_hour_without_the_english(env):
+    env.collector([finding()])
+    code, summary, ssh = env.run(ssh=FakeSSH(ja=["fail"]))
+    assert code == 0 and "roots=1" in summary and "ja=0 ja_failed=1" in summary
+    (it,) = env.state()["outbox"]
+    assert it["kind"] == "ja" and it["key"] == "root:Claude Code:GHSA-abcd-efgh-ijkl:feed:ja"
+    assert env.ledger()[1] == []  # a failed send is not in flight
+    code, summary, ssh2 = env.run(now=T0 + 3600)
+    assert code == 0 and ssh2.calls == [] and "ja=1" in summary
+    assert ssh2.ja == [("feed", ssh.ids[0], it["text"])] and env.state()["outbox"] == []
+
+
+def test_unknown_japanese_send_never_holds_english_work(env):
+    env.collector([finding()])
+    code, summary, ssh = env.run(ssh=FakeSSH(ja=["unknown"]))
+    assert code == 0 and "ja_failed=1" in summary
+    (p,) = env.ledger()[1]
+    assert p["key"].endswith(":ja") and p["aliases"] == [f"ja {p['key']}"]
+    # A new alias arrives: the English reply still posts, and its own ja reply too.
+    env.collector([finding(fid="CVE-2026-0002", aliases=("GHSA-abcd-efgh-ijkl",), sources=(GHSA, GHSA2))])
+    code, summary, ssh = env.run(now=T0 + 3600)
+    assert code == 0 and "replies=1" in summary and "busy=1" in summary  # the unknown ja waits
+    assert [c[2].startswith("lang: ja\nof: ") for c in ssh.ja] == [True]
+
+
+def test_journal_item_from_before_rd8t_loads_and_sends(env):
+    env.collector([finding()])
+    env.run(ssh=FakeSSH("fail"))
+    st = env.state()
+    del st["outbox"][0]["ja"]  # the shape the deployed poster journals
+    env.config.state.write_text(json.dumps(st))
+    code, summary, ssh = env.run(now=T0 + 3600)
+    assert code == 0 and "roots=1" in summary and ssh.ja == []
+
+
+def test_each_english_reply_keeps_its_own_japanese_reply(env):
+    env.collector([finding()])
+    env.run()
+    env.collector([finding(fid="CVE-2026-0002", aliases=("GHSA-abcd-efgh-ijkl",), sources=(GHSA, GHSA2))])
+    _, _, ssh1 = env.run(now=T0 + 3600, ssh=FakeSSH(ja=["fail"]))
+    env.collector([finding(fid="CVE-2026-0003", aliases=("GHSA-abcd-efgh-ijkl",))])
+    _, summary, ssh2 = env.run(now=T0 + 7200, ssh=FakeSSH(ja=["fail"]))  # the older one fails again
+    ja = [o for o in env.state()["outbox"] if o["kind"] == "ja"]
+    assert [o["text"].split("\n")[1] for o in ja] == [f"of: {ssh1.ids[0]}", f"of: {ssh2.ids[0]}"]
+    st = env.state()
+    st["outbox"][0]["sent"] = "cd" * 32  # a crash after the id was journaled: finished, never resent
+    env.config.state.write_text(json.dumps(st))
+    _, summary, ssh3 = env.run(now=T0 + 9000)  # before the digest hour
+    assert "ja=2" in summary and len(ssh3.ja) == 1 and env.state()["outbox"] == []

@@ -71,6 +71,8 @@ posted_by (pubkey role: curator|relay-bot), posted_at, expires_at
 
 Humans read the top; agents parse the block. Replies carry the same block with the changed fields. Final field names and the schema file are the builder's.
 
+Translations (coordinator decision 2026-11-06, ai-tools-alerts#rd8t): a translation is a reply in the thread (e tag marked root) from a manifest key whose first line is `lang: ja`, an optional second line `of: <event id>` naming the event it translates (absent = the root), a blank line, then the Japanese body. It carries no aitools-alert block; a lang reply that carries one is ignored entirely by readers (never a patch). For one target the latest lang reply from a manifest key wins. A lang reply from a non-manifest key is discussion. A curator `retract` retracts the translations with the thread. The digest root gets a `lang: ja` reply too.
+
 ### Trust manifest and action vocabulary
 
 - A trust manifest in the repo lists trusted poster pubkeys with a role: curator (a human) or relay-bot (jibot's automated posts). The manifest is signed by a trust root key, so a compromised GitHub account cannot add a poster. The root is a new key minted only for this service (Joi, 2026-11-05), held in Kura and used only to sign manifests, so a rotation of the ops-room key never re-issues every member's trust root. The retired ai-tools key `ef4cf523…` and the shared relay-owner key `18eafd07…` are not used for this. Adding a person is a manifest update plus channel write access on the relay. Version 1 trusted posters: Joi (as curator, posting with his current relay identity) and jibot (relay-bot).

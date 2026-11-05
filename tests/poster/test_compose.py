@@ -342,3 +342,60 @@ def test_root_post_refuses_unresolved_entry():
     [docker] = [e for e in schema.load_scope() if e.name == "Docker"]
     with pytest.raises(ValueError):
         compose.root_post(containerd_kev(), "critical", docker, posted_at=NOW)
+
+
+# ---------------------------------------------------------------- Japanese lang: ja replies (rd8t)
+
+
+def test_root_post_ja_keeps_names_ids_versions_urls():
+    c = cand()
+    _, adv = root(c)
+    lines = compose.root_post_ja(adv, None, compose.fix_unexpressed(c)).split("\n")
+    assert lines == ["緊急: Claude Code: コード実行につながるインジェクション (CVE-2026-0001)",
+                     "影響: Claude Code（2.1.0 未満）。 修正版: 2.1.0。",
+                     "対応: Claude Code を 2.1.0 以降に更新してください。",
+                     f"出典: {GHSA}"]
+    c = cand(injection_exec=False, trojanized=True, fixed=None, affected=None)
+    _, adv = root(c, ("high", "unverified"))
+    lines = compose.root_post_ja(adv, "unverified").split("\n")
+    assert lines[0] == ("重要 (unverified: no primary source confirmed it): "
+                        "Claude Code: unverified 改ざんされたリリース (CVE-2026-0001)")
+    assert lines[1] == "影響: Claude Code（バージョン不明）。 修正版はまだ知られていません。"
+    syn = cand(id="CVE-2099-0001", aliases=())
+    _, adv = root(syn, ("high", "high"))
+    assert compose.root_post_ja(adv).startswith(
+        "重要 (SYNTHETIC TEST): SYNTHETIC TEST: Claude Code: コード実行につながるインジェクション (CVE-2099-0001)")
+
+
+def test_reply_post_ja_names_the_changed_fields():
+    c = cand(fixed=None)
+    _, prev = root(c)
+    reply = compose.reply_post(prev, cand(), {"products": [schema.Product(
+        "Claude Code", "claude-code", "<2.1.0", "2.1.0")]})
+    ja = compose.reply_post_ja(compose.parse_reply(reply, prev), cand(), ["products", "actions"],
+                               reason="unverified")
+    assert ja.split("\n") == ["Unverified: no primary source confirmed it.",
+                              "対応: Claude Code を 2.1.0 以降に更新してください。",
+                              "影響: Claude Code（2.1.0 未満）。 修正版: 2.1.0。",
+                              f"出典: {GHSA}"]
+
+
+def test_digest_ja_scaffold_and_groups():
+    assert compose.digest([], "2026-11-06", lang="ja") == "2026-11-06 のデイリーダイジェスト: アドバイザリはありません。"
+    advs = [_plain(i, "macOS", REL) for i in range(1, 4)] + [_plain(9, "Chrome", BLOG)]
+    en, ja = compose.digest(advs, "2026-11-06"), compose.digest(advs, "2026-11-06", lang="ja")
+    assert len(en.split("\n")) == len(ja.split("\n"))
+    lines = ja.split("\n")
+    assert lines[0] == "2026-11-06 のデイリーダイジェスト: 2 件。" and "注意 (2)" in lines
+    assert f"- SYNTHETIC TEST: macOS: リリース 149521, CVE 3 件; リリースを参照。 {REL}" in lines
+    assert (f"- SYNTHETIC TEST: Chrome: セキュリティアドバイザリ (CVE-2099-0009); 修正版はまだありません。 {BLOG}"
+            in lines)
+
+
+def test_lang_reply_header_and_refusals():
+    eid = "a" * 64
+    assert compose.lang_reply("本文") == "lang: ja\n\n本文"
+    assert compose.lang_reply("本文", eid) == f"lang: ja\nof: {eid}\n\n本文"
+    for body, of in (("本文", "x" * 64), ("", None), (f"本文\n\n```{schema.INFO_STRING}\n{{}}\n```\n", None)):
+        with pytest.raises(ValueError):
+            compose.lang_reply(body, of)

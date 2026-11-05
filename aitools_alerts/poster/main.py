@@ -30,12 +30,17 @@ After an unknown send, ``pending`` lists what is in flight and ``resolve <key>
 --delivered <event id> | --not-delivered --reason <text>`` settles it, both under
 the ledger lock: delivered records as a successful send would; not delivered
 expires the pending entry (24 h after the attempt) so the next run sends again.
+
+Every sent post also gets a Japanese ``lang: ja`` reply (docs/design.md "Post format"),
+journaled as its own item ``<key>:ja`` once the original is recorded and sent after
+every English send; its failure waits for the next run and never holds English work.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import json
 import sys
 import time
 from collections import Counter
@@ -53,7 +58,7 @@ RANK = {"notice": 0, "high": 1, "critical": 2}
 CHANNELS_FOR = {"critical": ("critical", "feed"), "high": ("feed",), "notice": ()}
 MAX_DIGESTED = 5000
 SUMMARY = ("candidates", "in_scope", "old", "roots", "copies", "replies", "held", "withheld",
-           "busy", "digest", "failed", "unknown")
+           "busy", "digest", "failed", "unknown", "ja", "ja_failed")
 
 
 class _Stop(Exception):
@@ -79,7 +84,7 @@ class Run:
     # ------------------------------------------------------------ the journal
 
     def _item(self, kind, scope, ids, channel, text, *, key_id, adv=None, exploited=False, date=None,
-              root=None):
+              root=None, ja=None):
         """One journal item. ``root`` fixes a reply's or copy's thread at planning time, so a
         later alias bridge cannot move it to another thread. Raises ValueError (withheld)
         for a message the transport would refuse."""
@@ -87,15 +92,23 @@ class Run:
             raise ValueError("message too large or not sendable")
         return {"key": f"{kind}:{scope}:{key_id}:{channel}", "kind": kind, "scope": scope,
                 "ids": list(dict.fromkeys(ids)), "channel": channel, "text": text, "adv": adv,
-                "exploited": exploited is True, "date": date, "sent": None, "root": root}
+                "exploited": exploited is True, "date": date, "sent": None, "root": root, "ja": ja}
+
+    def _ja(self, fn, *a, **kw):
+        """A Japanese body, or None: a Japanese failure never withholds the English post."""
+        try:
+            return fn(*a, **kw)
+        except (ValueError, KeyError, TypeError):
+            self.n["ja_failed"] += 1
+            return None
 
     def drain(self):
         """Send every journaled item, oldest first; a pending one (and anything after it
         that shares its ids) waits for a human."""
         held_back: set[str] = set()
         for it in list(self.state["outbox"]):
-            if it not in self.state["outbox"]:
-                continue  # dropped with a superseded root
+            if it not in self.state["outbox"] or it["kind"] == "ja":
+                continue  # dropped with a superseded root; Japanese replies go last (drain_ja)
             keys = _fold(it["ids"])
             if it["sent"] is None and (keys & held_back or self.led.pending_for(it["ids"])):
                 held_back |= keys
@@ -109,7 +122,8 @@ class Run:
                 self.state["outbox"].remove(it)
         self.save()
 
-    def deliver(self, it):
+    def deliver(self, it) -> bool:
+        ja = it["kind"] == "ja"  # a Japanese reply: a failure ends only the Japanese sends
         if it["sent"] is None:
             if it["kind"] == "root" and self.led.lookup(it["ids"], scope=it["scope"]) is not None:
                 # Its ids were widened into a known thread while it waited: never a second
@@ -118,34 +132,76 @@ class Run:
                                    and o["root"] is None and _fold(o["ids"]) & _fold(it["ids"])])
                 self.n["withheld"] += 1
                 return
-            reply_to = self._entry(it).channel_ids.get(it["channel"]) if it["kind"] == "reply" else None
+            reply_to = it["root"] if ja else \
+                self._entry(it).channel_ids.get(it["channel"]) if it["kind"] == "reply" else None
             if it["kind"] == "reply" and reply_to is None:
                 raise LedgerError(f"{it['key']}: no root in {it['channel']}")
             try:  # every check the transport makes, before anything is marked pending
                 transport.remote_argv(self.channels[it["channel"]], reply_to)
             except (ValueError, KeyError):
                 self._drop([it])
-                self.n["withheld"] += 1
+                self.n["ja_failed" if ja else "withheld"] += 1
                 print(f"aitools-alerts-poster: {it['kind']} not sendable (bad channel or root id)",
                       file=sys.stderr)
+                if ja:
+                    return False
                 raise _Stop from None
             self.led.pending(it["key"], it["ids"], now=self.now)
             r = transport.send(self.channels[it["channel"]], it["text"], reply_to, ssh=self.ssh)
             if r.outcome != "ok":
                 if r.outcome == "failed":
                     self.led.clear_pending(it["key"])  # it certainly did not post: next hour
-                self.n[r.outcome] += 1
+                self.n["ja_failed" if ja else r.outcome] += 1
                 print(f"aitools-alerts-poster: {it['kind']} send {r.outcome} (exit {r.exit_code}): "
                       f"{r.stderr[-300:]}", file=sys.stderr)
+                if ja:
+                    return False
                 raise _Stop
             it["sent"] = r.event_id
             self.save()  # the journal holds the id before the ledger records it
-        self._record(it)
+        if not ja:  # a Japanese reply has no thread record: the journal is its record
+            self._record(it)
         if self.led.has_pending(it["key"]):  # while the sent item still exists to finish it
             self.led.clear_pending(it["key"])
         self.state["outbox"].remove(it)
+        self._queue_ja(it)  # in the same save as the removal: a replay queues it once
         self.save()
-        self.n[{"root": "roots", "copy": "copies", "reply": "replies", "digest": "digest"}[it["kind"]]] += 1
+        self.n[{"root": "roots", "copy": "copies", "reply": "replies", "digest": "digest", "ja": "ja"}[it["kind"]]] += 1
+        return True
+
+    def _queue_ja(self, it):
+        """Journal a recorded item's Japanese reply, to this channel's root (of: names a reply)."""
+        if not it.get("ja"):
+            return
+        target, of, key = it["sent"], None, it["key"] + ":ja"
+        if it["kind"] == "reply":
+            target, of, key = self._entry(it).channel_ids.get(it["channel"]), it["sent"], f"{key}:{it['sent']}"
+        if any(o["key"] == key for o in self.state["outbox"]):
+            return
+        try:
+            text = compose.lang_reply(it["ja"], of)
+            if len(text) > transport.MAX_CONTENT or "\x00" in text or not transport._HEX64.fullmatch(target or ""):
+                raise ValueError("message too large or not sendable")
+        except ValueError:
+            self.n["ja_failed"] += 1
+            return
+        self.state["outbox"].append({"key": key, "kind": "ja", "scope": it["scope"], "ids": [f"ja {key}"],
+                                     "channel": it["channel"], "text": text, "adv": None,
+                                     "exploited": False, "date": None, "sent": None, "root": target})
+
+    def drain_ja(self):
+        """Send the Japanese replies, oldest first; the first failure ends them, nothing else."""
+        try:
+            for it in [o for o in self.state["outbox"] if o["kind"] == "ja"]:
+                if it["sent"] is None and self.led.has_pending(it["key"]):
+                    self.n["busy"] += 1  # unknown outcome: `pending` / `resolve`, as for English
+                    continue
+                if not self.deliver(it):
+                    return
+        except (LedgerError, OSError, KeyError, ValueError) as e:
+            self.n["ja_failed"] += 1
+            _say(f"ja replies stopped: {e}")
+
 
     def _entry(self, it):
         e = self.led.thread(it["root"]) if it["root"] else self.led.lookup(it["ids"], scope=it["scope"])
@@ -192,7 +248,7 @@ class Run:
         learned by the overlapping items, so a later candidate under any of them waits too."""
         want = _fold(ids)
         hits = [it for it in self.state["outbox"]
-                if it["scope"] == scope and _fold(it["ids"]) & want]
+                if it["kind"] != "ja" and it["scope"] == scope and _fold(it["ids"]) & want]
         for it in hits:
             it["ids"] = list(dict.fromkeys(it["ids"] + [i for i in ids if i.casefold() not in _fold(it["ids"])]))
         if hits:
@@ -256,8 +312,9 @@ class Run:
             self.hold(scope.name, adv)
             return []
         chans = CHANNELS_FOR[level]
+        ja = self._ja(compose.root_post_ja, adv, reason, compose.fix_unexpressed(c))
         return [self._item("root" if i == 0 else "copy", scope.name, ids, ch, text, key_id=c.id,
-                           adv=asdict(adv), exploited=c.exploited)
+                           adv=asdict(adv), exploited=c.exploited, ja=ja)
                 for i, ch in enumerate(chans)]
 
     @staticmethod
@@ -306,16 +363,21 @@ class Run:
             changes["aliases"] = unpublished
         if any(s.url not in prev_urls for s in new.sources) and len(prev.sources) < 20:
             changes["sources"] = new.sources
+        copies = [ch for ch in CHANNELS_FOR[level] if ch not in entry.channel_ids]
+        ja = self._ja(compose.root_post_ja, new, reason, compose.fix_unexpressed(k)) if copies else None
         items = [self._item("copy", scope.name, ids, ch, text, key_id=prev.id, exploited=c.exploited,
-                            root=entry.root_event_id)
-                 for ch in CHANNELS_FOR[level] if ch not in entry.channel_ids]
+                            root=entry.root_event_id, ja=ja)
+                 for ch in copies]
         if changes:
             reply = compose.reply_post(prev, k, changes, reason=reason)
             merged = compose.parse_reply(reply, prev)
             if merged is None:
                 raise ValueError("reply does not parse back")
+            # The changed lines, then the whole current advisory: readers show the latest translation.
+            ja = self._ja(lambda: compose.reply_post_ja(merged, k, json.loads(schema._last_block(reply)),
+                          reason=reason) + "\n\n" + compose.root_post_ja(merged, reason, compose.fix_unexpressed(k)))
             items += [self._item("reply", scope.name, ids, ch, reply, key_id=prev.id,
-                                 adv=asdict(merged), exploited=c.exploited, root=entry.root_event_id)
+                                 adv=asdict(merged), exploited=c.exploited, root=entry.root_event_id, ja=ja)
                       for ch in entry.channel_ids]
         return items
 
@@ -376,8 +438,9 @@ class Run:
         snap = {"held": sorted({k for _, h, _ in taken if h is not None
                                 for k in self._notice_keys(h["scope"], h["adv"])}),
                 "cutoff": cutoff, "roots": roots}
+        ja = self._ja(compose.digest, [x[0] for x in taken], local.date(), lang="ja")
         self.enqueue([self._item("digest", None, [f"digest:{today}"], "feed", text,
-                                 key_id=today, adv=snap, date=today)])
+                                 key_id=today, adv=snap, date=today, ja=ja)])
 
 
 def _observed(c) -> int | None:
@@ -531,6 +594,7 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
                     merged[i] = None  # planned (or deferred by one() itself)
                 r.digest()
                 state.update(marks)  # every send of this run succeeded; busy work is deferred
+                r.drain_ja()  # last: a Japanese reply never delays or stops an English post
             except (_Stop, LedgerError) as e:
                 code = 1
                 if isinstance(e, LedgerError):

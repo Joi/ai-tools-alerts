@@ -43,6 +43,13 @@ UNVERIFIED = "unverified: no primary source confirmed it"
 # A reserved id (``run --kev-file``) is the provenance: it survives the ledger, the
 # digest and every later run, and ``schema.validate`` marks its title.
 SYNTHETIC, SYNTHETIC_ID, is_synthetic = schema.SYNTHETIC, schema.SYNTHETIC_ID, schema.is_synthetic
+# Japanese templates (``lang: ja`` replies). Names, ids, versions, URLs and the
+# SYNTHETIC TEST and unverified marks stay as they are.
+_JA_LEVEL = {"critical": "緊急", "high": "重要", "notice": "注意"}
+_JA_KINDS = ("悪用が確認された脆弱性", "改ざんされたリリース",
+             "コード実行につながるインジェクション", "セキュリティアドバイザリ")  # as _KINDS
+_JA_OPS = {"<": "未満", "<=": "以下", ">": "超", ">=": "以上", "=": "のみ"}
+_EVENT_ID = re.compile(r"[0-9a-f]{64}")
 
 
 def schema_fixed(v) -> str | None:
@@ -78,6 +85,15 @@ def _words(affected: str | None) -> str:
         return ", all versions"
     parts = [_COMPARATOR.fullmatch(t).groups() for t in affected.split(",")]
     return " " + " and ".join(f"{_OPS[op]} {ver}" for op, ver in parts)
+
+
+def _words_ja(affected: str | None) -> str:
+    if affected is None:
+        return "（バージョン不明）"
+    if affected == "*":
+        return "（全バージョン）"
+    parts = [_COMPARATOR.fullmatch(t).groups() for t in affected.split(",")]
+    return "（" + "、".join(f"{ver} {_JA_OPS[op]}" for op, ver in parts) + "）"
 
 
 def _guard(text: str) -> str:
@@ -163,8 +179,7 @@ def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, sc
     p = adv.products[0]
     head = adv.level.upper() + (f" ({SYNTHETIC})" if is_synthetic(adv.id) else "") \
         + (f" ({UNVERIFIED})" if reason == "unverified" else "")
-    # A fix the schema cannot express is still a fix: say so, and name no version.
-    unexpressed = fixed is None and isinstance(c.fixed, str) and c.fixed.strip() != ""
+    unexpressed = fix_unexpressed(c)
     body = [f"{head}: {adv.title}",
             f"Affected: {p.name}{_words(p.affected)}."
             + (f" Fixed in {fixed}." if fixed else " A fix is listed upstream; see the source."
@@ -174,6 +189,74 @@ def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, sc
             else "Action: no fix is published yet; watch this thread.",
             f"Source: {_primary(adv.sources)}"]
     return _guard(schema.render_post(adv, "\n".join(body))), adv
+
+
+def fix_unexpressed(c) -> bool:
+    """A fix the schema cannot express is still a fix: say so, and name no version."""
+    return schema_fixed(c.fixed) is None and isinstance(c.fixed, str) and c.fixed.strip() != ""
+
+
+def _ja_title(adv: schema.Advisory) -> str:
+    """A template title with its kind in Japanese ("unverified" stays); any other as it is."""
+    name = adv.products[0].name if adv.products else ""
+    mark = f"{SYNTHETIC}: " if is_synthetic(adv.id) else ""
+    for k, jk in zip(_KINDS, _JA_KINDS):
+        for pre in ("", "unverified "):
+            if adv.title == f"{mark}{name}: {pre}{k} ({adv.id})":
+                return f"{mark}{name}: {pre}{jk} ({adv.id})"
+    return adv.title
+
+
+def root_post_ja(adv: schema.Advisory, reason: str | None = None, unexpressed: bool = False) -> str:
+    """root_post's four body lines in Japanese, from the Advisory root_post returned."""
+    p, fixed = adv.products[0], adv.products[0].fixed
+    head = _JA_LEVEL[adv.level] + (f" ({SYNTHETIC})" if is_synthetic(adv.id) else "") \
+        + (f" ({UNVERIFIED})" if reason == "unverified" else "")
+    return "\n".join([
+        f"{head}: {_ja_title(adv)}",
+        f"影響: {p.name}{_words_ja(p.affected)}。"
+        + (f" 修正版: {fixed}。" if fixed else " 修正は上流で公開されています。出典を参照してください。"
+           if unexpressed else " 修正版はまだ知られていません。"),
+        f"対応: {p.name} を {fixed} 以降に更新してください。" if fixed
+        else "対応: 出典の説明に従って更新してください。" if unexpressed
+        else "対応: 修正はまだ公開されていません。このスレッドで続報を確認してください。",
+        f"出典: {_primary(adv.sources)}"])
+
+
+def _change_line_ja(k: str, adv: schema.Advisory) -> str:
+    p = adv.products[0]
+    return {
+        "level": f"レベルは{_JA_LEVEL[adv.level]}になりました。",
+        "products": f"影響: {p.name}{_words_ja(p.affected)}。" + (f" 修正版: {p.fixed}。" if p.fixed else ""),
+        "actions": f"対応: {p.name} を {p.fixed} 以降に更新してください。" if adv.actions
+        else "現在、記載された対応はありません。",
+        "title": f"件名: {_ja_title(adv)}",
+        "expires_at": "有効期限は解除されました。" if adv.expires_at is None
+        else "このアドバイザリには有効期限が設定されました。",
+        "aliases": "別名: " + ", ".join(adv.aliases) + "。",
+        "sources": "新しい出典が追加されました。",
+        "advisory_severity": "深刻度の評価は解除されました。",
+    }[k]
+
+
+def reply_post_ja(merged: schema.Advisory, c, keys, *, reason: str | None = None) -> str:
+    """reply_post's body lines in Japanese for the changed ``keys``; no block."""
+    body = [UNVERIFIED[0].upper() + UNVERIFIED[1:] + "."] if reason == "unverified" else []
+    body += [_change_line_ja(k, merged) for k in sorted(keys)]
+    body.append(f"出典: {_primary(_sources(c.sources) or merged.sources)}")
+    return "\n".join(body)
+
+
+def lang_reply(body: str, of: str | None = None) -> str:
+    """``lang: ja``, an optional ``of: <event id>``, a blank line, the body; never a block."""
+    if of is not None and not (isinstance(of, str) and _EVENT_ID.fullmatch(of)):
+        raise ValueError("of: must be a 64-hex event id")
+    if not isinstance(body, str) or not body.strip():
+        raise ValueError("an empty Japanese body")
+    text = "lang: ja\n" + (f"of: {of}\n" if of else "") + "\n" + body
+    if schema._last_block(text) is not schema._NONE:
+        raise ValueError("a lang reply carries no aitools-alert block")
+    return _guard(text)
 
 
 def apply_patch(prev: schema.Advisory, patch) -> schema.Advisory:
@@ -275,10 +358,30 @@ def reply_post(prev: schema.Advisory, c, changes: dict, *, reason: str | None = 
 _LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
 
 
-def _single(a: schema.Advisory) -> str:
-    fixed = f"fixed in {a.products[0].fixed}" if a.products[0].fixed else "no fix yet"
+_DIGEST = {
+    "en": dict(empty=lambda d: f"Daily digest for {d}: no advisories.",
+               head=lambda d, n: f"Daily digest for {d}: {n} advisor{'y' if n == 1 else 'ies'}.",
+               section=lambda lv, n: f"{lv.capitalize()} ({n})",
+               withheld=lambda n: f"{n} item{'s' if n > 1 else ''} withheld by the publication check.",
+               fixed=lambda v: f"fixed in {v}", nofix="no fix yet", end=".",
+               leads=lambda n: f"{n} unrated leads.", release=lambda seg: f"release {seg}",
+               one="one release", cves=lambda n: f"{n} CVEs", update="update available",
+               see="see the release", title=lambda a: a.title),
+    "ja": dict(empty=lambda d: f"{d} のデイリーダイジェスト: アドバイザリはありません。",
+               head=lambda d, n: f"{d} のデイリーダイジェスト: {n} 件。",
+               section=lambda lv, n: f"{_JA_LEVEL[lv]} ({n})",
+               withheld=lambda n: f"{n} 件を公開前チェックで保留しました。",
+               fixed=lambda v: f"修正版 {v}", nofix="修正版はまだありません", end="。",
+               leads=lambda n: f"未評価のリード {n} 件。", release=lambda seg: f"リリース {seg}",
+               one="1 件のリリース", cves=lambda n: f"CVE {n} 件", update="更新あり",
+               see="リリースを参照", title=_ja_title),
+}
+
+
+def _single(a: schema.Advisory, t=_DIGEST["en"]) -> str:
+    fixed = t["fixed"](a.products[0].fixed) if a.products[0].fixed else t["nofix"]
     mark = f"({SYNTHETIC}) " if is_synthetic(a.id) and not a.title.startswith(SYNTHETIC + ": ") else ""
-    return f"- {mark}{a.title}; {fixed}. {_primary(a.sources)}"
+    return f"- {mark}{t['title'](a)}; {fixed}{t['end']} {_primary(a.sources)}"
 
 
 def _group_key(a: schema.Advisory):
@@ -296,26 +399,28 @@ def _group_key(a: schema.Advisory):
     return None
 
 
-def _group_line(key, members) -> str:
+def _group_line(key, members, t=_DIGEST["en"]) -> str:
     mark = f"{SYNTHETIC}: " if key[2] else ""
     if key[0] == "lead":
-        return f"- {mark}{key[1]}: {len(members)} unrated leads."
+        return f"- {mark}{key[1]}: {t['leads'](len(members))}"
     url = key[3]
     seg = next((p for p in reversed(urlsplit(url).path.split("/")) if p), "")
-    label = f"release {seg}" if _LABEL.fullmatch(seg) else "one release"
+    label = t["release"](seg) if _LABEL.fullmatch(seg) else t["one"]
     fixes = {a.products[0].fixed for a in members}
-    fix = f"fixed in {fixes.pop()}" if len(fixes) == 1 and None not in fixes \
-        else "update available" if schema.is_primary(url) else "see the release"
-    return f"- {mark}{key[1]}: {label}, {len(members)} CVEs; {fix}. {url}"
+    fix = t["fixed"](fixes.pop()) if len(fixes) == 1 and None not in fixes \
+        else t["update"] if schema.is_primary(url) else t["see"]
+    return f"- {mark}{key[1]}: {label}, {t['cves'](len(members))}; {fix}{t['end']} {url}"
 
 
-def digest(advs_today, date) -> str:
+def digest(advs_today, date, lang: str = "en") -> str:
     """The daily digest: every advisory once per id and product (latest posted_at
     wins), critical first. Within high and notice, plain CVE advisories sharing a
     primary source URL and product are one line (a vendor release), and leads are one
     line per scope; N counts lines. An item that fails the publication guard is
     withheld and counted, never the whole digest. The ledger and --json keep every
-    advisory: this grouping is presentation only."""
+    advisory: this grouping is presentation only. ``lang="ja"``: the same digest from
+    the Japanese templates."""
+    t = _DIGEST[lang]
     latest: dict[tuple, schema.Advisory] = {}
     for adv in advs_today:
         if not (adv.products and adv.sources):
@@ -325,25 +430,25 @@ def digest(advs_today, date) -> str:
             latest[key] = adv
     day = date.isoformat() if hasattr(date, "isoformat") else str(date)
     if not latest:
-        return f"Daily digest for {day}: no advisories."
+        return t["empty"](day)
     sections = {}
     for level in ("critical", "high", "notice"):
         groups: dict = {}
         for a in sorted((a for a in latest.values() if a.level == level), key=lambda a: (a.posted_at, a.id)):
             k = _group_key(a)
             groups.setdefault(k if k is not None else ("single", a.id, a.products[0].name), []).append(a)
-        sections[level] = [_single(m[0]) if k[0] == "single" or len(m) == 1 else _group_line(k, m)
+        sections[level] = [_single(m[0], t) if k[0] == "single" or len(m) == 1 else _group_line(k, m, t)
                            for k, m in groups.items()]
     n = sum(len(v) for v in sections.values())
-    lines, withheld = [f"Daily digest for {day}: {n} advisor{'y' if n == 1 else 'ies'}."], 0
+    lines, withheld = [t["head"](day, n)], 0
     for level, items in sections.items():
         if items:
-            lines += ["", f"{level.capitalize()} ({len(items)})"]
+            lines += ["", t["section"](level, len(items))]
             for line in items:
                 try:
                     lines.append(_guard(line))
                 except ValueError:
                     withheld += 1
     if withheld:
-        lines += ["", f"{withheld} item{'s' if withheld > 1 else ''} withheld by the publication check."]
+        lines += ["", t["withheld"](withheld)]
     return _guard("\n".join(lines))

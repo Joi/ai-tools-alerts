@@ -45,7 +45,7 @@ _STATE_KEYS = {"schema_version", "since", "heartbeat", "collector", "kev_since",
 MAX_DIGEST_IDS = 10  # the event ids of the last digests sent, oldest first
 _ITEM_KEYS = {"key", "kind", "scope", "ids", "channel", "text", "adv", "exploited", "date", "sent", "root"}
 _CANDIDATE_FIELDS = frozenset(Candidate.__dataclass_fields__)
-_KINDS = {"root", "copy", "reply", "digest"}
+_KINDS = {"root", "copy", "reply", "digest", "ja"}
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
@@ -199,7 +199,8 @@ def _adv_ok(v) -> bool:
 def _item_ok(it) -> bool:
     """A journal item that a later run can finish: every field its kind needs is there
     and well formed, so nothing fails after the post is public."""
-    if not (isinstance(it, dict) and set(it) == _ITEM_KEYS and isinstance(it["kind"], str)
+    if not (isinstance(it, dict) and set(it) in (_ITEM_KEYS, _ITEM_KEYS | {"ja"})  # "ja": rd8t; older items lack it
+            and (it.get("ja") is None or isinstance(it["ja"], str) and it["ja"]) and isinstance(it["kind"], str)
             and it["kind"] in _KINDS and isinstance(it["key"], str) and it["key"]
             and it["channel"] in ("feed", "critical") and isinstance(it["text"], str) and it["text"]
             and _strs(it["ids"]) and it["ids"] and type(it["exploited"]) is bool
@@ -207,6 +208,9 @@ def _item_ok(it) -> bool:
                     for k in ("sent", "root"))):
         return False
     kind, adv = it["kind"], it["adv"]
+    if kind == "ja":  # a Japanese reply: names its target, no advisory, no text of its own to come
+        return (adv is None and it["root"] is not None and it["date"] is None and it.get("ja") is None
+                and (it["scope"] is None or isinstance(it["scope"], str) and it["scope"] != ""))
     if (kind == "reply") != (it["root"] is not None) and kind != "copy":
         return False  # a reply names its thread's root; a root or digest names none
     if kind == "digest":
