@@ -9,7 +9,14 @@ comes from the manifest role of the event's key, never from the block.
 A pull that fails anywhere before the save changes no event, manifest or
 seen record: a truncated or half-written mirror file is "mirror unreadable",
 never an empty feed. Stored events are re-checked against the current
-manifest on every pull, so a key removed from the manifest loses its events.
+manifest on every pull, so a key removed from the manifest loses its events,
+its retractions included; a retraction that must outlive its signer's key is
+listed in the manifest's ``retracted`` (see ``advisories``).
+
+Relay deletions (kind 9005, by a relay admin or by a root's own author) and
+NIP-09 deletions (kind 5) are not read, whoever signed them. Readers trust signed posters, not relay admin events: the stored
+events and the manifest floor stand, and a thread is withdrawn only by a
+trusted curator's retraction or by the manifest's ``retracted`` list.
 """
 
 from __future__ import annotations
@@ -40,6 +47,7 @@ RETENTION_S = 400 * 86400
 TIMEOUT = 20
 _RANK = {"notice": 1, "high": 2, "critical": 3}
 _PATCH_KEYS = frozenset(f for f in Advisory.__dataclass_fields__)
+_DELETION_KINDS = frozenset({5, 9005})  # NIP-09 deletion, NIP-29 relay delete-event
 
 
 @dataclass
@@ -311,6 +319,11 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
     Once a curator has posted or amended a thread, a relay-bot reply to it is
     discussion, so the bot can neither suppress, alter nor undo a curator's
     word. A patch that fails validation, or raises, is counted and skipped.
+    Last, a thread is retracted if any id it has carried (the root's id and
+    aliases, and the aliases of every patched state) is in the manifest's
+    ``retracted``, whoever posted or retracted it, compared case-folded as
+    the poster's ledger compares ids. Deletion events (kinds 5 and 9005) are
+    never read.
     """
     m = effective_manifest(state)
     if m is None:
@@ -319,8 +332,8 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
     roots, replies = {}, []
     for ev in state.events.values():
         role = manifest.role_of(m, ev.get("pubkey"))
-        if role is None:
-            continue
+        if role is None or ev.get("kind") in _DELETION_KINDS:
+            continue  # a deletion request is never read, even from a trusted key
         ref = _thread_ref(ev)
         if ref is not None:
             replies.append((ev, role, ref))
@@ -331,7 +344,8 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
         if adv is None:
             dropped["no-block"] += 1
             continue
-        roots[ev["id"]] = [replace(adv, posted_by=role), False, ev["created_at"], role == "curator"]
+        roots[ev["id"]] = [replace(adv, posted_by=role), False, ev["created_at"], role == "curator",
+                           {i.casefold() for i in (adv.id, *adv.aliases)}]
     for ev, role, ref in sorted(replies, key=lambda r: (r[0]["created_at"], r[0]["id"])):
         t = roots.get(ref)
         if t is None or t[1]:
@@ -358,8 +372,10 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
             dropped["bad-patch"] += 1
         else:
             t[0], t[2], t[3] = new, ev["created_at"], t[3] or role == "curator"
-    return [Thread(root_id=rid, adv=a, retracted=r, updated_at=u)
-            for rid, (a, r, u, _) in sorted(roots.items(), key=lambda kv: (kv[1][2], kv[0]))]
+            t[4].update(i.casefold() for i in new.aliases)
+    listed = {i.casefold() for i in m.retracted}
+    return [Thread(root_id=rid, adv=a, retracted=r or not ids.isdisjoint(listed), updated_at=u)
+            for rid, (a, r, u, _, ids) in sorted(roots.items(), key=lambda kv: (kv[1][2], kv[0]))]
 
 
 def active(threads: list[Thread], now: float | None = None) -> list[Thread]:

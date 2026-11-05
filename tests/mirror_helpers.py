@@ -41,13 +41,15 @@ class Mirror:
         self.raw: dict[str, bytes] = {}
         self.publish_manifest()
 
-    def publish_manifest(self, posters=None, version=None, issued=None, signer=None):
+    def publish_manifest(self, posters=None, version=None, issued=None, signer=None, retracted=None):
         self.version = version if version is not None else self.version + 1
         issued = issued if issued is not None else T0 + self.version
         posters = posters if posters is not None else [
             {"pubkey": self.cur, "role": "curator", "name": "cur"},
             {"pubkey": self.bot, "role": "relay-bot", "name": "bot"}]
         content = {"version": self.version, "issued_at": iso(issued), "posters": posters}
+        if retracted is not None:
+            content["retracted"] = retracted
         self.manifest = nostr.sign_event(signer or self.root_sec, {
             "created_at": issued, "kind": 30078, "tags": [["d", "aitools-alerts-manifest"]],
             "content": json.dumps(content)})

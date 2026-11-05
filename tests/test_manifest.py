@@ -205,6 +205,19 @@ BAD = {
         .replace(b'"created_at": 0', b'"created_at": ' + b"9" * 5000),
     "big_int_content": lambda: make(raw_content='{"version": ' + "9" * 5000
                                     + ', "issued_at": "2026-11-05T08:00:00Z", "posters": []}'),
+    "retracted_str": lambda: make(body=content(retracted="CVE-2099-0001")),
+    "retracted_object": lambda: make(body=content(retracted={})),
+    "retracted_int": lambda: make(body=content(retracted=[1])),
+    "retracted_null": lambda: make(body=content(retracted=[None])),
+    "retracted_null_list": lambda: make(body=content(retracted=None)),
+    "retracted_empty_id": lambda: make(body=content(retracted=[""])),
+    "retracted_space": lambda: make(body=content(retracted=[" CVE-2099-0001"])),
+    "retracted_leading_dash": lambda: make(body=content(retracted=["-x"])),
+    "retracted_long_id": lambda: make(body=content(retracted=["A" * 129])),
+    "retracted_duplicate": lambda: make(body=content(retracted=["CVE-2099-0001"] * 2)),
+    "retracted_duplicate_case": lambda: make(body=content(retracted=["CVE-2099-0001", "cve-2099-0001"])),
+    "retracted_too_many": lambda: make(body=content(
+        retracted=[f"AITA-{i}" for i in range(manifest.MAX_RETRACTED + 1)])),
 }
 
 
@@ -227,6 +240,22 @@ def test_load_accepts_exactly_max_bytes(tmp_path):
     padded = raw[:-1] + b" " * (manifest.MAX_BYTES - len(raw)) + b"}"
     assert len(padded) == manifest.MAX_BYTES
     assert manifest.verify(manifest.load(padded), ROOT_PUB)
+
+
+def test_retracted_absent_is_empty():
+    m = manifest.load(make())
+    assert m.retracted == () and manifest.verify(m, ROOT_PUB)
+
+
+def test_retracted_loads_verifies_and_is_signed():
+    ids = ["CVE-2099-0001", "GHSA-aaaa-bbbb-cccc"]
+    m = manifest.load(make(body=content(retracted=ids)))
+    assert m.retracted == tuple(ids) and manifest.verify(m, ROOT_PUB)
+    assert not manifest.verify(replace(m, retracted=()), ROOT_PUB)
+    assert not manifest.verify(replace(m, retracted=tuple(ids) + ("X",)), ROOT_PUB)
+    assert manifest.load(make(body=content(retracted=[]))).retracted == ()
+    full = [f"AITA-{i}" for i in range(manifest.MAX_RETRACTED)]
+    assert len(manifest.load(make(body=content(retracted=full))).retracted) == manifest.MAX_RETRACTED
 
 
 def test_load_rejects_previous_that_is_not_a_manifest():
@@ -485,3 +514,64 @@ def test_sign_script_previous_version_must_increase(tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         mod.main([str(src), "--out", str(out)], runner=FakeRunner(stdout=sec.encode()))
     assert out.read_bytes() == before
+
+
+# ------------------------------------------ sign-manifest --retract (jpzy)
+
+def _signer(monkeypatch, tmp_path):
+    mod = _script()
+    sec, pub = nostr.keygen()
+    monkeypatch.setattr(mod, "TRUST_ROOT_PUBKEY", pub)
+    out, src = tmp_path / "manifest.json", tmp_path / "content.json"
+
+    def sign(version, *flags, runner=None, **over):
+        src.write_text(json.dumps(content(version, issued_at=f"2026-11-0{version}T08:00:00Z", **over)))
+        return mod.main([str(src), "--out", str(out), *flags],
+                        runner=runner or FakeRunner(stdout=sec.encode()))
+    return sign, out, pub
+
+
+def test_sign_script_retract_round_trip(tmp_path, monkeypatch):
+    sign, out, pub = _signer(monkeypatch, tmp_path)
+    assert sign(1, "--retract", "CVE-2099-0002", "--retract", "AITA-X") == 0
+    m = manifest.load(out)
+    assert manifest.verify(m, pub) and m.retracted == ("AITA-X", "CVE-2099-0002")
+    assert sign(2) == 0  # no flags: the list is kept
+    assert manifest.load(out).retracted == ("AITA-X", "CVE-2099-0002")
+    assert sign(3, "--unretract", "aita-x", "--retract", "cve-2099-0002") == 0  # case-folded
+    assert manifest.load(out).retracted == ("CVE-2099-0002",)
+    assert sign(4, "--unretract", "CVE-2099-0002") == 0
+    m = manifest.load(out)
+    assert m.retracted == () and "retracted" not in json.loads(m.event["content"])
+
+
+def test_sign_script_merges_content_retracted(tmp_path, monkeypatch):
+    sign, out, _ = _signer(monkeypatch, tmp_path)
+    assert sign(1, "--retract", "AITA-A") == 0
+    assert sign(2, retracted=["AITA-C"]) == 0
+    assert manifest.load(out).retracted == ("AITA-A", "AITA-C")
+
+
+@pytest.mark.parametrize("flags", [
+    ["--unretract", "AITA-ABSENT"],
+    ["--retract", "AITA-A", "--unretract", "AITA-A"],
+    ["--retract", "AITA-B", "--unretract", "aita-b"],
+    ["--retract", " bad id"],
+])
+def test_sign_script_refuses_bad_flags_before_reading_key(tmp_path, monkeypatch, flags):
+    sign, out, _ = _signer(monkeypatch, tmp_path)
+    assert sign(1, "--retract", "AITA-A") == 0
+    before = out.read_bytes()
+    runner = FakeRunner(stdout=b"")
+    with pytest.raises(SystemExit):
+        sign(2, *flags, runner=runner)
+    assert runner.calls == [] and out.read_bytes() == before
+
+
+def test_sign_script_refuses_unverified_previous(tmp_path, monkeypatch):
+    sign, out, _ = _signer(monkeypatch, tmp_path)
+    out.write_bytes(make(body=content(1, retracted=["AITA-A"])))  # signed by another root
+    runner = FakeRunner(stdout=b"")
+    with pytest.raises(SystemExit, match="not signed by the trust root"):
+        sign(2, runner=runner)
+    assert runner.calls == []

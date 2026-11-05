@@ -2,8 +2,13 @@
 """Sign a trust manifest with the trust root key.
 
     scripts/sign-manifest.py <content.json> [--out trust/manifest.json]
+        [--retract ADVISORY-ID]... [--unretract ADVISORY-ID]...
 
-<content.json> is the manifest content: {"version", "issued_at", "posters"}.
+<content.json> is the manifest content: {"version", "issued_at", "posters"},
+optionally "retracted". The signed "retracted" list is the one in the
+manifest already at --out (which must verify against TRUST_ROOT_PUBKEY), plus
+the content file's, plus each --retract, minus each --unretract; it is kept
+across versions until an --unretract drops an id, and left out when empty.
 The root secret is read with get_secret AITOOLS_ALERTS_ROOT_NSEC from the
 fleet's secrets helper, in a bash subprocess whose SECRETS_CACHE_DIR is a fresh
 temporary directory with no write permission, so the helper's cache write
@@ -140,6 +145,10 @@ def main(argv=None, runner=subprocess.run) -> int:
     ap = argparse.ArgumentParser(description="Sign the trust manifest with the root key.")
     ap.add_argument("content", type=Path)
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    ap.add_argument("--retract", action="append", default=[], metavar="ADVISORY-ID",
+                    help="list an advisory id as retracted for every reader (repeatable)")
+    ap.add_argument("--unretract", action="append", default=[], metavar="ADVISORY-ID",
+                    help="drop an id from the retracted list (repeatable)")
     args = ap.parse_args(argv)
 
     try:
@@ -159,8 +168,30 @@ def main(argv=None, runner=subprocess.run) -> int:
             previous = manifest.load(args.out)
         except manifest.ManifestError as e:
             _die(f"existing {args.out} is unreadable ({e}); move it aside to replace it")
+        if not manifest.verify(previous, TRUST_ROOT_PUBKEY):
+            # its retracted list is carried forward, so it must be the root's
+            _die(f"existing {args.out} is not signed by the trust root; move it aside to replace it")
         if content["version"] <= previous.version:
             _die(f"version {content['version']} is not higher than the existing version {previous.version}")
+    # ids compare case-folded, as readers match them; the first spelling is kept
+    ids: dict[str, str] = {}
+    for i in [*(previous.retracted if previous else ()), *raw.get("retracted", []), *args.retract]:
+        ids.setdefault(i.casefold(), i)
+    drop = {i.casefold() for i in args.unretract}
+    both = drop & {i.casefold() for i in args.retract}
+    if both:
+        _die(f"--retract and --unretract both name {sorted(both)}")
+    absent = drop - set(ids)
+    if absent:
+        _die(f"--unretract: {sorted(absent)} not in the retracted list")
+    for k in drop:
+        del ids[k]
+    if ids:
+        content["retracted"] = sorted(ids.values())
+        try:
+            manifest.parse_content(content)
+        except manifest.ManifestError as e:
+            _die(f"invalid --retract: {e}")
 
     sec = read_root_secret(runner=runner)
     ev = build_event(content, sec)

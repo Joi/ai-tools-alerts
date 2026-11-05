@@ -98,6 +98,21 @@ def test_retract_is_reply_with_convention_text(mirror):
     assert thread_of(mirror, root["id"]).retracted
     with pytest.raises(curator.CuratorError, match="retracted"):
         curator.find_threads(pulled(mirror), mirror.root, root["id"])
+    [(t, _)] = curator.find_threads(pulled(mirror), mirror.root, root["id"], retracted_ok=True)
+    assert t.retracted
+
+
+def test_cli_retract_of_a_retracted_thread_posts_anyway(mirror, capsys):
+    root = publish(mirror, *post(mirror))
+    publish(mirror, retract(mirror, root))
+    pulled(mirror)
+    write_key(nostr.nsec(mirror.cur_sec))
+    assert cli.main(["curator", "retract", root["id"], "--no-pull", "--dry-run"]) == 0
+    out = capsys.readouterr()
+    assert f"{root['id']}: already retracted locally" in out.err
+    [ev] = json.loads(out.out)
+    assert ev["content"] == "retract" and ev["tags"][-1] == ["e", root["id"], "", "root"]
+    assert cli.main(["curator", "amend", root["id"], "--no-pull", "--level", "notice"]) == 1
 
 
 def test_retract_by_advisory_id_covers_both_channels(mirror):

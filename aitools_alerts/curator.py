@@ -11,7 +11,9 @@
 Every command takes --dry-run (print the signed events, send nothing) and
 --relay-url. A critical post goes to the critical channel and the feed.
 amend and retract pull the mirror first, and reply to every open thread of
-an advisory id. The key is read from config.key_path() (mode 600, never argv).
+an advisory id. A retraction is idempotent: retract also replies to a thread
+the stored state already holds as retracted, and says so on stderr. The key
+is read from config.key_path() (mode 600, never argv).
 Events follow the reader rules in pull.advisories: a root has no e tag; a
 reply carries the root-marked e tag; ``retract`` or ``level: high|notice``
 as the first line; any other change is a block holding the changed fields.
@@ -25,6 +27,7 @@ import os
 import re
 import secrets
 import stat
+import sys
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -159,16 +162,16 @@ def post_events(sec: str, m, root: str, *, level, title, product, ecosystem, sou
 
 # ------------------------------------------------------------------ replies
 
-def find_threads(st: State, root: str, ref: str) -> list:
+def find_threads(st: State, root: str, ref: str, retracted_ok: bool = False) -> list:
     """[(Thread, root event)] for a root event id, or every open thread of an
-    advisory id (a critical has a root in each channel). Only state pulled
-    under ``root`` is used."""
+    advisory id (a critical has a root in each channel); with ``retracted_ok``,
+    the retracted threads too. Only state pulled under ``root`` is used."""
     if st.manifest_root != root or st.manifest is None:
         raise CuratorError("the stored state was not pulled under this trust root; run: aitools-alerts pull")
     hits = [t for t in pull.advisories(st) if ref in (t.root_id, t.adv.id)]
     if not hits:
         raise CuratorError(f"no thread {ref!r} in the pulled state; run: aitools-alerts pull")
-    open_ = [t for t in hits if not t.retracted]
+    open_ = hits if retracted_ok else [t for t in hits if not t.retracted]
     if not open_:
         raise CuratorError(f"{ref!r} is retracted")
     return [(t, st.events[t.root_id]) for t in open_]
@@ -341,9 +344,12 @@ def cmd_curator(a, st: State) -> int:
         m = role_manifest(st, a.root)
         _curator_pub(sec, m, a.root)  # a revocation the pull just fetched refuses here
         evs = []
-        pairs = find_threads(st, a.root, a.ref)
+        pairs = find_threads(st, a.root, a.ref, retracted_ok=a.curator_cmd == "retract")
         for t, root_ev in pairs:
             if a.curator_cmd == "retract":
+                if t.retracted:
+                    print(f"{t.root_id}: already retracted locally; posting the retraction anyway",
+                          file=sys.stderr)
                 evs.append(retract_event(sec, m, a.root, st, t, root_ev, reason=a.reason))
                 continue
             try:

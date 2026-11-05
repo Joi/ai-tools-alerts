@@ -2,7 +2,11 @@
 
 The manifest is a Nostr event of kind 30078 with the single tag
 ``["d", "aitools-alerts-manifest"]``, signed by the trust root. Its content is
-JSON ``{"version", "issued_at", "posters": [{"pubkey", "role", "name"}]}``.
+JSON ``{"version", "issued_at", "posters": [{"pubkey", "role", "name"}]}``,
+plus an optional ``"retracted"``: advisory ids every reader treats as
+retracted, whoever posted or retracted them (a revoked curator's retractions
+are dropped with its key, so the ones that must stand are listed here). A
+manifest without the key has ``retracted == ()``.
 
 Use it in this order: ``load`` (parse and validate the shape, and refuse a
 version lower than the one already accepted), then ``verify`` against the
@@ -21,10 +25,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from . import nostr
-from .schema import ROLES
+from .schema import _IDENT, ROLES
 
 __all__ = ["KIND", "D_TAG", "MAX_BYTES", "MAX_POSTERS", "ManifestError",
-           "Poster", "Manifest", "parse_content", "load", "verify", "role_of"]
+           "MAX_RETRACTED", "Poster", "Manifest", "parse_content", "load", "verify", "role_of"]
 
 KIND = 30078
 D_TAG = "aitools-alerts-manifest"
@@ -32,8 +36,10 @@ MAX_BYTES = 1 << 20
 MAX_POSTERS = 64
 MAX_NAME = 64
 MAX_VERSION = 2**31 - 1
+MAX_RETRACTED = 1024
 _EVENT_KEYS = frozenset({"id", "pubkey", "created_at", "kind", "tags", "content", "sig"})
 _CONTENT_KEYS = frozenset({"version", "issued_at", "posters"})
+_OPTIONAL_CONTENT_KEYS = frozenset({"retracted"})
 _POSTER_KEYS = frozenset({"pubkey", "role", "name"})
 _ISSUED_AT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 
@@ -55,6 +61,7 @@ class Manifest:
     version: int
     issued_at: str
     posters: tuple[Poster, ...]
+    retracted: tuple[str, ...] = ()
 
 
 def _no_duplicates(pairs):
@@ -85,11 +92,12 @@ def _json(text: str):
         raise ManifestError("JSON nested too deeply") from None
 
 
-def _keys(obj, keys: frozenset, what: str) -> dict:
+def _keys(obj, keys: frozenset, what: str, optional: frozenset = frozenset()) -> dict:
     if not isinstance(obj, dict):
         raise ManifestError(f"{what} must be an object")
-    if set(obj) != keys:
-        raise ManifestError(f"{what} must have exactly the keys {sorted(keys)}")
+    if not keys <= set(obj) <= keys | optional:
+        extra = f" (optional: {sorted(optional)})" if optional else ""
+        raise ManifestError(f"{what} must have exactly the keys {sorted(keys)}{extra}")
     return obj
 
 
@@ -104,9 +112,21 @@ def _name_ok(name) -> bool:
                    for c in name)
 
 
-def parse_content(obj) -> tuple[int, str, tuple[Poster, ...]]:
-    """Validate decoded manifest content; return (version, issued_at, posters)."""
-    c = _keys(obj, _CONTENT_KEYS, "content")
+def _parse_retracted(ids) -> tuple[str, ...]:
+    if not isinstance(ids, list) or len(ids) > MAX_RETRACTED:
+        raise ManifestError(f"retracted must be a list of at most {MAX_RETRACTED} advisory ids")
+    for i, a in enumerate(ids):
+        if not isinstance(a, str) or not _IDENT.fullmatch(a):
+            raise ManifestError(f"retracted[{i}] must be an advisory id")
+    if len({a.casefold() for a in ids}) != len(ids):
+        raise ManifestError("retracted lists an id twice (ids compare case-folded)")
+    return tuple(ids)
+
+
+def parse_content(obj) -> tuple[int, str, tuple[Poster, ...], tuple[str, ...]]:
+    """Validate decoded manifest content; return (version, issued_at, posters,
+    retracted)."""
+    c = _keys(obj, _CONTENT_KEYS, "content", _OPTIONAL_CONTENT_KEYS)
     version = c["version"]
     if not isinstance(version, int) or isinstance(version, bool) or not 1 <= version <= MAX_VERSION:
         raise ManifestError(f"version must be an integer in 1..{MAX_VERSION}")
@@ -134,10 +154,10 @@ def parse_content(obj) -> tuple[int, str, tuple[Poster, ...]]:
             raise ManifestError(f"posters[{i}].name must be 1..{MAX_NAME} printable characters")
         seen.add(pub)
         out.append(Poster(pubkey=pub, role=role, name=name))
-    return version, issued_at, tuple(out)
+    return version, issued_at, tuple(out), _parse_retracted(c.get("retracted", []))
 
 
-def _parse_event(ev) -> tuple[int, str, tuple[Poster, ...]]:
+def _parse_event(ev) -> tuple[int, str, tuple[Poster, ...], tuple[str, ...]]:
     ev = _keys(ev, _EVENT_KEYS, "event")
     try:
         nostr._check_shape(ev)
@@ -149,11 +169,11 @@ def _parse_event(ev) -> tuple[int, str, tuple[Poster, ...]]:
         raise ManifestError(f"event kind must be {KIND}")
     if ev["tags"] != [["d", D_TAG]]:
         raise ManifestError(f'event tags must be exactly [["d", "{D_TAG}"]]')
-    version, issued_at, posters = parse_content(_json(ev["content"]))
+    version, issued_at, posters, retracted = parse_content(_json(ev["content"]))
     issued = datetime.strptime(issued_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     if ev["created_at"] != int(issued.timestamp()):
         raise ManifestError("event created_at must equal content issued_at")
-    return version, issued_at, posters
+    return version, issued_at, posters, retracted
 
 
 def _read(src) -> bytes:
@@ -184,13 +204,14 @@ def load(src, previous: Manifest | None = None) -> Manifest:
     except UnicodeDecodeError:
         raise ManifestError("manifest is not UTF-8") from None
     ev = _json(text)
-    version, issued_at, posters = _parse_event(ev)
+    version, issued_at, posters, retracted = _parse_event(ev)
     if previous is not None:
         if version < previous.version:
             raise ManifestError(f"manifest version {version} is older than accepted version {previous.version}")
         if version == previous.version and ev["id"] != previous.event.get("id"):
             raise ManifestError(f"manifest version {version} differs from the accepted manifest of the same version")
-    return Manifest(event=copy.deepcopy(ev), version=version, issued_at=issued_at, posters=posters)
+    return Manifest(event=copy.deepcopy(ev), version=version, issued_at=issued_at, posters=posters,
+                    retracted=retracted)
 
 
 def verify(m: Manifest, root_pubkey: str) -> bool:
@@ -203,7 +224,7 @@ def verify(m: Manifest, root_pubkey: str) -> bool:
         ev = m.event
         if not isinstance(ev, dict) or ev.get("pubkey") != root_pubkey:
             return False
-        if _parse_event(ev) != (m.version, m.issued_at, m.posters):
+        if _parse_event(ev) != (m.version, m.issued_at, m.posters, m.retracted):
             return False
         return nostr.verify_event(ev)
     except (ManifestError, ValueError, TypeError, KeyError, RecursionError):

@@ -523,3 +523,99 @@ def test_retract_is_the_first_raw_line(mirror):
     res, _ = do_pull(mirror)
     [t] = threads()
     assert not t.retracted and t.adv == advisory()
+
+
+# ------------------------------------- manifest retractions (ai-tools-alerts#jpzy)
+
+def _with_second_curator(m: Mirror):
+    c_sec, c_pub = nostr.keygen()
+    base = [{"pubkey": m.cur, "role": "curator", "name": "cur"},
+            {"pubkey": m.bot, "role": "relay-bot", "name": "bot"}]
+    m.publish_manifest(posters=base + [{"pubkey": c_pub, "role": "curator", "name": "c"}])
+    return c_sec, base
+
+
+def test_revoked_curator_retraction_needs_the_manifest_list(mirror):
+    c_sec, without_c = _with_second_curator(mirror)
+    root = mirror.root_post(mirror.bot_sec, advisory(id="CVE-2099-0010", posted_by="relay-bot"))
+    mirror.reply(c_sec, root, "retract\nsynthetic")
+    do_pull(mirror)
+    assert [t.retracted for t in threads()] == [True]
+    mirror.publish_manifest(posters=without_c)  # C revoked: its retraction goes with it
+    res, _ = do_pull(mirror)
+    assert res.error is None and res.dropped["revoked"] == 1
+    [t] = threads()
+    assert not t.retracted and pull.active([t]) == [t]
+    mirror.publish_manifest(posters=without_c, retracted=["CVE-2099-0010"])
+    res, _ = do_pull(mirror)
+    assert res.error is None
+    [t] = threads()
+    assert t.retracted and pull.active([t]) == []
+
+
+def test_manifest_retracted_matches_an_alias(mirror):
+    mirror.root_post(mirror.bot_sec, advisory(aliases=["CVE-2099-0011"]))
+    mirror.publish_manifest(retracted=["CVE-2099-0012"])
+    do_pull(mirror)
+    assert [t.retracted for t in threads()] == [False]
+    mirror.publish_manifest(retracted=["CVE-2099-0012", "CVE-2099-0011"])
+    do_pull(mirror)
+    assert [t.retracted for t in threads()] == [True]
+    mirror.publish_manifest(retracted=["cve-2099-0011"])  # case-folded, as the poster's ledger
+    do_pull(mirror)
+    assert [t.retracted for t in threads()] == [True]
+
+
+def test_manifest_retracted_primary_id_matches_case_folded(mirror):
+    mirror.root_post(mirror.bot_sec, advisory(id="cve-2099-0010"))
+    mirror.publish_manifest(retracted=["CVE-2099-0010"])
+    do_pull(mirror)
+    assert [t.retracted for t in threads()] == [True]
+
+
+@pytest.mark.parametrize("kind", [5, 9005])
+def test_deletion_events_are_never_read(mirror, kind):
+    root = mirror.root_post(mirror.bot_sec)
+    for sec in (mirror.cur_sec, mirror.bot_sec):
+        ev = nostr.sign_event(sec, {"created_at": T0 + 200, "kind": kind,
+                                    "tags": [["e", root["id"], "", "root"]], "content": "retract"})
+        mirror.events["feed.json"].append(ev)
+    res, _ = do_pull(mirror)
+    assert res.error is None
+    [t] = threads()
+    assert not t.retracted and t.root_id == root["id"]
+
+
+def test_manifest_retracted_alias_dropped_by_a_patch_still_matches(mirror):
+    root = mirror.root_post(mirror.bot_sec, advisory(aliases=["CVE-2099-0011"]))
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(aliases=[]))
+    mirror.publish_manifest(retracted=["CVE-2099-0011"])
+    do_pull(mirror)
+    [t] = threads()
+    assert t.adv.aliases == [] and t.retracted
+
+
+def test_manifest_retracted_needs_the_trust_roots_signature(mirror):
+    mirror.root_post(mirror.bot_sec)
+    do_pull(mirror)
+    other, _ = nostr.keygen()
+    mirror.publish_manifest(signer=other, retracted=["AITA-TEST-0001"])
+    res, _ = do_pull(mirror)
+    assert res.error == "manifest not signed by the trust root"
+    assert [t.retracted for t in threads()] == [False]
+    bad = dict(mirror.publish_manifest(retracted=["AITA-TEST-0001"]))
+    bad["content"] = bad["content"].replace('"retracted": ["AITA-TEST-0001"]', '"retracted": []')
+    mirror.raw["manifest.json"] = json.dumps(bad).encode()
+    res, _ = do_pull(mirror)
+    assert res.error == "manifest not signed by the trust root"
+    assert [t.retracted for t in threads()] == [False]
+
+
+def test_unlisting_an_id_makes_the_thread_active_again(mirror):
+    mirror.root_post(mirror.bot_sec)
+    mirror.publish_manifest(retracted=["AITA-TEST-0001"])
+    do_pull(mirror)
+    assert [t.retracted for t in threads()] == [True]
+    mirror.publish_manifest()
+    do_pull(mirror)
+    assert [t.retracted for t in threads()] == [False]
