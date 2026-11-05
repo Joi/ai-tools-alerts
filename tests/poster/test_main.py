@@ -1161,3 +1161,8 @@ def test_japanese_backlog_is_bounded(env, monkeypatch):
     _, summary, _ = env.run(now=T0 + 3600, ssh=FakeSSH(ja=["fail"]))
     assert [o["kind"] for o in env.state()["outbox"]] == ["ja"]
     assert env.state()["outbox"][0]["key"].startswith("reply:")  # the older root one was dropped
+    monkeypatch.setattr(main, "MAX_JA_BYTES", 10)  # over the byte budget, all in flight: not journaled
+    env.collector([finding(fid="CVE-2026-0003", aliases=("GHSA-abcd-efgh-ijkl",))])
+    _, summary, ssh = env.run(now=T0 + 7200, ssh=FakeSSH(ja=["unknown"]))
+    assert "ja_failed=2" in summary and env.ledger()[1] == []  # the waiting one dropped, the new one declined
+    assert env.state()["outbox"] == [] and ssh.ja == []

@@ -58,6 +58,7 @@ RANK = {"notice": 0, "high": 1, "critical": 2}
 CHANNELS_FOR = {"critical": ("critical", "feed"), "high": ("feed",), "notice": ()}
 MAX_DIGESTED = 5000
 MAX_JA = 200  # Japanese replies waiting in the journal; past it the oldest unsent one is dropped
+MAX_JA_BYTES = 4 * 1024 * 1024  # and their text as JSON-escaped: well inside load_state's 16 MiB
 SUMMARY = ("candidates", "in_scope", "old", "roots", "copies", "replies", "held", "withheld",
            "busy", "digest", "failed", "unknown", "ja", "ja_failed")
 
@@ -191,12 +192,20 @@ class Run:
         except ValueError:
             self.n["ja_failed"] += 1
             return
+        def size(o):  # an upper bound on its JSON size (every character escaped)
+            return len(json.dumps(o["text"], ensure_ascii=True))
         waiting = [o for o in self.state["outbox"] if o["kind"] == "ja"]
-        idle = [o for o in waiting if o["sent"] is None and not self.led.has_pending(o["key"])]
-        if len(waiting) >= MAX_JA and idle:  # a backlog never grows the journal past its size limit
-            self.state["outbox"].remove(idle[0])
+        # A backlog never grows the journal past its limit: drop the oldest unsent, unpending
+        # item; when every one is in flight or sent, this translation is not journaled.
+        while len(waiting) >= MAX_JA or sum(map(size, waiting)) + len(json.dumps(text)) > MAX_JA_BYTES:
+            idle = [o for o in waiting if o["sent"] is None and not self.led.has_pending(o["key"])]
+            drop = idle[0] if idle else None
             self.n["ja_failed"] += 1
-            _say(f"ja backlog full: dropped {idle[0]['key']}")
+            _say(f"ja backlog full: dropped {(drop or {'key': key})['key']}")
+            if drop is None:
+                return
+            self.state["outbox"].remove(drop)
+            waiting.remove(drop)
         self.state["outbox"].append({"key": key, "kind": "ja", "scope": it["scope"], "ids": [f"ja {key}"],
                                      "channel": it["channel"], "text": text, "adv": None,
                                      "exploited": False, "date": None, "sent": None, "root": target})
