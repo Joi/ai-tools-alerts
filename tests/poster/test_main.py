@@ -774,7 +774,7 @@ def test_kev_file_bypasses_fetch_and_marks_posts(env):
     assert kev.headers == [] and not env.config.kev_cache.exists()
     assert "inputs=kev:file," in summary and "roots=1" in summary
     assert chans(ssh) == [("critical", None), ("feed", None)]
-    assert all(c[2].startswith("CRITICAL (SYNTHETIC TEST): Claude Code") and "CVE-2099-0001" in c[2]
+    assert all(c[2].startswith("CRITICAL (SYNTHETIC TEST): Claude Code") and "CVE-2099-0010" in c[2]
                for c in ssh.calls)  # the root and its feed copy
     assert env.state()["kev_since"] is None  # the real catalog was not read
     code, summary, ssh = env.run(now=at(20, 7), kev=kev, kev_catalog=catalog)
@@ -818,7 +818,7 @@ def test_kev_file_refused_exits_2(tmp_path, capsys, body):
 
 def test_synthetic_fixture_says_so():
     c = inputs.read_kev_file(SYNTHETIC)
-    assert [v["cveID"] for v in c["vulnerabilities"]] == ["CVE-2099-0001"]
+    assert [v["cveID"] for v in c["vulnerabilities"]] == ["CVE-2099-0010"]
 
 
 def test_synthetic_advisory_is_marked_in_the_digest(env):
@@ -826,7 +826,7 @@ def test_synthetic_advisory_is_marked_in_the_digest(env):
     code, summary, ssh = env.run(kev_catalog=catalog, digest_now=True)  # the same run digests it
     assert code == 0 and "digest=1" in summary
     (body,) = [c[2] for c in ssh.calls if c[2].startswith("Daily digest")]
-    (line,) = [ln for ln in body.splitlines() if "CVE-2099-0001" in ln]
+    (line,) = [ln for ln in body.splitlines() if "CVE-2099-0010" in ln]
     assert line.startswith("- (SYNTHETIC TEST) Claude Code")
     env.kev.catalog = {"vulnerabilities": [kev_item(cve="CVE-2099-0003")]}  # any input: the id decides
     _, _, ssh = env.run(now=at(6, 6))
@@ -885,7 +885,7 @@ def test_rejected_first_heartbeat_dir_sets_no_mark(env):
 @pytest.mark.parametrize("order", [0, 1])
 def test_synthetic_never_merges_with_a_real_advisory(env, order, capsys):
     real = finding()
-    fake = finding(fid="CVE-2099-0001", aliases=("GHSA-abcd-efgh-ijkl",), fixed=None)
+    fake = finding(fid="CVE-2099-0010", aliases=("GHSA-abcd-efgh-ijkl",), fixed=None)
     env.collector([real, fake] if order == 0 else [fake, real])
     code, summary, ssh = env.run(kev_catalog=inputs.read_kev_file(SYNTHETIC))
     assert code == 0, summary

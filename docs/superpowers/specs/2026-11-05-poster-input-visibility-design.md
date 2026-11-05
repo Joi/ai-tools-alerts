@@ -74,7 +74,7 @@ Found while installing the poster on the live host (jibot-code#zhja):
   - a synthetic candidate is never deferred, never held as a notice, and
     never replies to a known thread. A real candidate never carries a 2099
     id, so merging cannot fold a real update into a synthetic one.
-- S9. `tests/fixtures/kev-synthetic.json`: one entry, `cveID` `CVE-2099-0001`
+- S9. `tests/fixtures/kev-synthetic.json`: one entry, `cveID` `CVE-2099-0010`
   (a reserved-looking id no real CVE will carry for decades),
   `vendorProject` `Anthropic`, `product` `Claude Code` (scope tier 1 under
   spec/scope.json version 2), `vulnerabilityName` beginning `SYNTHETIC TEST`,

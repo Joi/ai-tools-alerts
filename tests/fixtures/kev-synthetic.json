@@ -4,7 +4,7 @@
  "count": 1,
  "vulnerabilities": [
   {
-   "cveID": "CVE-2099-0001",
+   "cveID": "CVE-2099-0010",
    "vendorProject": "Anthropic",
    "product": "Claude Code",
    "vulnerabilityName": "SYNTHETIC TEST: not a real vulnerability",

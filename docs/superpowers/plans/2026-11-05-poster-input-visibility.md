@@ -57,7 +57,7 @@ Verify: `python3 -m pytest -q tests/poster`.
 ## Verification
 
 `scripts/test-gate.sh` (whole suite). Grep the diff for fleet host names
-(`host-a|host-b|host-d|host-e|host-f|host-c`) before review.
+before review.
 
 ## Acceptance
 
