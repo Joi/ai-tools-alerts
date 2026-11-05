@@ -97,7 +97,7 @@ def test_dataclass_fields_equal_schema_required_keys():
 def test_spec_files_agree_with_constants():
     loaded = {p.name: json.loads(p.read_text()) for p in SPEC.glob("*.json")}
     assert set(loaded) == {"advisory.schema.json", "actions.json", "scope.json",
-                           "primary-domains.json"}
+                           "primary-domains.json", "channels.json"}
     assert {v["verb"] for v in loaded["actions.json"]["verbs"]} == VERBS
     js = loaded["advisory.schema.json"]
     assert set(js["$defs"]["action"]["properties"]["verb"]["enum"]) == VERBS
