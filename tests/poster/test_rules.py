@@ -1,5 +1,7 @@
 """Level rules and scope matching (Task B2)."""
 
+import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -88,11 +90,12 @@ def test_scope_match_is_pattern_based():
     assert rules.scope_of("Nous Research Psyche", log) is None
     assert rules.scope_of("Gogs server", log) is None  # "go" is a whole token only
     assert rules.scope_of("Digital Signage", log) is None  # "git" is a whole token only
+    assert rules.scope_of("anthropic_desktop", log) is None  # "_" splits tokens
     assert log == ["Anthropic", "Anthropic Claude Desktop", "OpenAI ChatGPT Atlas",
-                   "Google Antigravity", "Nous Research Psyche"]
+                   "Google Antigravity", "Nous Research Psyche", "anthropic_desktop"]
     # Matched text is never logged.
     rules.scope_of("Claude Code", log)
-    assert len(log) == 5
+    assert len(log) == 6
 
 
 def test_out_of_scope_is_none():
@@ -109,6 +112,10 @@ def test_fix_rce_tier1_is_high():
     assert level(cred) == ("high", "fix-rce-tier1")
     plain = cand(product_text="Node.js", fixed="22.11.1", advisory_severity="CRITICAL")
     assert level(plain) == ("notice", "notice")
+    for text in ("High; remote code-execution", "lets an attacker execute arbitrary commands",
+                 "\uff32\uff23\uff25 in the inspector"):
+        assert level(cand(product_text="Node.js", fixed="22.11.1", advisory_severity=text)) == \
+            ("high", "fix-rce-tier1"), text
     nofix = cand(product_text="Node.js", advisory_severity="remote code execution")
     assert level(nofix) == ("notice", "notice")
 
@@ -159,90 +166,140 @@ def test_source_ok_needs_primary_and_200():
 
 class FakeResp:
     def __init__(self, status):
-        self.status, self.closed, self.read_called = status, False, False
+        self.status, self.closed = status, False
 
     def read(self, *a):
-        self.read_called = True
-        return b""
+        raise AssertionError("a response body was read")
 
     def close(self):
         self.closed = True
 
 
 class FakeOpener:
-    """Scripted transport: url -> status, or (3xx, Location). Records requests."""
+    """Scripted transport: url -> status, or (3xx, Location), or an exception.
 
-    def __init__(self, script, clock=None):
-        self.script, self.seen, self.made, self.clock = script, [], [], clock
+    Keys are (method, url) or url. Records requests and every response made.
+    """
+
+    def __init__(self, script, clock=None, step=4):
+        self.script, self.seen, self.made, self.clock, self.step = script, [], [], clock, step
 
     def open(self, req, timeout):
         assert 0 < timeout <= 10
-        self.seen.append((req.get_method(), req.full_url))
+        key = (req.get_method(), req.full_url)
+        self.seen.append(key)
         if self.clock:
-            self.clock[0] += 4
-        r = self.script[(req.get_method(), req.full_url)] if (req.get_method(), req.full_url) in self.script \
-            else self.script[req.full_url]
+            self.clock[0] += self.step
+        r = self.script[key] if key in self.script else self.script[req.full_url]
+        if isinstance(r, Exception):
+            raise r
         if isinstance(r, tuple):
             code, loc = r
             fp = FakeResp(code)
             self.made.append(fp)
-            raise urllib.error.HTTPError(req.full_url, code, "redirect", {"Location": loc}, fp)
+            hdrs = {"Location": loc} if loc is not None else {}
+            raise urllib.error.HTTPError(req.full_url, code, "redirect", hdrs, fp)
+        fp = FakeResp(r)
+        self.made.append(fp)
         if r >= 400:
-            fp = FakeResp(r)
-            self.made.append(fp)
             raise urllib.error.HTTPError(req.full_url, r, "error", {}, fp)
-        resp = FakeResp(r)
-        self.made.append(resp)
-        return resp
+        return fp
+
+    def all_closed(self):
+        return bool(self.made) and all(r.closed for r in self.made)
 
 
 A = "https://www.cisa.gov/a"
+B = "https://www.cisa.gov/b"
 
 
 def test_http_status_head_then_get():
     o = FakeOpener({A: 200})
     assert rules.http_status(A, opener=o) == 200
-    assert o.seen == [("HEAD", A)]
+    assert o.seen == [("HEAD", A)] and o.all_closed()
     o = FakeOpener({("HEAD", A): 405, ("GET", A): 200})
     assert rules.http_status(A, opener=o) == 200
-    assert o.seen == [("HEAD", A), ("GET", A)]
+    assert o.seen == [("HEAD", A), ("GET", A)] and o.all_closed()
+    o = FakeOpener({("HEAD", A): OSError("reset"), ("GET", A): 200})
+    assert rules.http_status(A, opener=o) == 200
+    assert o.seen == [("HEAD", A), ("GET", A)] and o.all_closed()
     o = FakeOpener({A: 404})
     assert rules.http_status(A, opener=o) == 404
-    assert all(r.closed and not r.read_called for r in o.made)
+    assert o.all_closed()
 
 
 def test_redirects_followed_only_to_primary():
-    b = "https://www.cisa.gov/b"
-    o = FakeOpener({A: (301, "/b"), b: 200})
+    o = FakeOpener({A: (301, "/b"), B: 200})
     assert rules.http_status(A, opener=o) == 200
-    assert o.seen == [("HEAD", A), ("HEAD", b)]
+    assert o.seen == [("HEAD", A), ("HEAD", B)] and o.all_closed()
     for target in ("https://127.0.0.1/a", "http://www.cisa.gov/a", "https://169.254.169.254/latest",
-                   "https://evil.example/a", "https://github.com/someone/x/security/advisories/1",
-                   "https://python.org/jobs/1", "file:///etc/passwd"):
+                   "https://evil.example/a", "//evil.example/a",
+                   "https://github.com/someone/x/security/advisories/1",
+                   "https://python.org/jobs/1", "file:///etc/passwd", None):
         o = FakeOpener({A: (302, target)})
         assert rules.http_status(A, opener=o) == 0, target
         assert all(url == A for _, url in o.seen), target  # the target never reaches transport
-        assert all(r.closed and not r.read_called for r in o.made)
+        assert o.all_closed(), target
 
 
 def test_redirect_hops_are_bounded():
-    b = "https://www.cisa.gov/b"
-    o = FakeOpener({A: (302, b), b: (302, A)})  # alternating between two URLs
+    o = FakeOpener({A: (302, B), B: (302, A)})  # alternating between two URLs
     assert rules.http_status(A, opener=o) == 0
     assert len(o.seen) == 2 * (rules.MAX_REDIRECTS + 1)  # HEAD chain, then GET chain
+    assert o.all_closed()
     chain = {f"https://www.cisa.gov/{i}": (302, f"https://www.cisa.gov/{i + 1}") for i in range(5)}
     chain["https://www.cisa.gov/5"] = 200
     o = FakeOpener(chain)
     assert rules.http_status("https://www.cisa.gov/0", opener=o) == 200  # exactly 5 hops is fine
+    assert o.all_closed()
 
 
 def test_http_status_has_one_deadline(monkeypatch):
     clock = [1000.0]
     monkeypatch.setattr(rules.time, "monotonic", lambda: clock[0])
-    b = "https://www.cisa.gov/b"
-    o = FakeOpener({A: (302, b), b: (302, A)}, clock=clock)  # each request takes 4 s
+    o = FakeOpener({A: (302, B), B: (302, A)}, clock=clock)  # each request takes 4 s
     assert rules.http_status(A, opener=o) == 0
     assert len(o.seen) == 3  # 0 s, 4 s, 8 s; nothing starts at 12 s, GET included
+
+
+def test_late_200_does_not_count(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(rules.time, "monotonic", lambda: clock[0])
+    o = FakeOpener({A: 200}, clock=clock, step=11)  # HEAD answers 200 after 11 s
+    assert rules.http_status(A, opener=o) == 0
+    assert o.all_closed()
+    clock[0] = 2000.0
+    o = FakeOpener({("HEAD", A): 405, ("GET", A): 200}, clock=clock, step=6)  # GET ends at 12 s
+    assert rules.http_status(A, opener=o) == 0
+    assert o.seen == [("HEAD", A), ("GET", A)]
+
+
+def test_hung_transport_is_cut_at_the_deadline():
+    release = threading.Event()
+
+    class Hung:
+        def open(self, req, timeout):
+            release.wait(5)  # a server that never answers within the socket timeout
+            return FakeResp(200)
+
+    t0 = time.monotonic()
+    try:
+        assert rules.http_status(A, timeout=0.2, opener=Hung()) == 0
+        assert time.monotonic() - t0 < 2
+    finally:
+        release.set()
+
+
+def test_source_ok_skips_root_pages():
+    seen = []
+
+    def fetch(url, timeout):
+        seen.append(url)
+        return 200
+
+    for root in ("https://www.anthropic.com/", "https://www.anthropic.com", "https://www.cisa.gov/?q=1"):
+        assert rules.source_ok(cand(sources=(Source(root, None),)), fetch) is False, root
+    assert seen == []
 
 
 def test_real_opener_does_not_follow_redirects():

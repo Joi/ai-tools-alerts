@@ -15,3 +15,5 @@ def no_network(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect_ex", _no_network)
     monkeypatch.setattr(socket, "create_connection", _no_network)
     monkeypatch.setattr(socket, "getaddrinfo", _no_network)
+    monkeypatch.setattr(socket, "gethostbyname", _no_network)
+    monkeypatch.setattr(socket, "gethostbyname_ex", _no_network)

@@ -84,9 +84,10 @@ Order matters; the first rule that applies wins.
   never read: it cannot raise a level.
 - Tier 2 tops out at `high`, whatever the flags.
 - A scope tier other than 1 or 2 raises `ValueError`.
-- The severity regex (rule 5), case-insensitive, over `advisory_severity` only:
-  `code execution`, `rce`, `command execution`, `command injection`,
-  `arbitrary code`, `credential`, `token theft`, `secret exposure`, `data loss`,
+- The severity regex (rule 5), case-insensitive, over the NFKC-normalised
+  `advisory_severity` only: `code execution` / `code-execution`, `rce`,
+  `command execution`, `command injection`, `arbitrary code`,
+  `arbitrary command(s)`, `credential`, `token theft`, `secret exposure`, `data loss`,
   `data exfiltration`. `advisory_severity` is free text from B1 ("High; remote code
   execution" or a CVSS rating) — a plain rating such as "CRITICAL" alone does not
   make a high (the plan requires the code-execution/credential/data-loss reading).
@@ -97,10 +98,14 @@ Order matters; the first rule that applies wins.
 - For each source in order: skip unless `schema.is_primary(url)`; call
   `fetch(url, 10)`; a status of exactly 200 returns True. Any exception from
   `fetch` counts as a failure for that source, never propagates.
+- A host's root page (path empty or `/`) never counts: it confirms nothing.
 - `http_status(url, timeout=10, opener=None)` is the production fetch. It
-  refuses (0) a URL that is not `is_primary`. One overall deadline of `timeout`
-  seconds covers everything (HEAD, the fallback GET and every redirect): each
-  request gets the time left, and none starts after the deadline.
+  refuses (0) a URL that is not `is_primary`. One wall-clock deadline of
+  `timeout` seconds covers everything (DNS, HEAD, the fallback GET and every
+  redirect): the fetch runs in a daemon thread joined for the time left, and 0
+  is returned if it is still running; each request gets the time left as its
+  socket timeout, none starts after the deadline, and an answer that completes
+  after the deadline counts as 0.
 - urllib's own redirect following is switched off (a handler whose
   `redirect_request` returns None, so a 3xx surfaces as an `HTTPError`), because
   CPython drains a redirect body before following it and counts distinct URLs,
@@ -111,8 +116,9 @@ Order matters; the first rule that applies wins.
   final status, or 0 on a network error, a refused redirect, too many hops or the
   deadline. The `opener` parameter lets tests drive this loop with fake
   responses, offline.
-- Residual: a DNS lookup is not bounded by the socket timeout; the deadline is
-  checked before each request, not during a lookup. Accepted for an hourly job.
+- Residual: a worker thread stuck past the deadline keeps running until its
+  socket timeout (or a slow DNS lookup) ends it; its answer is discarded. Daemon
+  threads do not hold the process open.
 
 ### Source reconciliation
 
@@ -134,6 +140,17 @@ passes both arguments positionally, so nothing else changes.
   product is about that product too; missing a tier-1 critical costs more than
   an interrupt on mixed text. KEV text is `vendorProject product`, which rarely
   names two products.
+
+## Review decisions (code pass 1)
+
+- Tier 2 tops out at `kev-tier2` (decided): design.md's High line says "a vendor
+  advisory with a fix and a plausible path to code execution ... in scope", which
+  could include tier 2; the plan's B2 interface says "tier 1 with a fix", and the
+  brief says to implement the plan exactly. Tier 2 exists so the feed does not
+  carry every browser and OS fix the updater already handles, so a fixed tier-2
+  RCE, or a trojanized tier-2 release, is `notice`. One directive reverses it.
+- Index pages other than the root still pass `source_ok`: the poster cannot tell
+  an advisory page from an index by URL alone. Root pages are refused.
 
 ## Alternatives considered
 

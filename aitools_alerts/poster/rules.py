@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import functools
 import re
+import threading
 import time
 import unicodedata
 import urllib.error
 import urllib.request
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from aitools_alerts import schema
 from aitools_alerts.poster.candidates import Candidate
@@ -32,11 +33,11 @@ EXTRA_VENDOR_WORDS = frozenset({"anthropic", "openai", "anysphere", "nousresearc
 
 # Advisory text that names code execution, credential theft or data loss.
 _SEVERE = re.compile(
-    r"code execution|\brce\b|command (?:execution|injection)|arbitrary code"
+    r"code[ -]execution|\brce\b|command[ -](?:execution|injection)|arbitrary (?:code|commands?)"
     r"|credential|token theft|secret exposure|data loss|data exfiltration",
     re.I,
 )
-_TOKEN = re.compile(r"[\w.]+")
+_TOKEN = re.compile(r"(?:[^\W_]|\.)+")
 
 
 def _norm(text: str) -> str:
@@ -125,7 +126,7 @@ def level_for(c: Candidate, scope: schema.ScopeEntry, source_ok: bool) -> tuple[
             return "high", "unverified"
         return ("critical", "trojanized-primary") if trojanized else ("critical", "injection-exec-fixed")
     severity = c.advisory_severity
-    if c.fixed and isinstance(severity, str) and _SEVERE.search(severity):
+    if c.fixed and isinstance(severity, str) and _SEVERE.search(_norm(severity)):
         return "high", "fix-rce-tier1"
     return "notice", "notice"
 
@@ -134,12 +135,14 @@ def source_ok(c: Candidate, fetch) -> bool:
     """True when at least one source is a primary source and fetches with 200.
 
     ``fetch(url, timeout) -> int`` is the HTTP status; the production one is
-    ``http_status``. Non-primary sources are never fetched. An exception from
-    ``fetch`` fails that source only.
+    ``http_status``. Non-primary sources and a host's root page (which confirms
+    nothing) are never fetched. An exception from ``fetch`` fails that source only.
     """
     for s in c.sources:
         url = getattr(s, "url", None)
         if not isinstance(url, str) or not schema.is_primary(url):
+            continue
+        if urlsplit(url).path in ("", "/"):
             continue
         try:
             status = fetch(url, FETCH_TIMEOUT)
@@ -196,6 +199,8 @@ def _request(opener, method: str, url: str, deadline: float) -> int:
             return 0
         status = getattr(resp, "status", 0)
         _close(resp)  # the body is never read
+        if time.monotonic() > deadline:
+            return 0  # an answer after the deadline does not count
         return status if type(status) is int else 0
     return 0  # too many hops
 
@@ -203,17 +208,29 @@ def _request(opener, method: str, url: str, deadline: float) -> int:
 def http_status(url: str, timeout: float = FETCH_TIMEOUT, opener=None) -> int:
     """HEAD, then GET on a non-200; the final status, or 0 on any failure.
 
-    One deadline of ``timeout`` seconds covers both methods and every redirect.
-    Refuses (0) a URL that is not a primary source, and any redirect that leaves
-    the primary-source list or runs past MAX_REDIRECTS hops. Bodies are never read.
+    One wall-clock deadline of ``timeout`` seconds covers DNS, both methods and
+    every redirect: the fetch runs in a daemon thread and its answer counts only
+    if it arrives in time. Refuses (0) a URL that is not a primary source, and
+    any redirect that leaves the primary-source list or runs past MAX_REDIRECTS
+    hops. Bodies are never read.
     """
     if not isinstance(url, str) or not schema.is_primary(url):
         return 0
     opener = opener or _opener()
     deadline = time.monotonic() + timeout
-    status = 0
-    for method in ("HEAD", "GET"):
-        status = _request(opener, method, url, deadline)
-        if status == 200:
-            return 200
-    return status
+    result = [0]
+
+    def run():
+        status = 0
+        for method in ("HEAD", "GET"):
+            status = _request(opener, method, url, deadline)
+            if status == 200:
+                break
+        result[0] = status
+
+    worker = threading.Thread(target=run, name="aitools-alerts-fetch", daemon=True)
+    worker.start()
+    worker.join(max(0.0, deadline - time.monotonic()))
+    if worker.is_alive() or time.monotonic() > deadline:
+        return 0
+    return result[0]

@@ -43,19 +43,20 @@ One chunk; one commit `feat: level rules` (plus review-fix commits). Standard li
   - `test_source_ok_needs_primary_and_200` (non-primary 200 → False without
     calling fetch for it; primary 404 → False; primary 200 → True; fetch raising
     → False, next source still tried; timeout passed is 10).
-  - `test_redirect_off_allowlist_refused` (the redirect handler's
-    `redirect_request` raises/returns None for `https://evil.example/` and returns
-    a request for a primary URL) — no network.
+  - the `http_status` tests of step 8a, through a fake opener — no network.
   - `test_unmatched_log_is_caller_owned` (no `log` → nothing kept anywhere).
   - `test_source_is_schema_source` (`candidates.Source is schema.Source`).
 - [ ] 3. Run `python3 -m pytest tests/poster/test_rules.py -q` → FAIL (module missing).
 - [ ] 4. Implement `rules.py` per the spec: `_entries()` cached `load_scope()`;
   `_norm(text)` NFKC + lower; `vendor_words(entries)`; `scope_of`; `level_for`
-  with the table's order; `_SEVERE` regex; `source_ok`; `_PrimaryRedirect(
-  urllib.request.HTTPRedirectHandler)` with `max_redirections = 5` and
-  `redirect_request` returning None-raising `HTTPError` unless `is_primary(newurl)`;
-  `http_status(url, timeout=10)` HEAD then GET, 0 on `URLError`/`OSError`/
-  `ValueError`, the `HTTPError` code otherwise.
+  with the table's order; `_SEVERE` regex over `_norm(advisory_severity)`;
+  `source_ok` (skips non-primary URLs and root pages); `_NoRedirect(
+  urllib.request.HTTPRedirectHandler)` whose `redirect_request` returns None, so
+  urllib never follows a redirect; `_request(opener, method, url, deadline)`, the
+  explicit redirect loop (primary-only targets, at most `MAX_REDIRECTS = 5` hops,
+  every response closed unread, an answer after the deadline counts as 0);
+  `http_status(url, timeout=10, opener=None)` HEAD then GET through `_request`,
+  run in a daemon thread joined for the time left, 0 if it is still running.
 - [ ] 5. Apply the candidates.py Source change.
 - [ ] 6. Run `scripts/test-gate.sh` → PASS (B1's tests included).
 - [ ] 7. Acceptance one-liner prints `1 2 None`.
@@ -69,6 +70,12 @@ One chunk; one commit `feat: level rules` (plus review-fix commits). Standard li
   (also alternating between two URLs), deadline expired → 0 without a request,
   every response closed and never read; the real opener does not follow
   redirects. Unmatched log covers "Google" and "Nous Research".
+- [ ] 8b. Review fixes (code pass 1): a 200 after the deadline is 0 (HEAD and
+  GET); a hung transport returns 0 at the deadline (thread); every fake response,
+  successful ones included, is closed and a body read fails the test; 3xx without
+  Location; HEAD network error then GET 200; `source_ok` skips root pages;
+  severity regex takes "code-execution", "arbitrary commands" and full-width
+  text; `_` splits vendor tokens; conftest also blocks `gethostbyname(_ex)`.
 - [ ] 9. Commit `feat: level rules`.
 
 ### Verification
