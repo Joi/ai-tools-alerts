@@ -1,6 +1,6 @@
 # Run: pull-state-notify-cli
 Instruction: start at medium (dispatched; never light). Task: ai-tools-alerts#z4hs (A5) per TASK-ai-tools-alerts#z4hs.md — pull.py, state.py, config.py, notify.py, cli.py, the twelve plan tests, mirror fixtures and the console script, per docs/plan.md Task A5. Not repoman-managed; non-repoman ending (ff-merge to main, close issue). Security-shaped: FRESHEYES_GPT_MODEL=gpt-6-astra.
-Stage: verifying
+Stage: done
 Rung: heavy (start-floor heavy: hard-trigger credential handling — init --make-key writes key.nsec, notify reads and sends a Telegram bot token; BR1 REV1 NOV1 INT1 FC2 = 6; Lens: none), above the dispatch's "start at medium"
 Spec: docs/superpowers/specs/2026-11-05-pull-state-notify-cli-design.md   Plan: docs/superpowers/plans/2026-11-05-pull-state-notify-cli.md
 Agency project: — (executed inline, as A1 to A4 did)
@@ -18,9 +18,12 @@ Pass 2 [code:whole-branch delta]: 0B/2S/0C/0R · fixed 13/13 prior · velocity �
 ## Chunks
 - [x] chunk 1 — config, state, pull (verification, replies), mirror fixtures, tests/test_pull.py (6f58030)
 - [x] chunk 2 — notify, cli, console script, package data, tests/test_cli.py (1715330; spec/plan review fixes in the next commit)
+- [x] review fixes — 5995780 (spec/plan pass), ab951bd (whole-branch pass), 90c8339 (delta pass, unreviewed by rule), 25bba3a (directive c:87syjz and B3 contract, unreviewed by rule)
 
 ## Notes
 - kata search "pull state notify cli": only z4hs itself. capability-search notify/mirror/pull: two unrelated hits (bundle-development skill, drive-sync script); no overlapping tool.
 - Code was written while the spec/plan pass ran (the review reads a frozen snapshot); its findings were applied to spec, plan and code together afterwards.
 - Agency: not used, as in A1 to A4; executed inline.
 - Acceptance script: /private/tmp/claude-501/-Users-joi-repos--worktrees-z4hs-a5-pull-state-notify-cli/0752004f-48ed-40dd-8892-724997e0bc96/scratchpad/install.sh (venv in the scratchpad, pip install of a copy of the repo, HOME=$S/home, AITOOLS_ALERTS_TRUST_ROOT exported). Output: "pulled manifest v1: 2 new events, 2 stored, dropped: none" / "CRITICAL: Claude Code fixture critical (synthetic, not a real advisory) [Claude Code 2.1.318: affected] ..." / "2 advisories, 1 matches on this machine"; installed site-packages/aitools_alerts/spec and /trust hold the JSON files and root.pub.
+- Directive c:87syjz (coordinator): adopt C1's reply-target rule. Applied in 25bba3a (also B3's patch contract from c:ejcesh: no id or posted_by in a patch, {} is a no-op); acked on the issue.
+- Rebased on origin/main db38362 (B3, C1 landed). Pre-rebase → rebased: 6f58030→b2f8e17, 1715330→dbfe8d1, 5995780→6d9b48e (whole-branch review head), ab951bd→e5e5d17 (delta reviewed --since 5995780), 90c8339→16932f5 and 25bba3a→932d301 (after the last pass; no further pass per the Review Cycle). Gate on the rebased head: 483 passed. Acceptance script re-run on the rebased head: same output. Leak grep (code, tests, fixtures, pyproject) for the six fleet Mac names and nsec1 strings: 0 hits.
