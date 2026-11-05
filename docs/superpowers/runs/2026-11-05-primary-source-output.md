@@ -1,6 +1,6 @@
 # Run: primary-source-output
 Instruction: Read TASK-ai-tools-alerts#h260.md in this worktree root, then run `kata show ai-tools-alerts#h260` and follow the brief and the dispatch rules (/do-it, starting rung floored at medium; not repoman-managed: ff-merge ending).
-Stage: verifying
+Stage: done
 Rung: medium (start-floor medium: dispatch floor; evaluator agrees: BR1 REV1 NOV1 INT1 FC1 = 5, external contract (JSON read by agents) + runtime-supplied URLs; Hard-trigger none; Lens none)
 Spec: docs/superpowers/specs/2026-11-05-primary-source-output-design.md   Plan: docs/superpowers/plans/2026-11-05-primary-source-output.md
 Agency project: — (executed inline, as A1 to A7 did)
@@ -19,3 +19,5 @@ SUBSTANTIVE fix → no delta pass (Review Cycle: a delta runs only for a behavio
 
 ## Notes
 - kata search "primary source plan json": only h260 itself and the closed A/B tasks; no prior attempt. Prior rule reused: poster/compose._primary (first is_primary, else first).
+- Gate (python3 -m pytest tests -q, no repoman row) on 4c80eb4: 759 passed, 1 skipped. origin/main unmoved at fc7576c, no rebase. Size outside docs/superpowers: 115+/16-. Leak grep (fleet Mac names, nsec1) outside docs/superpowers: 0 hits.
+- roborev: see the summary; ai-tools-alerts was not enrolled at A6.
