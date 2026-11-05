@@ -1,0 +1,217 @@
+"""The poster's inputs (Task B4): config, run state, the KEV fetch, run dirs. No network."""
+
+import json
+import threading
+import time
+from collections import Counter
+
+import pytest
+
+from aitools_alerts.poster import inputs
+from aitools_alerts.poster.ledger import LedgerError
+
+LM = "Tue, 03 Nov 2026 10:00:00 GMT"
+CATALOG = {"vulnerabilities": [{"cveID": "CVE-2026-0001"}]}
+
+
+# ---------------------------------------------------------------- config
+
+
+def test_load_config_defaults_and_expands(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('heartbeat_runs = "~/hb"\ncollector_runs = "/srv/c"\n')
+    c = inputs.load_config(cfg)
+    assert c.heartbeat_runs.is_absolute() and "~" not in str(c.heartbeat_runs)
+    assert (c.digest_hour, c.backfill_days) == (9, 2)
+    assert c.state == c.ledger.parent / "poster-state.json"
+
+
+def test_config_unknown_key_is_error(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('private_key = "no"\n')
+    with pytest.raises(inputs.ConfigError, match="unknown keys"):
+        inputs.load_config(cfg)
+
+
+@pytest.mark.parametrize("text", ["digest_hour = 24\n", "digest_hour = true\n", "backfill_days = -1\n",
+                                  "ledger = 3\n", 'ledger = ""\n', "not toml =\n"])
+def test_config_bad_types_are_errors(tmp_path, text):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(text)
+    with pytest.raises(inputs.ConfigError):
+        inputs.load_config(cfg)
+
+
+def test_missing_config_is_error(tmp_path):
+    with pytest.raises(inputs.ConfigError):
+        inputs.load_config(tmp_path / "absent.toml")
+
+
+# ---------------------------------------------------------------- state
+
+
+def test_state_fresh_has_backfill_floor(tmp_path):
+    st = inputs.load_state(tmp_path / "s.json", 1_800_000_000, 2)
+    assert st["since"] == st["digest_at"] == 1_800_000_000 - 2 * 86400
+    assert st["outbox"] == [] and st["heartbeat"] is None
+
+
+def test_state_roundtrip_atomic(tmp_path):
+    path = tmp_path / "d" / "s.json"
+    st = inputs.new_state(1_800_000_000, 2)
+    st["outbox"].append({"key": "root:X:CVE-1:feed", "kind": "root", "scope": "X", "ids": ["CVE-1"],
+                         "channel": "feed", "text": "t", "adv": {}, "exploited": False,
+                         "date": None, "sent": None})
+    inputs.save_state(path, st)
+    assert inputs.load_state(path, 0, 0) == st
+    assert [p.name for p in path.parent.iterdir()] == ["s.json"]
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda st: st.pop("outbox"),
+    lambda st: st.update(since="0"),
+    lambda st: st.update(extra=1),
+    lambda st: st["outbox"].append({"key": "k"}),
+    lambda st: st["outbox"].append({"key": "k", "kind": "post", "scope": None, "ids": ["a"], "channel": "feed",
+                                    "text": "t", "adv": None, "exploited": False, "date": None, "sent": None}),
+    lambda st: st["held"].append({"adv": {}}),
+])
+def test_malformed_state_is_ledger_error(tmp_path, mutate):
+    st = inputs.new_state(0, 0)
+    mutate(st)
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps(st))
+    with pytest.raises(LedgerError):
+        inputs.load_state(path, 0, 0)
+
+
+def test_unreadable_state_is_ledger_error(tmp_path):
+    path = tmp_path / "s.json"
+    path.write_text("{not json")
+    with pytest.raises(LedgerError):
+        inputs.load_state(path, 0, 0)
+
+
+# ---------------------------------------------------------------- KEV
+
+
+class Fetch:
+    def __init__(self, status=200, body=None, headers=None, exc=None):
+        self.status, self.exc = status, exc
+        self.body = json.dumps(CATALOG).encode() if body is None else body
+        self.headers_out = {"Last-Modified": LM} if headers is None else headers
+        self.seen = []
+
+    def __call__(self, url, headers):
+        assert url == inputs.KEV_URL
+        self.seen.append(dict(headers))
+        if self.exc:
+            raise self.exc
+        return self.status, self.headers_out, b"" if self.status == 304 else self.body
+
+
+def test_kev_fetch_not_modified_uses_cache(tmp_path):
+    cache = tmp_path / "kev.json"
+    cache.write_text(json.dumps({"last_modified": LM, "catalog": CATALOG}))
+    f = Fetch(status=304)
+    assert inputs.load_kev(cache, f) == CATALOG
+    assert f.seen == [{"If-Modified-Since": LM}]
+
+
+def test_kev_200_writes_cache(tmp_path):
+    cache = tmp_path / "kev.json"
+    f = Fetch(headers={"last-modified": LM})
+    assert inputs.load_kev(cache, f) == CATALOG and f.seen == [{}]
+    assert json.loads(cache.read_text()) == {"last_modified": LM, "catalog": CATALOG}
+
+
+def test_kev_304_without_cache_is_none(tmp_path):
+    assert inputs.load_kev(tmp_path / "kev.json", Fetch(status=304)) is None
+
+
+@pytest.mark.parametrize("fetch", [Fetch(status=500), Fetch(exc=OSError("down")),
+                                   Fetch(body=b"not json"), Fetch(body=b"[]"),
+                                   Fetch(body=json.dumps({"vulnerabilities": {}}).encode())])
+def test_kev_error_or_bad_shape_returns_none(tmp_path, fetch):
+    cache = tmp_path / "kev.json"
+    cache.write_text(json.dumps({"last_modified": LM, "catalog": CATALOG}))
+    assert inputs.load_kev(cache, fetch) is None
+    assert json.loads(cache.read_text())["catalog"] == CATALOG  # a bad fetch never overwrites the cache
+
+
+def test_kev_oversize_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(inputs, "MAX_KEV", 10)
+    assert inputs.load_kev(tmp_path / "kev.json", Fetch()) is None
+
+
+def test_kev_stalled_fetch_hits_deadline(tmp_path):
+    release = threading.Event()
+
+    def stall(url, headers):
+        release.wait(10)
+        return 200, {}, json.dumps(CATALOG).encode()
+
+    t0 = time.monotonic()
+    try:
+        assert inputs.load_kev(tmp_path / "kev.json", stall, deadline=0.2) is None
+        assert time.monotonic() - t0 < 1.0
+    finally:
+        release.set()
+
+
+# ---------------------------------------------------------------- run dirs
+
+
+def _mk(root, name, *files):
+    d = root / name
+    d.mkdir(parents=True)
+    for f in files:
+        (d / f).write_text("{}")
+    return d
+
+
+def test_heartbeat_dirs_after_watermark(tmp_path):
+    for n in ("2026-11-04T000000Z", "2026-11-04T060000Z", "2026-11-04T120000Z"):
+        _mk(tmp_path, n, "run.json")
+    _mk(tmp_path, "2026-11-04T180000Z", "feeds.json")  # in progress: no run.json
+    _mk(tmp_path, "2026-11-04", "run.json")  # not a run dir name
+    names = lambda ds: [d.name for d in ds]
+    assert names(inputs.heartbeat_dirs(tmp_path, None)) == ["2026-11-04T120000Z"]
+    assert names(inputs.heartbeat_dirs(tmp_path, "2026-11-04T000000Z")) == \
+        ["2026-11-04T060000Z", "2026-11-04T120000Z"]
+    assert inputs.heartbeat_dirs(tmp_path, "2026-11-04T120000Z") == []
+    assert inputs.heartbeat_dirs(tmp_path / "absent", None) == []
+
+
+def test_heartbeat_dirs_cap(tmp_path):
+    for h in range(60):
+        _mk(tmp_path, f"2026-11-04T{h // 6:02d}{h % 6 * 10:02d}00Z", "run.json")
+    dirs = inputs.heartbeat_dirs(tmp_path, "2026-01-01T000000Z")
+    assert len(dirs) == inputs.MAX_RUN_DIRS and dirs[-1].name == "2026-11-04T095000Z"
+
+
+def _collector(root, name, validate="ok", record=None):
+    d = root / name
+    d.mkdir(parents=True)
+    (d / "run-record.json").write_text(json.dumps(record or {"schema_version": 1, "findings": []}))
+    (d / "job.json").write_text(json.dumps({"steps": {"validate": {"out": validate}}}))
+
+
+def test_collector_newest_validated_only(tmp_path):
+    counts = Counter()
+    _collector(tmp_path, "2026-11-05T030000Z")
+    _mk(tmp_path, "2026-11-05", "run-record.json")  # the collector's date-only copy
+    name, rec = inputs.collector_record(tmp_path, None, counts)
+    assert name == "2026-11-05T030000Z" and rec["schema_version"] == 1
+    assert inputs.collector_record(tmp_path, "2026-11-05T030000Z", counts) is None
+    _collector(tmp_path, "2026-11-05T040000Z", validate="failed")
+    assert inputs.collector_record(tmp_path, "2026-11-05T030000Z", counts) is None
+    assert counts["collector not validated"] == 1
+    (tmp_path / "2026-11-05T050000Z").mkdir()
+    (tmp_path / "2026-11-05T050000Z" / "run-record.json").write_text("{}")  # no job.json
+    assert inputs.collector_record(tmp_path, None, counts) is None
+
+
+def test_load_channels_reads_spec():
+    ch = inputs.load_channels()
+    assert set(ch) >= {"feed", "critical"}

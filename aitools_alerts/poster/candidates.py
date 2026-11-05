@@ -50,7 +50,8 @@ _OP_SPACE = re.compile(r"([<>=!~^]{1,2}) +")
 # not hide them). Over-matching drops a field, which is the safe failure.
 _PRIVATE = re.compile(
     r"/Users/|/home/|/private/|/var/|/tmp/|/etc/|~/"
-    r"|\b[A-Za-z]:\\"
+    r"|/Volumes/|/opt/|/srv/|/mnt/|/root/|/usr/local/"
+    r"|(?<![A-Za-z0-9])[A-Za-z]:[\\/](?!/)|\\\\[A-Za-z0-9]"
     r"|\b[a-z][a-z0-9-]*#[0-9a-z]{4}\b",
     re.I,
 )
@@ -110,8 +111,13 @@ def _flag(v) -> bool:
     return v is True
 
 
+# macOS roots matched with their capital, so Apple's public /library/ documentation
+# paths stay allowed while a local /Library/... path does not.
+_PRIVATE_CASED = re.compile(r"/Library/|/Applications/|/System/Volumes/")
+
+
 def _private(s: str | None) -> bool:
-    return s is not None and bool(_PRIVATE.search(s))
+    return s is not None and bool(_PRIVATE.search(s) or _PRIVATE_CASED.search(s))
 
 
 def _hint(v) -> str | None:

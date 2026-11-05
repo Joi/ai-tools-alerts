@@ -339,6 +339,13 @@ def test_private_detail_in_product_or_id_drops_the_item(field, value):
     "https://example.com/?issue=jibot-code%23ab12",
     "https://example.com/%2575sers/x?f=%252FUsers%252Fop",
     "https://example.com/a/%7E/notes",
+    "https://example.org/advisory?evidence=/Volumes/Work/scan.json",
+    "https://example.org/advisory?log=%2Fopt%2Fwatch%2Fout.txt",
+    "https://example.com/advisory?file=C:/work/incident.txt",
+    "https://example.com/advisory?file=C%3A%2Fwork%2Fincident.txt",
+    "https://example.com/advisory?share=%5C%5Cfileserver%5Ccase",
+    "https://example.org/advisory?evidence=/Library/Logs/private.log",
+    "https://example.org/advisory?evidence=%2FLibrary%2FLogs%2Fprivate.log",
 ])
 def test_percent_encoded_private_detail_in_source_url_is_dropped(url):
     record = {"schema_version": 1, "host_coverage": [{"host": "node-7"}], "findings": [
@@ -455,3 +462,9 @@ def test_fixed_length_boundary_never_truncates(fixed, kept):
          "fixed": fixed},
     ]}
     assert from_collector(record)[0].fixed == (fixed if kept else None)
+
+
+def test_apple_developer_library_url_is_kept():
+    url = "https://developer.apple.com/library/archive/releasenotes/x.html"
+    record = {"schema_version": 1, "findings": [{"id": "CVE-2026-72", "product": "P", "sources": [{"url": url}]}]}
+    assert [s.url for s in from_collector(record)[0].sources] == [url]
