@@ -10,7 +10,8 @@ timer in this directory, every 5 minutes):
 For each channel in spec/channels.json it reads the channel's events from the
 relay's PostgreSQL with one psql query, re-verifies every event's id and
 BIP-340 signature and drops (and counts) the failures, keeps only kind 9
-(NIP-29 group chat message) events, then writes feed.json, critical.json,
+(NIP-29 group chat message) events signed by a poster in the current
+manifest, then writes feed.json, critical.json,
 feed.atom, index.html and manifest.json into --out, each to a
 temp file in that directory and then os.replace. Nothing is written unless
 every channel read and the manifest check succeed, so a failed run leaves the
@@ -62,6 +63,9 @@ PIPX_LINE = "pipx install git+https://github.com/Joi/ai-tools-alerts"  # README'
 REPO_URL = "https://github.com/Joi/ai-tools-alerts"
 RELAY_HOST = "buzz.ai-tools.md"
 INDEX_LIMIT = 20
+ATOM_SUBTITLE = ("Security alerts for people who run AI agents on their own machines. This feed is "
+                 "for humans and feed readers; agents use the aitools-alerts CLI, which verifies "
+                 "each alert's signature (" + REPO_URL + ").")
 
 
 class ExportError(Exception):
@@ -134,12 +138,17 @@ def file_reader(path):
     return read
 
 
-def clean(rows) -> tuple[list[dict], Counter]:
-    """Keep rows that are NIP-01 events whose id and signature verify and
-    whose kind is 9. The relay also stores NIP-29 admin events in a channel
-    (kinds 9000-9020, 39000-39003, 40099...), signed by the relay-bot key with
-    no e tag: they are not posts, and every reader would otherwise take them
-    for roots. They are counted as other_kind."""
+def clean(rows, m) -> tuple[list[dict], Counter]:
+    """Keep rows that are NIP-01 events whose id and signature verify, whose
+    kind is 9 and whose pubkey is a poster in manifest m.
+
+    The relay also stores NIP-29 admin events in a channel (kinds 9000-9020,
+    39000-39003, 40099...), signed by the relay-bot key with no e tag: they
+    are not posts, and every reader would otherwise take them for roots
+    (counted other_kind). The relay is members-only and the mirror is its
+    only public surface, so a member's discussion reply, and every post by a
+    key the manifest no longer lists (a revoked poster), stays off the mirror
+    (counted not_poster)."""
     kept, counts = [], Counter()
     for row in rows:
         if not isinstance(row, dict):
@@ -151,6 +160,9 @@ def clean(rows) -> tuple[list[dict], Counter]:
             continue
         if ev["kind"] != CHAT_KIND:
             counts["other_kind"] += 1
+            continue
+        if mf.role_of(m, ev["pubkey"]) is None:
+            counts["not_poster"] += 1
             continue
         kept.append(ev)
     counts["kept"] = len(kept)
@@ -278,6 +290,7 @@ def atom_doc(events: list[dict], m, generated_at: str, mirror_url: str) -> bytes
     feed = ET.Element(q("feed"))
     sub(feed, "id", mirror_url + "feed.atom")
     sub(feed, "title", "ai-tools security alerts")
+    sub(feed, "subtitle", ATOM_SUBTITLE)
     sub(feed, "updated", _iso(updated(roots[0])) if roots else generated_at)
     sub(feed, "link", rel="self", href=mirror_url + "feed.atom")
     sub(feed, "link", rel="alternate", href=mirror_url + "feed.json")
@@ -364,6 +377,7 @@ def index_doc(events: dict[str, list[dict]], m, channels: dict, now: int,
             f'<a href="{_esc(url)}">{_esc(url)}</a>{note}</span></li>')
     listing = "<ol>\n" + "\n".join(rows) + "\n</ol>" if rows else "<p>No advisories yet.</p>"
     atom = mirror_url + "feed.atom"
+    feed_json = mirror_url + "feed.json"
     names = " and ".join(f"<code>#security-{_esc(n)}</code>" for n in sorted(channels, key=lambda n: n != "feed"))
     doc = f"""<!DOCTYPE html>
 <html lang="en">
@@ -389,11 +403,14 @@ def index_doc(events: dict[str, list[dict]], m, channels: dict, now: int,
 <section id="subscribe">
 <h2>Subscribe</h2>
 <ul>
-<li>Atom feed: <a href="{_esc(atom)}">{_esc(atom)}</a></li>
-<li>Command-line tool: <code>{_esc(PIPX_LINE)}</code>, then <code>aitools-alerts init</code></li>
-<li>Channels {names} on {_esc(RELAY_HOST)}</li>
+<p>No account is needed for any of these:</p>
+<ul>
+<li>Atom feed, for you and your feed reader: <a href="{_esc(atom)}">{_esc(atom)}</a></li>
+<li>The same alerts as signed JSON: <a href="{_esc(feed_json)}">{_esc(feed_json)}</a></li>
+<li>Command-line tool for your agent, which verifies every alert's signature: <code>{_esc(PIPX_LINE)}</code>, then <code>aitools-alerts init</code></li>
 <li>Source and instructions: <a href="{_esc(REPO_URL)}">{_esc(REPO_URL)}</a></li>
 </ul>
+<p>The channels {names} on {_esc(RELAY_HOST)} are for ai-tools community members; reading the relay needs a member's auth token.</p>
 </section>
 </main>
 </body>
@@ -437,7 +454,7 @@ def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_
 
     events, counts = {}, {}
     for name, cid in channels.items():
-        events[name], counts[name] = clean(reader(name, cid))
+        events[name], counts[name] = clean(reader(name, cid), m)
     atom, entries = atom_doc(events["feed"], m, generated_at, mirror_url)
     index, listed = index_doc(events, m, channels, now, mirror_url)
 
@@ -455,7 +472,7 @@ def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_
 
 def summary_line(result: dict) -> str:
     parts = [f"{name} kept={c['kept']} malformed={c['malformed']} bad_sig={c['bad_sig']}"
-             f" other_kind={c['other_kind']}"
+             f" other_kind={c['other_kind']} not_poster={c['not_poster']}"
              for name, c in result["channels"].items()]
     return ("export_mirror: " + "; ".join(parts) + f"; atom entries={result['atom_entries']}"
             f"; index advisories={result['index_advisories']}")

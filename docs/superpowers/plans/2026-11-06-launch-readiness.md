@@ -75,7 +75,7 @@ from a fixture and read it.
   every 5 minutes at https://buzz.ai-tools.md/alerts/ with feed.atom and the
   page, digest daily at 09:00 Tokyo, critical posts within the hour), where
   design/plan/kata live, trust root paragraph kept. No fleet host names
-  (grep `host-a|host-b|host-d|host-e|host-f|host-c` over the diff).
+  (grep the brief's host-name pattern over the diff).
 - [ ] `ops/vm/README.md`: if it lists the exporter's files, add index.html.
 
 ## Verification
@@ -102,3 +102,16 @@ in the same step. Both are live-state steps outside this repo.
 - Added tests: cross-channel retraction, manifest `retracted` list, curator
   level change, aged-out thread, far-future advisory, rejected mirror URLs,
   a quoted source URL parsed back out of the `href` attribute.
+
+## Directive c:yjb4ze amendments
+
+- `clean(rows, m)`: `mf.role_of(m, pubkey) is None` → `not_poster`; summary
+  line prints it. Tests: `test_only_current_manifest_posters_reach_the_mirror`
+  (non-manifest reply, revoked poster's root, manifest root; checked across all
+  four public files), the two existing tests that expected a stranger's event
+  in feed.json updated.
+- Atom `<subtitle>` (`ATOM_SUBTITLE`); page subscribe block: no-account list
+  (Atom, feed.json, CLI, repo) and a members-only sentence for the channels.
+  Tests: `test_atom_subtitle_points_agents_at_the_cli`,
+  `test_index_says_channels_are_for_members`.
+- README Status: members-only channels, public mirror.

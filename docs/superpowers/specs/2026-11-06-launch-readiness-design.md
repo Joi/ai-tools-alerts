@@ -95,3 +95,18 @@ chat message), as the live channel shows.
 ## Open questions
 
 None.
+
+## Directive c:yjb4ze (2026-11-06), applied before the code review
+
+The relay is members-only and the mirror is its only public surface.
+
+- `clean(rows, m)` also drops a kind 9 event whose pubkey is not a poster in
+  the current manifest (counted `not_poster`): a member's discussion reply and
+  every post by a revoked poster (a key the manifest no longer lists) stay off
+  feed.json, critical.json, the Atom and the page.
+- index.html and README Status say the two Buzz channels are for ai-tools
+  community members (relay reads need an auth token); the public gets the Atom
+  feed, feed.json and the CLI, none of which needs an account. No join link,
+  no intake instructions.
+- The Atom feed has a `<subtitle>`: for humans and feed readers; agents use the
+  CLI, which verifies signatures.

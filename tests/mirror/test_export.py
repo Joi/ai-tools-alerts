@@ -141,13 +141,13 @@ def test_exported_events_verify(env, capsys):
     assert set(doc) == {"generated_at", "channel", "events"}
     assert doc["channel"] == "feed"
     assert len(doc["generated_at"]) == 20 and doc["generated_at"].endswith("Z")
-    assert [e["content"] for e in doc["events"]] == ["one", "two\nlines", "three"]
+    assert [e["content"] for e in doc["events"]] == ["one", "two\nlines"]  # "three": not a poster
     for e in doc["events"]:
         assert set(e) == set(em.NIP01_KEYS)
         assert nostr.verify_event(e)
     assert json.loads((out / "critical.json").read_text())["events"] == []
     err = capsys.readouterr().err
-    assert "feed kept=3 malformed=1 bad_sig=3" in err
+    assert "feed kept=2 malformed=1 bad_sig=3 other_kind=0 not_poster=1" in err
     assert "skewed" not in err and "flipped" not in err
 
 
@@ -289,10 +289,10 @@ def test_cli_rows_from_end_to_end(tmp_path):
         cwd=tmp_path, capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr
     assert {p.name for p in out.iterdir()} == NAMES
-    assert len(json.load(open(out / "feed.json"))["events"]) == 1
+    assert json.load(open(out / "feed.json"))["events"] == []  # a non-poster never reaches the mirror
     root = ET.parse(out / "feed.atom").getroot()
-    assert root.findall(f"{ATOM}entry") == []  # a non-poster never reaches the Atom
-    assert "feed kept=1 malformed=0 bad_sig=0" in proc.stderr
+    assert root.findall(f"{ATOM}entry") == []
+    assert "feed kept=0 malformed=0 bad_sig=0 other_kind=0 not_poster=1" in proc.stderr
 
 
 def test_missing_out_dir_refused(env):
@@ -463,7 +463,7 @@ def test_admin_kinds_dropped_from_every_output(env):
     assert "(untitled)" not in (out / "feed.atom").read_text()
     assert result["channels"]["feed"]["other_kind"] == len(ADMIN_KINDS)
     line = em.summary_line(result)
-    assert "feed kept=1 malformed=0 bad_sig=0 other_kind=8" in line
+    assert "feed kept=1 malformed=0 bad_sig=0 other_kind=8 not_poster=0" in line
     assert "index advisories=1" in line
 
 
@@ -637,3 +637,36 @@ def test_index_source_href_attribute_is_escaped(env):
     P().feed(page(env))
     assert url in hrefs
     assert not any(k.startswith("on") for k in attrs)
+
+
+
+def test_only_current_manifest_posters_reach_the_mirror(env):
+    """Directive c:yjb4ze: the relay is members-only and the mirror public, so a
+    member's reply, and a revoked poster's root, never reach any output."""
+    REVOKED_SEC, _ = nostr.keygen()  # signed posts once, no longer in the manifest
+    root = ev(CUR_SEC, advisory_post("Kept", "Upgrade now."), 1793865600)
+    member = ev(STRANGER_SEC, "I am affected too, my token is in ~/.env", 1793865610,
+                tags=[("e", root["id"], "", "root")])
+    revoked = ev(REVOKED_SEC, _adv_post("Revoked test", "AITA-TEST-0011"), 1793865620)
+    result = run_export(env, rows_reader([root, member, revoked], [root, revoked]))
+    out = env[2]
+    for name in ("feed.json", "critical.json"):
+        assert [e["id"] for e in json.loads((out / name).read_text())["events"]] == [root["id"]]
+    every = "".join((out / n).read_text() for n in ("feed.json", "critical.json", "feed.atom", "index.html"))
+    assert "my token" not in every and "Revoked test" not in every
+    assert result["channels"]["feed"]["not_poster"] == 2
+    assert result["channels"]["critical"]["not_poster"] == 1
+
+
+def test_atom_subtitle_points_agents_at_the_cli(env):
+    run_export(env, rows_reader([]))
+    sub = ET.parse(env[2] / "feed.atom").getroot().findtext(f"{ATOM}subtitle")
+    assert "humans and feed readers" in sub and "CLI" in sub and "verifies" in sub
+
+
+def test_index_says_channels_are_for_members(env):
+    run_export(env, rows_reader([]))
+    sub = page(env).split('<section id="subscribe">')[1].split("</section>")[0]
+    assert "for ai-tools community members" in sub and "auth token" in sub
+    assert "No account is needed" in sub and "feed.json" in sub
+    assert "join" not in sub.lower()
