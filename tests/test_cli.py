@@ -235,3 +235,44 @@ def test_webhook_accepts_2xx_only():
     def boom(u, p):
         raise OSError("down")
     assert not notify.send("webhook", TEXT, s, post=boom).accepted
+
+
+def test_run_json_and_quiet(sent, capsys):
+    write_config(f'mirror_url = "{MIRROR}"\n')
+    capsys.readouterr()
+    assert cli.main(["run", "--json"]) == 2
+    data = json.loads(capsys.readouterr().out)
+    assert data["pull_error"] is None and len(data["unseen_critical"]) == 1
+    assert data["matches"][0]["level"] == "critical"
+    assert cli.main(["run", "--quiet"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_plan_upgrade_without_fixed_prints_no_command(capsys, monkeypatch):
+    from aitools_alerts import pull
+    from aitools_alerts.schema import Product
+    real = pull.advisories
+
+    def no_fixed(st, dropped=None):
+        return [pull.Thread(t.root_id, __import__("dataclasses").replace(
+            t.adv, products=[Product("Claude Code", "claude-code", "<99.0.0", None)]), t.retracted, t.updated_at)
+            for t in real(st)]
+    monkeypatch.setattr(pull, "advisories", no_fixed)
+    cli.main(["pull", "--mirror-url", MIRROR])
+    capsys.readouterr()
+    assert cli.main(["plan", "AITA-FIXTURE-0001"]) == 0
+    out = capsys.readouterr().out
+    assert "no fixed version given: notify only" in out and "npm" not in out
+
+
+def test_telegram_failure_never_shows_token(home):
+    tok = home / "telegram.token"
+    tok.write_text("123456:invented-token\n")
+    os.chmod(tok, 0o600)
+    s = Settings(telegram_chat_id="12345", telegram_token_file=str(tok))
+
+    def boom(url, payload):
+        raise OSError(f"cannot reach {url}")
+    for post in (boom, lambda u, p: (401, b'{"ok": false}'), lambda u, p: (200, b"not json")):
+        res = notify.send("telegram", TEXT, s, post=post)
+        assert not res.accepted and "invented-token" not in res.detail

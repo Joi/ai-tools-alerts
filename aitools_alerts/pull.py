@@ -95,9 +95,7 @@ def bundled_manifest() -> Manifest | None:
 
 
 def _floor(state: State, root: str) -> Manifest | None:
-    cands = []
-    if state.manifest is not None and state.manifest_root == root:
-        cands.append(state.manifest)
+    cands = [state.accepted[root]] if root in state.accepted else []
     if root == TRUST_ROOT_PUBKEY:
         b = bundled_manifest()
         if b is not None:
@@ -121,17 +119,54 @@ def _events_file(data: bytes, name: str) -> list:
 
 def fetch(base_url: str, state: State, fetch=None, root_pubkey: str = TRUST_ROOT_PUBKEY,
           now: float | None = None) -> PullResult:
-    """Pull the mirror at ``base_url`` into ``state`` (saved on success only)."""
-    get = fetch or default_fetch
-    now = time.time() if now is None else now
+    """Pull the mirror at ``base_url`` into ``state`` under the state lock."""
+    with state.locked():
+        return _fetch(base_url, state, fetch or default_fetch, root_pubkey,
+                      time.time() if now is None else now)
+
+
+def _filter(events, m: Manifest, floor: Manifest | None, before: dict, res: PullResult) -> dict:
+    """Events that verify and whose key is in ``m``. Each candidate is
+    verified before it can claim its id, so a forged copy of a genuine
+    event's id never displaces the genuine one."""
+    kept: dict[str, dict] = {}
+    why: dict[str, str] = {}  # id -> reason, counted once per id
+    for ev in events:
+        if not isinstance(ev, dict) or not isinstance(ev.get("id"), str):
+            res.dropped["malformed"] += 1
+            continue
+        eid = ev["id"]
+        if eid in kept:
+            continue  # the same event served twice (feed and critical)
+        if not nostr.verify_event(ev):
+            why.setdefault(eid, "bad-signature")
+        elif manifest.role_of(m, ev["pubkey"]) is None:
+            was = (eid in before or (floor is not None
+                                     and manifest.role_of(floor, ev["pubkey"]) is not None))
+            why.setdefault(eid, "revoked" if was else "unknown-poster")
+        else:
+            kept[eid] = copy.deepcopy(ev)
+            why.pop(eid, None)
+    res.dropped.update(why.values())
+    return kept
+
+
+def _fetch(base_url, state: State, get, root_pubkey: str, now: float) -> PullResult:
     base = base_url if base_url.endswith("/") else base_url + "/"
     floor = _floor(state, root_pubkey)
-    res = PullResult(manifest=state.manifest if state.manifest_root == root_pubkey else floor)
+    res = PullResult(manifest=state.accepted.get(root_pubkey) or floor)
+    before = state.events
+
+    def record(ok: bool, error: str | None) -> None:
+        last = {"at": int(now), "mirror_url": base, "ok": ok, "error": error,
+                "last_ok_at": int(now) if ok else state.last_pull.get("last_ok_at")}
+        if ok:
+            last.update(new=len(res.new_events), dropped=dict(res.dropped))
+        state.last_pull = last
 
     def fail(msg: str) -> PullResult:
         res.error = msg
-        state.last_pull = {**{k: v for k, v in state.last_pull.items() if k == "last_ok_at"},
-                           "at": int(now), "mirror_url": base, "ok": False, "error": msg}
+        record(False, msg)
         state.save_last_pull()
         return res
 
@@ -148,39 +183,28 @@ def fetch(base_url: str, state: State, fetch=None, root_pubkey: str = TRUST_ROOT
     if not manifest.verify(m, root_pubkey):
         return fail("manifest not signed by the trust root")
     # 3. both event files, whole
-    fetched = []
+    fetched, error = [], None
     for name in FILES:
         try:
             fetched += _events_file(get(base + name), name)
         except ValueError as e:
-            return fail(f"mirror unreadable: {e}")
+            error = f"mirror unreadable: {e}"
         except Exception as e:
-            return fail(f"mirror unreadable: {name}: {e}")
-    # 4. every candidate, stored or fetched, under the current manifest only
-    before = state.events
-    cands: dict[str, dict] = {}
-    for ev in list(before.values()) + fetched:
-        if not isinstance(ev, dict) or not isinstance(ev.get("id"), str):
-            res.dropped["malformed"] += 1
-            continue
-        cands.setdefault(ev["id"], ev)
-    kept: dict[str, dict] = {}
-    for eid, ev in cands.items():
-        if not nostr.verify_event(ev):
-            res.dropped["bad-signature"] += 1
-        elif manifest.role_of(m, ev["pubkey"]) is None:
-            was = (eid in before or (floor is not None
-                                     and manifest.role_of(floor, ev["pubkey"]) is not None))
-            res.dropped["revoked" if was else "unknown-poster"] += 1
-        else:
-            kept[eid] = copy.deepcopy(ev)
-    # 5. save
+            error = f"mirror unreadable: {name}: {e}"
+        if error:
+            break
+    # 4. stored events first (verified before), then fetched, under the
+    # current manifest only. A verified manifest is accepted even when an
+    # event file is unreadable: its revocations apply to the stored events
+    # at once, while the previous events of keys it still trusts are kept.
+    res.manifest = m
+    kept = _filter(list(before.values()) + ([] if error else fetched), m, floor, before, res)
     res.new_events = sorted((ev for eid, ev in kept.items() if eid not in before),
                             key=lambda e: (e["created_at"], e["id"]))
-    res.manifest = m
-    state.events, state.manifest, state.manifest_root = kept, m, root_pubkey
-    state.last_pull = {"at": int(now), "last_ok_at": int(now), "mirror_url": base, "ok": True,
-                       "error": None, "new": len(res.new_events), "dropped": dict(res.dropped)}
+    state.events = kept
+    state.accept(root_pubkey, m)
+    res.error = error
+    record(error is None, error)
     state.save_pull()
     return res
 
@@ -209,25 +233,39 @@ def _patch(content: str) -> dict | None:
 def _apply_patch(adv: Advisory, patch: dict, role: str) -> Advisory | None:
     """The advisory with ``patch`` applied, or None if the patch is invalid.
     Omitted field: unchanged. Present: replaced whole. null: cleared (only
-    nullable fields validate as null). posted_by is ignored; id must match."""
+    nullable fields validate as null). ``posted_by`` is ignored (the thread
+    keeps its root's role); ``id`` must match. A relay-bot patch may not
+    lower ``level`` or set ``expires_at`` (both would hide an alert)."""
     if not patch or set(patch) - _PATCH_KEYS:
         return None
     if "id" in patch and patch["id"] != adv.id:
         return None
     patch = {k: v for k, v in patch.items() if k != "posted_by"}
-    if role != "curator" and "level" in patch and _RANK.get(patch["level"], 0) < _RANK[adv.level]:
-        del patch["level"]  # only a curator may lower a level
-    merged = {**asdict(adv), **patch}
     if role != "curator":
-        merged["posted_by"] = "relay-bot"  # least trusted author wins
+        if "expires_at" in patch:
+            return None
+        if "level" in patch and _RANK.get(patch["level"], 0) < _RANK[adv.level]:
+            return None
     try:
-        return schema.validate(merged)
+        return schema.validate({**asdict(adv), **patch, "posted_by": adv.posted_by})
     except ValueError:
         return None
 
 
+def _first_line(content: str) -> str:
+    return content.strip().split("\n", 1)[0].strip()
+
+
 def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
-    """Every thread built from the stored events under the stored manifest."""
+    """Every thread built from the stored events under the current manifest.
+
+    Replies apply to their root in (created_at, id) order. A curator reply
+    whose first line is ``retract`` retracts the thread for good; one whose
+    first line is ``level: high`` or ``level: notice`` lowers the level. A
+    reply's ``aitools-alert`` block, if any, is a patch (see _apply_patch).
+    Only a curator may amend a curator's thread: a relay-bot reply there is
+    discussion, so the bot can neither suppress nor alter a curator alert.
+    """
     m = state.manifest
     if m is None:
         return []
@@ -250,22 +288,21 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
         t = roots.get(ref)
         if t is None or t[1]:
             continue
-        adv = t[0]
-        first = ev["content"].strip().split("\n", 1)[0].strip() if ev["content"].strip() else ""
+        if role != "curator" and t[0].posted_by == "curator":
+            continue  # discussion
+        first = _first_line(ev["content"])
         if first == "retract":
             if role == "curator":
                 t[1], t[2] = True, ev["created_at"]
             continue
-        if first.startswith("level:"):
-            if role == "curator":
-                want = first[len("level:"):].strip()
-                if want in ("high", "notice") and _RANK[want] < _RANK[adv.level]:
-                    t[0], t[2] = replace(adv, level=want), ev["created_at"]
-            continue
+        if first.startswith("level:") and role == "curator":
+            want = first[len("level:"):].strip()
+            if want in ("high", "notice") and _RANK[want] < _RANK[t[0].level]:
+                t[0], t[2] = replace(t[0], level=want), ev["created_at"]
         p = _patch(ev["content"])
         if p is None:
-            continue  # discussion
-        new = _apply_patch(adv, p, role)
+            continue  # convention text only, or discussion
+        new = _apply_patch(t[0], p, role)
         if new is None:
             dropped["bad-patch"] += 1
         else:

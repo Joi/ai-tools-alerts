@@ -45,13 +45,22 @@ modify `aitools_alerts/schema.py` (SPEC_DIR resolution),
     from state, `dropped["revoked"] == 1`, `advisories` empty.
   - `test_pull_truncated_json_keeps_previous_state` (Review Focus 2): good
     pull, then a mirror whose `feed.json` is cut mid-way → error starts with
-    `mirror unreadable`, events, manifest and last good last_pull unchanged.
+    `mirror unreadable`, events and manifest unchanged, `last_pull` records the
+    failed attempt with `last_ok_at` from the good pull.
   - `test_posted_by_role_comes_from_manifest_not_block`: block says
     `curator`, key is relay-bot → advisory `posted_by == "relay-bot"`.
   - `test_curator_retract_reply_hides_root`: curator reply `retract` →
     thread retracted, not in the check list.
   - `test_relay_bot_reply_cannot_retract`: same from relay-bot → not
     retracted.
+  - Review-driven (spec/plan pass 1): revocation applies when a feed is
+    truncated; a forged copy of an event id never displaces the genuine one
+    (both orders, and over a cached copy); each root keeps its own floor
+    across root switches; a stale concurrent pull cannot roll the manifest
+    back; relay-bot replies cannot amend a curator thread; a relay-bot patch
+    cannot lower or expire its own thread; a curator patch keeps a
+    relay-bot thread relay-bot; `level:` plus a block applies both; an
+    unknown-key reply is ignored.
   - Extra (spec rules): an older-issued_at manifest is refused; a stored
     newer manifest refuses a replayed older one; `level: high` from curator
     lowers, from relay-bot does nothing; a patch with only `fixed` changed
@@ -87,17 +96,24 @@ Files: create `aitools_alerts/notify.py`, `aitools_alerts/cli.py`,
   - `test_notify_text_contains_level_title_action_source`.
   - `test_cli_init_writes_config_and_no_key_by_default`; plus `init
     --make-key` writes a 0600 key, prints an npub, never the nsec.
+  - Review-driven: `run --json` and `run --quiet` (A6); `plan` on an
+    upgrade with no `fixed` prints no command (Review Focus 1); Telegram
+    failures never show the token.
   - Extra: `plan` prints the npm command for claude-code from the template
     and executes nothing (subprocess.run patched to fail); desktop transport
     passes the text as one argv element outside the AppleScript;
     telegram refuses a group-readable token file; `check --json` parses.
 - [ ] 11. Install check (scratchpad venv, temp HOME):
-  `python3 -m venv $S/venv && $S/venv/bin/pip install .`, then the spec's
-  acceptance line with `AITOOLS_ALERTS_TRUST_ROOT` set to the fixture root;
-  `check` output contains the fixture critical's title. Record the output in
-  the run manifest.
-- [ ] 12. Leak grep: `git diff origin/main | grep -E
-  'host-a|host-b|host-d|host-e|host-f|host-c|nsec1'` prints nothing.
+  a script in the scratchpad that defines `S` (the scratchpad) and `REPO`,
+  makes `$S/venv`, installs a copy of the repo with `$S/venv/bin/pip`, then
+  with `HOME=$S/home` and `AITOOLS_ALERTS_TRUST_ROOT` (the fixture root)
+  exported runs `$S/venv/bin/aitools-alerts init`, `pull --mirror-url
+  file://$REPO/tests/fixtures/mirror/` and `check`; the output contains the
+  fixture critical's title. Record the script and output in the run manifest.
+- [ ] 12. Leak grep over the code and fixtures only (the docs quote the
+  pattern): `git diff origin/main -- aitools_alerts tests pyproject.toml |
+  grep -E '<fleet host names>|nsec1[0-9a-z]{20}'` prints nothing (the
+  pattern lists the six fleet Mac names from the brief).
 
 Verify: `scripts/test-gate.sh`. Acceptance: gate green, install check prints
 the critical; commit `feat: notify and the member CLI`, tick chunk 2.

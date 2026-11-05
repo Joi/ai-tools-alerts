@@ -22,11 +22,14 @@ fixed templates.
    (`test_pull_truncated_json_keeps_previous_state`,
    `test_revoked_poster_events_dropped`); `scripts/test-gate.sh` passes.
 2. In a clean venv under the scratchpad, with a temporary HOME:
-   `pip install .` (pipx's install path), then
-   `AITOOLS_ALERTS_TRUST_ROOT=<fixture root> aitools-alerts init &&
-   aitools-alerts pull --mirror-url file://$PWD/tests/fixtures/mirror/ &&
-   aitools-alerts check` prints the fixture critical. The installed package
-   finds `spec/` and `trust/` (package data).
+   `$VENV/bin/pip install <copy of the repo>` (pipx's install path), then,
+   with `HOME` a temp directory and `AITOOLS_ALERTS_TRUST_ROOT=<fixture root>`
+   EXPORTED so it reaches every command:
+   `$VENV/bin/aitools-alerts init && $VENV/bin/aitools-alerts pull
+   --mirror-url file://$REPO/tests/fixtures/mirror/ &&
+   $VENV/bin/aitools-alerts check` prints the fixture critical. The installed
+   package finds `spec/` and `trust/` (package data). The exact script is in
+   the run manifest Notes.
 3. No test writes under the real `~/.config` or `~/.local`: every test sets
    HOME to a temp directory.
 4. No subprocess argument comes from a post. Notify transports use a fixed
@@ -46,7 +49,12 @@ CLI reads an override from the environment variable
 `AITOOLS_ALERTS_TRUST_ROOT` (64 lowercase hex). When it is set the CLI prints
 `warning: trust root overridden by AITOOLS_ALERTS_TRUST_ROOT` to stderr on
 every command that reads state. It is not a config key, so `init` never
-persists it. Rejected: signing a fixture manifest with the real root (it would
+persists it. State is bound to its root: the accepted manifest is stored per
+root, and `check`, `notify`, `plan` and `run` refuse to use state pulled
+under a root other than the active one (they print "pulled under another
+trust root; run pull"), so trust gained under an override ends when the
+override is removed, and the pinned root's freshness floor survives a test
+pull under another root. Rejected: signing a fixture manifest with the real root (it would
 publish a trusted key whose secret is in the repo); a `--trust-root` flag (the
 acceptance command line has none, and a flag is easier to leave in a hook).
 
@@ -82,12 +90,17 @@ acceptance command line has none, and a flag is easier to leave in a hook).
   (temp file in the same directory, `os.replace`, mode 0600):
   `events.json` (`{event id: event}`), `seen.json` (sorted list of advisory
   thread ids notified), `last_pull.json` (`{"at", "mirror_url", "ok",
-  "error", "new", "dropped"}`), and `manifest.json` (`{"root": hex, "event":
-  manifest event}`, the last accepted manifest; a fourth file because
-  `last_pull.json` is rewritten on a failed pull and the accepted manifest
-  must survive it).
-- `State(dir, events: dict, seen: set, manifest: Manifest | None,
-  manifest_root: str | None, last_pull: dict)`; `State.load(dir=None)`
+    "error", "last_ok_at", "new", "dropped"}`: the last ATTEMPT, rewritten on
+  a failed pull too, with `last_ok_at` carried from the last success), and
+  `manifest.json` (`{"current": root, "accepted": {root: manifest event}}`,
+  the last accepted manifest for each root a pull used).
+- `State(dir, events: dict, seen: set, accepted: dict[root, Manifest],
+  manifest_root: str | None, last_pull: dict)`, with `manifest` the current
+  root's; `State.locked()` takes an exclusive `flock` on `<dir>/.lock` and
+  re-reads the files, and `pull.fetch` runs inside it, so two concurrent
+  pulls decide one after the other on the latest saved floor (no rollback).
+  Events are written before the manifest record: a reader between the two
+  sees the new events under the old manifest, which only drops more. `State.load(dir=None)`
   never raises on a missing file. A state file that does not parse, or has the
   wrong shape, raises `StateError` naming the file: the CLI reports it and
   stops rather than silently start from empty (an empty manifest record would
@@ -106,8 +119,11 @@ a 20 s timeout, reads at most 8 MiB (more is an error), and refuses any URL
 scheme but `https` and `file`. `base_url` gets a trailing `/` if it lacks
 one.
 
-Order (every failure before step 5 returns `error` and changes nothing in
-state, so the previous events, manifest and seen list stay):
+Order. A failure in steps 1 and 2 returns `error` and changes nothing but
+`last_pull`. A failure in step 3 also returns `error` (`mirror unreadable`)
+and fetches nothing new, but the manifest verified in steps 1 and 2 IS
+accepted and step 4 runs over the stored events alone: a revocation applies
+at once, and the last good events of keys still trusted are kept.
 
 1. Fetch and `manifest.load(bytes, previous=floor)`. `floor` is the stored
    manifest when it was accepted under the same root, and for the pinned root
@@ -121,8 +137,10 @@ state, so the previous events, manifest and seen list stay):
    `generated_at` (string), `channel` (string) and `events` (list of at most
    10000 objects). A fetch failure, truncated JSON or wrong shape is
    `mirror unreadable: <file>: <why>`: never an empty feed.
-4. Candidates are the stored events plus the fetched ones, de-duplicated by
-   id. Each is checked under the CURRENT manifest only: `nostr.verify_event`
+4. Candidates are the stored events, then the fetched ones. Each is
+   verified BEFORE it may claim its id (the first candidate with an id that
+   verifies and is trusted wins; a forged copy of a genuine id never
+   displaces it); each is checked under the CURRENT manifest only: `nostr.verify_event`
    (else `dropped["bad-signature"]`), then `manifest.role_of` (else
    `dropped["revoked"]` when the key was in the previous manifest or the
    event was in state, else `dropped["unknown-poster"]`). The block is parsed
@@ -144,7 +162,10 @@ events and stored manifest (`Thread(root_id, adv, retracted, updated_at)`):
     nothing;
   - first line `level: high` or `level: notice`, from a curator key, lowers
     the level when it is lower than the current one (never raises);
-  - a reply whose last `aitools-alert` block decodes is a PATCH.
+  - a reply whose last `aitools-alert` block decodes is a PATCH, applied
+    after any `level:` line in the same reply (A7's amend sends both).
+  Only a curator may amend a curator's thread: a relay-bot reply to one is
+  discussion, so the bot cannot suppress, expire or re-scope a curator alert.
   Plain-text replies from a relay-bot key, and any other text, are discussion.
 - Patch contract (for B3 compose.reply_post and A7 curator): the block is a
   JSON object whose keys are a subset of the advisory fields. An omitted field
@@ -152,14 +173,14 @@ events and stored manifest (`Thread(root_id, adv, retracted, updated_at)`):
   replaced, not merged); an explicit `null` clears a nullable field
   (`advisory_severity`, `expires_at`; also `products[].affected` and `fixed`
   through the whole-list replace). `id` must equal the root's id or be
-  omitted; `posted_by` in a patch is ignored. Each field is validated with
+  omitted; `posted_by` in a patch is ignored, and the thread's `posted_by` is
+  always its ROOT's manifest role (a curator patch on a relay-bot thread does
+  not make it curator; a curator re-posts as a new root for that). Each field is validated with
   schema's validators by validating the merged object with `schema.validate`,
   so a patch that leaves the advisory invalid is dropped whole
-  (`dropped["bad-patch"]`, counted in the view). A patch from a non-curator
-  key may not lower `level` (that field is ignored, the rest applies). Once a
-  relay-bot patch is applied, the advisory's `posted_by` is `relay-bot`: the
-  merged advisory is only as trusted as its least trusted author, so a
-  relay-bot patch can never ride a curator's auto-apply.
+  (`dropped["bad-patch"]`, counted in the view). A relay-bot patch (on its
+  own thread) that lowers `level` or carries `expires_at` is dropped whole:
+  only a curator may lower or expire an alert.
 - Expired advisories (`expires_at` before now) are left out of `check`.
 
 ### `notify.py`
@@ -213,12 +234,17 @@ aitools_alerts.cli:main`.
   `npm install -g @anthropic-ai/claude-code@<fixed>`, `codex` ->
   `npm install -g @openai/codex@<fixed>`, `gemini-cli` ->
   `npm install -g @google/gemini-cli@<fixed>`. `<fixed>` is the product's
-  `fixed`, which schema already restricts to the version grammar. Other
-  ecosystems print "no command template; upgrade with your package manager".
+  `fixed`, which schema already restricts to the version grammar. An
+  upgrade with no `fixed` prints "no fixed version given: notify only, no
+  command" (Review Focus 1). Other ecosystems print "no command template;
+  upgrade with your package manager".
   Nothing is executed: A6 wires hooks.
-- `run`: pull (a failure warns and continues on the cached state), check,
-  notify; exit 2 when at least one critical match was unseen when the run
-  started, else the notify status.
+- `run [--json | --quiet]`: pull (a failure warns on stderr and continues on
+  the cached state), check, notify; exit 2 when at least one critical match
+  was unseen when the run started, else the notify status. `--json` (A6's
+  skill) prints one object `{"pull_error", "matches": [as check --json],
+  "unseen_critical": [thread ids]}`; `--quiet` (A6's SessionStart hook)
+  prints nothing on stdout. Exit codes are the same in all three modes.
 
 ### Packaging
 

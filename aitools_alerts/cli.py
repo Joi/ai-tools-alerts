@@ -15,6 +15,8 @@ from fixed templates keyed by the product's ecosystem; it runs none of them.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import os
 import shlex
@@ -216,20 +218,37 @@ def cmd_plan(a, st: State, s: config.Settings) -> int:
                 print(f"    {check.describe(x)}")
                 if x.verb == "upgrade" and m.product is not None:
                     argv = upgrade_command(m.product.ecosystem, x.value)
-                    print(f"      command: {shlex.join(argv)}" if argv else
-                          "      no command template; upgrade with your package manager")
+                    if argv:
+                        print(f"      command: {shlex.join(argv)}")
+                    elif not x.value:
+                        print("      no fixed version given: notify only, no command")
+                    else:
+                        print("      no command template; upgrade with your package manager")
     print("nothing was executed")
     return 0
 
 
 def cmd_run(a, st: State, s: config.Settings) -> int:
+    """pull, check, notify. --json prints one object; --quiet prints nothing
+    on stdout. Exit 2 when a critical match was unseen at the start."""
     res = _pull(a, st, s.mirror_url)
     if res.error:
         _err(f"{res.error} (using the last good state)")
-    a.json = False
-    cmd_check(a, st, s)
     pending = _unseen_critical(a, st)
-    status = _notify(st, s, pending)
+    if a.json:
+        _, pairs = _matches(a, st)
+        out = {"pull_error": res.error, "matches": [_match_json(t, m) for t, m in pairs],
+               "unseen_critical": sorted({t.root_id for t, _ in pending})}
+    elif not a.quiet:
+        a.json = False
+        cmd_check(a, st, s)
+    if a.quiet or a.json:
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = _notify(st, s, pending)
+    else:
+        status = _notify(st, s, pending)
+    if a.json:
+        print(json.dumps(out, indent=2))
     return EXIT_UNSEEN_CRITICAL if pending else status
 
 
@@ -250,7 +269,10 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("notify", help="send unseen critical matches")
     p = sub.add_parser("plan", help="print the actions and commands for one advisory")
     p.add_argument("advisory_id")
-    sub.add_parser("run", help="pull, check and notify; exit 2 on an unseen critical")
+    p = sub.add_parser("run", help="pull, check and notify; exit 2 on an unseen critical")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--json", action="store_true", help="print one JSON object")
+    g.add_argument("--quiet", action="store_true", help="print nothing on stdout")
     return ap
 
 

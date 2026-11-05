@@ -2,14 +2,19 @@
 
 Four files, each written whole to a temp file and moved into place:
 ``events.json`` (verified events by id), ``seen.json`` (thread ids already
-notified), ``last_pull.json`` (the last pull's outcome) and ``manifest.json``
-(the last accepted manifest and the root it was accepted under). A missing
-file is empty; a file that does not parse raises StateError, because starting
-from empty would lower the manifest freshness floor and re-notify.
+notified), ``last_pull.json`` (the last pull attempt's outcome) and
+``manifest.json`` (the last accepted manifest for every trust root a pull
+used, and which root is current). Keeping one record per root means a test
+pull under another root never erases the pinned root's freshness floor.
+A missing file is empty; a file that does not parse raises StateError,
+because starting from empty would lower the floor and re-notify. ``locked``
+serialises pulls so two of them cannot roll the manifest back.
 """
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import tempfile
@@ -67,7 +72,7 @@ class State:
     dir: Path
     events: dict = field(default_factory=dict)
     seen: set = field(default_factory=set)
-    manifest: Manifest | None = None
+    accepted: dict = field(default_factory=dict)
     manifest_root: str | None = None
     last_pull: dict = field(default_factory=dict)
 
@@ -86,27 +91,61 @@ class State:
         if not isinstance(last, dict):
             raise StateError(f"{d / 'last_pull.json'}: not an object")
         rec = _read(d / "manifest.json", None)
-        m = root = None
+        accepted: dict[str, Manifest] = {}
+        current = None
+        where = d / "manifest.json"
         if rec is not None:
-            if (not isinstance(rec, dict) or set(rec) != {"root", "event"}
-                    or not nostr._is_hex(rec["root"], 32)):
-                raise StateError(f"{d / 'manifest.json'}: not a manifest record")
-            try:
-                m = manifest.load(json.dumps(rec["event"]).encode("utf-8"))
-            except manifest.ManifestError as e:
-                raise StateError(f"{d / 'manifest.json'}: {e}") from None
-            if not manifest.verify(m, rec["root"]):
-                raise StateError(f"{d / 'manifest.json'}: not signed by its recorded root")
-            root = rec["root"]
-        return cls(dir=d, events=events, seen=set(seen), manifest=m,
-                   manifest_root=root, last_pull=last)
+            if (not isinstance(rec, dict) or set(rec) != {"current", "accepted"}
+                    or not isinstance(rec["accepted"], dict)
+                    or rec["current"] not in rec["accepted"]):
+                raise StateError(f"{where}: not a manifest record")
+            for root, ev in rec["accepted"].items():
+                if not nostr._is_hex(root, 32):
+                    raise StateError(f"{where}: bad root {root!r}")
+                try:
+                    m = manifest.load(json.dumps(ev).encode("utf-8"))
+                except manifest.ManifestError as e:
+                    raise StateError(f"{where}: {e}") from None
+                if not manifest.verify(m, root):
+                    raise StateError(f"{where}: manifest not signed by its recorded root")
+                accepted[root] = m
+            current = rec["current"]
+        return cls(dir=d, events=events, seen=set(seen), accepted=accepted,
+                   manifest_root=current, last_pull=last)
+
+    @property
+    def manifest(self) -> Manifest | None:
+        """The manifest of the current root (the last pull's)."""
+        return self.accepted.get(self.manifest_root) if self.manifest_root else None
+
+    def accept(self, root: str, m: Manifest) -> None:
+        self.accepted[root] = m
+        self.manifest_root = root
+
+    @contextlib.contextmanager
+    def locked(self):
+        """Hold an exclusive lock on the state directory and re-read it, so
+        the caller decides on the latest saved state."""
+        self.dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd = os.open(self.dir / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            fresh = State.load(self.dir)
+            self.events, self.seen, self.accepted = fresh.events, fresh.seen, fresh.accepted
+            self.manifest_root, self.last_pull = fresh.manifest_root, fresh.last_pull
+            yield self
+        finally:
+            os.close(fd)
 
     def save_pull(self) -> None:
-        """Write events and the manifest record, then last_pull."""
+        """Write events, then the manifest record, then last_pull. Events go
+        first: a reader between the two writes sees the new events under the
+        old manifest, and a key the new manifest removed has no events left."""
         write_json(self.dir / "events.json", self.events)
-        if self.manifest is not None:
+        if self.manifest_root is not None:
             write_json(self.dir / "manifest.json",
-                       {"root": self.manifest_root, "event": self.manifest.event})
+                       {"current": self.manifest_root,
+                        "accepted": {r: m.event for r, m in self.accepted.items()}})
         write_json(self.dir / "last_pull.json", self.last_pull)
 
     def save_last_pull(self) -> None:

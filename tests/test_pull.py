@@ -197,20 +197,50 @@ def test_patch_changes_only_given_fields_and_null_clears(mirror):
     assert t.adv.posted_by == "curator"
 
 
-def test_relay_bot_patch_makes_advisory_relay_bot(mirror):
-    root = mirror.root_post(mirror.cur_sec)
-    mirror.reply(mirror.bot_sec, root, mirror.patch_text(title="New title", posted_by="curator"))
+def test_relay_bot_reply_cannot_amend_a_curator_thread(mirror):
+    root = mirror.root_post(mirror.cur_sec, advisory(expires_at=T0 + 10**6))
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(expires_at=T0 + 1), created_at=T0 + 150)
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(products=[
+        {"name": "Other", "ecosystem": "git", "affected": "<0.1", "fixed": "0.1"}]), created_at=T0 + 160)
+    mirror.reply(mirror.bot_sec, root, "level: notice", created_at=T0 + 170)
     do_pull(mirror)
     [t] = threads()
-    assert t.adv.title == "New title" and t.adv.posted_by == "relay-bot"
+    assert t.adv == advisory(expires_at=T0 + 10**6)
 
 
-def test_relay_bot_patch_cannot_lower_level(mirror):
-    root = mirror.root_post(mirror.cur_sec)
-    mirror.reply(mirror.bot_sec, root, mirror.patch_text(level="notice", title="T2"))
+def test_relay_bot_patch_on_own_thread(mirror):
+    root = mirror.root_post(mirror.bot_sec, advisory(posted_by="relay-bot"))
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(level="notice", title="T1"), created_at=T0 + 150)
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(expires_at=T0 + 1), created_at=T0 + 160)
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(title="T2", posted_by="curator"), created_at=T0 + 170)
     do_pull(mirror)
     [t] = threads()
-    assert t.adv.level == "critical" and t.adv.title == "T2"
+    assert t.adv.level == "critical" and t.adv.expires_at is None
+    assert t.adv.title == "T2" and t.adv.posted_by == "relay-bot"
+
+
+def test_curator_patch_keeps_relay_bot_role(mirror):
+    root = mirror.root_post(mirror.bot_sec)
+    mirror.reply(mirror.cur_sec, root, mirror.patch_text(title="Curated", posted_by="curator"))
+    do_pull(mirror)
+    [t] = threads()
+    assert t.adv.title == "Curated" and t.adv.posted_by == "relay-bot"
+
+
+def test_curator_level_reply_with_block_applies_both(mirror):
+    root = mirror.root_post(mirror.cur_sec)
+    mirror.reply(mirror.cur_sec, root, "level: high\n" + mirror.patch_text(title="Lowered"))
+    do_pull(mirror)
+    [t] = threads()
+    assert t.adv.level == "high" and t.adv.title == "Lowered"
+
+
+def test_unknown_key_reply_ignored(mirror):
+    sec, _ = nostr.keygen()
+    root = mirror.root_post(mirror.cur_sec)
+    mirror.reply(sec, root, "retract")
+    res, _ = do_pull(mirror)
+    assert res.dropped["unknown-poster"] == 1 and not threads()[0].retracted
 
 
 @pytest.mark.parametrize("fields", [
@@ -255,7 +285,9 @@ def test_state_manifest_record_must_verify(mirror):
     do_pull(mirror)
     p = config.state_dir() / "manifest.json"
     rec = json.loads(p.read_text())
-    rec["root"] = nostr.keygen()[1]
+    [(root, ev)] = rec["accepted"].items()
+    rec["accepted"] = {nostr.keygen()[1]: ev}
+    rec["current"] = next(iter(rec["accepted"]))
     p.write_text(json.dumps(rec))
     with pytest.raises(StateError, match="not signed"):
         State.load()
@@ -297,3 +329,53 @@ def test_fixture_mirror_rejected_under_pinned_root():
     res = pull.fetch(FIXTURE_MIRROR.as_uri() + "/", State.load())
     assert res.error is not None and State.load().events == {}
     assert isinstance(manifest.load(FIXTURE_MIRROR / "manifest.json"), manifest.Manifest)
+
+
+# ------------------------------------------------- review-driven interactions
+
+def test_revocation_applies_even_when_a_feed_is_truncated(mirror):
+    kept = mirror.root_post(mirror.cur_sec, advisory(id="AITA-KEEP"))
+    gone = mirror.root_post(mirror.bot_sec, advisory(id="AITA-GONE", posted_by="relay-bot"))
+    assert do_pull(mirror)[0].error is None
+    mirror.publish_manifest(posters=[{"pubkey": mirror.cur, "role": "curator", "name": "cur"}])
+    full = mirror.body("feed.json")
+    mirror.raw["feed.json"] = full[:40]
+    res, _ = do_pull(mirror)
+    assert res.error.startswith("mirror unreadable: feed.json")
+    st = State.load()
+    assert st.manifest.version == 2 and res.dropped["revoked"] == 1
+    assert kept["id"] in st.events and gone["id"] not in st.events
+
+
+@pytest.mark.parametrize("forged_first", [True, False])
+def test_forged_copy_of_an_id_never_displaces_the_genuine_event(mirror, forged_first):
+    ev = mirror.root_post(mirror.cur_sec, files=())
+    forged = dict(ev, content="forged")
+    mirror.events["feed.json"] = [forged, ev] if forged_first else [ev, forged]
+    res, _ = do_pull(mirror)
+    assert State.load().events == {ev["id"]: ev}
+    mirror.events["feed.json"] = [forged]  # and not over a cached copy either
+    do_pull(mirror)
+    assert State.load().events == {ev["id"]: ev}
+
+
+def test_switching_roots_keeps_each_roots_floor(mirror):
+    mirror.publish_manifest()  # v2
+    assert do_pull(mirror)[0].error is None
+    other = Mirror()
+    assert do_pull(other)[0].error is None
+    assert State.load().manifest_root == other.root
+    mirror.publish_manifest(version=1)
+    res, _ = do_pull(mirror)
+    assert res.error.startswith("manifest refused")  # v1 after the accepted v2
+
+
+def test_concurrent_pull_cannot_roll_the_manifest_back(mirror):
+    stale = State.load()  # loaded before the other pull
+    v1 = mirror.manifest
+    mirror.publish_manifest(version=3)
+    assert do_pull(mirror)[0].error is None
+    mirror.manifest = v1
+    res = pull.fetch("https://x.invalid/", stale, fetch=mirror.fetch, root_pubkey=mirror.root)
+    assert res.error.startswith("manifest refused")
+    assert State.load().manifest.version == 3
