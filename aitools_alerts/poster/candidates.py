@@ -24,9 +24,20 @@ from aitools_alerts.schema import Source  # re-exported: candidates.Source is sc
 
 KEV_CATALOG_URL = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
 
-# Generic fleet names, already public in the fleet's open repos. Each adapter adds
-# the host names its own input record names.
-FLEET_HOSTS = ("host-a", "host-b", "host-d", "host-e", "host-f", "host-c")
+# The deployment's own host names (the poster config's ``strip_hosts``) and extra
+# internal source-host suffixes (``internal_host_suffixes``), set once per run by
+# ``configure``; the public code names none. Each adapter adds the host names its
+# own input record names, and compose reads FLEET_HOSTS at call time.
+FLEET_HOSTS: tuple[str, ...] = ()
+INTERNAL_SUFFIXES: tuple[str, ...] = ()
+
+
+def configure(strip_hosts=(), internal_suffixes=()) -> None:
+    """Set the deployment's host names and internal suffixes for this process."""
+    global FLEET_HOSTS, INTERNAL_SUFFIXES
+    FLEET_HOSTS = tuple(strip_hosts)
+    INTERNAL_SUFFIXES = tuple(internal_suffixes)
+
 
 MAX_RUN_BYTES = 16 * 1024 * 1024
 MAX_ID = 200
@@ -65,7 +76,7 @@ _PRIVATE = re.compile(
     re.I,
 )
 # Source hosts that only resolve inside a network: never a public advisory.
-_INTERNAL_SUFFIXES = (".local", ".internal", ".lan", ".home.arpa", ".ts.net", ".vm.example", ".localhost")
+_INTERNAL_SUFFIXES = (".local", ".internal", ".lan", ".home.arpa", ".ts.net", ".localhost")
 _PRIVATE_URL_PATH = re.compile(r"/(?:Users|home)/|~/")
 HINTS = frozenset({"critical", "high", "medium", "low", "none", "not_affected", "out_of_scope"})
 
@@ -208,7 +219,8 @@ def _internal_host(host: str) -> bool:
         return not ipaddress.ip_address(host).is_global
     except ValueError:
         pass
-    return "." not in host or host == "localhost" or host.endswith(_INTERNAL_SUFFIXES)
+    return ("." not in host or host == "localhost" or host.endswith(_INTERNAL_SUFFIXES)
+            or host.endswith(INTERNAL_SUFFIXES))
 
 
 def _url_private(url: str) -> bool:

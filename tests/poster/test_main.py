@@ -5,6 +5,7 @@ import itertools
 import json
 import shlex
 import subprocess
+from dataclasses import replace
 
 import pytest
 from pathlib import Path
@@ -83,13 +84,17 @@ def finding(fid="GHSA-abcd-efgh-ijkl", product="Claude Code", severity="remote c
 MAC = finding(fid="CVE-2026-5000", product="macOS", severity=None, fixed=None, sources=(APPLE,))
 
 
+RELAY = {"relay_ssh_host": "relay.example.net", "relay_send_wrapper": "/opt/relay/bin/buzz-send"}
+RELAY_TOML = "".join(f'{k} = "{v}"\n' for k, v in RELAY.items())
+
+
 @pytest.fixture
 def env(tmp_path):
     class Env:
         hb, col = tmp_path / "heartbeat", tmp_path / "collector"
         config = inputs.Config(heartbeat_runs=tmp_path / "heartbeat", collector_runs=tmp_path / "collector",
                                ledger=tmp_path / "state" / "ledger.json",
-                               kev_cache=tmp_path / "state" / "kev.json")
+                               kev_cache=tmp_path / "state" / "kev.json", **RELAY)
         kev = FakeKEV()
         _n = itertools.count()
 
@@ -510,7 +515,8 @@ def test_config_unknown_key_exits_2(tmp_path, capsys):
 
 def test_main_prints_one_summary_line(tmp_path, monkeypatch, capsys):
     cfg = tmp_path / "config.toml"
-    cfg.write_text(f'ledger = "{tmp_path / "s" / "ledger.json"}"\nkev_cache = "{tmp_path / "s" / "kev.json"}"\n')
+    cfg.write_text(f'ledger = "{tmp_path / "s" / "ledger.json"}"\nkev_cache = "{tmp_path / "s" / "kev.json"}"\n'
+                   + RELAY_TOML)
     monkeypatch.setattr(main.run, "__kwdefaults__",
                         {**main.run.__kwdefaults__, "kev_fetch": FakeKEV(), "ssh": FakeSSH()})
     assert main.main(["run", "--config", str(cfg)]) == 0
@@ -790,7 +796,7 @@ def test_summary_shows_kev_unavailable_and_rejected_collector(env, capsys):
 def test_quiet_hour_with_healthy_inputs(env):
     code, summary, _ = env.run()
     assert code == 0 and summary.endswith(" inputs=kev:ok,collector:none,heartbeat:0/0")
-    env.config = inputs.Config(ledger=env.config.ledger, kev_cache=env.config.kev_cache)
+    env.config = inputs.Config(ledger=env.config.ledger, kev_cache=env.config.kev_cache, **RELAY)
     code, summary, _ = env.run(now=T0 + 3600, kev=FakeKEV(status=304))
     assert code == 0 and summary.endswith(" inputs=kev:304,collector:off,heartbeat:off")
 
@@ -929,7 +935,7 @@ def test_kev_file_notice_is_withheld(env, tmp_path):
 ])
 def test_kev_file_refused_exits_2(tmp_path, capsys, body):
     cfg = tmp_path / "config.toml"
-    cfg.write_text(f'ledger = "{tmp_path / "ledger.json"}"\nkev_cache = "{tmp_path / "kev.json"}"\n')
+    cfg.write_text(f'ledger = "{tmp_path / "ledger.json"}"\nkev_cache = "{tmp_path / "kev.json"}"\n' + RELAY_TOML)
     bad = tmp_path / "kev.json.in"
     bad.write_text(body)
     assert main.main(["run", "--config", str(cfg), "--kev-file", str(bad)]) == 2
@@ -1021,7 +1027,8 @@ def test_synthetic_never_merges_with_a_real_advisory(env, order, capsys):
 
 
 def test_kev_added_on_the_floor_day_is_not_old(env):
-    env.config = inputs.Config(ledger=env.config.ledger, kev_cache=env.config.kev_cache, backfill_days=0)
+    env.config = inputs.Config(ledger=env.config.ledger, kev_cache=env.config.kev_cache, backfill_days=0,
+                               **RELAY)
     start = int(dt.datetime(2026, 11, 5, 10, tzinfo=dt.timezone.utc).timestamp())
     env.run(now=start)
     env.kev.catalog = {"vulnerabilities": [kev_item(added="2026-11-05")]}
@@ -1166,3 +1173,44 @@ def test_japanese_backlog_is_bounded(env, monkeypatch):
     _, summary, ssh = env.run(now=T0 + 7200, ssh=FakeSSH(ja=["unknown"]))
     assert "ja_failed=2" in summary and env.ledger()[1] == []  # the waiting one dropped, the new one declined
     assert env.state()["outbox"] == [] and ssh.ja == []
+
+
+@pytest.mark.parametrize("missing", ["relay_ssh_host", "relay_send_wrapper"])
+def test_no_relay_route_refuses_to_run(tmp_path, capsys, missing):
+    keep = {k: v for k, v in RELAY.items() if k != missing}
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(f'ledger = "{tmp_path / "ledger.json"}"\nkev_cache = "{tmp_path / "kev.json"}"\n'
+                   + "".join(f'{k} = "{v}"\n' for k, v in keep.items()))
+    assert main.main(["run", "--config", str(cfg)]) == 2
+    assert "relay_ssh_host and relay_send_wrapper must be set" in capsys.readouterr().err
+    ssh = FakeSSH()
+    config = inputs.Config(ledger=tmp_path / "ledger.json", kev_cache=tmp_path / "kev.json", **keep)
+    code, summary = main.run(T0, config, ssh=ssh, kev_fetch=FakeKEV(), channels=CHANNELS)
+    assert code == 2 and summary.endswith(" error=config") and ssh.calls == []
+    assert not (tmp_path / "ledger.json").exists()
+
+
+def test_run_sets_strip_hosts_from_config(env, monkeypatch):
+    monkeypatch.setattr(main.candidates, "FLEET_HOSTS", ())
+    monkeypatch.setattr(main.candidates, "INTERNAL_SUFFIXES", ())
+    env.config = replace(env.config, strip_hosts=("hostalpha",), internal_host_suffixes=(".corp.example",))
+    env.run()
+    assert main.candidates.FLEET_HOSTS == ("hostalpha",)
+    assert main.candidates.INTERNAL_SUFFIXES == (".corp.example",)
+
+
+def test_loaded_config_sets_route_and_strip_hosts(env, monkeypatch):
+    monkeypatch.setattr(main.candidates, "FLEET_HOSTS", ())
+    cfg = env.hb.parent / "config.toml"
+    cfg.write_text(f'ledger = "{env.config.ledger}"\nkev_cache = "{env.config.kev_cache}"\n'
+                   f'collector_runs = "{env.col}"\nstrip_hosts = ["hostalpha"]\n'
+                   'relay_ssh_host = "op@relay.example.net"\nrelay_send_wrapper = "/opt/relay/bin/buzz-send"\n')
+    env.collector([finding(), finding(fid="GHSA-zzzz-zzzz-zzzz", product="Claude Code on hostalpha")])
+    fake, argvs = FakeSSH(), []
+    code, _ = main.run(T0, cfg, ssh=lambda argv, **kw: argvs.append(argv) or fake(argv, **kw),
+                       kev_fetch=env.kev, http_status=lambda url, timeout: 200, channels=CHANNELS)
+    assert code == 0 and argvs
+    for argv in argvs:
+        assert argv[-2] == "op@relay.example.net" and argv[-3] == "--"
+        assert shlex.split(argv[-1])[0] == "/opt/relay/bin/buzz-send"
+    assert not any("GHSA-zzzz-zzzz-zzzz" in text or "hostalpha" in text for _, _, text in fake.calls)

@@ -66,6 +66,33 @@ def test_config_bad_types_are_errors(tmp_path, text):
         inputs.load_config(cfg)
 
 
+def test_deployment_keys_default_empty_and_load(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("")
+    c = inputs.load_config(cfg)
+    assert (c.strip_hosts, c.internal_host_suffixes, c.relay_ssh_host, c.relay_send_wrapper) == ((), (), None, None)
+    with pytest.raises(inputs.ConfigError, match="relay_ssh_host and relay_send_wrapper"):
+        c.check_relay()
+    cfg.write_text('strip_hosts = ["HostAlpha", "hostbeta"]\ninternal_host_suffixes = [".corp.example"]\n'
+                   'relay_ssh_host = "op@relay.example.net"\nrelay_send_wrapper = "/opt/relay/bin/buzz-send"\n')
+    c = inputs.load_config(cfg)
+    assert c.strip_hosts == ("hostalpha", "hostbeta") and c.internal_host_suffixes == (".corp.example",)
+    assert (c.relay_ssh_host, c.relay_send_wrapper) == ("op@relay.example.net", "/opt/relay/bin/buzz-send")
+    c.check_relay()
+
+
+@pytest.mark.parametrize("text", ['strip_hosts = "hostalpha"\n', 'strip_hosts = [""]\n', "strip_hosts = [3]\n",
+                                  'strip_hosts = ["a b"]\n', 'internal_host_suffixes = ["corp.example"]\n',
+                                  'relay_ssh_host = "-oProxyCommand=x"\n', 'relay_ssh_host = "a b"\n',
+                                  'relay_ssh_host = ""\n', 'relay_send_wrapper = "bin/buzz-send"\n',
+                                  'relay_send_wrapper = "~/bin/buzz-send"\n', 'relay_send_wrapper = "/a;b"\n'])
+def test_deployment_keys_bad_values_are_errors(tmp_path, text):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(text)
+    with pytest.raises(inputs.ConfigError):
+        inputs.load_config(cfg)
+
+
 def test_missing_config_is_error(tmp_path):
     with pytest.raises(inputs.ConfigError):
         inputs.load_config(tmp_path / "absent.toml")

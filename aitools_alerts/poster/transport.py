@@ -23,8 +23,9 @@ from dataclasses import dataclass
 
 from aitools_alerts import schema
 
-HOST = "relay-vm.example"
-WRAPPER = "/home/relay/bin/buzz-send"
+# The ssh destination and the wrapper's path come from the poster config
+# (relay_ssh_host, relay_send_wrapper); the public code names neither.
+_WRAPPER = re.compile(r"/[A-Za-z0-9._/-]{1,255}")
 # -T and RequestTTY=no: no terminal, so stdin reaches the wrapper as bytes; RemoteCommand=none:
 # no ssh_config entry can replace the command. "--" ends options before the host.
 SSH_OPTIONS = ("-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
@@ -64,11 +65,13 @@ class SendResult:
     outcome: str  # "ok" | "failed" | "unknown"
 
 
-def remote_argv(channel_id: str, reply_to: str | None = None) -> list[str]:
-    """The wrapper's argv for one send; raises ValueError for a malformed id."""
+def remote_argv(channel_id: str, reply_to: str | None = None, *, wrapper: str) -> list[str]:
+    """The wrapper's argv for one send; raises ValueError for a malformed id or path."""
+    if not isinstance(wrapper, str) or not _WRAPPER.fullmatch(wrapper):
+        raise ValueError("wrapper must be an absolute path on the relay VM")
     if not isinstance(channel_id, str) or not _UUID.fullmatch(channel_id):
         raise ValueError("channel_id must be a lowercase UUID")
-    argv = [WRAPPER, "messages", "send", "--channel", channel_id, "--content", "-"]
+    argv = [wrapper, "messages", "send", "--channel", channel_id, "--content", "-"]
     if reply_to is not None:
         if not isinstance(reply_to, str) or not _HEX64.fullmatch(reply_to):
             raise ValueError("reply_to must be a 64-hex event id")
@@ -135,7 +138,7 @@ def _classify(rc: int, stdout, stderr: str) -> tuple[str, str | None]:
 
 
 def send(channel_id: str, content: str, reply_to: str | None = None, ssh=None, *,
-         host: str = HOST, timeout: float = TIMEOUT) -> SendResult:
+         host: str, wrapper: str, timeout: float = TIMEOUT) -> SendResult:
     """Post ``content`` to ``channel_id`` (optionally as a reply to ``reply_to``).
 
     ``ssh`` is a callable with ``subprocess.run``'s signature; None means the real
@@ -146,7 +149,7 @@ def send(channel_id: str, content: str, reply_to: str | None = None, ssh=None, *
         raise ValueError("content must be non-empty text within the post size cap, without NUL")
     if not isinstance(host, str) or not host or host.startswith("-"):
         raise ValueError("host must be a host name")
-    argv = ["ssh", *SSH_OPTIONS, "--", host, shlex.join(remote_argv(channel_id, reply_to))]
+    argv = ["ssh", *SSH_OPTIONS, "--", host, shlex.join(remote_argv(channel_id, reply_to, wrapper=wrapper))]
     ssh = ssh if ssh is not None else _default_ssh
     try:
         proc = ssh(argv, input=content.encode("utf-8"), capture_output=True, timeout=timeout)

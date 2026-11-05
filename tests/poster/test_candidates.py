@@ -15,7 +15,16 @@ from aitools_alerts.poster.candidates import (
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 HEARTBEAT = FIXTURES / "heartbeat"
 COLLECTOR = FIXTURES / "collector" / "run-record.json"
-FLEET_NAMES = ("host-a", "host-b", "host-d", "host-e", "host-f", "host-c")
+# Placeholder deployment names, set as the poster config's strip_hosts and
+# internal_host_suffixes would set them; the real ones live only in the live config.
+FLEET_NAMES = ("hostalpha", "hostbeta", "hostgamma")
+
+
+@pytest.fixture(autouse=True)
+def _deployment(monkeypatch):
+    from aitools_alerts.poster import candidates
+    monkeypatch.setattr(candidates, "FLEET_HOSTS", FLEET_NAMES)
+    monkeypatch.setattr(candidates, "INTERNAL_SUFFIXES", (".corp.example",))
 
 
 def _by_id(cands):
@@ -83,7 +92,7 @@ def test_heartbeat_scrubs_hosts_in_text_and_drops_host_urls(tmp_path):
             "CVE-2026-1|node-9|curl": {
                 "advisory_severity": "RCE seen on node-7 and NODE-9",
                 "source": "https://example.com/a",
-                "fixed": "8.1 (host-b has 8.0)",
+                "fixed": "8.1 (hostalpha has 8.0)",
             },
             "CVE-2026-2": {"product": "tool", "source": "https://node-7.example.net/x"},
             "node-7": {"source": "https://example.com/b"},
@@ -237,9 +246,7 @@ def test_fixtures_contain_no_fleet_names():
     paths = [HEARTBEAT / "run.json", HEARTBEAT / "feeds.json", COLLECTOR]
     for p in paths:
         text = p.read_text().lower()
-        for name in FLEET_NAMES:
-            assert name not in text, (p.name, name)
-        assert "/users/" not in text, p.name
+        assert "/users/" not in text, p.name  # deployment host names: scripts/public-scan.sh
         assert "jibot-code#" not in text, p.name
 
 
@@ -310,7 +317,7 @@ def test_kev_private_values_in_notes_and_fields():
         {"cveID": "CVE-2026-0050", "dateAdded": "2026-11-02", "vendorProject": "V",
          "product": "P", "notes": " ".join(PRIVATE_SOURCES[:3]) + " https://example.com/ok"},
         {"cveID": "CVE-2026-0052", "dateAdded": "2026-11-02", "vendorProject": "V",
-         "product": "P on host-b"},
+         "product": "P on hostbeta"},
         {"cveID": "CVE-2026-0051", "dateAdded": "2026-11-02", "vendorProject": "V",
          "product": "see /Users/op/x"},
     ]}
@@ -408,7 +415,7 @@ def test_heartbeat_deeply_nested_json_never_raises(tmp_path):
     "http://10.0.0.5/x",
     "http://[fd7a:115c:a1e0::1]/x",
     "https://studio.tail1234.ts.net/x",
-    "https://ops-vm.example/x",
+    "https://buzz-ops.corp.example/x",
     "https://printer.local/x",
     "https://intranet/x",
 ])
@@ -421,7 +428,7 @@ def test_internal_source_hosts_are_dropped(url):
 
 
 @pytest.mark.parametrize("severity", [
-    "see /users/joi/x", "log>/home/user/x", "file:///home/user/x", "a|/home/op/x",
+    "see /users/op/x", "log>/Users/op/x", "file:///Users/op/x", "a|/home/op/x",
     "tracked in Jibot-Code#ab12", "bad \ud800 surrogate", "rtl \u202e text", "bell \x07",
 ])
 def test_private_or_unsafe_text_is_dropped(severity):

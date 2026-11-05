@@ -140,7 +140,8 @@ class Run:
             if it["kind"] == "reply" and reply_to is None:
                 raise LedgerError(f"{it['key']}: no root in {it['channel']}")
             try:  # every check the transport makes, before anything is marked pending
-                transport.remote_argv(self.channels[it["channel"]], reply_to)
+                transport.remote_argv(self.channels[it["channel"]], reply_to,
+                                      wrapper=self.config.relay_send_wrapper)
             except (ValueError, KeyError):
                 self._drop([it])
                 self.n["ja_failed" if ja else "withheld"] += 1
@@ -150,7 +151,8 @@ class Run:
                     return False
                 raise _Stop from None
             self.led.pending(it["key"], [] if ja else it["ids"], now=self.now)  # ja: matches no advisory
-            r = transport.send(self.channels[it["channel"]], it["text"], reply_to, ssh=self.ssh)
+            r = transport.send(self.channels[it["channel"]], it["text"], reply_to, ssh=self.ssh,
+                               host=self.config.relay_ssh_host, wrapper=self.config.relay_send_wrapper)
             if r.outcome != "ok":
                 if r.outcome == "failed":
                     self.led.clear_pending(it["key"])  # it certainly did not post: next hour
@@ -578,6 +580,13 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
     KEV fetch with a synthetic catalog (``inputs.read_kev_file``)."""
     if not isinstance(config, Config):
         config = inputs.load_config(config)
+    try:
+        config.check_relay()  # before the ledger opens: a run without a route sends nothing
+    except ConfigError as e:
+        print(f"aitools-alerts-poster: config error: {e}", file=sys.stderr)
+        return 2, "aitools-alerts-poster: " + " ".join(f"{k}=0" for k in SUMMARY) \
+            + " inputs=- error=config"
+    candidates.configure(config.strip_hosts, config.internal_host_suffixes)
     channels = channels or inputs.load_channels()
     n, code, err, status, skipped = Counter(), 0, None, None, Counter()
     try:
@@ -759,6 +768,7 @@ def main(argv=None) -> int:
         return code
     try:
         cfg = inputs.load_config(a.config)
+        cfg.check_relay()
         channels = inputs.load_channels()
         kev_catalog = inputs.read_kev_file(a.kev_file) if a.kev_file is not None else None
     except ConfigError as e:

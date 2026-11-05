@@ -22,7 +22,6 @@ SKILLS = {
     "hermes": ROOT / "skills" / "hermes" / "aitools-alerts" / "SKILL.md",
 }
 HOOK_LINE = "AITOOLS-ALERT: critical advisory matches this machine; run the aitools-alerts skill"
-FLEET_HOSTS = ("host-a", "host-b", "host-d", "host-e", "host-f", "host-c")
 
 
 # ------------------------------------------------------------------ schedules
@@ -71,9 +70,7 @@ def test_cron_install_line_keeps_other_jobs(tmp_path):
 @pytest.mark.parametrize("path", [PLIST, CRON, HOOK, SNIPPET, *SKILLS.values()],
                          ids=lambda p: p.name if p.name != "SKILL.md" else p.parent.parent.name)
 def test_templates_carry_no_host_or_user_path(path):
-    text = path.read_text()
-    for host in FLEET_HOSTS:
-        assert host not in text.lower(), host
+    text = path.read_text()  # deployment host names: scripts/public-scan.sh, run by the gate
     assert "/Users/" not in text and "/home/" not in text
 
 

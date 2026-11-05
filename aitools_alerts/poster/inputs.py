@@ -47,6 +47,9 @@ _ITEM_KEYS = {"key", "kind", "scope", "ids", "channel", "text", "adv", "exploite
 _CANDIDATE_FIELDS = frozenset(Candidate.__dataclass_fields__)
 _KINDS = {"root", "copy", "reply", "digest", "ja"}
 _HEX64 = re.compile(r"[0-9a-f]{64}")
+_NAME = re.compile(r"[A-Za-z0-9._-]{1,253}")
+_SSH_HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}@[A-Za-z0-9][A-Za-z0-9.-]{0,252}|[A-Za-z0-9][A-Za-z0-9.-]{0,252}")
+_WRAPPER = re.compile(r"/[A-Za-z0-9._/-]{1,255}")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
@@ -62,6 +65,18 @@ class Config:
     kev_cache: Path = STATE_DIR / "kev.json"
     digest_hour: int = 9
     backfill_days: int = 2
+    # Deployment detail lives here, never in the public code: host names that drop a
+    # field or item (candidates.FLEET_HOSTS), extra internal source-host suffixes, and
+    # the relay route (ssh destination, absolute wrapper path on the relay VM).
+    strip_hosts: tuple[str, ...] = ()
+    internal_host_suffixes: tuple[str, ...] = ()
+    relay_ssh_host: str | None = None
+    relay_send_wrapper: str | None = None
+
+    def check_relay(self) -> None:
+        """A run sends, so it needs the relay route; pending and resolve do not."""
+        if not self.relay_ssh_host or not self.relay_send_wrapper:
+            raise ConfigError("relay_ssh_host and relay_send_wrapper must be set")
 
     @property
     def state(self) -> Path:
@@ -99,6 +114,20 @@ def load_config(path) -> Config:
         if k in raw:
             if type(raw[k]) is not int or not lo <= raw[k] <= hi:
                 raise ConfigError(f"{k} must be an integer {lo}-{hi}")
+            out[k] = raw[k]
+    for k in ("strip_hosts", "internal_host_suffixes"):
+        if k in raw:
+            v = raw[k]
+            if not isinstance(v, list) or not all(isinstance(h, str) and _NAME.fullmatch(h) for h in v):
+                raise ConfigError(f"{k} must be a list of host names")
+            if k == "internal_host_suffixes" and not all(h.startswith(".") for h in v):
+                raise ConfigError(f"{k} entries must start with '.'")
+            out[k] = tuple(h.lower() for h in v)
+    for k, pattern, what in (("relay_ssh_host", _SSH_HOST, "an ssh host ([user@]host)"),
+                             ("relay_send_wrapper", _WRAPPER, "an absolute path")):
+        if k in raw:
+            if not isinstance(raw[k], str) or not pattern.fullmatch(raw[k]):
+                raise ConfigError(f"{k} must be {what}")
             out[k] = raw[k]
     cfg = Config(**out)
     cfg.check_paths()
