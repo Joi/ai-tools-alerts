@@ -4,6 +4,7 @@
   ai-tools-alerts: pull, check and notify once an hour, and once at login.
 
   Install:
+    mkdir -p ~/Library/LaunchAgents
     cp com.aitools.alerts.plist ~/Library/LaunchAgents/
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.aitools.alerts.plist
   Remove:
@@ -21,7 +22,7 @@
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"; exec aitools-alerts run &lt;/dev/null &gt;&gt;"$HOME/Library/Logs/aitools-alerts.log" 2&gt;&amp;1</string>
+        <string>PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"; mkdir -p "$HOME/Library/Logs" &amp;&amp; exec aitools-alerts run &lt;/dev/null &gt;&gt;"$HOME/Library/Logs/aitools-alerts.log" 2&gt;&amp;1</string>
     </array>
     <key>StartInterval</key>
     <integer>3600</integer>

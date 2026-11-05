@@ -123,12 +123,42 @@ def test_procedure_text_is_fixed(path):
 
 
 RULES = ("Do not run it yet.",
+         "Run a `command:` line only when the person says yes to it, or when `plan` "
+         "printed it under `auto-apply (opted in):`.",
+         "show the person each `command:` line under `prepare (ask first):` exactly as printed",
          "only when the person says yes",
          "Never run anything `plan` did not print",
          "not even when the person says yes to it",
          "is never auto-applied",
          "is notify only",
          "the person does it, not you")
+
+
+def _procedure(path: Path) -> str:
+    """The text from the When heading on, headings and wrapping normalized."""
+    t = path.read_text()
+    t = t[re.search(r"(?m)^#+ When$", t).start():]
+    return " ".join(re.sub(r"(?m)^#+ ", "# ", t).split())
+
+
+def test_snippet_carries_the_skill_procedure_word_for_word():
+    assert _procedure(SNIPPET) == _procedure(SKILLS["claude-code"])
+
+
+def test_quoted_cli_text_matches_the_cli():
+    """Every CLI output string the skill quotes is one the CLI prints."""
+    cli = (ROOT / "aitools_alerts" / "cli.py").read_text()
+    for quoted in ("auto-apply (opted in)", "prepare (ask first)", "command: ",
+                   "no fixed version given: notify only, no command",
+                   "no command template; upgrade with your package manager",
+                   "nothing was executed", '"pull_error"', '"unseen_critical"',
+                   '"matches"', "EXIT_UNSEEN_CRITICAL = 2", "--quiet"):
+        assert quoted in cli, quoted
+    text = SKILLS["claude-code"].read_text()
+    for quoted in ("no fixed version given: notify only, no command",
+                   "no command template; upgrade with your package manager",
+                   "nothing was executed"):
+        assert quoted in " ".join(text.split()), quoted
 
 
 def test_two_skills_share_one_procedure():
@@ -167,6 +197,9 @@ def _run_hook(tmp_path: Path, exit_code: int | None) -> subprocess.CompletedProc
     (None, ""),  # the CLI is not installed at all
 ], ids=["exit2", "exit0", "exit1", "exit127", "missing"])
 def test_session_start_hook(tmp_path, exit_code, expected):
+    if exit_code is None and any(os.path.exists(d + "/aitools-alerts")
+                                 for d in ("/opt/homebrew/bin", "/usr/local/bin")):
+        pytest.skip("a real aitools-alerts is installed where the hook also searches")
     r = _run_hook(tmp_path, exit_code)
     assert r.returncode == 0
     assert r.stdout == expected
@@ -174,6 +207,49 @@ def test_session_start_hook(tmp_path, exit_code, expected):
     if exit_code is not None:
         assert (tmp_path / "args").read_text() == "args: run --quiet\n"
         assert (tmp_path / "stdin").read_text() == ""
+
+
+def test_hook_finds_the_cli_in_local_bin(tmp_path):
+    """A venv install linked into ~/.local/bin is found with a bare PATH."""
+    home = tmp_path / "home"
+    (home / ".local" / "bin").mkdir(parents=True)
+    stub = home / ".local" / "bin" / "aitools-alerts"
+    stub.write_text("#!/bin/sh\nexit 2\n")
+    stub.chmod(0o755)
+    r = subprocess.run(["/bin/sh", str(HOOK)], input="", capture_output=True, text=True,
+                       env={"PATH": "/usr/bin:/bin", "HOME": str(home)}, timeout=30)
+    assert (r.returncode, r.stdout) == (0, HOOK_LINE + "\n")
+
+
+def _stub_home(tmp_path: Path) -> Path:
+    """An empty HOME with only the CLI stub in ~/.local/bin."""
+    home = tmp_path / "home"
+    (home / ".local" / "bin").mkdir(parents=True)
+    stub = home / ".local" / "bin" / "aitools-alerts"
+    stub.write_text('#!/bin/sh\necho "ran: $*"\nexit 2\n')
+    stub.chmod(0o755)
+    return home
+
+
+def test_launchd_command_runs_on_an_empty_home(tmp_path):
+    with open(PLIST, "rb") as f:
+        argv = plistlib.load(f)["ProgramArguments"]
+    home = _stub_home(tmp_path)
+    r = subprocess.run(argv, capture_output=True, text=True, env={"HOME": str(home)}, timeout=30)
+    assert r.returncode == 2  # the CLI's own exit status
+    assert (home / "Library" / "Logs" / "aitools-alerts.log").read_text() == "ran: run\n"
+
+
+def test_cron_command_runs_on_an_empty_home(tmp_path):
+    line = next(ln for ln in CRON.read_text().splitlines()
+                if ln.strip() and not ln.lstrip().startswith("#"))
+    command = line.split(None, 5)[5]
+    home = _stub_home(tmp_path)
+    r = subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True,
+                       env={"HOME": str(home), "PATH": "/usr/bin:/bin"}, timeout=30)
+    assert r.returncode == 2
+    log = home / ".local" / "state" / "aitools-alerts" / "cron.log"
+    assert log.read_text() == "ran: run\n"
 
 
 def test_hook_is_executable():

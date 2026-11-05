@@ -1,7 +1,7 @@
 # ai-tools-alerts: pull, check and notify once an hour, at 17 minutes past.
-# Add it to your crontab (keeps the lines already there):
-#   (crontab -l 2>/dev/null; cat aitools-alerts.cron) | crontab -
+# Add it to your crontab (keeps your other lines, replaces an earlier copy):
+#   (crontab -l 2>/dev/null | grep -v 'aitools-alerts run'; cat aitools-alerts.cron) | crontab -
 # cron runs the command with /bin/sh, which expands $HOME; the mkdir makes
 # the log directory before the first run has. The log is
 # ~/.local/state/aitools-alerts/cron.log.
-17 * * * * mkdir -p "$HOME/.local/state/aitools-alerts" && PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" aitools-alerts run </dev/null >>"$HOME/.local/state/aitools-alerts/cron.log" 2>&1
+17 * * * * mkdir -p "$HOME/.local/state/aitools-alerts" && PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" aitools-alerts run </dev/null >>"$HOME/.local/state/aitools-alerts/cron.log" 2>&1

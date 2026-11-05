@@ -6,7 +6,7 @@ Two channels on the henkaku ai-tools Buzz relay (`#security-feed` to browse, `#s
 
 ## Status
 
-The member CLI, the skills, the session-start hook and the schedule templates are in place; the fleet poster and the live mirror are still being built, so until the mirror at `https://buzz.ai-tools.md/alerts/` is up a pull reports "mirror unreadable". The design is `docs/design.md` and the implementation plan `docs/plan.md`. Work is tracked in the kata project `ai-tools-alerts`, one issue per plan task, under the epic jibot-code#gr5b.
+The member CLI, the skills, the session-start hook and the schedule templates are in place; the fleet poster and the live mirror are still being built, so until the mirror at `https://buzz.ai-tools.md/alerts/` is up a pull reports "manifest unreadable". The design is `docs/design.md` and the implementation plan `docs/plan.md`. Work is tracked in the kata project `ai-tools-alerts`, one issue per plan task, under the epic jibot-code#gr5b.
 
 Done: the pure-Python Nostr primitives (`aitools_alerts/nostr.py`: BIP-340 signatures, NIP-01 event ids, NIP-19 keys) and the trust root. The trust root's public key is `trust/root.pub`; it signs only the manifest that lists who may post alerts, and the CLI pins it as `TRUST_ROOT_PUBKEY`.
 
@@ -29,7 +29,7 @@ aitools-alerts init
 aitools-alerts run
 ```
 
-Without pipx: `python3 -m venv ~/.local/share/aitools-alerts && ~/.local/share/aitools-alerts/bin/pip install git+https://github.com/Joi/ai-tools-alerts`, then link the command where the schedules and the hook look for it: `mkdir -p ~/.local/bin && ln -s ~/.local/share/aitools-alerts/bin/aitools-alerts ~/.local/bin/`. The launchd and cron templates search `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and `/bin`.
+Without pipx: `python3 -m venv ~/.local/share/aitools-alerts && ~/.local/share/aitools-alerts/bin/pip install git+https://github.com/Joi/ai-tools-alerts`, then link the command where the schedules and the hook look for it: `mkdir -p ~/.local/bin && ln -s ~/.local/share/aitools-alerts/bin/aitools-alerts ~/.local/bin/`. The launchd and cron templates search `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and `/bin`; the hook searches `~/.local/bin`, then the session's PATH, then Homebrew.
 
 `init` writes `~/.config/aitools-alerts/config.toml` (mode 600). Reading alerts needs no Buzz account; `aitools-alerts keygen` makes a key only if you want to post or discuss on the relay. The settings:
 
@@ -44,6 +44,7 @@ The templates, the hook and the skills below are files in this repository: `git 
 macOS (launchd):
 
 ```
+mkdir -p ~/Library/LaunchAgents
 cp templates/launchd/com.aitools.alerts.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.aitools.alerts.plist
 ```
@@ -53,7 +54,7 @@ It runs `aitools-alerts run` at login and every hour, and logs to `~/Library/Log
 Linux or anything with cron:
 
 ```
-(crontab -l 2>/dev/null; cat templates/cron/aitools-alerts.cron) | crontab -
+(crontab -l 2>/dev/null | grep -v 'aitools-alerts run'; cat templates/cron/aitools-alerts.cron) | crontab -
 ```
 
 ### Interrupt the next Claude Code session
@@ -67,7 +68,7 @@ Copy `hooks/claude-code/session-start.sh` to `~/.claude/hooks/aitools-alerts-ses
       {
         "matcher": "startup",
         "hooks": [
-          {"type": "command", "command": "~/.claude/hooks/aitools-alerts-session-start.sh", "timeout": 30}
+          {"type": "command", "command": "~/.claude/hooks/aitools-alerts-session-start.sh", "timeout": 90}
         ]
       }
     ]
@@ -81,7 +82,9 @@ The hook runs `aitools-alerts run --quiet`. When a critical advisory that matche
 AITOOLS-ALERT: critical advisory matches this machine; run the aitools-alerts skill
 ```
 
-Otherwise it prints nothing, and it never blocks a session: a missing CLI or an unreadable mirror is silent.
+Otherwise it prints nothing, and it never fails a session: a missing CLI or an unreadable mirror is silent. On a slow network the start of a session can wait for the pull (up to 20 seconds) and a notification (up to 30 seconds); the 90-second timeout covers both. With a shorter timeout Claude Code can stop the hook after the CLI has already marked the alert seen, and the line is lost.
+
+The hourly job is the main interrupt: its notification (desktop by default) marks the alert seen, and the hook then stays quiet. The hook covers a session that starts before the hourly job has run. To have Claude Code check at every session start as well, paste `snippets/AGENTS.md` into `~/.claude/CLAUDE.md`.
 
 ### Install the skill
 
@@ -94,10 +97,10 @@ Otherwise it prints nothing, and it never blocks a session: a missing CLI or an 
 An example, not a real advisory. `aitools-alerts check` prints one line per advisory that matches this machine:
 
 ```
-CRITICAL: <title> [Claude Code 2.1.318: affected] (id <advisory id>, thread <thread id>)
+CRITICAL: <title> [Claude Code 2.1.318: affected] (id <advisory id>, thread <first 12 characters of the thread id>)
 ```
 
-`aitools-alerts plan <thread>` prints what to do. For an upgrade it prints the command, built from a fixed template, never from the post:
+`aitools-alerts plan <advisory id>` prints what to do (it takes the advisory id or the full thread id from `check --json`, not the 12-character prefix). For an upgrade it prints the command, built from a fixed template, never from the post:
 
 ```
 CRITICAL: <title> [Claude Code 2.1.318] posted by curator
@@ -115,7 +118,7 @@ With the skill installed, on a critical match your agent:
 
 - tells you first: level, title, affected product and version, the action, the source;
 - shows you the exact command `plan` printed and asks before running it;
-- runs it without asking only if you put that verb in `auto_apply` and the alert came from a curator;
+- runs it without asking only if you put that verb in `auto_apply` and the alert came from a curator, and tells you which command it is running;
 - runs `aitools-alerts check` again afterwards and tells you what still matches.
 
 It will not:
