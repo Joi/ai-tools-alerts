@@ -1,4 +1,4 @@
-# systemd user unit (relayuser on the relay VM). Started by
+# systemd user unit (<user> on the relay VM). Started by
 # aitools-alerts-mirror.timer; runs from the checkout at ~/ai-tools-alerts.
 [Unit]
 Description=Export the ai-tools alert channels to the static mirror

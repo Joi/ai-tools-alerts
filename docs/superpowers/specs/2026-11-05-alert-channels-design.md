@@ -10,7 +10,7 @@ The poster (Task B4) and the mirror (Task C1) need two channels on the ai-tools 
 
 1. `buzz channels list` on the VM, as jibot, shows `security-feed` and `security-critical`, both `stream`, `open`, with the descriptions in the brief.
 2. `buzz channels members --channel <id>` shows Joi's relay identity `18eafd07cca9f24eac1a62d8155f5e9cdabc7552357abca8a1fcced45d05fe29` with role `owner` on both.
-3. `/home/relay/bin/buzz-send` exists, mode 700, byte-identical to `ops/vm/buzz-send` (sha256 match), and `printf '%s' '<text>' | buzz-send messages send --channel <feed> --content -` returns exit 0 and an event id.
+3. `~/bin/buzz-send` exists, mode 700, byte-identical to `ops/vm/buzz-send` (sha256 match), and `printf '%s' '<text>' | buzz-send messages send --channel <feed> --content -` returns exit 0 and an event id.
 4. The one setup message, text exactly `channel check from jibot (setup, not an alert) - Jibot`, is deleted with `buzz messages delete` (exit 0), and a later complete-window `buzz messages get` on the feed (see Proof message) does not list it.
 5. A member can read both channels: `buzz messages get --channel <id>` as jibot exits 0 on each (jibot's key; a read as Joi needs Joi's nsec, which this session does not use; see Assumptions).
 6. `spec/channels.json` is `{"feed": "<uuid>", "critical": "<uuid>"}`; `tests/test_channels.py` asserts both are canonical UUIDs and distinct; `scripts/test-gate.sh` passes.
@@ -21,7 +21,7 @@ The poster (Task B4) and the mirror (Task C1) need two channels on the ai-tools 
 
 ### Channels (live state, approved in the design, Joi 2026-11-05)
 
-One SSH session to `relay-vm.example` runs a script fed on stdin. On the remote side it exports `BUZZ_PRIVATE_KEY="$(cat ~/.buzz-keys/agent.nsec)"` and `BUZZ_RELAY_URL=https://buzz.ai-tools.md`, then:
+One SSH session to `<relay-vm>` runs a script fed on stdin. On the remote side it exports `BUZZ_PRIVATE_KEY="$(cat ~/.buzz-keys/agent.nsec)"` and `BUZZ_RELAY_URL=https://buzz.ai-tools.md`, then:
 
 - `buzz channels list` first; if a channel named `security-feed` or `security-critical` already exists, stop (no duplicate, no change to another channel).
 - `buzz channels create --name security-feed --type stream --visibility open --description "Security alerts for people running AI agents: a daily digest and real-time highs. Agents: parse the aitools-alert block."`
@@ -39,17 +39,17 @@ Probed on the VM's source (`crates/buzz-auth/src/access.rs` `check_write_access`
 
 Bash, `set -euo pipefail`, `umask 077`, never `set -x`.
 
-- Key file: `${BUZZ_SEND_KEY_FILE:-/home/relay/.buzz-keys/agent.nsec}`; CLI: `${BUZZ_SEND_BUZZ:-/home/relay/buzz/target/release/buzz}`. The overrides exist for the tests; they give a caller nothing it lacks, since the only caller is `relayuser`, who can read the key file anyway.
+- Key file: `${BUZZ_SEND_KEY_FILE:-$HOME/.buzz-keys/agent.nsec}`; CLI: `${BUZZ_SEND_BUZZ:-$HOME/buzz/target/release/buzz}`. The overrides exist for the tests; they give a caller nothing it lacks, since the only caller is `<user>`, who can read the key file anyway.
 - The key file must be a regular, readable file (`[ -f ] && [ -r ]`; a FIFO, directory or missing path fails before any read, so a read can never block). Read it with bash's `$(<file)` (no subprocess argv carries it), checking the read's status, and strip whitespace.
 - Validate fully before the CLI runs: a shape check in bash (`^nsec1[02-9ac-hj-np-z]{58}$`, the bech32 alphabet, or 64 lowercase hex), then `python3 -I` with the key on **stdin** (never argv) checks the bech32 checksum, the `nsec` prefix, a 32-byte payload, and the scalar range `1 <= k < n` (secp256k1 order) for both forms. The checker prints nothing; only its exit status is read. On a missing, non-regular or empty file, a failed read, or any validation failure: one line on stderr in the CLI's JSON error shape naming the file path, never its contents, and exit 1, with the CLI never started. (python3 3.12 is on the VM; `aitools_alerts.nostr.nsec_to_hex` is the reference for the same checks, and the tests compare the two.)
 - `export BUZZ_PRIVATE_KEY` and `export BUZZ_RELAY_URL=https://buzz.ai-tools.md` (overwriting whatever the caller set), unset `BUZZ_AUTH_TAG`, then `exec "$BUZZ" "$@"`. The key is in the child's environment, readable by the same uid via `/proc/<pid>/environ` only; it is never on argv, so `ps` does not show it.
 - A `--private-key` argument from the caller is refused (exit 1): the wrapper's job is to be the key's only route, and a caller passing a key on argv defeats it. `--relay` is refused too, so the wrapper only ever authenticates to the pinned relay.
 
-Installed at `/home/relay/bin/buzz-send`, mode 700, by `scp` of the repo file plus `chmod`, then verified by sha256 against the repo copy. Because review fixes and a rebase can change the file after that install, the ending re-checks the installed sha256 against `git show origin/main:ops/vm/buzz-send` after landing; on a mismatch it reinstalls and re-runs a no-post check (`buzz-send channels get --channel <feed>`, exit 0) — no second message.
+Installed at `~/bin/buzz-send`, mode 700, by `scp` of the repo file plus `chmod`, then verified by sha256 against the repo copy. Because review fixes and a rebase can change the file after that install, the ending re-checks the installed sha256 against `git show origin/main:ops/vm/buzz-send` after landing; on a mismatch it reinstalls and re-runs a no-post check (`buzz-send channels get --channel <feed>`, exit 0) — no second message.
 
 ### Proof message
 
-`printf '%s' 'channel check from jibot (setup, not an alert) - Jibot' | /home/relay/bin/buzz-send messages send --channel <feed> --content -`; parse the event id from stdout; `buzz-send messages delete --event <id>`; then `buzz-send messages get --channel <feed> --since <send time - 60> --limit 200` must exit 0, return fewer than 200 rows (the CLI caps `get` at 200, so a full page could hide the event and fails the check) and not contain the id; the send time is the VM's `date +%s` taken just before the send. `buzz-send messages thread --channel <feed> --event <id>` is recorded as supporting evidence. The event id, the JSON field that carries it (for B4's transport), and the delete result go on the issue.
+`printf '%s' 'channel check from jibot (setup, not an alert) - Jibot' | ~/bin/buzz-send messages send --channel <feed> --content -`; parse the event id from stdout; `buzz-send messages delete --event <id>`; then `buzz-send messages get --channel <feed> --since <send time - 60> --limit 200` must exit 0, return fewer than 200 rows (the CLI caps `get` at 200, so a full page could hide the event and fails the check) and not contain the id; the send time is the VM's `date +%s` taken just before the send. `buzz-send messages thread --channel <feed> --event <id>` is recorded as supporting evidence. The event id, the JSON field that carries it (for B4's transport), and the delete result go on the issue.
 
 ### Repo files
 
@@ -69,7 +69,7 @@ Installed at `/home/relay/bin/buzz-send`, mode 700, by `scp` of the repo file pl
 
 ## Blast radius and rollback
 
-- Live relay: two new channels, two membership rows, one message created and deleted (a tombstone remains in the feed's history, which is the delete's normal effect). No other channel, no image, Caddy or compose change. Rollback: `buzz channels delete --channel <id>` on each (Joi or jibot as owner) and remove `/home/relay/bin/buzz-send`.
+- Live relay: two new channels, two membership rows, one message created and deleted (a tombstone remains in the feed's history, which is the delete's normal effect). No other channel, no image, Caddy or compose change. Rollback: `buzz channels delete --channel <id>` on each (Joi or jibot as owner) and remove `~/bin/buzz-send`.
 - Repo: new files only, plus the README Status line. Rollback: revert the commit.
 
 ## Assumptions

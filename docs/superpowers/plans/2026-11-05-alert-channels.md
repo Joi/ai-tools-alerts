@@ -2,7 +2,7 @@
 
 Spec: `docs/superpowers/specs/2026-11-05-alert-channels-design.md`. Issue jibot-code#wpbd. Branch `wpbd-alert-channels-on-ai-tools-relay`, base 3ce587e.
 
-Rules for every step: shell scripts longer than one line are written to the session scratchpad and run as files (jibot-code#y1f2); remote scripts go to the VM on stdin (`ssh relay-vm.example 'bash -s' < script`), so the key is read and exported only on the remote side; no remote script prints `BUZZ_PRIVATE_KEY` or runs `set -x`; nothing from `~/.buzz-keys` is copied off the VM.
+Rules for every step: shell scripts longer than one line are written to the session scratchpad and run as files (jibot-code#y1f2); remote scripts go to the VM on stdin (`ssh <relay-vm> 'bash -s' < script`), so the key is read and exported only on the remote side; no remote script prints `BUZZ_PRIVATE_KEY` or runs `set -x`; nothing from `~/.buzz-keys` is copied off the VM.
 
 ## Chunk 1 — the wrapper and its tests (repo only)
 
@@ -26,8 +26,8 @@ Files: create `ops/vm/buzz-send`, `tests/test_buzz_send.py`.
   #!/usr/bin/env bash
   set -euo pipefail
   umask 077
-  KEY_FILE="${BUZZ_SEND_KEY_FILE:-/home/relay/.buzz-keys/agent.nsec}"
-  BUZZ="${BUZZ_SEND_BUZZ:-/home/relay/buzz/target/release/buzz}"
+  KEY_FILE="${BUZZ_SEND_KEY_FILE:-$HOME/.buzz-keys/agent.nsec}"
+  BUZZ="${BUZZ_SEND_BUZZ:-$HOME/buzz/target/release/buzz}"
   fail() { printf '{"error":"user_error","message":"buzz-send: %s"}\n' "$1" >&2; exit 1; }
   for a in "$@"; do case "$a" in --private-key|--private-key=*|--relay|--relay=*) fail "refused flag ${a%%=*}";; esac; done
   [ -f "$KEY_FILE" ] && [ -r "$KEY_FILE" ] || fail "key file missing, not a regular file, or not readable: $KEY_FILE"
@@ -52,18 +52,18 @@ Acceptance: all tests in 1.1 pass; gate passes.
 
 ## Chunk 2 — live VM state
 
-- [ ] **2.1 Pre-check script** (`$SCRATCH/vm-precheck.sh`): export the key and relay on the remote side, `buzz channels list --limit 500 | jq -r '.[]?.name // empty'` (adjust to the actual JSON shape seen) and abort if `security-feed` or `security-critical` exists. Also `ls -la /home/relay/bin/buzz-send` must say no such file.
+- [ ] **2.1 Pre-check script** (`$SCRATCH/vm-precheck.sh`): export the key and relay on the remote side, `buzz channels list --limit 500 | jq -r '.[]?.name // empty'` (adjust to the actual JSON shape seen) and abort if `security-feed` or `security-critical` exists. Also `ls -la ~/bin/buzz-send` must say no such file.
 - [ ] **2.2 Create script** (`$SCRATCH/vm-create.sh`): the two `channels create` commands from the spec verbatim, capturing each JSON; print only the JSON (ids, names, descriptions). Record both UUIDs.
 - [ ] **2.3 Owner script**: `channels add-member --channel <id> --pubkey 18eafd07cca9f24eac1a62d8155f5e9cdabc7552357abca8a1fcced45d05fe29 --role owner` on both; then `channels members` and `channels get` on both.
-- [ ] **2.4 Install wrapper**: `scp ops/vm/buzz-send relay-vm.example:/home/relay/bin/buzz-send.new`, then remote `chmod 700` and `mv -f` onto `/home/relay/bin/buzz-send`; compare `sha256sum` remote vs `shasum -a 256` local.
+- [ ] **2.4 Install wrapper**: `scp ops/vm/buzz-send '<relay-vm>:bin/buzz-send.new'`, then remote `chmod 700` and `mv -f` onto `~/bin/buzz-send`; compare `sha256sum` remote vs `shasum -a 256` local.
 - [ ] **2.5 Proof**: remote script runs
-  `printf '%s' 'channel check from jibot (setup, not an alert) - Jibot' | /home/relay/bin/buzz-send messages send --channel <feed> --content -`, prints the JSON, extracts the event id, runs `/home/relay/bin/buzz-send messages delete --event <id>` and prints its JSON and exit status, then `buzz-send messages get --channel <feed> --since $((send_ts - 60)) --limit 200`, requiring exit 0, fewer than 200 rows (the CLI caps `get` at 200, `messages.rs:363` on the VM's a5dbdf5e6, so a full page means the window may be truncated and the check fails), and the id absent; `send_ts=$(date +%s)` is captured on the VM immediately before the send. `buzz-send messages thread --channel <feed> --event <id>` is also run and recorded (exit status and output), as supporting evidence only.
+  `printf '%s' 'channel check from jibot (setup, not an alert) - Jibot' | ~/bin/buzz-send messages send --channel <feed> --content -`, prints the JSON, extracts the event id, runs `~/bin/buzz-send messages delete --event <id>` and prints its JSON and exit status, then `buzz-send messages get --channel <feed> --since $((send_ts - 60)) --limit 200`, requiring exit 0, fewer than 200 rows (the CLI caps `get` at 200, `messages.rs:363` on the VM's a5dbdf5e6, so a full page means the window may be truncated and the check fails), and the id absent; `send_ts=$(date +%s)` is captured on the VM immediately before the send. `buzz-send messages thread --channel <feed> --event <id>` is also run and recorded (exit status and output), as supporting evidence only.
 - [ ] **2.6 Reads**: `buzz-send messages get --channel <critical> --limit 1` exit 0; `buzz-send channels list --member` shows both.
 - [ ] **2.7 Notice comment** on jibot-code#wpbd: `notice: created #security-feed <uuid> and #security-critical <uuid> on buzz.ai-tools.md as jibot; Joi owner on both; buzz-send installed; setup message <event id> sent and deleted (<result>)`, plus the write-restriction finding.
 
 Acceptance: spec criteria 1–5.
 
-Rollback: `buzz channels delete --channel <id>` for each; `rm /home/relay/bin/buzz-send`.
+Rollback: `buzz channels delete --channel <id>` for each; `rm ~/bin/buzz-send`.
 
 ## Chunk 3 — repo records
 
@@ -80,6 +80,6 @@ Acceptance: spec criteria 6–8.
 ## Review and ending
 
 - Whole-branch fresheyes (`FRESHEYES_GPT_MODEL=gpt-6-astra`, watchdog) on `origin/main...HEAD`, Stage 1 in parallel; BLOCKERs fixed, SUBSTANTIVE fixed or rebutted; delta only if a BLOCKER fix changed behaviour.
-- `git fetch origin`; rebase if main moved; push the branch; ff-merge to main from `/path/to/repos/ai-tools-alerts`; push main.
-- Final deploy identity: compare `ssh relay-vm.example sha256sum /home/relay/bin/buzz-send` with `git show origin/main:ops/vm/buzz-send | shasum -a 256`; on a mismatch reinstall (2.4) and run `buzz-send channels get --channel <feed>` (exit 0, no message). Record the final sha256 in the close-out.
+- `git fetch origin`; rebase if main moved; push the branch; ff-merge to main from the primary checkout; push main.
+- Final deploy identity: compare `ssh <relay-vm> sha256sum '~/bin/buzz-send'` with `git show origin/main:ops/vm/buzz-send | shasum -a 256`; on a mismatch reinstall (2.4) and run `buzz-send channels get --channel <feed>` (exit 0, no message). Record the final sha256 in the close-out.
 - Close-out comment (commits, VM outputs with ids, review evidence line), `kata close --done --commit`; comment the landed sha and UUIDs on ai-tools-alerts#gctv and #kfq6; `/finish-worktree`.

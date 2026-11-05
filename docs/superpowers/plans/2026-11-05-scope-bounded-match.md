@@ -54,7 +54,7 @@ One chunk; about 150 changed lines of code and tests.
 
 - [ ] `python3 -m pytest tests/poster/test_rules.py tests/test_schema.py -q`
 - [ ] `scripts/test-gate.sh` (the whole suite; this repo has no repoman row).
-- [ ] Leak grep over the diff: `host-a|host-b|host-d|host-e|host-f|host-c`
+- [ ] Leak grep over the diff: `<fleet-names>`
       returns nothing in added lines outside docs/superpowers.
 
 ### Acceptance

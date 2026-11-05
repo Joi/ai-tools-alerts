@@ -56,7 +56,7 @@ Files: `aitools_alerts/poster/main.py`, `aitools_alerts/poster/ledger.py`, `test
   gate; no repoman row: the repo has no `.repoman-managed`).
 - `git diff --shortstat origin/main -- aitools_alerts tests README.md` on the committed branch: under 250
   changed lines (the budget covers code, tests and README; the run artifacts under docs/ are not counted).
-- `git diff origin/main -- aitools_alerts tests README.md | grep -Eic 'host-a|host-b|host-d|host-e|host-f|host-c'` prints 0
+- `git diff origin/main -- aitools_alerts tests README.md | grep -Eic '<fleet-names>'` prints 0
   (scoped to the deliverables: this plan names the pattern itself, so docs/ is excluded).
 
 ## Acceptance

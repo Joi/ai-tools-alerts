@@ -2,8 +2,8 @@
 # buzz-send — run the Buzz CLI as jibot against the ai-tools relay, with the
 # key read from its file so it is never on any argv.
 #
-# Installed on the relay VM (relay-vm.example) at /home/relay/bin/buzz-send,
-# mode 700, owner relayuser. Source of truth: ops/vm/buzz-send in the
+# Installed on the relay VM at ~/bin/buzz-send of the relay's login user,
+# mode 700, owned by that user. Source of truth: ops/vm/buzz-send in the
 # ai-tools-alerts repo (jibot-code#gr5b decision c:8qna4r); ops/vm/README.md
 # says how to install and verify it.
 #
@@ -26,6 +26,8 @@
 # failure prints one JSON error line naming the path, never the contents, and
 # exits 1 without starting the CLI.
 #
+# The key file and the CLI default to $HOME/.buzz-keys/agent.nsec and
+# $HOME/buzz/target/release/buzz; an unset HOME stops the wrapper (exit 1).
 # BUZZ_SEND_KEY_FILE and BUZZ_SEND_BUZZ override the two paths for the tests;
 # the only caller is the key's own uid, so they grant nothing new.
 #
@@ -35,8 +37,8 @@ set +x
 set -euo pipefail
 umask 077
 
-KEY_FILE="${BUZZ_SEND_KEY_FILE:-/home/relay/.buzz-keys/agent.nsec}"
-BUZZ="${BUZZ_SEND_BUZZ:-/home/relay/buzz/target/release/buzz}"
+KEY_FILE="${BUZZ_SEND_KEY_FILE:-${HOME:?}/.buzz-keys/agent.nsec}"
+BUZZ="${BUZZ_SEND_BUZZ:-${HOME:?}/buzz/target/release/buzz}"
 RELAY_URL="https://buzz.ai-tools.md"
 
 fail() {

@@ -317,3 +317,22 @@ def test_error_line_stays_one_json_line_for_odd_paths(env, tmp_path, name):
     lines = r.stderr.decode().strip().splitlines()
     assert len(lines) == 1, lines
     assert json.loads(lines[0])["error"] == "user_error"
+
+
+def test_default_paths_are_under_home(env):
+    home = env.tmp / "home"
+    cli = home / "buzz" / "target" / "release" / "buzz"
+    cli.parent.mkdir(parents=True)
+    cli.write_text(STUB)
+    cli.chmod(0o700)
+    (home / ".buzz-keys").mkdir(mode=0o700)
+    key_file = home / ".buzz-keys" / "agent.nsec"
+    key_file.write_text(env.key + "\n")
+    key_file.chmod(0o600)
+    environ = {"PATH": env.base["PATH"], "HOME": str(home)}
+    r = subprocess.run(["bash", str(WRAPPER), *SEND], env=environ, capture_output=True, timeout=10)
+    assert r.returncode == 0, r.stderr
+    assert (cli.parent / "key").read_text() == env.key and (cli.parent / "relay").read_text() == RELAY
+    environ.pop("HOME")
+    r = subprocess.run(["bash", str(WRAPPER), *SEND], env=environ, capture_output=True, timeout=10)
+    assert r.returncode == 1 and env.key.encode() not in r.stdout + r.stderr

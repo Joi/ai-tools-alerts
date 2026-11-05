@@ -14,8 +14,8 @@ The hook and the skill are not added to the fleet-managed ~/.claude/settings.jso
 - [x] Sign v2 (v1 posters plus test-curator-2026-11-05).
 - [x] tests/test_manifest.py pins the exact committed release (version and poster tuples); the gate is green.
 - [ ] Independent review (fresheyes, gpt-6-astra); fixes committed.
-- [ ] Land: fetch, rebase, gate, push branch, fast-forward main from the primary checkout, push main. Pull main on host-b.
-- [ ] Ship: `notice:` on gs18; the patched copy of cell-fleet's install-mirror.sh (qwar open) against /path/to/repos/ai-tools-alerts.
+- [ ] Land: fetch, rebase, gate, push branch, fast-forward main from the primary checkout, push main. Pull main on the poster Mac.
+- [ ] Ship: `notice:` on gs18; the patched copy of cell-fleet's install-mirror.sh (qwar open) against the primary checkout.
 - [ ] Verify: the mirror's manifest.json content says version 2 within 5 minutes. Evidence line 1.
 
 ## C2: fresh-machine install
@@ -38,8 +38,8 @@ The hook and the skill are not added to the fleet-managed ~/.claude/settings.jso
 
 - [ ] Wait for akq9's landing comment on gs18 (re-probe `kata show ai-tools-alerts#akq9`).
 - [ ] Before the run: the relay-bot synthetic thread can be retracted for good only by a curator who stays in the manifest. A test-key retraction is dropped with the key at v3 (pull._filter drops every event of a revoked key, its retraction replies included), and the relay-bot root, still trusted, comes back active for 400 days. So the relay-bot thread is retracted with Joi's key, by Joi, before v3 ships: park class a (a credential only Joi holds) with the exact command.
-- [ ] host-b: pull, `uv tool install --force --reinstall`, by-hand run away from :20 with `--kev-file` on the fixture. `notice:` first.
-- [ ] Confirm the posts (ledger event ids), `pull` shows them, the hook line in a new Claude Code session started in the scratch project, the skill prepares and does not run, no iMessage (the poster never messages; the security-watch router on host-b is `heartbeat`, so it dry-runs).
+- [ ] the poster Mac: pull, `uv tool install --force --reinstall`, by-hand run away from :20 with `--kev-file` on the fixture. `notice:` first.
+- [ ] Confirm the posts (ledger event ids), `pull` shows them, the hook line in a new Claude Code session started in the scratch project, the skill prepares and does not run, no iMessage (the poster never messages; the security-watch router on the poster Mac is `heartbeat`, so it dry-runs).
 - [ ] `plan` for the relay-bot advisory under `auto_apply = ["upgrade"]`: upgrade under prepare. If the KEV fixture carries no fixed version the poster emits no upgrade action; record that as it is and file it.
 - [ ] `run --digest-now` twice; the first posts one digest, the second sends nothing. Evidence lines 3, 4a, 5a, 6.
 
@@ -52,7 +52,7 @@ The hook and the skill are not added to the fleet-managed ~/.claude/settings.jso
 
 ## C6: close-out
 
-- [ ] Read `~/.local/state/security-watch/model-turns-<UTC date>` on host-b. Evidence line 8.
+- [ ] Read `<collector-state>/model-turns-<UTC date>` on the poster Mac. Evidence line 8.
 - [ ] Post all lines on gr5b and gs18; close gs18 with `--test` only if every synthetic thread is retracted by a curator who stays trusted and verified on `check`; otherwise leave it open with `needs-review` and the remaining action. /finish-worktree.
 
 ## Failure cleanup (any step after the v2 ship)

@@ -54,7 +54,7 @@ Kata: ai-tools-alerts#h260. One chunk.
 
 - `python3 -m pytest tests -q` (the repo has no repoman row; this is the
   ordinary gate, as A1–A7 used).
-- Leak grep over the diff: `host-a|host-b|host-d|host-e|host-f|host-c`
+- Leak grep over the diff: `<fleet-names>`
   and `nsec1` → 0 hits outside docs/superpowers.
 - `git diff --stat origin/main` under 200 lines outside docs/superpowers.
 

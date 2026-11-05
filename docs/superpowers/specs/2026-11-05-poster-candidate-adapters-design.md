@@ -18,8 +18,8 @@ that must never reach a post (design: "Nothing private leaves the fleet").
 2. `scripts/test-gate.sh` passes, with one test per adapter plus
    `test_heartbeat_adapter_never_emits_hosts_or_evidence` and
    `test_kev_adapter_filters_by_date_added`.
-3. No committed fixture contains any of `host-a`, `host-b`, `host-d`, `host-e`,
-   `host-f`, `host-c` (asserted by a test), and no serialized candidate contains a
+3. No committed fixture contains a fleet host name (asserted by
+   `scripts/public-scan.sh`), and no serialized candidate contains a
    host name that appears anywhere in its input record.
 4. Malformed input (wrong types, missing fields, bad JSON, unreadable file) never
    raises out of an adapter; each skipped item is counted by reason.
@@ -78,7 +78,7 @@ that must never reach a post (design: "Nothing private leaves the fleet").
   hold a host name, a path or a kata ref. A source whose host is an IP literal that
   is not globally routable (loopback, private, link-local, tailnet CGNAT), has no
   dot, or ends in `.local`, `.internal`, `.lan`, `.home.arpa`, `.ts.net`,
-  `.vm.example` or `.localhost` is dropped, and so is any URL whose host part is
+  `.<vm-domain>` or `.localhost` is dropped, and so is any URL whose host part is
   percent-encoded (it would hide those suffixes from the check). Path and kata-ref patterns are
   case-insensitive. A bare `#xxxx` with no project name is not treated as a kata ref.
 - Any string holding a control, format (bidi override) or lone surrogate character
@@ -162,7 +162,7 @@ booleans, `fixed`/`affected` per the version grammar. `exploited` is ignored (KE
 
 ### Fixtures
 
-- `tests/fixtures/heartbeat/run.json`, `feeds.json`: from host-b
+- `tests/fixtures/heartbeat/run.json`, `feeds.json`: from the poster Mac
   `.../runs/2026-11-04T175014Z/`. Four findings kept (a host in the key, a host list
   with aliases, an alias-only finding, a finding with a host-named nested key) plus
   the `other-leads` meta entry; every fleet host renamed `host-A`, `host-B`, ...;

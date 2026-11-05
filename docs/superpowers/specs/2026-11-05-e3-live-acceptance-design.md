@@ -23,7 +23,7 @@ A non-listed key is shown ignored three ways: `curator post` refuses the test ke
 
 ### Departures from the design's acceptance list (set by the dispatch brief)
 
-- Design item 2 says Joi receives the iMessage. The brief asks for the opposite check: no iMessage, because the poster never messages and the security-watch runner on host-b is in `heartbeat` mode, where its router only dry-runs. The iMessage leg is the heartbeat cutover (amplifier-bundle-joi#vy7y), still open; this run does not cover it.
+- Design item 2 says Joi receives the iMessage. The brief asks for the opposite check: no iMessage, because the poster never messages and the security-watch runner on the poster Mac is in `heartbeat` mode, where its router only dry-runs. The iMessage leg is the heartbeat cutover (amplifier-bundle-joi#vy7y), still open; this run does not cover it.
 - Design item 6 says the curator advisory "does" apply. The CLI never applies anything: `plan` classifies and the agent applies. This run proves the classification (prepare for the relay bot, auto-apply for the curator) and that `run` executes nothing; that an agent then runs the auto-apply command is the skill's behaviour, not tested live.
 - The relay-bot synthetic thread is retracted with Joi's key, not the test key (plan C4): a test-key retraction would be dropped with the key at v3 and the thread would come back active. The test key's retraction is proven on its own post.
 

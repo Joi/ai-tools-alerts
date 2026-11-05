@@ -1,5 +1,5 @@
-# systemd user timer (relayuser on the relay VM): systemctl --user enable --now
-# aitools-alerts-mirror.timer. Needs linger for relayuser to run with no session.
+# systemd user timer (<user> on the relay VM): systemctl --user enable --now
+# aitools-alerts-mirror.timer. Needs linger for <user> to run with no session.
 [Unit]
 Description=Export the ai-tools alert mirror every 5 minutes
 

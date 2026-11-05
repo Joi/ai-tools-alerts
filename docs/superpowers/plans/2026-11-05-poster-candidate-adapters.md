@@ -10,7 +10,7 @@ Kata: ai-tools-alerts#6j8x. One chunk; one commit
 
 | File | Change |
 |---|---|
-| `tests/fixtures/heartbeat/run.json` | new, redacted from host-b run 2026-11-04T175014Z |
+| `tests/fixtures/heartbeat/run.json` | new, redacted from the poster Mac run 2026-11-04T175014Z |
 | `tests/fixtures/heartbeat/feeds.json` | new, trimmed copy |
 | `tests/fixtures/collector/run-record.json` | new, trimmed and redacted `run-levels.json` |
 | `aitools_alerts/poster/__init__.py` | new, docstring only |
@@ -83,7 +83,7 @@ Kata: ai-tools-alerts#6j8x. One chunk; one commit
 ```
 scripts/test-gate.sh
 python3 -c "from aitools_alerts.poster.candidates import from_kev"
-grep -RniE 'host-a|host-b|host-d|host-e|host-f|host-c' tests/fixtures/heartbeat tests/fixtures/collector  # expect no output
+grep -RniE '<fleet-names>' tests/fixtures/heartbeat tests/fixtures/collector  # expect no output
 ```
 
 ### Rollback

@@ -5,7 +5,7 @@ Runs on the relay VM from a checkout of ai-tools-alerts (the systemd user
 timer in this directory, every 5 minutes):
 
     python3 -I mirror/export_mirror.py --channels spec/channels.json \\
-        --manifest trust/manifest.json --out /home/relay/alerts-mirror
+        --manifest trust/manifest.json --out ~/alerts-mirror
 
 For each channel in spec/channels.json it reads the channel's events from the
 relay's PostgreSQL with one psql query, re-verifies every event's id and

@@ -4,11 +4,11 @@
 
 **Goal:** Two alert channels on the ai-tools Buzz relay, a signed public mirror, and a zero-dependency CLI plus skill that lets a member's agent verify, match and act on alerts, fed hourly by the fleet security watch.
 
-**Architecture:** One public repo `ai-tools-alerts` holds the spec files (advisory schema, action verbs, scope tiers, primary domains, signed trust manifest), a Python package `aitools_alerts` with the member CLI and the fleet poster, the skills and the schedule templates. The poster runs hourly on host-b, reads the heartbeat's run records and the CISA KEV JSON, applies the level rules, and posts through the Buzz CLI on the relay VM over SSH. A mirror exporter on the relay VM dumps the two channels' raw signed events to static files that Caddy serves at `https://buzz.ai-tools.md/alerts/`. The member CLI pulls those files, verifies BIP-340 signatures against the manifest, matches against the local inventory and notifies.
+**Architecture:** One public repo `ai-tools-alerts` holds the spec files (advisory schema, action verbs, scope tiers, primary domains, signed trust manifest), a Python package `aitools_alerts` with the member CLI and the fleet poster, the skills and the schedule templates. The poster runs hourly on the poster Mac, reads the heartbeat's run records and the CISA KEV JSON, applies the level rules, and posts through the Buzz CLI on the relay VM over SSH. A mirror exporter on the relay VM dumps the two channels' raw signed events to static files that Caddy serves at `https://buzz.ai-tools.md/alerts/`. The member CLI pulls those files, verifies BIP-340 signatures against the manifest, matches against the local inventory and notifies.
 
-**Tech Stack:** Python 3.11+ standard library only for the member CLI (pure-Python BIP-340, bech32, tomllib, urllib); `websockets` as an optional extra for the curator subcommand; Buzz CLI (`/home/relay/buzz/target/release/buzz`) on the relay VM for posting; PostgreSQL (`buzz-prod-postgres-1`) and Caddy (`~/buzz/deploy/compose/Caddyfile.pair`) on the VM for the mirror; launchd on host-b; systemd timer on the VM; pytest.
+**Tech Stack:** Python 3.11+ standard library only for the member CLI (pure-Python BIP-340, bech32, tomllib, urllib); `websockets` as an optional extra for the curator subcommand; Buzz CLI (`~/buzz/target/release/buzz`) on the relay VM for posting; PostgreSQL (`buzz-prod-postgres-1`) and Caddy (`~/buzz/deploy/compose/Caddyfile.pair`) on the VM for the mirror; launchd on the poster Mac; systemd timer on the VM; pytest.
 
-**Spec:** /path/to/workspace/docs/plans/2026-11-05-ai-tools-security-alerts-design.md
+**Spec:** the jibot workspace's docs/plans/2026-11-05-ai-tools-security-alerts-design.md
 
 ## Global Constraints
 
@@ -17,8 +17,8 @@
 - Critical fires only by rule: product in scope tier 1 and (KEV exploited, or trojanized/malicious release confirmed by a primary source, or injection-to-execution with a fix). A critical whose cited primary source is not on the allowlist or did not fetch posts as `high` with the word "unverified" in the body.
 - Scope tier 2 (macOS, Linux distributions, browsers) never posts critical.
 - Trust root is a new dedicated key: vault line `AITOOLS_ALERTS_ROOT_NSEC` in Kura, used only to sign manifests. Public key pinned in the CLI as `TRUST_ROOT_PUBKEY` and in the README.
-- Secrets come from Kura helpers or mode-600 files, never argv, never printed. jibot's relay key on the VM is `/home/relay/.buzz-keys/agent.nsec`; the Kura copy is `BUZZ_AITOOLS_AGENT_NSEC`.
-- Relay: NIP-42 URL `wss://buzz.ai-tools.md`, HTTP API `https://buzz.ai-tools.md`, VM `relay-vm.example`, Buzz CLI `/home/relay/buzz/target/release/buzz`.
+- Secrets come from Kura helpers or mode-600 files, never argv, never printed. jibot's relay key on the VM is `~/.buzz-keys/agent.nsec`; the Kura copy is `BUZZ_AITOOLS_AGENT_NSEC`.
+- Relay: NIP-42 URL `wss://buzz.ai-tools.md`, HTTP API `https://buzz.ai-tools.md`, VM `<relay-vm>`, Buzz CLI `~/buzz/target/release/buzz`.
 - Model turns for the watch stay at four a day; the 25-minute budget per run holds.
 - Nothing private leaves the fleet: posts carry advisory, products, actions, sources; never host names, observed versions or evidence paths.
 - Public repo creation is approved (class a, 2026-11-05). No other outward-facing change is.
@@ -53,7 +53,7 @@ Kata: create project `ai-tools-alerts` after Task A1; file one issue per task be
 - [ ] **Step 3: Implement `aitools_alerts/nostr.py`** with pure-Python secp256k1 point arithmetic and BIP-340 sign/verify as in the BIP reference implementation, plus bech32 encode/decode for `npub`/`nsec`. No third-party imports.
 - [ ] **Step 4: Run** the tests — expect PASS.
 - [ ] **Step 5: Create the GitHub repo** `gh repo create Joi/ai-tools-alerts --public --description "Security alerts for people running AI agents: two Buzz channels, a signed mirror, and a CLI your agent can act on"` using the token from `get_github_token`. Push `main`.
-- [ ] **Step 6: Mint the trust root on host-b**: `python3 -c 'from aitools_alerts.nostr import keygen; ...'` writing the sec hex to a 0600 temp file, append `AITOOLS_ALERTS_ROOT_NSEC=<hex>` to the Kura vault through `~/dotfiles-private/scripts/kura-edit.sh` with `EDITOR` set to a one-shot append script (the script appends the line from the temp file and exits), wipe the temp file, verify with `get_secret AITOOLS_ALERTS_ROOT_NSEC | wc -c` (65). Commit only `trust/root.pub` with the pub hex.
+- [ ] **Step 6: Mint the trust root on the poster Mac**: `python3 -c 'from aitools_alerts.nostr import keygen; ...'` writing the sec hex to a 0600 temp file, append `AITOOLS_ALERTS_ROOT_NSEC=<hex>` to the Kura vault through `the Kura edit helper` with `EDITOR` set to a one-shot append script (the script appends the line from the temp file and exits), wipe the temp file, verify with `get_secret AITOOLS_ALERTS_ROOT_NSEC | wc -c` (65). Commit only `trust/root.pub` with the pub hex.
 - [ ] **Step 7: Commit** `git commit -m "feat: nostr primitives, trust root public key"`.
 
 ### Task A2: Spec files
@@ -79,11 +79,11 @@ Kata: create project `ai-tools-alerts` after Task A1; file one issue per task be
 
 **Interfaces:**
 - Produces: `manifest.load(path_or_bytes) -> Manifest` where the manifest is a signed Nostr event of kind `30078`, tag `["d","aitools-alerts-manifest"]`, `content` = JSON `{"version": int, "issued_at": iso, "posters": [{"pubkey": hex, "role": "curator"|"relay-bot", "name": str}]}`; `manifest.verify(m: Manifest, root_pubkey: str) -> bool`; `manifest.role_of(m, pubkey) -> str|None`; constant `TRUST_ROOT_PUBKEY` in `aitools_alerts/__init__.py` equal to `trust/root.pub`.
-- `scripts/sign-manifest.py <content.json>`: reads the root nsec via `get_secret AITOOLS_ALERTS_ROOT_NSEC` (sourcing `~/dotfiles-private/scripts/lib/secrets.sh` in a subprocess), writes `trust/manifest.json`, prints the event id.
+- `scripts/sign-manifest.py <content.json>`: reads the root nsec via `get_secret AITOOLS_ALERTS_ROOT_NSEC` (sourcing `the Kura secrets helper` in a subprocess), writes `trust/manifest.json`, prints the event id.
 
 - [ ] **Step 1: Failing tests**: `test_manifest_signed_by_root_verifies`, `test_manifest_signed_by_other_key_rejected`, `test_manifest_version_must_increase` (loading v2 then v1 raises), `test_role_lookup`.
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
-- [ ] **Step 5: Produce manifest v1 on host-b** with posters: Joi's current relay identity (`18eafd07cca9f24eac1a62d8155f5e9cdabc7552357abca8a1fcced45d05fe29`, role curator, name "Joi") and jibot's ai-tools pubkey (`/home/relay/.buzz-keys/agent.pub.hex` on the VM, role relay-bot, name "jibot"). Commit `trust/manifest.json`.
+- [ ] **Step 5: Produce manifest v1 on the poster Mac** with posters: Joi's current relay identity (`18eafd07cca9f24eac1a62d8155f5e9cdabc7552357abca8a1fcced45d05fe29`, role curator, name "Joi") and jibot's ai-tools pubkey (`~/.buzz-keys/agent.pub.hex` on the VM, role relay-bot, name "jibot"). Commit `trust/manifest.json`.
 - [ ] **Step 6: Commit** `feat: signed trust manifest v1`.
 
 ### Task A4: Inventory, matching and action planning
@@ -148,7 +148,7 @@ Kata: create project `ai-tools-alerts` after Task A1; file one issue per task be
 ### Task B1: Candidate adapters
 
 **Files:**
-- Create: `aitools_alerts/poster/__init__.py`, `aitools_alerts/poster/candidates.py`, `tests/poster/test_candidates.py`, `tests/fixtures/heartbeat/{run.json,feeds.json}` (redacted copies of /path/to/workspace/outputs/security-watch/runs/2026-11-04T175014Z/), `tests/fixtures/collector/run-record.json` (the d9aa schema_version=1 shape from amplifier-bundle-joi/bundles/security-watch/tests/fixtures/)
+- Create: `aitools_alerts/poster/__init__.py`, `aitools_alerts/poster/candidates.py`, `tests/poster/test_candidates.py`, `tests/fixtures/heartbeat/{run.json,feeds.json}` (redacted copies of the jibot workspace's outputs/security-watch/runs/2026-11-04T175014Z/), `tests/fixtures/collector/run-record.json` (the d9aa schema_version=1 shape from amplifier-bundle-joi/bundles/security-watch/tests/fixtures/)
 
 **Interfaces:**
 - Produces: `Candidate(id, aliases, product_text: str, advisory_severity, local_level_hint: str|None, exploited: bool, trojanized: bool, injection_exec: bool, fixed: str|None, affected: str|None, sources: list[Source], observed_at)`; `candidates.from_heartbeat(run_dir: Path) -> list[Candidate]` (findings dict values, `source` to one Source, `local_severity` to the hint; drops `hosts`, `evidence`, `kata`); `candidates.from_kev(kev_json: dict, since_date: str) -> list[Candidate]` (`exploited=True`, product_text = `vendorProject + " " + product`, source = the KEV catalog URL plus `notes`/vendor URL when present); `candidates.from_collector(record: dict) -> list[Candidate]`.
@@ -183,7 +183,7 @@ Kata: create project `ai-tools-alerts` after Task A1; file one issue per task be
 - Modify: `pyproject.toml` (console script `aitools-alerts-poster = aitools_alerts.poster.main:main`)
 
 **Interfaces:**
-- Produces: `transport.send(channel_id: str, content: str, reply_to: str|None, ssh=subprocess) -> SendResult(ok, event_id: str|None, exit_code, stderr)` running `ssh relay-vm.example env BUZZ_RELAY_URL=https://buzz.ai-tools.md BUZZ_PRIVATE_KEY_FILE=/home/relay/.buzz-keys/agent.nsec /home/relay/buzz/target/release/buzz messages send --channel <id> --content - [--reply-to <id>]` with content on stdin; the remote argv is built with `shlex.join`; the key is read by a tiny remote wrapper script installed in Task E1 (`/home/relay/bin/buzz-send`) so the nsec is never on argv; event id parsed from the CLI's JSON stdout (builder verifies the field name on the VM; fall back to `SELECT encode(id,'hex') FROM events WHERE pubkey=... ORDER BY created_at DESC LIMIT 1` through `docker exec buzz-prod-postgres-1 psql`).
+- Produces: `transport.send(channel_id: str, content: str, reply_to: str|None, ssh=subprocess) -> SendResult(ok, event_id: str|None, exit_code, stderr)` running `ssh <relay-vm> env BUZZ_RELAY_URL=https://buzz.ai-tools.md BUZZ_PRIVATE_KEY_FILE=~/.buzz-keys/agent.nsec ~/buzz/target/release/buzz messages send --channel <id> --content - [--reply-to <id>]` with content on stdin; the remote argv is built with `shlex.join`; the key is read by a tiny remote wrapper script installed in Task E1 (`~/bin/buzz-send`) so the nsec is never on argv; event id parsed from the CLI's JSON stdout (builder verifies the field name on the VM; fall back to `SELECT encode(id,'hex') FROM events WHERE pubkey=... ORDER BY created_at DESC LIMIT 1` through `docker exec buzz-prod-postgres-1 psql`).
 - `main.run(now, config)`: load candidates (heartbeat run dirs newer than the watermark; KEV JSON fetched from `https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json` with `If-Modified-Since`; collector records when present), scope, level, ledger lookup, compose, send to `critical` then `feed` for critical, `feed` for high, hold notice for the digest; at the digest hour (`09:00 Asia/Tokyo`) send the digest; write a watermark only after sends succeed; exit 0 with a one-line summary, exit 1 on any send failure.
 - [ ] **Step 1: Failing tests**: `test_send_failure_leaves_advisory_unposted`, `test_critical_posts_to_both_channels_in_order`, `test_high_posts_to_feed_only`, `test_notice_waits_for_digest`, `test_duplicate_alias_becomes_reply`, `test_watermark_advances_only_on_success`, `test_kev_fetch_not_modified_uses_cache`.
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS. **Step 5: Commit** `feat: poster transport and hourly run`.
@@ -196,14 +196,14 @@ Kata: create project `ai-tools-alerts` after Task A1; file one issue per task be
 - Create: `mirror/export_mirror.py`, `mirror/aitools-alerts-mirror.service`, `mirror/aitools-alerts-mirror.timer` (every 5 min), `tests/mirror/test_export.py`
 
 **Interfaces:**
-- Produces: `export_mirror.py --channels spec/channels.json --out /home/relay/alerts-mirror --manifest trust/manifest.json` reading events with `docker exec buzz-prod-postgres-1 psql -U buzz -d buzz -At -c "SELECT json_build_object('id',encode(id,'hex'),'pubkey',encode(pubkey,'hex'),'created_at',extract(epoch from created_at)::bigint,'kind',kind,'tags',tags,'content',content,'sig',encode(sig,'hex')) FROM events WHERE channel_id = '<uuid>' AND deleted_at IS NULL ORDER BY created_at"`, writing `feed.json`, `critical.json`, `feed.atom` (one entry per root post, title from the advisory title, content the human body), `manifest.json`, each to a temp file then `os.replace`. Re-verifies every exported event with `nostr.verify_event` and drops any that fail (a created_at rounding mismatch would show here).
+- Produces: `export_mirror.py --channels spec/channels.json --out ~/alerts-mirror --manifest trust/manifest.json` reading events with `docker exec buzz-prod-postgres-1 psql -U buzz -d buzz -At -c "SELECT json_build_object('id',encode(id,'hex'),'pubkey',encode(pubkey,'hex'),'created_at',extract(epoch from created_at)::bigint,'kind',kind,'tags',tags,'content',content,'sig',encode(sig,'hex')) FROM events WHERE channel_id = '<uuid>' AND deleted_at IS NULL ORDER BY created_at"`, writing `feed.json`, `critical.json`, `feed.atom` (one entry per root post, title from the advisory title, content the human body), `manifest.json`, each to a temp file then `os.replace`. Re-verifies every exported event with `nostr.verify_event` and drops any that fail (a created_at rounding mismatch would show here).
 - [ ] **Step 1: Failing tests**: `test_export_writes_atomically` (temp then replace), `test_exported_events_verify` (fixture rows), `test_atom_has_one_entry_per_root`.
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS. **Step 5: Commit** `feat: mirror exporter and systemd timer`.
 
 ### Task C2: Caddy path and VM install (cell-fleet, repoman-managed)
 
 **Files:**
-- Modify: `/path/to/repos/cell-fleet/ops/buzz/compose-overlays/buzz-aitools/Caddyfile.pair` (add before the catch-all: `handle_path /alerts/* { root * /srv/alerts; file_server; header Cache-Control "max-age=60" }`), `compose.override.yml` (mount `/home/relay/alerts-mirror:/srv/alerts:ro` on the caddy service), `ops/buzz/README.md` (mirror section)
+- Modify: `cell-fleet/ops/buzz/compose-overlays/buzz-aitools/Caddyfile.pair` (add before the catch-all: `handle_path /alerts/* { root * /srv/alerts; file_server; header Cache-Control "max-age=60" }`), `compose.override.yml` (mount `~/alerts-mirror:/srv/alerts:ro` on the caddy service), `ops/buzz/README.md` (mirror section)
 - Create: `ops/buzz/compose-overlays/buzz-aitools/install-mirror.sh` (copies the exporter, service and timer to the VM, `systemctl --user enable --now`, copies Caddyfile and override to `~/buzz/deploy/compose/`, `docker compose up -d --wait` from that directory, bare `docker compose` as the overlay header requires)
 - [ ] **Step 1: Failing test** in cell-fleet's bats suite: `caddyfile has /alerts handle before catch-all` (grep order) and `override mounts alerts-mirror read-only`.
 - [ ] **Step 2: Run** the repo's scoped gate via `~/repos/cell-fleet/ops/repoman/bin/repoman-gate <slug> --repo .` — FAIL on the new test.
@@ -230,7 +230,7 @@ Reopen amplifier-bundle-joi#d9aa on branch `d9aa-security-collector-review-repai
 - One whole-branch independent review with `FRESHEYES_GPT_MODEL=gpt-6-astra` (security-shaped), BLOCKERs fixed, SUBSTANTIVE fixed or rebutted in one kata comment with the evidence line; scoped gate through `repoman-gate`; `repoman-submit -r <slug> -p amplifier-bundle-joi -i d9aa`.
 
 ### Task D5: Rollout at hourly cadence (amplifier-bundle-joi#vy7y)
-- Host: host-b. launchd `com.joi.security-watch-collect` hourly running the collector in read-only mode writing `~/.local/state/security-watch/runs/<ts>/run-record.json`; a second step in the same job starts one model turn through `kata-dispatch` against jibot-code#w3xq only when the record carries a candidate with no prior ledger entry, and only while a counter file `~/.local/state/security-watch/model-turns-<date>` is below 4; the heartbeat automation is retired by the cutover guard the vy7y brief already specifies (one runner active). The poster (Task B4) reads the new record path through `candidates.from_collector`.
+- Host: the poster Mac. launchd `com.joi.security-watch-collect` hourly running the collector in read-only mode writing `<collector-state>/runs/<ts>/run-record.json`; a second step in the same job starts one model turn through `kata-dispatch` against jibot-code#w3xq only when the record carries a candidate with no prior ledger entry, and only while a counter file `<collector-state>/model-turns-<date>` is below 4; the heartbeat automation is retired by the cutover guard the vy7y brief already specifies (one runner active). The poster (Task B4) reads the new record path through `candidates.from_collector`.
 - Acceptance: as written in vy7y, plus `aitools-alerts-poster run` consuming a scheduler-produced record.
 
 ## Slice E: channels, schedule, live acceptance
@@ -238,11 +238,11 @@ Reopen amplifier-bundle-joi#d9aa on branch `d9aa-security-collector-review-repai
 ### Task E1: Create the channels and the VM send wrapper
 
 - On the VM as jibot (`BUZZ_RELAY_URL=https://buzz.ai-tools.md`, key from `~/.buzz-keys/agent.nsec` via `BUZZ_PRIVATE_KEY=$(cat ...)` inside the SSH session only): `buzz channels create --name security-feed --type stream --visibility open --description "Security alerts for people running AI agents: daily digest, real-time highs. Agents: parse the aitools-alert block."` and `--name security-critical --description "Fix-now alerts only. Posts here also interrupt your agent."`. Add Joi's identity as owner of both (`buzz channels` role commands; builder checks the exact subcommand). Builder verifies whether Buzz can restrict writes on `security-critical` to owner/admin/bot; if it cannot, the channel stays open and the README states that only manifest keys are trusted.
-- Write `/home/relay/bin/buzz-send` (reads the nsec from the key file, execs the Buzz CLI; mode 700) and commit a copy at `ops/buzz/compose-overlays/buzz-aitools/buzz-send` in cell-fleet.
+- Write `~/bin/buzz-send` (reads the nsec from the key file, execs the Buzz CLI; mode 700) and commit a copy at `ops/buzz/compose-overlays/buzz-aitools/buzz-send` in cell-fleet.
 - Write `spec/channels.json` in the repo: `{"feed": "<uuid>", "critical": "<uuid>"}`. Commit.
 
-### Task E2: Poster schedule on host-b
-- Install `aitools-alerts` from the repo into `~/.local/pipx` on host-b; launchd `com.joi.aitools-alerts-poster` hourly at :20 (`aitools-alerts-poster run`), logs under `~/Library/Logs/aitools-alerts-poster.log`, `ProcessType Standard` (Background QoS has timed out other lanes). Record the plist in dotfiles-private per the launchd skill.
+### Task E2: Poster schedule on the poster Mac
+- Install `aitools-alerts` from the repo into `~/.local/pipx` on the poster Mac; launchd `com.joi.aitools-alerts-poster` hourly at :20 (`aitools-alerts-poster run`), logs under `~/Library/Logs/aitools-alerts-poster.log`, `ProcessType Standard` (Background QoS has timed out other lanes). Record the plist in dotfiles-private per the launchd skill.
 - Verify: one scheduler-triggered run writes the summary line and posts nothing when there is nothing new.
 
 ### Task E3: Live acceptance (from the design's acceptance list)

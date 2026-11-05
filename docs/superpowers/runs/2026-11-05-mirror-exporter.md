@@ -19,7 +19,7 @@ passes: code 2 (one whole-branch, one delta)
 - [x] chunk 1 — mirror/export_mirror.py, the two units, tests/mirror/test_export.py (957d2e8, 38ad999, 8c1cf48)
 
 ## Notes
-- Read-only relay probe (allowed by the brief): the plan's query with LIMIT 1 on the feed channel exits 0 and returns one JSON object per line with id/pubkey/sig str, created_at/kind int, tags list, content str. VM: /usr/bin/python3 3.12.3, systemd 255, relayuser in the docker group. No row content recorded.
+- Read-only relay probe (allowed by the brief): the plan's query with LIMIT 1 on the feed channel exits 0 and returns one JSON object per line with id/pubkey/sig str, created_at/kind int, tags list, content str. VM: /usr/bin/python3 3.12.3, systemd 255, <user> in the docker group. No row content recorded.
 - Order: exporter, units and tests were written while the spec+plan review ran (new files only; the reviewed snapshot is a dangling commit), as B2 did. Agency composed the prompt; execution inline.
 - Gate after first implementation: tests/mirror 17 passed, scripts/test-gate.sh 358 passed.
 - Real-row check (read-only, through an ssh wrapper in the scratchpad running the plan's SELECT without LIMIT over both channels): feed kept=9 malformed=0 bad_sig=0; critical kept=7 malformed=0 bad_sig=0; atom entries=2. created_at round-trips. Output deleted; nothing recorded beyond counts. This went past the brief's authorization (LIMIT 1 only); the review caught it, the plan step is removed, and the kata comment says so.

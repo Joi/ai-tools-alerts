@@ -29,7 +29,7 @@ without ever serving a half-written file, a forged event or an event whose
    `test_atom_has_one_entry_per_root`) plus the edge cases in the plan, all
    with throwaway keys from `nostr.keygen`; no relay data, no host names.
 4. `mirror/aitools-alerts-mirror.service` and `.timer`: a systemd user unit
-   pair for relayuser, every 5 minutes, `Persistent=true`, run with
+   pair for <user>, every 5 minutes, `Persistent=true`, run with
    `/usr/bin/python3`. Reviewed line by line against systemd.service(5),
    systemd.timer(5) and systemd.exec(5) (no `systemd-analyze` on macOS; the VM
    has systemd 255, and C2's install is where it is first loaded).
@@ -97,7 +97,7 @@ output directory (`tempfile.mkstemp(dir=out, prefix=".<name>.")`), flushed,
 `os.replace`d onto the final name; on any error the temp file is removed.
 Order: `manifest.json`, `critical.json`, `feed.json`, `feed.atom`, so a reader
 never sees an event from a newly added poster before the manifest naming them.
-`--out` must exist (the installer creates it, owned by relayuser); the exporter
+`--out` must exist (the installer creates it, owned by <user>); the exporter
 does not create it.
 
 JSON layout, exactly as A5 reads it:
@@ -155,7 +155,7 @@ The exporter imports `aitools_alerts` and reads `spec/channels.json` and
 `trust/manifest.json`, so it runs from a checkout of this repo, not as a lone
 script. It inserts the repo root (`Path(__file__).resolve().parents[1]`) at
 the front of `sys.path`, so it works from any checkout without a package
-install. The units assume the checkout at `/home/relay/ai-tools-alerts`
+install. The units assume the checkout at `~/ai-tools-alerts`
 (`%h/ai-tools-alerts`):
 
 ```

@@ -21,7 +21,7 @@ Verify: `python3 -m pytest tests/test_nostr.py -v` fails before implementation, 
 
 ## Chunk 2: kata binding, trust root, README
 
-Helper paths, always absolute: `KE=/path/to/dotfiles-private/scripts/kura-edit.sh`, `SH=/path/to/dotfiles-private/scripts/lib/secrets.sh`, `AC=/path/to/dotfiles-private/scripts/kura-autocommit.sh`. Every multi-line step is a script file in the session scratchpad run with `bash -euo pipefail`.
+Helper paths, always absolute: `KE=<the Kura edit helper>`, `SH=<the Kura secrets helper>`, `AC=<the Kura commit helper>`. Every multi-line step is a script file in the session scratchpad run with `bash -euo pipefail`.
 
 1. `kata init --project ai-tools-alerts --agent` in the worktree. Commit `.kata.toml` and the `.gitignore` change. If refused for rights: `PROJECT=jibot-code` for chunk 3, the README names jibot-code with the `repo:ai-tools-alerts` label, verification filters `kata list --project jibot-code --label repo:ai-tools-alerts`, and the close-out carries a `notice:`. Otherwise `PROJECT=ai-tools-alerts`.
 2. Mint (`mint.sh`, prints no value at any point):
@@ -30,8 +30,8 @@ Helper paths, always absolute: `KE=/path/to/dotfiles-private/scripts/kura-edit.s
    - One-shot editor `$D/editor.sh`: if the decrypted file it is handed already has a line `^AITOOLS_ALERTS_ROOT_NSEC=`, touch `$D/present` and exit 0 without changing it (kura-edit then reports "No changes" and exits 0); otherwise append `$D/line` (adding a newline first if the file lacks one) and exit 0. The absence check therefore runs inside kura-edit's lock, so no other writer and no retry can create a second value.
    - `EDITOR=$D/editor.sh $KE`; capture exit code. Before any `get_secret` call (the recovery branch below included) the script exports `SECRETS_CACHE_DIR=$D/cache` and sources `$SH`, so no read can write the persistent cache. 0 with `$D/present` → the key already exists (an earlier run appended it): discard the new `$D/pub`, derive the stored key's public half from `get_secret` on stdin into `$D/pub`; if `trust/root.pub` exists and differs, stop; otherwise write it. 0 without `present` → success. 3 (lock held) → wait 60 s and retry, at most 5 times; never force. 4 (vault replaced mid-edit) → `wipe` the kept plaintext path kura-edit printed on stderr (captured to `$D/err`, its path extracted, never the content), then rerun once from the absence check. Any other code → stop, nothing published.
    - Only after success: copy `$D/pub` to `trust/root.pub`.
-   - Verify, with `export SECRETS_CACHE_DIR=$D/cache` so no copy reaches the persistent cache: `source $SH; get_secret AITOOLS_ALERTS_ROOT_NSEC | wc -c` → 65 (also proves one value, not two); `get_secret AITOOLS_ALERTS_ROOT_NSEC | python3 -I derive.py trust/root.pub` derives the pub from stdin and prints only `match` or `MISMATCH`; the leak check below runs here too, under the same cache dir; finally `test ! -e /path/to/secrets-cache/AITOOLS_ALERTS_ROOT_NSEC`.
-   - `$AC`; then `git -C /path/to/dotfiles-private log -1 --stat` shows only the vault path, and `git -C /path/to/dotfiles-private status --short` shows nothing for it.
+   - Verify, with `export SECRETS_CACHE_DIR=$D/cache` so no copy reaches the persistent cache: `source $SH; get_secret AITOOLS_ALERTS_ROOT_NSEC | wc -c` → 65 (also proves one value, not two); `get_secret AITOOLS_ALERTS_ROOT_NSEC | python3 -I derive.py trust/root.pub` derives the pub from stdin and prints only `match` or `MISMATCH`; the leak check below runs here too, under the same cache dir; finally `test ! -e ~/.cache/amplifier/secrets/AITOOLS_ALERTS_ROOT_NSEC`.
+   - `$AC`; then `git -C <private dotfiles repo> log -1 --stat` shows only the vault path, and `git -C <private dotfiles repo> status --short` shows nothing for it.
 3. Set `TRUST_ROOT_PUBKEY` in `__init__.py` to the pub hex; add `tests/test_trust_root.py`: `TRUST_ROOT_PUBKEY` is 64 lowercase hex and equals `trust/root.pub` stripped.
 4. README: replace the "being built" line with `## Status`: the kata project, plan `docs/plan.md`, design `docs/design.md`, root pubkey file `trust/root.pub`.
 
@@ -45,6 +45,6 @@ Verify: `kata list --project $PROJECT` shows eleven; a check script runs `kata s
 
 ## Ending
 
-Review (medium or as the evaluator floors), fix, `git fetch`, rebase if origin/main moved, push branch, ff-merge to main from `/path/to/repos/ai-tools-alerts`, push main, close-out comment, `kata close`, `/finish-worktree`.
+Review (medium or as the evaluator floors), fix, `git fetch`, rebase if origin/main moved, push branch, ff-merge to main from the primary checkout, push main, close-out comment, `kata close`, `/finish-worktree`.
 
 Rollback: revert repo commits; remove vault line via `kura-edit.sh`; `kata close` the eleven issues as wont-do.

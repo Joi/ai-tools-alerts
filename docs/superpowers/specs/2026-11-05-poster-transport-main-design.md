@@ -7,7 +7,7 @@ composition and the advisory ledger. Nothing yet runs them, and nothing sends a
 post. B4 adds the transport (one ssh call to the relay VM's `buzz-send` wrapper
 per post) and the hourly command that turns inputs into posts: critical to
 `#security-critical` then `#security-feed`, high to the feed, notice held for a
-09:00 Asia/Tokyo digest. E2 (jibot-code#zhja) schedules it on host-b; E3 is the
+09:00 Asia/Tokyo digest. E2 (jibot-code#zhja) schedules it on the poster Mac; E3 is the
 live acceptance.
 
 The contract is the issue's comments: B1 c:6mnrdz (KEV only from the poster's
@@ -20,8 +20,8 @@ record path).
 1. `transport.send(channel_id, content, reply_to=None, ssh=subprocess.run)`
    returns `SendResult(ok, event_id, exit_code, stderr, outcome)` and runs exactly
    `ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15
-   -o ServerAliveCountMax=4 relay-vm.example
-   '<shlex.join([/home/relay/bin/buzz-send, messages, send, --channel, <id>,
+   -o ServerAliveCountMax=4 <relay-vm>
+   '<shlex.join([/home/<user>/bin/buzz-send, messages, send, --channel, <id>,
    --content, -, (--reply-to, <id>)])>'` with the content on stdin. No key, key
    path, `--private-key` or `--relay` appears in the poster's code (the VM
    wrapper `ops/vm/buzz-send`, E1's file, holds the key path by design; that is
@@ -49,7 +49,7 @@ record path).
 
 `aitools_alerts/poster/transport.py`, about 110 lines.
 
-- Constants: `HOST = "relay-vm.example"`, `WRAPPER = "/home/relay/bin/buzz-send"`,
+- Constants: `HOST = "<relay-vm>"`, `WRAPPER = "/home/<user>/bin/buzz-send"` (both moved to the poster config by ai-tools-alerts#h6bx),
   `TIMEOUT = 120` seconds, `MAX_CONTENT = schema.MAX_POST_CHARS`.
 - Argument checks raise `ValueError` before any ssh (a programmer error, not a
   send): `channel_id` must be a lowercase UUID, `reply_to` 64 lowercase hex,

@@ -42,7 +42,7 @@ Steps:
   `python3 -c "from aitools_alerts.poster import compose, ledger"`: exit 0.
 - [ ] 6. Stage the four files (`git add` them by name), check `git diff --cached --name-only`
   lists all four, then the leak check on staged added lines:
-  `git diff --cached origin/main -- aitools_alerts tests | grep '^+' | grep -E -i 'host-a|host-b|host-d|host-e|host-f|host-c'`
+  `git diff --cached origin/main -- aitools_alerts tests | grep '^+' | grep -E -i '<fleet-names>'`
   prints nothing (`candidates.FLEET_HOSTS` is not in this diff).
 - [ ] 7. Commit `feat: post composition and ledger`.
 

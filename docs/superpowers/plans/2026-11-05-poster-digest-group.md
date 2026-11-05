@@ -21,7 +21,7 @@ Acceptance: `python3 -m pytest tests -q` passes (the repo's whole suite; no repo
 ## Verification
 
 - `python3 -m pytest tests -q` on the committed head and again after the rebase.
-- `git diff origin/main...HEAD -- aitools_alerts tests | grep -Ei 'host-a|host-b|host-d|host-e|host-f|host-c'` prints nothing.
+- `git diff origin/main...HEAD -- aitools_alerts tests | grep -Ei '<fleet-names>'` prints nothing.
 - Diff stays under 300 changed lines (code + tests; run artifacts excluded).
 
 ## Rollback

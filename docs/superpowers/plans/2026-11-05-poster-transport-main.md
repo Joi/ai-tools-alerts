@@ -4,7 +4,7 @@ Spec: `docs/superpowers/specs/2026-11-05-poster-transport-main-design.md`.
 Three chunks, three landings on `main` (decided: split by the 600-line rule).
 Gate for each: `scripts/test-gate.sh` (the whole suite; the repo has no
 repoman row). Every chunk: grep the chunk's new and changed lines for
-`host-a|host-b|host-d|host-e|host-f|host-c` (only `candidates.FLEET_HOSTS`
+`<fleet-names>` (only `candidates.FLEET_HOSTS`
 and test denylists may hold them) and for `nsec|PRIVATE_KEY|\.buzz-keys|--private-key|--relay`
 (only a test's denylist may). The repo-wide key path in `ops/vm/buzz-send`,
 `ops/vm/README.md` and `docs/plan.md` is E1's wrapper and its docs, kept by
@@ -136,7 +136,7 @@ Acceptance: tests green; gate green; greps clean.
 fresheyes (`FRESHEYES_GPT_MODEL=gpt-6-astra`) of the landing's diff; every
 BLOCKER fixed, every SUBSTANTIVE fixed or rebutted in one kata comment; one
 delta pass only when a BLOCKER fix changed behaviour; gate; push the branch;
-from `/path/to/repos/ai-tools-alerts`: `git checkout main && git pull
+from the primary checkout: `git checkout main && git pull
 --ff-only && git merge --ff-only <branch> && git push origin main`; comment
 the sha on kfq6. After landing 3: comment the config shape and the command
 line on jibot-code#zhja (E2); comment the shas and interfaces on the issues

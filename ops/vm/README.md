@@ -1,6 +1,6 @@
 # The relay VM: what this service keeps there
 
-The ai-tools Buzz relay runs on `relay-vm.example` (user `relayuser`) and answers at `https://buzz.ai-tools.md`. This repo owns the VM-side pieces of the alert service; the relay itself (image, Caddy, compose) belongs to cell-fleet `ops/buzz/` and this service changes none of it.
+The ai-tools Buzz relay runs on `<relay-vm>` (user `<user>`) and answers at `https://buzz.ai-tools.md`. This repo owns the VM-side pieces of the alert service; the relay itself (image, Caddy, compose) belongs to cell-fleet `ops/buzz/` and this service changes none of it.
 
 Created 2026-11-05 under jibot-code#wpbd.
 
@@ -24,12 +24,12 @@ Buzz cannot restrict posting on a channel by role. A write is accepted from any 
 
 ## `buzz-send`
 
-`/home/relay/bin/buzz-send`, mode 700, owner `relayuser`. Source: `ops/vm/buzz-send` in this repo; the installed file must be byte-identical.
+`~/bin/buzz-send`, mode 700, owner `<user>`. Source: `ops/vm/buzz-send` in this repo; the installed file must be byte-identical.
 
-It reads jibot's key from `/home/relay/.buzz-keys/agent.nsec`, checks it (regular file, nsec checksum and length or 64 hex, scalar in range), exports it as `BUZZ_PRIVATE_KEY` with `BUZZ_RELAY_URL=https://buzz.ai-tools.md`, clears `BUZZ_AUTH_TAG`, refuses `--private-key` and `--relay`, and execs `/home/relay/buzz/target/release/buzz` with the caller's arguments. The key is never on an argv. Message text goes on stdin:
+It reads jibot's key from `~/.buzz-keys/agent.nsec`, checks it (regular file, nsec checksum and length or 64 hex, scalar in range), exports it as `BUZZ_PRIVATE_KEY` with `BUZZ_RELAY_URL=https://buzz.ai-tools.md`, clears `BUZZ_AUTH_TAG`, refuses `--private-key` and `--relay`, and execs `~/buzz/target/release/buzz` with the caller's arguments. The key is never on an argv. Message text goes on stdin:
 
 ```bash
-printf '%s' "$text" | ssh relay-vm.example /home/relay/bin/buzz-send \
+printf '%s' "$text" | ssh <relay-vm> '~/bin/buzz-send' \
   messages send --channel <uuid> --content - [--reply-to <event id>]
 ```
 
@@ -38,18 +38,18 @@ printf '%s' "$text" | ssh relay-vm.example /home/relay/bin/buzz-send \
 Install or update, then verify:
 
 ```bash
-scp ops/vm/buzz-send relay-vm.example:/home/relay/bin/buzz-send.new
-ssh relay-vm.example 'chmod 700 /home/relay/bin/buzz-send.new && mv -f /home/relay/bin/buzz-send.new /home/relay/bin/buzz-send && sha256sum /home/relay/bin/buzz-send'
+scp ops/vm/buzz-send '<relay-vm>:bin/buzz-send.new'
+ssh <relay-vm> 'chmod 700 ~/bin/buzz-send.new && mv -f ~/bin/buzz-send.new ~/bin/buzz-send && sha256sum ~/bin/buzz-send'
 git show origin/main:ops/vm/buzz-send | shasum -a 256   # must match
-ssh relay-vm.example /home/relay/bin/buzz-send channels get --channel 599adb9f-4f9f-4b19-aee3-66667c3293e8
+ssh <relay-vm> '~/bin/buzz-send' channels get --channel 599adb9f-4f9f-4b19-aee3-66667c3293e8
 ```
 
 ## How the channels were made
 
-Each block ran on the VM through `ssh relay-vm.example 'bash -s' < script`, so the key was read and exported on the remote side only:
+Each block ran on the VM through `ssh <relay-vm> 'bash -s' < script`, so the key was read and exported on the remote side only:
 
 ```bash
-B=/home/relay/buzz/target/release/buzz
+B=~/buzz/target/release/buzz
 BUZZ_PRIVATE_KEY="$(cat ~/.buzz-keys/agent.nsec)"; export BUZZ_PRIVATE_KEY
 export BUZZ_RELAY_URL=https://buzz.ai-tools.md
 $B channels create --name security-feed --type stream --visibility open \
@@ -68,7 +68,7 @@ Do not use `--template`: it resolves desktop-app templates. The wrapper was then
 2. Check neither name exists. The listing must succeed and parse before its absence means anything; a failed listing is not permission to create:
 
    ```bash
-   list="$(/home/relay/bin/buzz-send channels list --limit 500)" || { echo "listing failed; stop"; exit 1; }
+   list="$(~/bin/buzz-send channels list --limit 500)" || { echo "listing failed; stop"; exit 1; }
    echo "$list" | jq -e 'type == "array"' >/dev/null || { echo "listing not a JSON array; stop"; exit 1; }
    echo "$list" | jq -e 'length < 500' >/dev/null || { echo "listing hit the 500 cap and may be truncated; stop"; exit 1; }
    echo "$list" | jq -e 'map(.name) | (index("security-feed") or index("security-critical")) | not' >/dev/null \
@@ -76,4 +76,4 @@ Do not use `--template`: it resolves desktop-app templates. The wrapper was then
    ```
 3. Run the create and add-member commands above (through `buzz-send`, or with the remote-side key export).
 4. New channels get new UUIDs: update `spec/channels.json`, this table, and tell the readers of `spec/channels.json` (the poster, the mirror exporter, the member CLI). Members must re-join.
-5. To remove: `buzz-send channels delete --channel <uuid>` for each, and delete `/home/relay/bin/buzz-send`.
+5. To remove: `buzz-send channels delete --channel <uuid>` for each, and delete `~/bin/buzz-send`.
