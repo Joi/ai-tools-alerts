@@ -80,12 +80,12 @@ def test_pull_truncated_json_keeps_previous_state(mirror):
     ev = mirror.root_post(mirror.cur_sec)
     res, _ = do_pull(mirror)
     assert res.error is None
-    before = {n: (config.state_dir() / n).read_bytes() for n in ("events.json", "manifest.json")}
+    before = {n: (config.state_dir() / n).read_bytes() for n in ("events.json",)}
     full = mirror.body("feed.json")
     mirror.raw["feed.json"] = full[: len(full) // 2]
     res, _ = do_pull(mirror)
     assert res.error.startswith("mirror unreadable: feed.json")
-    after = {n: (config.state_dir() / n).read_bytes() for n in ("events.json", "manifest.json")}
+    after = {n: (config.state_dir() / n).read_bytes() for n in ("events.json",)}
     assert after == before
     st = State.load()
     assert list(st.events) == [ev["id"]] and len(threads(st)) == 1
@@ -143,11 +143,14 @@ def test_bundled_manifest_is_the_floor_for_the_pinned_root():
 
 
 def test_stored_manifest_from_another_root_is_not_a_floor(mirror):
+    ev = mirror.root_post(mirror.cur_sec)
     assert do_pull(mirror)[0].error is None
     other = Mirror()
     other.publish_manifest(version=1)
     res, _ = do_pull(other)
     assert res.error is None and State.load().manifest_root == other.root
+    st = State.load()  # the first root's events are kept under that root
+    assert st.events == {} and ev["id"] in st.events_for(mirror.root)
 
 
 def test_unknown_poster_counted(mirror):
@@ -283,11 +286,12 @@ def test_corrupt_state_file_raises(home):
 
 def test_state_manifest_record_must_verify(mirror):
     do_pull(mirror)
-    p = config.state_dir() / "manifest.json"
+    p = config.state_dir() / "events.json"
     rec = json.loads(p.read_text())
-    [(root, ev)] = rec["accepted"].items()
-    rec["accepted"] = {nostr.keygen()[1]: ev}
-    rec["current"] = next(iter(rec["accepted"]))
+    [(root, r)] = rec["roots"].items()
+    other = nostr.keygen()[1]
+    rec["roots"] = {other: r}
+    rec["current"] = other
     p.write_text(json.dumps(rec))
     with pytest.raises(StateError, match="not signed"):
         State.load()
@@ -379,3 +383,79 @@ def test_concurrent_pull_cannot_roll_the_manifest_back(mirror):
     res = pull.fetch("https://x.invalid/", stale, fetch=mirror.fetch, root_pubkey=mirror.root)
     assert res.error.startswith("manifest refused")
     assert State.load().manifest.version == 3
+
+
+# ------------------------------------------------ whole-branch review fixes
+
+@pytest.mark.parametrize("level", [[], {}, 3, None, "urgent"])
+def test_relay_bot_patch_with_bad_level_never_crashes(mirror, level):
+    root = mirror.root_post(mirror.bot_sec, advisory(posted_by="relay-bot"))
+    other = mirror.root_post(mirror.cur_sec, advisory(id="AITA-OTHER"))
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(level=level))
+    do_pull(mirror)
+    ts = threads()
+    assert {t.adv.id for t in ts} == {"AITA-TEST-0001", "AITA-OTHER"}
+    assert all(t.adv.level == "critical" for t in ts)
+
+
+def test_unsigned_extra_fields_are_not_stored(mirror):
+    ev = mirror.root_post(mirror.cur_sec, files=())
+    mirror.events["feed.json"] = [dict(ev, extra="\ud800", sig=ev["sig"])]
+    res, _ = do_pull(mirror)
+    assert res.error is None
+    assert State.load().events == {ev["id"]: ev}
+
+
+def test_newer_bundled_manifest_governs_cached_events(monkeypatch, mirror):
+    ev = mirror.root_post(mirror.cur_sec)
+    assert do_pull(mirror)[0].error is None
+    v1 = mirror.manifest
+    v2 = mirror.publish_manifest(posters=[{"pubkey": mirror.bot, "role": "relay-bot", "name": "bot"}])
+    monkeypatch.setattr(pull, "TRUST_ROOT_PUBKEY", mirror.root)
+    monkeypatch.setattr(pull, "bundled_manifest", lambda: manifest.load(json.dumps(v2).encode()))
+    mirror.manifest = v1  # the mirror replays v1: the pull fails ...
+    assert do_pull(mirror)[0].error.startswith("manifest refused")
+    assert threads() == []  # ... and the bundled v2 still revokes the curator
+
+
+def test_events_age_out_but_an_active_root_stays(mirror):
+    old = mirror.root_post(mirror.cur_sec, advisory(id="AITA-OLD"), created_at=T0 - 500 * 86400)
+    kept_root = mirror.root_post(mirror.cur_sec, advisory(id="AITA-KEPT"), created_at=T0 - 500 * 86400)
+    mirror.reply(mirror.cur_sec, kept_root, "level: high", created_at=T0)
+    res, _ = do_pull(mirror)
+    st = State.load()
+    assert old["id"] not in st.events and kept_root["id"] in st.events
+    assert res.dropped["aged-out"] == 1
+
+
+def test_state_limit_refuses_new_events_but_applies_the_manifest(monkeypatch, mirror):
+    first = mirror.root_post(mirror.cur_sec)
+    assert do_pull(mirror)[0].error is None
+    for i in range(3):
+        mirror.root_post(mirror.cur_sec, advisory(id=f"AITA-N{i}"), created_at=T0 + 300 + i)
+    monkeypatch.setattr(pull, "MAX_STORED_EVENTS", 2)
+    res, _ = do_pull(mirror)
+    assert res.error == "state limit reached: new events not stored"
+    assert list(State.load().events) == [first["id"]]
+    State.load()  # still loadable
+
+
+def test_relay_bot_cannot_undo_a_curator_amendment(mirror):
+    root = mirror.root_post(mirror.bot_sec, advisory(posted_by="relay-bot"))
+    mirror.reply(mirror.cur_sec, root, "level: high", created_at=T0 + 150)
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(level="critical"), created_at=T0 + 160)
+    do_pull(mirror)
+    assert threads()[0].adv.level == "high"
+
+
+def test_telegram_chat_ids(home):
+    p = config.config_path()
+    p.parent.mkdir(parents=True)
+    for v, want in (("-1001234567890", "-1001234567890"), ("-42", "-42"), ("@alerts_chan", "@alerts_chan")):
+        p.write_text(f'telegram_chat_id = "{v}"\n')
+        assert config.load().telegram_chat_id == want
+    p.write_text("telegram_chat_id = -1001234567890\n")
+    assert config.load().telegram_chat_id == "-1001234567890"
+    p.write_text('telegram_chat_id = "1; rm"\n')
+    with pytest.raises(config.ConfigError):
+        config.load()

@@ -67,13 +67,23 @@ def _run(argv: list[str], run) -> SendResult:
     return SendResult(True, f"sent with {argv[0]}")
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect turns a POST into a GET without the body, so a 200 after
+    one proves nothing was delivered: refuse it."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, "redirect refused", headers, fp)
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def _default_post(url: str, payload: dict) -> tuple[int, bytes]:
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST",
                                  headers={"Content-Type": "application/json",
                                           "User-Agent": "aitools-alerts"})
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        with _OPENER.open(req, timeout=TIMEOUT) as r:
             return r.status, r.read(65536)
     except urllib.error.HTTPError as e:
         return e.code, b""

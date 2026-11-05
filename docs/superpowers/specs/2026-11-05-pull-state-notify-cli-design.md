@@ -74,8 +74,9 @@ acceptance command line has none, and a flag is easier to leave in a hook).
   strings, intersected with `schema.VERBS` (unknown verbs ignored).
   `notify`: a list of strings, unknown channels ignored. `mirror_url` must
   start with `https://` or `file://`. Recipients (`imessage_to`, `signal_to`,
-  `signal_account`, `telegram_chat_id`) must match
-  `[A-Za-z0-9+@._:-]{1,128}` and not start with `-`; `webhook_url` must be
+  `signal_account`) must match `[A-Za-z0-9+@._:-]{1,128}` and not start with
+  `-`; `telegram_chat_id` (JSON, never argv) is a numeric id, negative for
+  groups and channels, or `@channelname`; `webhook_url` must be
   https.
 - `write_default(path, force=False)`: writes a commented TOML template with
   the defaults, mode 0600, directory 0700; refuses an existing file unless
@@ -88,19 +89,21 @@ acceptance command line has none, and a flag is easier to leave in a hook).
 
 - Directory `~/.local/state/aitools-alerts/` (0700), files written atomically
   (temp file in the same directory, `os.replace`, mode 0600):
-  `events.json` (`{event id: event}`), `seen.json` (sorted list of advisory
-  thread ids notified), `last_pull.json` (`{"at", "mirror_url", "ok",
+  `events.json` (`{"current": root, "roots": {root: {"manifest": manifest
+  event, "events": {event id: event}}}}`: per trust root, the last accepted
+  manifest and the events filtered under it, in ONE file so no reader and no
+  crash ever pairs events with another generation's manifest, and a pull
+  under one root never touches another root's events), `seen.json` (sorted
+  list of advisory thread ids notified), `last_pull.json` (`{"at", "mirror_url", "ok",
     "error", "last_ok_at", "new", "dropped"}`: the last ATTEMPT, rewritten on
-  a failed pull too, with `last_ok_at` carried from the last success), and
-  `manifest.json` (`{"current": root, "accepted": {root: manifest event}}`,
-  the last accepted manifest for each root a pull used).
-- `State(dir, events: dict, seen: set, accepted: dict[root, Manifest],
-  manifest_root: str | None, last_pull: dict)`, with `manifest` the current
-  root's; `State.locked()` takes an exclusive `flock` on `<dir>/.lock` and
+  a failed pull too, with `last_ok_at` carried from the last success), Stored events keep only the seven NIP-01 fields (an unsigned extra field
+  never reaches state).
+- `State(dir, roots: {root: [Manifest, events]}, manifest_root, seen,
+  last_pull)`, with `manifest` and `events` the current root's; `State.locked()` takes an exclusive `flock` on `<dir>/.lock` and
   re-reads the files, and `pull.fetch` runs inside it, so two concurrent
   pulls decide one after the other on the latest saved floor (no rollback).
-  Events are written before the manifest record: a reader between the two
-  sees the new events under the old manifest, which only drops more. `State.load(dir=None)`
+  `notify` holds the same lock while it sends, re-reads `seen` and skips a
+  thread a concurrent run already sent, so no update is lost. `State.load(dir=None)`
   never raises on a missing file. A state file that does not parse, or has the
   wrong shape, raises `StateError` naming the file: the CLI reports it and
   stops rather than silently start from empty (an empty manifest record would
@@ -140,17 +143,27 @@ at once, and the last good events of keys still trusted are kept.
 4. Candidates are the stored events, then the fetched ones. Each is
    verified BEFORE it may claim its id (the first candidate with an id that
    verifies and is trusted wins; a forged copy of a genuine id never
-   displaces it); each is checked under the CURRENT manifest only: `nostr.verify_event`
+   displaces it; stored events were verified when stored and are re-checked
+   for role only); each is checked under the CURRENT manifest only: `nostr.verify_event`
    (else `dropped["bad-signature"]`), then `manifest.role_of` (else
    `dropped["revoked"]` when the key was in the previous manifest or the
    event was in state, else `dropped["unknown-poster"]`). The block is parsed
    later, when advisories are built. A stored event whose key left the
    manifest is removed from state: the cache never vouches for it.
-5. Save events, manifest (with root) and last_pull. `new_events` are the
+   Retention: events older than 400 days are dropped (`aged-out`) unless a
+   kept reply points at them. Bound: when the result would exceed 20000
+   events or about 24 MiB, the fetched events are refused
+   (`state limit reached: new events not stored`) and the stored ones are
+   filtered under the new manifest alone, so state always stays loadable and
+   a revoking manifest always lands.
+5. Save the root's manifest and events (one file), then last_pull. `new_events` are the
    accepted events not in state before, in `created_at` order.
 
 `advisories(state) -> list[Thread]` builds the current view from the stored
-events and stored manifest (`Thread(root_id, adv, retracted, updated_at)`):
+events under the EFFECTIVE manifest: the stored one, or the bundled
+`trust/manifest.json` when the current root is the pinned root and the
+bundle is newer, so a revocation shipped in the package governs the cache
+even while the mirror replays an old manifest (`Thread(root_id, adv, retracted, updated_at)`):
 
 - A root is an event with no `e` tag marked `reply` or `root`, and whose last
   `aitools-alert` block parses (`schema.parse_post`); the advisory's
@@ -164,8 +177,10 @@ events and stored manifest (`Thread(root_id, adv, retracted, updated_at)`):
     the level when it is lower than the current one (never raises);
   - a reply whose last `aitools-alert` block decodes is a PATCH, applied
     after any `level:` line in the same reply (A7's amend sends both).
-  Only a curator may amend a curator's thread: a relay-bot reply to one is
-  discussion, so the bot cannot suppress, expire or re-scope a curator alert.
+  Once a curator has posted or amended a thread, a relay-bot reply to it is
+  discussion, so the bot cannot suppress, expire, re-scope or undo a
+  curator's word. A patch that fails validation or raises is counted
+  (`bad-patch`) and skipped; it never stops the other threads.
   Plain-text replies from a relay-bot key, and any other text, are discussion.
 - Patch contract (for B3 compose.reply_post and A7 curator): the block is a
   JSON object whose keys are a subset of the advisory fields. An omitted field
@@ -200,6 +215,8 @@ events and stored manifest (`Thread(root_id, adv, retracted, updated_at)`):
   `https://api.telegram.org/bot<token>/sendMessage`; accepted only on HTTP
   200 with `"ok": true`. The token never appears in `detail`.
 - `webhook`: urllib POST of JSON `{"text": text}`; accepted on HTTP 2xx.
+  Redirects are refused (urllib would turn the POST into a bodiless GET and
+  a login page's 200 would mark the alert seen).
 - Subprocesses: `shell=False`, `timeout=30`, stdin closed, accepted on exit 0.
 - `format_text(thread, match) -> str`: four lines: `CRITICAL: <title>`,
   `Affected: <product> <installed version> (fixed in <fixed>)`,

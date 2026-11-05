@@ -24,7 +24,9 @@ __all__ = ["DEFAULT_MIRROR_URL", "CHANNELS", "ConfigError", "Settings", "config_
 DEFAULT_MIRROR_URL = "https://buzz.ai-tools.md/alerts/"
 CHANNELS = ("desktop", "imessage", "signal", "telegram", "webhook")
 _RECIPIENT = re.compile(r"[A-Za-z0-9+@._:][A-Za-z0-9+@._:-]{0,127}")
-_RECIPIENT_KEYS = ("imessage_to", "signal_to", "signal_account", "telegram_chat_id")
+_RECIPIENT_KEYS = ("imessage_to", "signal_to", "signal_account")
+# Telegram ids go into JSON, never argv: negative group/channel ids or @name.
+_TELEGRAM_CHAT = re.compile(r"-?[0-9]{1,20}|@[A-Za-z0-9_]{5,32}")
 MAX_CONFIG_BYTES = 1 << 20
 
 
@@ -103,11 +105,17 @@ def load(path: Path | None = None) -> Settings:
                                             if c in CHANNELS))
     if "auto_apply" in raw:
         out["auto_apply"] = frozenset(_strings(raw["auto_apply"], "auto_apply")) & schema.VERBS
+    if "telegram_chat_id" in raw:
+        v = raw["telegram_chat_id"]
+        if isinstance(v, int) and not isinstance(v, bool):
+            v = str(v)
+        if not isinstance(v, str) or not _TELEGRAM_CHAT.fullmatch(v):
+            raise ConfigError("telegram_chat_id must be a numeric chat id (negative for "
+                              "groups and channels) or @channelname")
+        out["telegram_chat_id"] = v
     for key in _RECIPIENT_KEYS:
         if key in raw:
             v = raw[key]
-            if isinstance(v, int) and not isinstance(v, bool) and key == "telegram_chat_id":
-                v = str(v)
             if not isinstance(v, str) or not _RECIPIENT.fullmatch(v):
                 raise ConfigError(f"{key} must be 1..128 characters of A-Z a-z 0-9 + @ . _ : - "
                                   "and not start with -")

@@ -87,6 +87,9 @@ def _make_key() -> int:
 
 def cmd_init(a) -> int:
     path = config.config_path()
+    if a.make_key and config.key_path().exists():
+        _err(f"{config.key_path()} exists; not replacing a key")
+        return 1
     if path.exists() and not a.force:
         if not a.make_key:
             _err(f"{path} exists; use --force to overwrite it")
@@ -166,27 +169,29 @@ def _unseen_critical(a, st: State) -> list:
 
 
 def _notify(st: State, s: config.Settings, pending) -> int:
+    """Send each pending thread once, under the state lock: a concurrent run
+    waits, then re-reads seen and skips what this one already sent."""
+    if not pending:
+        return 0
     if not s.notify:
-        if pending:
-            _err("no notify channel configured")
-        return 1 if pending else 0
+        _err("no notify channel configured")
+        return 1
     status = 0
-    done: set[str] = set()
-    for t, m in pending:
-        if t.root_id in done:
-            continue
-        text = notify.format_text(t.adv, m)
-        accepted = False
-        for ch in s.notify:
-            r = notify.send(ch, text, s)
-            print(f"{ch}: {r.detail}")
-            accepted = accepted or r.accepted
-        if accepted:
-            done.add(t.root_id)
-            st.seen.add(t.root_id)
-            st.save_seen()
-        else:
-            status = 1
+    with st.locked():
+        for t, m in pending:
+            if t.root_id in st.seen:
+                continue  # sent already (by this run, or a concurrent one)
+            text = notify.format_text(t.adv, m)
+            accepted = False
+            for ch in s.notify:
+                r = notify.send(ch, text, s)
+                print(f"{ch}: {r.detail}")
+                accepted = accepted or r.accepted
+            if accepted:
+                st.seen.add(t.root_id)
+                st.save_seen()
+            else:
+                status = 1
     return status
 
 
@@ -290,6 +295,9 @@ def main(argv: list[str] | None = None) -> int:
                 "plan": cmd_plan, "run": cmd_run}[a.cmd](a, st, s)
     except (config.ConfigError, StateError) as e:
         _err(str(e))
+        return 1
+    except OSError as e:  # e.g. the state directory is not writable
+        _err(f"{type(e).__name__}: {e.strerror or e}")
         return 1
 
 

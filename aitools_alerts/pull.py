@@ -26,7 +26,7 @@ from urllib.parse import urlsplit
 from . import TRUST_DIR, TRUST_ROOT_PUBKEY, manifest, nostr, schema
 from .manifest import Manifest
 from .schema import Advisory
-from .state import State
+from .state import EVENT_KEYS, State
 
 __all__ = ["FILES", "MAX_FETCH_BYTES", "MAX_EVENTS", "PullResult", "Thread",
            "fetch", "default_fetch", "advisories", "active", "bundled_manifest"]
@@ -34,6 +34,9 @@ __all__ = ["FILES", "MAX_FETCH_BYTES", "MAX_EVENTS", "PullResult", "Thread",
 FILES = ("feed.json", "critical.json")
 MAX_FETCH_BYTES = 8 << 20
 MAX_EVENTS = 10000
+MAX_STORED_EVENTS = 20000
+MAX_STORED_BYTES = 24 << 20  # well under state.MAX_STATE_BYTES, so state stays loadable
+RETENTION_S = 400 * 86400
 TIMEOUT = 20
 _RANK = {"notice": 1, "high": 2, "critical": 3}
 _PATCH_KEYS = frozenset(f for f in Advisory.__dataclass_fields__)
@@ -95,7 +98,7 @@ def bundled_manifest() -> Manifest | None:
 
 
 def _floor(state: State, root: str) -> Manifest | None:
-    cands = [state.accepted[root]] if root in state.accepted else []
+    cands = [state.accepted(root)] if state.accepted(root) is not None else []
     if root == TRUST_ROOT_PUBKEY:
         b = bundled_manifest()
         if b is not None:
@@ -125,37 +128,57 @@ def fetch(base_url: str, state: State, fetch=None, root_pubkey: str = TRUST_ROOT
                       time.time() if now is None else now)
 
 
-def _filter(events, m: Manifest, floor: Manifest | None, before: dict, res: PullResult) -> dict:
-    """Events that verify and whose key is in ``m``. Each candidate is
-    verified before it can claim its id, so a forged copy of a genuine
-    event's id never displaces the genuine one."""
+def _filter(stored: dict, fetched: list, m: Manifest, floor: Manifest | None,
+            res: PullResult) -> dict:
+    """Events whose key is in ``m``: the stored ones (verified when they were
+    stored), then each fetched one that verifies. A fetched event is verified
+    before it can claim its id, so a forged copy of a genuine id never
+    displaces the genuine one. Only the seven NIP-01 fields are kept: an
+    unsigned extra field never reaches state."""
     kept: dict[str, dict] = {}
     why: dict[str, str] = {}  # id -> reason, counted once per id
-    for ev in events:
+    for ev, verified in [(e, True) for e in stored.values()] + [(e, False) for e in fetched]:
         if not isinstance(ev, dict) or not isinstance(ev.get("id"), str):
             res.dropped["malformed"] += 1
             continue
         eid = ev["id"]
         if eid in kept:
             continue  # the same event served twice (feed and critical)
-        if not nostr.verify_event(ev):
+        if not verified and not nostr.verify_event(ev):
             why.setdefault(eid, "bad-signature")
         elif manifest.role_of(m, ev["pubkey"]) is None:
-            was = (eid in before or (floor is not None
-                                     and manifest.role_of(floor, ev["pubkey"]) is not None))
+            was = verified or (floor is not None
+                               and manifest.role_of(floor, ev["pubkey"]) is not None)
             why.setdefault(eid, "revoked" if was else "unknown-poster")
         else:
-            kept[eid] = copy.deepcopy(ev)
+            kept[eid] = {k: copy.deepcopy(ev[k]) for k in EVENT_KEYS}
             why.pop(eid, None)
     res.dropped.update(why.values())
     return kept
 
 
+def _retain(kept: dict, now: float, res: PullResult) -> dict:
+    """Drop events older than RETENTION_S, except a root that a kept reply
+    still points at, so the store stays bounded and a thread never loses its
+    root while it is active."""
+    cutoff = now - RETENTION_S
+    young = {eid: ev for eid, ev in kept.items() if ev["created_at"] >= cutoff}
+    refs = {_thread_ref(ev) for ev in young.values()}
+    out = {eid: ev for eid, ev in kept.items() if eid in young or eid in refs}
+    if len(out) < len(kept):
+        res.dropped["aged-out"] += len(kept) - len(out)
+    return out
+
+
+def _size(events: dict) -> int:
+    return sum(len(ev["content"]) + len(json.dumps(ev["tags"])) + 300 for ev in events.values())
+
+
 def _fetch(base_url, state: State, get, root_pubkey: str, now: float) -> PullResult:
     base = base_url if base_url.endswith("/") else base_url + "/"
     floor = _floor(state, root_pubkey)
-    res = PullResult(manifest=state.accepted.get(root_pubkey) or floor)
-    before = state.events
+    res = PullResult(manifest=state.accepted(root_pubkey) or floor)
+    before = state.events_for(root_pubkey)
 
     def record(ok: bool, error: str | None) -> None:
         last = {"at": int(now), "mirror_url": base, "ok": ok, "error": error,
@@ -193,20 +216,35 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float) -> PullRes
             error = f"mirror unreadable: {name}: {e}"
         if error:
             break
-    # 4. stored events first (verified before), then fetched, under the
-    # current manifest only. A verified manifest is accepted even when an
-    # event file is unreadable: its revocations apply to the stored events
-    # at once, while the previous events of keys it still trusts are kept.
+    # 4. stored events first, then fetched, under the current manifest only.
+    # A verified manifest is accepted even when an event file is unreadable
+    # or the store is full: its revocations apply to the stored events at
+    # once, while the previous events of keys it still trusts are kept.
     res.manifest = m
-    kept = _filter(list(before.values()) + ([] if error else fetched), m, floor, before, res)
+    kept = _retain(_filter(before, [] if error else fetched, m, floor, res), now, res)
+    if _size(kept) > MAX_STORED_BYTES or len(kept) > MAX_STORED_EVENTS:
+        res.dropped.clear()
+        kept = _retain(_filter(before, [], m, floor, res), now, res)
+        error = error or "state limit reached: new events not stored"
     res.new_events = sorted((ev for eid, ev in kept.items() if eid not in before),
                             key=lambda e: (e["created_at"], e["id"]))
-    state.events = kept
-    state.accept(root_pubkey, m)
+    state.accept(root_pubkey, m, kept)
     res.error = error
     record(error is None, error)
     state.save_pull()
     return res
+
+
+def effective_manifest(state: State) -> Manifest | None:
+    """The stored manifest of the current root, or the bundled one when the
+    current root is the pinned root and the bundle is newer: a revocation
+    shipped in the package governs cached events before any pull succeeds."""
+    m = state.manifest
+    if m is not None and state.manifest_root == TRUST_ROOT_PUBKEY:
+        b = bundled_manifest()
+        if b is not None and b.version > m.version:
+            return b
+    return m
 
 
 # ---------------------------------------------------------------- advisories
@@ -244,7 +282,8 @@ def _apply_patch(adv: Advisory, patch: dict, role: str) -> Advisory | None:
     if role != "curator":
         if "expires_at" in patch:
             return None
-        if "level" in patch and _RANK.get(patch["level"], 0) < _RANK[adv.level]:
+        lvl = patch.get("level", adv.level)
+        if not isinstance(lvl, str) or lvl not in _RANK or _RANK[lvl] < _RANK[adv.level]:
             return None
     try:
         return schema.validate({**asdict(adv), **patch, "posted_by": adv.posted_by})
@@ -263,10 +302,11 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
     whose first line is ``retract`` retracts the thread for good; one whose
     first line is ``level: high`` or ``level: notice`` lowers the level. A
     reply's ``aitools-alert`` block, if any, is a patch (see _apply_patch).
-    Only a curator may amend a curator's thread: a relay-bot reply there is
-    discussion, so the bot can neither suppress nor alter a curator alert.
+    Once a curator has posted or amended a thread, a relay-bot reply to it is
+    discussion, so the bot can neither suppress, alter nor undo a curator's
+    word. A patch that fails validation, or raises, is counted and skipped.
     """
-    m = state.manifest
+    m = effective_manifest(state)
     if m is None:
         return []
     dropped = dropped if dropped is not None else Counter()
@@ -283,13 +323,13 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
         if adv is None:
             dropped["no-block"] += 1
             continue
-        roots[ev["id"]] = [replace(adv, posted_by=role), False, ev["created_at"]]
+        roots[ev["id"]] = [replace(adv, posted_by=role), False, ev["created_at"], role == "curator"]
     for ev, role, ref in sorted(replies, key=lambda r: (r[0]["created_at"], r[0]["id"])):
         t = roots.get(ref)
         if t is None or t[1]:
             continue
-        if role != "curator" and t[0].posted_by == "curator":
-            continue  # discussion
+        if role != "curator" and t[3]:
+            continue  # discussion: a curator posted or amended this thread
         first = _first_line(ev["content"])
         if first == "retract":
             if role == "curator":
@@ -298,17 +338,20 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
         if first.startswith("level:") and role == "curator":
             want = first[len("level:"):].strip()
             if want in ("high", "notice") and _RANK[want] < _RANK[t[0].level]:
-                t[0], t[2] = replace(t[0], level=want), ev["created_at"]
+                t[0], t[2], t[3] = replace(t[0], level=want), ev["created_at"], True
         p = _patch(ev["content"])
         if p is None:
             continue  # convention text only, or discussion
-        new = _apply_patch(t[0], p, role)
+        try:
+            new = _apply_patch(t[0], p, role)
+        except Exception:  # a hostile patch never stops the other threads
+            new = None
         if new is None:
             dropped["bad-patch"] += 1
         else:
-            t[0], t[2] = new, ev["created_at"]
+            t[0], t[2], t[3] = new, ev["created_at"], t[3] or role == "curator"
     return [Thread(root_id=rid, adv=a, retracted=r, updated_at=u)
-            for rid, (a, r, u) in sorted(roots.items(), key=lambda kv: (kv[1][2], kv[0]))]
+            for rid, (a, r, u, _) in sorted(roots.items(), key=lambda kv: (kv[1][2], kv[0]))]
 
 
 def active(threads: list[Thread], now: float | None = None) -> list[Thread]:

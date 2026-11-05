@@ -64,8 +64,7 @@ modify `aitools_alerts/schema.py` (SPEC_DIR resolution),
   - Extra (spec rules): an older-issued_at manifest is refused; a stored
     newer manifest refuses a replayed older one; `level: high` from curator
     lowers, from relay-bot does nothing; a patch with only `fixed` changed
-    updates it and keeps the rest; an explicit null clears `expires_at`; a
-    relay-bot patch on a curator root makes `posted_by` relay-bot; a patch
+    updates it and keeps the rest; an explicit null clears `expires_at`; a relay-bot patch on a curator root has no effect (the curator advisory and its role stay); a patch
     that leaves the advisory invalid is ignored; a corrupt state file raises
     StateError; config loads defaults, intersects auto_apply with VERBS and
     rejects a bad type; the default fetcher refuses `http://`.

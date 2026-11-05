@@ -276,3 +276,79 @@ def test_telegram_failure_never_shows_token(home):
     for post in (boom, lambda u, p: (401, b'{"ok": false}'), lambda u, p: (200, b"not json")):
         res = notify.send("telegram", TEXT, s, post=post)
         assert not res.accepted and "invented-token" not in res.detail
+
+
+# ------------------------------------------------ whole-branch review fixes
+
+def test_notify_rereads_seen_under_the_lock(sent):
+    cli.main(["pull", "--mirror-url", MIRROR])
+    stale = State.load()
+    a = type("A", (), {"root": FIXTURE_ROOT})()
+    pending = cli._unseen_critical(a, stale)
+    assert len(pending) == 1
+    assert cli.main(["notify"]) == 0  # another run sends and marks it seen
+    assert cli._notify(stale, config.load(), pending) == 0  # the stale run skips it
+    assert len(sent["calls"]) == 1 and len(State.load().seen) == 1
+
+
+def test_plan_auto_applies_an_opted_upgrade_from_a_curator_post(monkeypatch, capsys):
+    from mirror_helpers import Mirror
+    m = Mirror()
+    m.root_post(m.cur_sec)
+    monkeypatch.setenv(cli.TRUST_ROOT_ENV, m.root)
+    from aitools_alerts import pull
+    monkeypatch.setattr(pull, "default_fetch", m.fetch)
+    write_config('auto_apply = ["upgrade"]\n')
+    assert cli.main(["pull", "--mirror-url", "https://mirror.invalid/"]) == 0
+    capsys.readouterr()
+    assert cli.main(["plan", "AITA-TEST-0001"]) == 0
+    out = capsys.readouterr().out
+    assert "auto-apply (opted in):" in out and "prepare (ask first)" not in out
+    assert "command: npm install -g @anthropic-ai/claude-code@99.0.0" in out
+    config.config_path().write_text("auto_apply = []\n")
+    cli.main(["plan", "AITA-TEST-0001"])
+    out = capsys.readouterr().out
+    assert "prepare (ask first)" in out and "auto-apply" not in out
+
+
+def test_init_make_key_force_with_existing_key_changes_nothing(capsys):
+    assert cli.main(["init", "--make-key"]) == 0
+    config.config_path().write_text("notify = []\n")
+    assert cli.main(["init", "--make-key", "--force"]) == 1
+    assert config.config_path().read_text() == "notify = []\n"
+
+
+def test_webhook_redirect_is_not_delivery():
+    import http.server
+    import threading
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.send_response(302)
+            self.send_header("Location", "/login")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"login page")
+
+        def log_message(self, *a):
+            pass
+    class Srv(http.server.ThreadingHTTPServer):
+        def server_bind(self):  # skip the reverse DNS lookup of the base class
+            import socketserver
+            socketserver.TCPServer.server_bind(self)
+            self.server_name, self.server_port = "localhost", self.server_address[1]
+    srv = Srv(("127.0.0.1", 0), H)
+    th = threading.Thread(target=srv.serve_forever, daemon=True)
+    th.start()
+    try:
+        code, _ = notify._default_post(f"http://127.0.0.1:{srv.server_port}/hook", {"text": "x"})
+    finally:
+        srv.shutdown()
+    assert code == 302
+    s = Settings(webhook_url="https://example.invalid/hook")
+    assert not notify.send("webhook", "x", s, post=lambda u, p: (code, b"")).accepted
