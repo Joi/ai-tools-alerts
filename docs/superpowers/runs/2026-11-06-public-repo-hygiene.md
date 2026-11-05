@@ -19,8 +19,18 @@ Pass 1 [spec+plan, snapshot ddced0a9dd81964a76e7e17155c88ccc5f507ccc, fresheyes 
 - S2 no test that config reaches the send path: fixed (loaded-TOML run asserts destination, wrapper, strip host).
 - S3 snapshot commit message: rebutted — the snapshot is a dangling review commit and never lands; the landed commits carry descriptive messages.
 - Plan delta: the BLOCKER fixes changed the plan; its delta look is folded into the whole-branch code review (Stage 2), which reads the amended plan with the code it describes, rather than a separate plan-only pass.
+Pass 1 [code:branch, origin/main...f8b4ea89cf7ba0bfefaf9478513f528f950d6f88; Stage 1 same-model subagent ∥ Stage 2 fresheyes gpt-6-astra high, REASON=-]: 5B/4S/4C/0R · fixed -/- · velocity = (—→13, escalation no)
+- FB1 scan treats grep errors as clean: fixed (scanner reads every tracked file in Python; unreadable file or listing failure exits 2; gate passes the code through).
+- FB2 `grep -I` skips binary files: fixed (bytes scan; file names scanned too); tests/test_public_scan.py covers clean, hit, spaces, binary, file name, unreadable, gate.
+- FB3 leak-check commands grep a literal placeholder: fixed (placeholder now reads `<the pattern in scripts/public-scan.sh>`; these are records of past runs, the live check is the script).
+- FB4 `source the Kura secrets helper` in shell code: fixed (`"$KURA_SECRETS_HELPER"`, pointer to ai-tools-alerts#2bf0).
+- FB5 docs/plan.md:186 unquoted `~` after ssh: fixed (remote command single-quoted, `$HOME`).
+- FS1 budget criterion unmet as written: fixed (spec criterion 7 and plan acceptance state the overrun and point to the decided: comment).
+- S1 check_relay checks presence only: fixed (format checked in check_relay too).
+- S2 bad host reaches send after pending: fixed by S1 (host validated before the ledger opens).
+- S3 empty strip_hosts silently weakens scrubbing: fixed (stderr warning each run; compose still refuses this machine's own name). Refusal rejected: an installer with no fleet names of its own has nothing to list.
+- C4 underscore ssh alias refused: fixed. C5 one- and two-letter strip_hosts accepted: fixed (three or more, alphanumeric first). C6 `${HOME:?}` message is bash's own, not JSON: rebutted — exit 1 is in the poster's never-sent set and the key is never read. C7 VM short name in cell-fleet overlay paths: rebutted — a directory name in another repo, no domain, not a route; the pattern is the issue's.
 
-## Chunks
 - [x] C1 — poster config keys (strip_hosts, internal_host_suffixes, relay_ssh_host, relay_send_wrapper), code and tests — df01f32
 - [x] C2 — scrub docs, ops/vm, mirror units; scripts/public-scan.sh in the gate — committed with this manifest
 

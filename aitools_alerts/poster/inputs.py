@@ -47,8 +47,8 @@ _ITEM_KEYS = {"key", "kind", "scope", "ids", "channel", "text", "adv", "exploite
 _CANDIDATE_FIELDS = frozenset(Candidate.__dataclass_fields__)
 _KINDS = {"root", "copy", "reply", "digest", "ja"}
 _HEX64 = re.compile(r"[0-9a-f]{64}")
-_NAME = re.compile(r"[A-Za-z0-9._-]{1,253}")
-_SSH_HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}@[A-Za-z0-9][A-Za-z0-9.-]{0,252}|[A-Za-z0-9][A-Za-z0-9.-]{0,252}")
+_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,252}")  # three or more: compose skips shorter names
+_SSH_HOST = re.compile(r"(?:[A-Za-z0-9][A-Za-z0-9._-]{0,63}@)?[A-Za-z0-9][A-Za-z0-9._-]{0,252}")
 _WRAPPER = re.compile(r"/[A-Za-z0-9._/-]{1,255}")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
@@ -77,6 +77,12 @@ class Config:
         """A run sends, so it needs the relay route; pending and resolve do not."""
         if not self.relay_ssh_host or not self.relay_send_wrapper:
             raise ConfigError("relay_ssh_host and relay_send_wrapper must be set")
+        # Checked here too, so a Config built in code meets the load_config rules
+        # before anything is marked pending.
+        if not isinstance(self.relay_ssh_host, str) or not _SSH_HOST.fullmatch(self.relay_ssh_host):
+            raise ConfigError("relay_ssh_host must be an ssh host ([user@]host)")
+        if not isinstance(self.relay_send_wrapper, str) or not _WRAPPER.fullmatch(self.relay_send_wrapper):
+            raise ConfigError("relay_send_wrapper must be an absolute path")
 
     @property
     def state(self) -> Path:
@@ -118,10 +124,10 @@ def load_config(path) -> Config:
     for k in ("strip_hosts", "internal_host_suffixes"):
         if k in raw:
             v = raw[k]
-            if not isinstance(v, list) or not all(isinstance(h, str) and _NAME.fullmatch(h) for h in v):
-                raise ConfigError(f"{k} must be a list of host names")
-            if k == "internal_host_suffixes" and not all(h.startswith(".") for h in v):
-                raise ConfigError(f"{k} entries must start with '.'")
+            dot = k == "internal_host_suffixes"  # ".example.net": a dot, then a name
+            if not isinstance(v, list) or not all(
+                    isinstance(h, str) and h.startswith(".") == dot and _NAME.fullmatch(h[dot:]) for h in v):
+                raise ConfigError(f"{k} must be a list of host names" + (" each starting with '.'" if dot else ""))
             out[k] = tuple(h.lower() for h in v)
     for k, pattern, what in (("relay_ssh_host", _SSH_HOST, "an ssh host ([user@]host)"),
                              ("relay_send_wrapper", _WRAPPER, "an absolute path")):

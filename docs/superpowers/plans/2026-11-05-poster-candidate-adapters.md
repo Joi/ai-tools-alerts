@@ -83,7 +83,7 @@ Kata: ai-tools-alerts#6j8x. One chunk; one commit
 ```
 scripts/test-gate.sh
 python3 -c "from aitools_alerts.poster.candidates import from_kev"
-grep -RniE '<fleet-names>' tests/fixtures/heartbeat tests/fixtures/collector  # expect no output
+grep -RniE '<the pattern in scripts/public-scan.sh>' tests/fixtures/heartbeat tests/fixtures/collector  # expect no output
 ```
 
 ### Rollback

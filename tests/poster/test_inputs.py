@@ -85,7 +85,9 @@ def test_deployment_keys_default_empty_and_load(tmp_path):
                                   'strip_hosts = ["a b"]\n', 'internal_host_suffixes = ["corp.example"]\n',
                                   'relay_ssh_host = "-oProxyCommand=x"\n', 'relay_ssh_host = "a b"\n',
                                   'relay_ssh_host = ""\n', 'relay_send_wrapper = "bin/buzz-send"\n',
-                                  'relay_send_wrapper = "~/bin/buzz-send"\n', 'relay_send_wrapper = "/a;b"\n'])
+                                  'relay_send_wrapper = "~/bin/buzz-send"\n', 'relay_send_wrapper = "/a;b"\n',
+                                  'strip_hosts = ["a"]\n', 'strip_hosts = [".."]\n', 'strip_hosts = [".corp"]\n',
+                                  'internal_host_suffixes = ["."]\n'])
 def test_deployment_keys_bad_values_are_errors(tmp_path, text):
     cfg = tmp_path / "config.toml"
     cfg.write_text(text)
@@ -346,3 +348,16 @@ def test_read_kev_file_never_fetches_or_caches(tmp_path, monkeypatch):
     f.write_text('{"vulnerabilities": [{"vulnerabilityName": "SYNTHETIC TEST"}], "vulnerabilities": []}')
     with pytest.raises(inputs.ConfigError):
         inputs.read_kev_file(f)  # duplicate keys are refused, as every strict read
+
+
+def test_ssh_alias_with_underscore_loads(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('relay_ssh_host = "relay_vm"\nrelay_send_wrapper = "/opt/relay/bin/buzz-send"\n')
+    inputs.load_config(cfg).check_relay()
+
+
+@pytest.mark.parametrize("host, wrapper", [("-oProxyCommand=x", "/opt/w"), ("relay.example.net", "~/w"),
+                                           ("relay.example.net", "w"), (3, "/opt/w")])
+def test_check_relay_validates_a_config_built_in_code(host, wrapper):
+    with pytest.raises(inputs.ConfigError):
+        inputs.Config(relay_ssh_host=host, relay_send_wrapper=wrapper).check_relay()

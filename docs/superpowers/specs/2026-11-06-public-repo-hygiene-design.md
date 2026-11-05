@@ -40,7 +40,9 @@ it lives only in `scripts/public-scan.sh`, which no scan reads) hits
 6. Docs keep their technical content with generic names: "the poster Mac",
    "the relay VM", `<relay-vm>`, `<user>`, `~` or `$HOME` in place of home paths.
    Kura helper paths and the collector's state paths go.
-7. The whole test suite passes; diff under 400 changed lines.
+7. The whole test suite passes. The brief's budget was under 400 changed lines; the
+   deliverable is about 600 (tests asked for by the reviews account for most of the
+   excess), and the overrun is recorded as `decided:` on ai-tools-alerts#h6bx.
 
 ## Approach
 

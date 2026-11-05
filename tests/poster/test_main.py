@@ -1214,3 +1214,11 @@ def test_loaded_config_sets_route_and_strip_hosts(env, monkeypatch):
         assert argv[-2] == "op@relay.example.net" and argv[-3] == "--"
         assert shlex.split(argv[-1])[0] == "/opt/relay/bin/buzz-send"
     assert not any("GHSA-zzzz-zzzz-zzzz" in text or "hostalpha" in text for _, _, text in fake.calls)
+
+
+def test_empty_strip_hosts_warns(env, capsys):
+    env.run()
+    assert "warning: strip_hosts is empty" in capsys.readouterr().err
+    env.config = replace(env.config, strip_hosts=("hostalpha",))
+    env.run(now=T0 + 3600)
+    assert "strip_hosts" not in capsys.readouterr().err

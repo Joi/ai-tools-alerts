@@ -587,6 +587,8 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
         return 2, "aitools-alerts-poster: " + " ".join(f"{k}=0" for k in SUMMARY) \
             + " inputs=- error=config"
     candidates.configure(config.strip_hosts, config.internal_host_suffixes)
+    if not config.strip_hosts:  # the candidate filter then knows only the input's own host names
+        print("aitools-alerts-poster: warning: strip_hosts is empty", file=sys.stderr)
     channels = channels or inputs.load_channels()
     n, code, err, status, skipped = Counter(), 0, None, None, Counter()
     try:

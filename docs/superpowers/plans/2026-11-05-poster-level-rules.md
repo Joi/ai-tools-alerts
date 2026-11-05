@@ -61,7 +61,7 @@ One chunk; one commit `feat: level rules` (plus review-fix commits). Standard li
 - [ ] 6. Run `scripts/test-gate.sh` → PASS (B1's tests included).
 - [ ] 7. Acceptance one-liner prints `1 2 None`.
 - [ ] 8. Leak check over added lines only, plan and run files excluded (they name
-  the pattern): `git diff -U0 origin/main...HEAD -- . ':!docs/superpowers' | grep '^+' | grep -v '^+++' | grep -Eic '<fleet-names>'`
+  the pattern): `git diff -U0 origin/main...HEAD -- . ':!docs/superpowers' | grep '^+' | grep -v '^+++' | grep -Eic '<the pattern in scripts/public-scan.sh>'`
   prints `0` (grep exits 1).
 - [ ] 8a. Review fixes (spec+plan pass 1): tier-2 test per critical clause with
   source_ok True and False; `http_status` tests through a fake opener: HEAD 200,

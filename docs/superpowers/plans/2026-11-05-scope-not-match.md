@@ -57,7 +57,7 @@ python3 -m pytest tests/poster/test_rules.py tests/test_schema.py -q
 scripts/test-gate.sh
 git diff origin/main --stat -- aitools_alerts spec tests   # under 200 lines; run artifacts not counted
 git diff origin/main --stat -- trust   # empty
-git diff origin/main | grep '^+' | grep -Ei '<fleet-names>'   # docs aside: empty
+git diff origin/main | grep '^+' | grep -Ei '<the pattern in scripts/public-scan.sh>'   # docs aside: empty
 ```
 
 ## Acceptance

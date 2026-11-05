@@ -67,9 +67,10 @@ Shell scripts longer than one line go to the scratchpad and run as files (jibot-
   `scripts/test-gate.sh` runs it before pytest and fails on non-zero.
 - Verify: `scripts/public-scan.sh` → exit 0; a temp tracked file with a name → exit 1
   (in a scratch clone); `scripts/test-gate.sh` → exit 0.
-- Acceptance: scan clean; under 400 changed lines in the deliverable
-  (`git diff --shortstat origin/main -- . ':!docs/superpowers/*/2026-11-06-public-repo-hygiene*'`);
-  this run's own spec, plan and manifest are records and are counted apart.
+- Acceptance: scan clean; scanner tests (clean, hit, spaces, binary, file name,
+  unreadable file, gate propagation) pass. Line count, measured with
+  `git diff --shortstat origin/main -- . ':!docs/superpowers/*/2026-11-06-public-repo-hygiene*'`,
+  exceeds the brief's 400; the overrun is decided on the issue (spec criterion 7).
 
 ## Rollback
 
