@@ -774,7 +774,7 @@ def test_kev_file_bypasses_fetch_and_marks_posts(env):
     assert kev.headers == [] and not env.config.kev_cache.exists()
     assert "inputs=kev:file," in summary and "roots=1" in summary
     assert chans(ssh) == [("critical", None), ("feed", None)]
-    assert all(c[2].startswith("CRITICAL (SYNTHETIC TEST): Claude Code") and "CVE-2099-0010" in c[2]
+    assert all(c[2].startswith("CRITICAL (SYNTHETIC TEST): SYNTHETIC TEST: Claude Code") and "CVE-2099-0010" in c[2]
                for c in ssh.calls)  # the root and its feed copy
     assert env.state()["kev_since"] is None  # the real catalog was not read
     code, summary, ssh = env.run(now=at(20, 7), kev=kev, kev_catalog=catalog)
@@ -827,7 +827,7 @@ def test_synthetic_advisory_is_marked_in_the_digest(env):
     assert code == 0 and "digest=1" in summary
     (body,) = [c[2] for c in ssh.calls if c[2].startswith("Daily digest")]
     (line,) = [ln for ln in body.splitlines() if "CVE-2099-0010" in ln]
-    assert line.startswith("- (SYNTHETIC TEST) Claude Code")
+    assert line.startswith("- SYNTHETIC TEST: Claude Code") and line.count("SYNTHETIC") == 1
     env.kev.catalog = {"vulnerabilities": [kev_item(cve="CVE-2099-0003")]}  # any input: the id decides
     _, _, ssh = env.run(now=at(6, 6))
     assert ssh.calls and all(c[2].startswith("CRITICAL (SYNTHETIC TEST)") for c in ssh.calls)

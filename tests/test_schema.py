@@ -441,3 +441,14 @@ def test_load_primary_domains_rejects_bad_entries(tmp_path):
         p.write_text(json.dumps({"domains": bad}))
         with pytest.raises(ValueError):
             schema.load_primary_domains(p)
+
+
+def test_reserved_id_title_is_marked_by_the_reader():
+    blk = {**valid_block(), "id": "CVE-2099-0010", "title": "Claude Code: looks real"}
+    assert schema.validate(blk).title == "SYNTHETIC TEST: Claude Code: looks real"
+    assert schema.validate({**blk, "title": "SYNTHETIC TEST: x"}).title == "SYNTHETIC TEST: x"
+    assert schema.parse_post(post_with(blk)).title == "SYNTHETIC TEST: Claude Code: looks real"
+    with pytest.raises(ValueError):
+        schema.validate({**blk, "title": "x" * 290})  # the mark pushes it over 300
+    real = {**valid_block(), "id": "CVE-2026-0010", "aliases": ["CVE-2099-0010"], "title": "Real"}
+    assert schema.validate(real).title == "Real"

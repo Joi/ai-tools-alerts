@@ -39,17 +39,9 @@ _COMPARATOR = re.compile(r"(<=|>=|<|>|=)(.+)")
 _KINDS = ("known exploited vulnerability", "trojanized release",
           "injection to code execution", "security advisory")
 UNVERIFIED = "unverified: no primary source confirmed it"
-SYNTHETIC = "SYNTHETIC TEST"
-# Ids reserved for synthetic checks (``run --kev-file`` accepts no others). The id is
-# the provenance: it survives the ledger, the digest and every later run, so a
-# synthetic advisory is marked wherever it is listed.
-SYNTHETIC_ID = re.compile(r"CVE-2099-\d{4,}", re.IGNORECASE)
-
-
-def is_synthetic(adv_id) -> bool:
-    """The primary id decides; an alias never does (main strips reserved aliases from
-    real inputs, so a typo in a feed cannot mark or silence a real advisory)."""
-    return isinstance(adv_id, str) and SYNTHETIC_ID.fullmatch(adv_id) is not None
+# A reserved id (``run --kev-file``) is the provenance: it survives the ledger, the
+# digest and every later run, and ``schema.validate`` marks its title.
+SYNTHETIC, SYNTHETIC_ID, is_synthetic = schema.SYNTHETIC, schema.SYNTHETIC_ID, schema.is_synthetic
 
 
 def schema_fixed(v) -> str | None:
@@ -136,7 +128,8 @@ def _kind(c, reason) -> str:
 
 
 def _titles(name: str, adv_id: str) -> set[str]:
-    return {f"{name}: {pre}{k} ({adv_id})" for k in _KINDS for pre in ("", "unverified ")}
+    mark = f"{SYNTHETIC}: " if is_synthetic(adv_id) else ""
+    return {f"{mark}{name}: {pre}{k} ({adv_id})" for k in _KINDS for pre in ("", "unverified ")}
 
 
 def _ids(raw, exclude: str) -> list[str]:
@@ -147,10 +140,11 @@ def _ids(raw, exclude: str) -> list[str]:
     return out
 
 
-def root_post(c, level, scope, *, posted_at: int | None = None, test: bool = False) -> tuple[str, schema.Advisory]:
+def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, schema.Advisory]:
     """(post text, Advisory) for a new thread: four body lines, then the block.
-    ``level`` is ``rules.level_for``'s (level, reason), or a bare level. ``test``
-    marks a post from a synthetic check (``run --kev-file``) in its head line."""
+    ``level`` is ``rules.level_for``'s (level, reason), or a bare level. A reserved
+    primary id (a synthetic check, ``run --kev-file``) marks the head line, and
+    ``schema.validate`` marks the block's title; nothing else marks either."""
     level, reason = level if isinstance(level, tuple) else (level, None)
     fixed = schema_fixed(c.fixed)
     sources = _sources(c.sources)
@@ -164,7 +158,7 @@ def root_post(c, level, scope, *, posted_at: int | None = None, test: bool = Fal
         sources=sources, posted_by=POSTED_BY,
         posted_at=int(time.time()) if posted_at is None else posted_at, expires_at=None)))
     p = adv.products[0]
-    head = adv.level.upper() + (f" ({SYNTHETIC})" if test else "") \
+    head = adv.level.upper() + (f" ({SYNTHETIC})" if is_synthetic(adv.id) else "") \
         + (f" ({UNVERIFIED})" if reason == "unverified" else "")
     # A fix the schema cannot express is still a fix: say so, and name no version.
     unexpressed = fixed is None and isinstance(c.fixed, str) and c.fixed.strip() != ""
@@ -297,7 +291,7 @@ def digest(advs_today, date) -> str:
             lines += ["", f"{level.capitalize()} ({len(group)})"]
             for a in group:
                 fixed = f"fixed in {a.products[0].fixed}" if a.products[0].fixed else "no fix yet"
-                mark = f"({SYNTHETIC}) " if is_synthetic(a.id) else ""
+                mark = f"({SYNTHETIC}) " if is_synthetic(a.id) and not a.title.startswith(SYNTHETIC) else ""
                 line = f"- {mark}{a.title}; {fixed}. {_primary(a.sources)}"
                 try:
                     lines.append(_guard(line))

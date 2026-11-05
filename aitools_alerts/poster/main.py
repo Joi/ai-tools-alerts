@@ -244,7 +244,7 @@ class Run:
 
     def plan_new(self, c, scope, level, reason, ids):
         test = self.is_synthetic(c)
-        text, adv = compose.root_post(c, (level, reason), scope, posted_at=self.now, test=test)
+        text, adv = compose.root_post(c, (level, reason), scope, posted_at=self.now)
         if level == "notice":
             if test:  # the digest would list it without its marker
                 raise ValueError("a synthetic entry is never held for the digest")

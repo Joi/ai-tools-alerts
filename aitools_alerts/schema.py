@@ -28,6 +28,17 @@ LEVELS = frozenset({"critical", "high", "notice"})
 VERBS = frozenset({"upgrade", "disable_skill", "remove_mcp_server",
                    "rotate_credential", "stop_using", "review_setting"})
 ROLES = frozenset({"curator", "relay-bot"})
+SYNTHETIC = "SYNTHETIC TEST"
+# Ids reserved for synthetic checks (the poster's ``run --kev-file`` accepts no
+# others). The id is the provenance: ``validate`` gives such an advisory's title
+# the ``SYNTHETIC TEST: `` prefix, so every reader shows it, whatever a post says.
+SYNTHETIC_ID = re.compile(r"CVE-2099-\d{4,}", re.IGNORECASE)
+
+
+def is_synthetic(adv_id) -> bool:
+    """The primary id decides; an alias never does (the poster strips reserved
+    aliases from real inputs, so a typo in a feed cannot mark a real advisory)."""
+    return isinstance(adv_id, str) and SYNTHETIC_ID.fullmatch(adv_id) is not None
 
 _IDENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
 _ECOSYSTEM = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
@@ -210,13 +221,17 @@ def validate(obj) -> Advisory:
     expires_at = _int(o["expires_at"], "$.expires_at", nullable=True)
     if expires_at is not None and expires_at < posted_at:
         _fail("$.expires_at", "before posted_at")
+    adv_id = _pattern(o["id"], "$.id", _IDENT)
+    title = _text(o["title"], "$.title", 1, 300)
+    if is_synthetic(adv_id) and not title.startswith(SYNTHETIC + ": "):
+        title = _text(f"{SYNTHETIC}: {title}", "$.title", 1, 300)
     return Advisory(
-        id=_pattern(o["id"], "$.id", _IDENT),
+        id=adv_id,
         aliases=[_pattern(a, f"$.aliases[{i}]", _IDENT)
                  for i, a in enumerate(_list(o["aliases"], "$.aliases", 0, 50))],
         level=_enum(o["level"], "$.level", LEVELS),
         advisory_severity=_text(o["advisory_severity"], "$.advisory_severity", 0, 64, nullable=True),
-        title=_text(o["title"], "$.title", 1, 300),
+        title=title,
         products=products,
         actions=actions,
         sources=sources,

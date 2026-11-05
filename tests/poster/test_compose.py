@@ -219,3 +219,28 @@ def test_guard_refuses_cased_macos_paths(alias):
 def test_guard_keeps_apple_developer_library_urls():
     text = "Source: https://developer.apple.com/library/archive/releasenotes/x.html"
     assert compose._guard(text) == text
+
+
+def test_synthetic_root_marks_the_block_title():
+    text, adv = root(cand(id="CVE-2099-0010", aliases=()))
+    head = text.split("\n")[0]
+    assert head == ("CRITICAL (SYNTHETIC TEST): SYNTHETIC TEST: Claude Code: "
+                    "injection to code execution (CVE-2099-0010)")
+    assert adv.title.startswith("SYNTHETIC TEST: Claude Code") and adv.title.count("SYNTHETIC") == 1
+    assert schema.parse_post(text).title == adv.title
+    assert schema.parse_post(schema.render_post(adv, "Body.")).title == adv.title  # one mark
+    real_text, real = root(cand(aliases=("CVE-2099-0011",)))  # a reserved alias never marks
+    assert "SYNTHETIC" not in real_text and not real.title.startswith("SYNTHETIC")
+
+
+def test_synthetic_digest_and_reply_keep_one_mark():
+    c = cand(id="CVE-2099-0010", aliases=())
+    _, adv = root(c)
+    (line,) = [ln for ln in compose.digest([adv], "2026-11-05").split("\n") if "2099" in ln]
+    assert line.startswith("- SYNTHETIC TEST: Claude Code") and line.count("SYNTHETIC") == 1
+    legacy = dataclasses.replace(adv, title="Claude Code: injection to code execution (CVE-2099-0010)")
+    (line,) = [ln for ln in compose.digest([legacy], "2026-11-05").split("\n") if "2099" in ln]
+    assert line.startswith("- (SYNTHETIC TEST) Claude Code")
+    assert adv.title in compose._titles("Claude Code", adv.id)
+    assert legacy.title not in compose._titles("Claude Code", adv.id)
+    assert compose.reply_post(adv, c, {"level": "high"}).count("SYNTHETIC") == 0  # block: changed fields

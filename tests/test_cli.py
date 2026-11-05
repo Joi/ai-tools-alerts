@@ -414,3 +414,40 @@ def test_source_through_a_signed_post_in_plan_and_json(monkeypatch, capsys):
                                    " (not a primary source)")
     assert sum(ln.lstrip().startswith("command:") for ln in out.splitlines()) == 1
     assert "      command: npm install -g @anthropic-ai/claude-code@99.0.0" in out
+
+
+def test_check_plan_and_notify_show_the_synthetic_mark(monkeypatch, capsys, sent):
+    from aitools_alerts import pull, schema
+    from aitools_alerts.poster import compose, rules
+    from aitools_alerts.poster.candidates import Candidate, Source
+    from mirror_helpers import T0, Mirror, asdict
+    m = Mirror()
+    c = Candidate(id="CVE-2099-0010", aliases=(), product_text="Anthropic Claude Code",
+                  advisory_severity=None, local_level_hint=None, exploited=True, trojanized=False,
+                  injection_exec=False, fixed="99.0.0", affected="< 99.0.0", observed_at=None,
+                  sources=(Source("https://github.com/anthropics/claude-code/security/advisories/"
+                                  "GHSA-abcd-efgh-ijkl", None),))
+    text, _ = compose.root_post(c, "critical", rules.scope_of(c.product_text), posted_at=T0)
+    m.post(m.bot_sec, text, files=("feed.json", "critical.json"))
+    # A root posted before the title carried the mark, and a patch that sets an unmarked title.
+    old = asdict(advisory(id="CVE-2099-0011", posted_by="relay-bot", title="Claude Code: old test"))
+    legacy = m.post(m.bot_sec, f"CRITICAL: x\n\n```{schema.INFO_STRING}\n{json.dumps(old)}\n```\n",
+                    files=("feed.json", "critical.json"))
+    m.reply(m.bot_sec, legacy, m.patch_text(title="Claude Code: real-looking"))
+    monkeypatch.setenv(cli.TRUST_ROOT_ENV, m.root)
+    monkeypatch.setattr(pull, "default_fetch", m.fetch)
+    assert cli.main(["pull", "--mirror-url", "https://mirror.invalid/"]) == 0
+    capsys.readouterr()
+    want = "SYNTHETIC TEST: Claude Code: known exploited vulnerability (CVE-2099-0010)"
+    assert cli.main(["check"]) == 0
+    out = capsys.readouterr().out
+    assert f"CRITICAL: {want} [Claude Code" in out
+    assert "CRITICAL: SYNTHETIC TEST: Claude Code: real-looking [Claude Code" in out
+    assert cli.main(["check", "--json"]) == 0
+    titles = sorted(d["title"] for d in json.loads(capsys.readouterr().out))
+    assert titles == [want, "SYNTHETIC TEST: Claude Code: real-looking"]
+    assert cli.main(["plan", "CVE-2099-0010"]) == 0
+    assert f"CRITICAL: {want}" in capsys.readouterr().out
+    assert cli.main(["notify"]) == 0
+    assert len(sent["calls"]) == 2
+    assert all(t.startswith("CRITICAL: SYNTHETIC TEST: Claude Code") for _, t in sent["calls"])
