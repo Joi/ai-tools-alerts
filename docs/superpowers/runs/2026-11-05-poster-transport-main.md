@@ -24,9 +24,11 @@ Pass 1 [code:transport, whole branch d2f2fd7]: Stage 1 0B/4S/3C · fresheyes (gp
 - Stage 1 fixed: ssh connect-phase patterns anchored per line and stdout empty; classify on the whole stderr; `duplicate:` answer is unknown; ssh=None default with a conftest that blocks real ssh; relay 4xx allowlist; -T, RequestTTY=no, RemoteCommand=none, `--`, host check; tests for each.
 - fresheyes fixed: truncation (same as Stage 1); exit 2 now read from the CLI's JSON error line (category + status), never free text; docstring no longer spells the forbidden flags; for landings 2 and 3 (spec + working tree): identity learned past the alias cap (Ledger.add_ids), affected-range change without a fix, cased /Library/ guard.
 - The exit-2 fix changes behaviour: one delta pass `--since d2f2fd7`.
+Pass 2 [code:transport delta --since d2f2fd7]: 3B/0S/0C/0R · fixed 13/13 prior · velocity ↓ (13→3, escalation no)
+- run 20261105-105044-9d91d5. Fixed: the full-stderr test (60fe808); alias publication compared with prev (landing 3); compose's case-preserved guard (92b202f, landing 2). Landed 60fe808 on main 2026-11-05.
 
 ## Chunks
-- [ ] transport — `aitools_alerts/poster/transport.py`, `tests/poster/test_transport.py` (landing 1)
+- [x] transport — `aitools_alerts/poster/transport.py`, `tests/poster/test_transport.py` (landing 1)
 - [ ] inputs — `aitools_alerts/poster/inputs.py`, `tests/poster/test_inputs.py`, `_PRIVATE` in candidates.py + tests (landing 2)
 - [ ] run — `aitools_alerts/poster/main.py`, `tests/poster/test_main.py`, `Ledger.entries_since`/`has_pending` + test, `pyproject.toml` console script (landing 3)
 

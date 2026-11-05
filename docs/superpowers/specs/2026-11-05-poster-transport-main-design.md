@@ -182,6 +182,9 @@ source URLs carrying each, plain and percent-encoded, are dropped.
 `/Library/`, `/Applications/` and `/System/Volumes/` are matched with their
 capital (a second, case-sensitive pattern), so a local `/Library/Logs/...`
 path is dropped while Apple's public `/library/` documentation URLs stay.
+`compose._guard` lowercases text for the host-name check, so it also runs
+`_private` on the case-preserved text and its decoded form; a cased path in an
+alias handed to `reply_post` is refused there too.
 Over-matching drops a field or item, never posts it.
 
 ## The run (`aitools_alerts/poster/main.py`)
@@ -241,8 +244,10 @@ Known entry (`prev = schema.validate(entry.advisory)`):
   alias list is at its cap of 50 and no reply can say so.
 - `changes`: `level` and `title` when the level rises; `products` when `new`'s
   product differs from `prev`'s (a fix, or a corrected affected range with or
-  without one; `k` keeps the stored fix and range when the candidate has none); `aliases` (the ids the
-  ledger entry lacks) when `prev` has fewer than 50; `sources` (new URLs) when
+  without one; `k` keeps the stored fix and range when the candidate has none);
+  `aliases` (the ids `prev` has not published; compared with `prev`, not the
+  ledger's full set, which `add_ids` may already hold from a run that stopped
+  before journaling) when `prev` has fewer than 50; `sources` (new URLs) when
   `prev` has fewer than 20.
 - Items, in order: a `copy` of `text` to each channel the level needs
   (critical: `critical`, `feed`; high: `feed`) that `entry.channel_ids` lacks
