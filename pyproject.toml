@@ -13,6 +13,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest"]
+curator = ["websockets>=12"]
 
 [project.scripts]
 aitools-alerts = "aitools_alerts.cli:main"

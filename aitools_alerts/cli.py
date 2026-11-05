@@ -7,6 +7,7 @@
     aitools-alerts notify
     aitools-alerts plan <advisory-id>
     aitools-alerts run
+    aitools-alerts curator post|amend|retract ...   (needs the curator extra)
 
 Nothing here executes a string from a post. ``plan`` prints commands built
 from fixed templates keyed by the product's ecosystem; it runs none of them.
@@ -23,7 +24,7 @@ import shlex
 import sys
 from dataclasses import asdict
 
-from . import TRUST_ROOT_PUBKEY, __version__, check, config, inventory, nostr, notify, pull
+from . import TRUST_ROOT_PUBKEY, __version__, check, config, curator, inventory, nostr, notify, pull, relay
 from .state import State, StateError
 
 TRUST_ROOT_ENV = "AITOOLS_ALERTS_TRUST_ROOT"
@@ -278,6 +279,7 @@ def _parser() -> argparse.ArgumentParser:
     g = p.add_mutually_exclusive_group()
     g.add_argument("--json", action="store_true", help="print one JSON object")
     g.add_argument("--quiet", action="store_true", help="print nothing on stdout")
+    curator.add_parser(sub)
     return ap
 
 
@@ -289,11 +291,13 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "keygen":
             return cmd_keygen(a)
         a.root = _root()
+        if a.cmd == "curator":
+            return curator.cmd_curator(a, State.load())
         s = config.load()
         st = State.load()
         return {"pull": cmd_pull, "check": cmd_check, "notify": cmd_notify,
                 "plan": cmd_plan, "run": cmd_run}[a.cmd](a, st, s)
-    except (config.ConfigError, StateError) as e:
+    except (config.ConfigError, StateError, curator.CuratorError, relay.RelayError) as e:
         _err(str(e))
         return 1
     except OSError as e:  # e.g. the state directory is not writable
