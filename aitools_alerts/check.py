@@ -74,6 +74,13 @@ def _aliases(ecosystem: str, installed: Installed) -> set[str]:
     return names
 
 
+def _owns(ecosystem: str, installed: Installed) -> bool:
+    """The installation is the ecosystem's tool (its collector names it from
+    the scope entry, which IDENTITY lists); skill and mcp names are free."""
+    return (ecosystem in _NAME_ECOSYSTEMS
+            or installed.name.lower() in IDENTITY.get(ecosystem, set()))
+
+
 def _concerns(action: Action, ecosystem: str, aliases: set[str]) -> bool:
     if action.verb in _TARGETED:
         want = _TARGETED[action.verb]
@@ -85,15 +92,16 @@ def _concerns(action: Action, ecosystem: str, aliases: set[str]) -> bool:
 
 
 def match(advs: list[Advisory], inv: Inventory) -> list[Match]:
-    """One Match per (advisory, ecosystem, installed name): two products in one
-    advisory naming the same installation yield the first that matches."""
+    """One Match per (advisory, installation, range): product entries that
+    repeat the same range and fixed version for one installation collapse;
+    entries with different constraints each yield their own Match."""
     out = []
     for adv in advs:
         seen = set()
         for product in adv.products:
             for inst in inv.products.get(product.ecosystem, []):
                 aliases = _aliases(product.ecosystem, inst)
-                key = (product.ecosystem, inst.name.lower())
+                key = (product.ecosystem, inst.name.lower(), product.affected, product.fixed)
                 if product.name.lower() not in aliases or key in seen:
                     continue
                 if inst.version is None or (product.affected is None
@@ -122,12 +130,14 @@ def plan(m: Match, config: Config) -> Plan:
     p = m.product
     aliases = _aliases(p.ecosystem, m.installed) if p is not None else set()
     trusted = (m.adv.posted_by == "curator" and m.reason == AFFECTED
-               and p is not None and p.name.lower() in aliases
+               and p is not None and p in m.adv.products
+               and p.name.lower() in aliases and _owns(p.ecosystem, m.installed)
+               and (p.affected is not None or p.fixed is not None)
                and versions.check(m.installed.version, p.affected, p.fixed) is True)
     fixed = p.fixed if p is not None else None
     for a in m.actions_allowed:
         ready = (trusted and a.verb in schema.VERBS and a.verb in opted
-                 and _concerns(a, p.ecosystem, aliases))
+                 and a in m.adv.actions and _concerns(a, p.ecosystem, aliases))
         if a.verb == "upgrade":
             # products[].fixed is authoritative (spec/actions.json), for a
             # prepared upgrade too; without it the upgrade is notify-only.

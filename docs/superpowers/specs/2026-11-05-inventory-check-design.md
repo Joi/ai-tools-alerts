@@ -135,13 +135,16 @@ an incomplete action must never reach `auto_apply`.
     (an unknown verb then lands in `prepare`, below).
   - One `Match` per (advisory, product, installed); an `Advisory` is never a set
     member or dict key (A2: frozen, not hashable).
-- `match` yields one Match per (advisory, ecosystem, installed name), so two
-  products naming one installation do not duplicate advisory-wide actions.
+- `match` yields one Match per (advisory, installation, range): product
+  entries repeating the same `affected`/`fixed` for one installation collapse;
+  entries with different constraints each yield their own Match, so product
+  order never decides the remediation.
 - `plan(m, config) -> Plan(notify, auto_apply, prepare)`: `notify` is True for
-  every match. `plan` re-checks what `match` established (product present and
-  naming the installation, the version readably inside the range, each
-  action concerning the product under the ecosystem rule), so a hand-built
-  `Match` cannot widen `auto_apply`. An action goes to `auto_apply` only when ALL hold:
+  every match. `plan` re-checks what `match` established (the product is one
+  of the advisory's products and has a range; it names the installation, and
+  a tool installation is that ecosystem's tool; the version is readably inside
+  the range; each action is one of the advisory's and concerns the product
+  under the ecosystem rule), so a hand-built `Match` cannot widen `auto_apply`. An action goes to `auto_apply` only when ALL hold:
   `m.adv.posted_by == "curator"`, the verb is in `schema.VERBS` and in
   `config.auto_apply`, `m.reason == "affected"`, and the action is complete.
   Complete: `upgrade` needs `m.product.fixed` and an installed version. Every

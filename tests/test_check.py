@@ -226,6 +226,33 @@ def test_upgrade_naming_another_tool_is_dropped():
     assert m.actions_allowed == []
 
 
+def test_products_with_different_ranges_each_match():
+    a = adv([Product(name="Claude Code", ecosystem="claude-code", affected=None, fixed=f)
+             for f in ("2.1.4", "2.1.5")], [UPGRADE])
+    ms = check.match([a], CLAUDE_213)
+    assert sorted(check.plan(m, OPT_IN).auto_apply[0].value for m in ms) == ["2.1.4", "2.1.5"]
+    a = adv([Product(name="Claude Code", ecosystem="claude-code", affected="<2.1.4", fixed="2.1.4zz1"),
+             Product(name="Claude Code", ecosystem="claude-code", affected="<2.1.4", fixed="2.1.4")],
+            [UPGRADE])
+    assert [m.reason for m in check.match([a], CLAUDE_213)] == ["unparsable-version", "affected"]
+
+
+def test_hand_built_match_must_agree_with_its_advisory():
+    every = Config(auto_apply=frozenset(check.schema.VERBS))
+    claude = CLAUDE_213.products["claude-code"][0]
+    product = Product(name="Claude Code", ecosystem="claude-code", affected="<2.1.4", fixed="2.1.4")
+    rotate = Action(verb="rotate_credential", target="api key", value=None)
+    bare = Product(name="Claude Code", ecosystem="claude-code", affected=None, fixed=None)
+    cases = [
+        check.Match(claude_adv(actions=()), claude, [UPGRADE], "affected", product),
+        check.Match(claude_adv(fixed="2.1.9"), claude, [UPGRADE], "affected", product),
+        check.Match(claude_adv(), Installed("Codex", "2.1.3", "codex"), [UPGRADE], "affected", product),
+        check.Match(adv([bare], [rotate]), claude, [rotate], "affected", bare),
+    ]
+    for m in cases:
+        assert check.plan(m, every).auto_apply == []
+
+
 def test_two_products_naming_one_install_match_once():
     rotate = Action(verb="rotate_credential", target="api key", value=None)
     a = adv([Product(name=n, ecosystem="claude-code", affected="<2.1.4", fixed="2.1.4")
