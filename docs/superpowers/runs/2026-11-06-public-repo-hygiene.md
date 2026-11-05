@@ -1,6 +1,6 @@
 # Run: public-repo-hygiene
 Instruction: Dispatch of ai-tools-alerts#h6bx in mode do-it, starting rung floored at medium; brief TASK-ai-tools-alerts#h6bx.md in the worktree root: move every fleet host name, the relay VM hostname and user, the wrapper and key-file paths and every home-directory path out of code and docs; new config keys default empty/none and the poster refuses to send without relay_ssh_host and relay_send_wrapper; docs rewritten with generic names; scripts/public-scan.sh (tracked files only, exit 1 on a hit) called from scripts/test-gate.sh; no history rewrite; under 400 changed lines.
-Stage: committing
+Stage: done
 Rung: heavy (start-floor heavy: hard-trigger — ops/vm/buzz-send reads the relay key file, and its default path changes; brief floor was medium) BR2 REV1 NOV1 INT2 FC2 = 8
 Lens: poster refuses to send without relay_ssh_host and relay_send_wrapper; docs keep technical content; no history rewrite; under 400 changed lines; the fleet poster keeps working after reinstall; buzz-send keeps its behaviour on the VM; no fleet host name in fixture, test, log, template or kata comment; close comment names values as "the current HOST constant", not literally
 Spec: docs/superpowers/specs/2026-11-06-public-repo-hygiene-design.md   Plan: docs/superpowers/plans/2026-11-06-public-repo-hygiene.md
@@ -44,3 +44,5 @@ Pass 2 [code:delta, --since f8b4ea89cf7ba0bfefaf9478513f528f950d6f88 at 6e67bab7
 - Scope wider than the issue lists: the scan pattern also hits ops/vm/README.md, ops/vm/buzz-send, mirror/*.service|timer, mirror/export_mirror.py and three test files; all are in scope, or the scan fails the gate.
 - Agency execution not used (as in the earlier runs of this repo): two small chunks whose edits interlock with the sibling workers' files; executed inline, each chunk verified by the full suite.
 - Line budget: the deliverable is about 520 changed lines (code and ops about 140, tests about 220 of which about 130 are tests the spec/plan review asked for, docs 160 as one-line rewrites); over the brief's 400. Splitting would leave the scan red in one half. Recorded as decided: on the issue.
+- Rebased onto origin/main e566386 (siblings hgs0, rd8t, 8et2 landed): one conflict in main.py deliver (rd8t's ja pending ids kept, route arguments added) and test_main.py (both sides appended tests; both kept). Gate on the rebased head: public scan clean, 944 passed.
+- Follow-up filed: ai-tools-alerts#2bf0 (sign-manifest.py's fixed secrets-helper path).
