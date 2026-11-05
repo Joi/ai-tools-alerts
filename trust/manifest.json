@@ -1,0 +1,14 @@
+{
+  "pubkey": "afb55ca02209ca12e980bba67262f478b7977b6fdc6bbaf8c3b9fb96983c78a4",
+  "created_at": 1793843255,
+  "kind": 30078,
+  "tags": [
+    [
+      "d",
+      "aitools-alerts-manifest"
+    ]
+  ],
+  "content": "{\"issued_at\":\"2026-11-05T01:47:35Z\",\"posters\":[{\"name\":\"Joi\",\"pubkey\":\"18eafd07cca9f24eac1a62d8155f5e9cdabc7552357abca8a1fcced45d05fe29\",\"role\":\"curator\"},{\"name\":\"jibot\",\"pubkey\":\"d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1\",\"role\":\"relay-bot\"}],\"version\":1}",
+  "id": "4efdaa235be3d47d07796986e5d8ce02533d971696c544e043fea458805a043e",
+  "sig": "83675657e60391f13a3919217b321cc32c418f5c1f00a9a157dd699e89f77b1dda1b545384a1f140e65ca293746a9bd18b5e4127b18c3e2de757e9b08b6ed250"
+}
