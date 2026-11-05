@@ -18,7 +18,9 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlsplit
 
-SPEC_DIR = Path(__file__).resolve().parent.parent / "spec"
+from . import _data_dir
+
+SPEC_DIR = _data_dir("spec")
 INFO_STRING = "aitools-alert"
 MAX_BLOCK_BYTES = 65536
 
