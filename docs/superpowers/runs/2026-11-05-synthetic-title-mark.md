@@ -1,9 +1,10 @@
 # Run: synthetic-title-mark
 Instruction: Task ai-tools-alerts#hhe3 per TASK-ai-tools-alerts#hhe3.md — when the primary id is reserved (is_synthetic), the aitools-alert block's title starts with `SYNTHETIC TEST: ` and the head line keeps its mark; check, plan, run notifications and the skill then show it. Tests in test_compose and test_cli; the session-start hook line unchanged. Under 150 changed lines. /do-it with the rung floored at medium; security-shaped review on gpt-6-astra. Non-repoman repo (ff-merge ending).
-Stage: code-review:compose-title
+Stage: done
 Rung: medium (start-floor medium: constraint-lens, evaluator BR1 REV1 NOV0 INT1 FC1 = 4, no hard trigger)
 Lens: "the session-start hook line is unchanged"; "a synthetic test is never labelled real"; for any id that is not reserved, "the title never carries the mark"
 Last reviewed: spec+plan ee1c94c0f30c3e6f238b6eeb51df5acdd12d13d7 (pass 1, gpt-6-astra)
+Last reviewed: code ef5b6a7 whole branch (pass 1), 2d1496d delta --since ef5b6a7 (pass 2); rebased onto origin/main 802b093 as cf8f971, 37ba04a (test_cli conflict with h260: both appended tests kept)
 Spec: docs/superpowers/specs/2026-11-05-synthetic-title-mark-design.md   Plan: docs/superpowers/plans/2026-11-05-synthetic-title-mark.md
 Agency project: — (no mcp__agency tools in this session; built inline, as the earlier runs on this repo did)
 Kata: ai-tools-alerts#hhe3
@@ -26,9 +27,13 @@ Pass 1 [code:compose-title, whole branch ef5b6a7]: Stage 1 0B/3S/2C · fresheyes
 - Rebutted Stage 1 S3 (no curator-path test): the curator's root and amend reach readers through the same `schema.validate` as the relay bot's, which test_schema and test_cli cover; the curator module builds no Advisory of its own.
 - Rebutted Stage 1 C5 (`curator amend --title X` on a synthetic thread posts a no-op amend): a curator amending a synthetic thread is a by-hand test step; the reply still reads marked. Not worth code here.
 - BLOCKER fixes changed behaviour: one delta pass `--since ef5b6a7`.
+Pass 2 [code:delta --since ef5b6a7, head 2d1496d]: 0B/0S/0C/0R · fixed 5/5 prior · velocity ↓ (8→0, escalation no)
+- fresheyes (gpt-6-astra, run 20261105-154418-23c92e) with the three rebuttals: passed, no rebuttal overturned.
+
+Verification: `python3 -m pytest -q` on the rebased head 37ba04a: 765 passed, 1 skipped. Fleet host-name grep over `git diff origin/main...HEAD -- aitools_alerts tests`: 0. hooks/ and skills/ unchanged. Code and tests: 142 lines changed (119+, 23-).
 
 ## Chunks
-- [ ] compose-title — title mark, _titles, digest, tests
+- [x] compose-title — title mark in schema.validate, _titles, digest, tests; 2 passes (whole branch + one delta)
 
 ## Notes
 - Skill rule slip: the spec/plan amendments after pass 1 were applied with a python str.replace script, not Edit; each replacement asserted or was checked by the harness diff shown afterwards, and the files read as intended. Later artifact edits use Edit.
