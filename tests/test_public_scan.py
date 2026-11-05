@@ -38,6 +38,13 @@ def test_clean_tree_passes(repo):
     ("with space.md", f"x\n{NAME}\n".encode()),
     ("blob.bin", b"\x00\x01" + NAME.encode() + b"\x00"),
     (f"{NAME}.txt", b"no content hit\n"),
+    # the directive's terms, each built from pieces
+    ("tailnet.md", ("node.tail" + "36f19b.example\n").encode()),
+    ("domain.md", ("https://studio.example.t" + "s.net/x\n").encode()),
+    ("cache.md", ("~/." + "cache/amplifier/secrets/x\n").encode()),
+    ("root.md", ("AITOOLS_ALERTS_ROOT" + "_NSEC=\n").encode()),
+    ("relay.md", ("BUZZ_AITOOLS_AGENT" + "_NSEC\n").encode()),
+    ("pool.md", ("~/.claude-" + "pool/profiles/x\n").encode()),
 ])
 def test_hit_fails(repo, name, data):
     (repo / name).write_bytes(data)
@@ -57,3 +64,8 @@ def test_gate_fails_on_a_hit(repo):
     scan(repo, "notes.md")
     r = subprocess.run(["sh", "scripts/test-gate.sh"], cwd=repo, capture_output=True, text=True)
     assert r.returncode == 1 and "notes.md" in r.stdout
+
+
+def test_netloc_is_not_the_tailnet(repo):
+    (repo / "code.py").write_text("host = parts.netloc\n")
+    assert scan(repo, "code.py").returncode == 0

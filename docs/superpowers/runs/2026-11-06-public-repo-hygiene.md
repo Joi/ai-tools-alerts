@@ -34,6 +34,10 @@ Pass 2 [code:delta, --since f8b4ea89cf7ba0bfefaf9478513f528f950d6f88 at 6e67bab7
 - D1 suffix validation refuses two-letter domains (".io"), a regression: fixed (own suffix pattern; regression test).
 - D2 leak checks still grep the placeholder: fixed (commands replaced by `scripts/public-scan.sh`, exit 0).
 - No standing rebuttal overturned. No further pass (ruling jibot-code#41e2).
+Pass 3 [directive c:s5x5zq scope, --since 5ca5061e8e400da62e7b4d043e5c9967d12aad9b at bd3aa4fe784f17509ee788e5b36c0be6ba8f4626, rebuttals file (4), fresheyes gpt-6-astra high, REASON=-]: 2B/0S/0C/0R · fixed -/- (new scope) · velocity = (—→2, escalation no)
+- Why a third look: the directive arrived after the delta and its fix changes the signing path (credential handling); no behaviour-changing fix there ships unseen. Its findings are disposed of without another pass.
+- E1 the trust-manifest plan's signing step lacks the two new required variables: fixed (step 2.5 sets both with placeholders).
+- E2 no scanner tests for the directive's terms: fixed (one constructed case per term, plus parts.netloc stays clean).
 
 ## Chunks
 - [x] C1 — poster config keys (strip_hosts, internal_host_suffixes, relay_ssh_host, relay_send_wrapper), code and tests — df01f32
@@ -46,3 +50,4 @@ Pass 2 [code:delta, --since f8b4ea89cf7ba0bfefaf9478513f528f950d6f88 at 6e67bab7
 - Line budget: the deliverable is about 520 changed lines (code and ops about 140, tests about 220 of which about 130 are tests the spec/plan review asked for, docs 160 as one-line rewrites); over the brief's 400. Splitting would leave the scan red in one half. Recorded as decided: on the issue.
 - Rebased onto origin/main e566386 (siblings hgs0, rd8t, 8et2 landed): one conflict in main.py deliver (rd8t's ja pending ids kept, route arguments added) and test_main.py (both sides appended tests; both kept). Gate on the rebased head: public scan clean, 944 passed.
 - Follow-up filed: ai-tools-alerts#2bf0 (sign-manifest.py's fixed secrets-helper path).
+- Directive c:s5x5zq (posted 2026-11-05T23:19Z, read at the pre-landing checkpoint): applied at bd3aa4f, review fixes after it; acked on the issue. ai-tools-alerts#2bf0 is done by it.
