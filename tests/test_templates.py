@@ -54,6 +54,20 @@ def test_cron_template_runs_hourly():
     assert "aitools-alerts run" in fields[5]
 
 
+def test_cron_install_line_keeps_other_jobs(tmp_path):
+    """The README's install pipeline, with a file standing in for crontab:
+    installing twice leaves one copy and keeps a job that also names the CLI."""
+    assert all(ln.strip() for ln in CRON.read_text().splitlines()), "a blank line would match every blank line"
+    other = "0 2 * * * /usr/local/bin/backup && aitools-alerts run\n"
+    tab = tmp_path / "crontab"
+    tab.write_text(other)
+    for _ in range(2):
+        r = subprocess.run(["/bin/sh", "-c", f'grep -vxF -f "$1" "$2"; cat "$1"', "sh",
+                            str(CRON), str(tab)], capture_output=True, text=True, check=True)
+        tab.write_text(r.stdout)
+    assert tab.read_text() == other + CRON.read_text()
+
+
 @pytest.mark.parametrize("path", [PLIST, CRON, HOOK, SNIPPET, *SKILLS.values()],
                          ids=lambda p: p.name if p.name != "SKILL.md" else p.parent.parent.name)
 def test_templates_carry_no_host_or_user_path(path):

@@ -54,8 +54,10 @@ It runs `aitools-alerts run` at login and every hour, and logs to `~/Library/Log
 Linux or anything with cron:
 
 ```
-(crontab -l 2>/dev/null | grep -v 'aitools-alerts run'; cat templates/cron/aitools-alerts.cron) | crontab -
+(crontab -l 2>/dev/null | grep -vxF -f templates/cron/aitools-alerts.cron; cat templates/cron/aitools-alerts.cron) | crontab -
 ```
+
+The `grep` removes only lines identical to the template's, so running it again replaces an earlier copy and keeps every other job.
 
 ### Interrupt the next Claude Code session
 
@@ -82,7 +84,7 @@ The hook runs `aitools-alerts run --quiet`. When a critical advisory that matche
 AITOOLS-ALERT: critical advisory matches this machine; run the aitools-alerts skill
 ```
 
-Otherwise it prints nothing, and it never fails a session: a missing CLI or an unreadable mirror is silent. On a slow network the start of a session can wait for the pull (up to 20 seconds) and a notification (up to 30 seconds); the 90-second timeout covers both. With a shorter timeout Claude Code can stop the hook after the CLI has already marked the alert seen, and the line is lost.
+Otherwise it prints nothing, and it never fails a session: a missing CLI or an unreadable mirror is silent. It usually takes a few seconds. On a slow network it takes longer: each of the three mirror files has a 20-second timeout and each notification a 30-second one, so there is no fixed bound. When Claude Code stops the hook at its timeout (90 seconds here), the line does not appear; an alert the CLI had already marked seen was marked so only after a notification channel accepted it, so you still got that notification.
 
 The hourly job is the main interrupt: its notification (desktop by default) marks the alert seen, and the hook then stays quiet. The hook covers a session that starts before the hourly job has run. To have Claude Code check at every session start as well, paste `snippets/AGENTS.md` into `~/.claude/CLAUDE.md`.
 
