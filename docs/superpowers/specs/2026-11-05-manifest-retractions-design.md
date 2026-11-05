@@ -45,7 +45,8 @@ bump; the change is additive.
 **pull.advisories.** After the replies are applied, a thread is marked
 retracted when any advisory id it has carried is in the effective
 manifest's `retracted`: the root's `id`, the root's `aliases`, and the
-`aliases` a curator patch gave the thread. A patch that drops an alias
+`aliases` a curator patch itself supplied (a curator patch that omits
+`aliases` adopts none; delta review finding). A patch that drops an alias
 cannot take the thread out of the list (the root's aliases count), and a
 relay-bot patch that adds a listed id cannot pull a thread into it, since
 the bot never lowers an alert (Stage 1 code review finding). Ids compare

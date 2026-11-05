@@ -1,6 +1,6 @@
 # Run: manifest-retractions
 Instruction: start at medium. Task: TASK-ai-tools-alerts#jpzy.md in the worktree root (kata ai-tools-alerts#jpzy): implement decisions 1-4 (manifest `retracted` list honoured by readers regardless of key state; sign-manifest --retract/--unretract; idempotent curator retract; pull docstring on ignoring 9005) with tests, spec+plan+run manifest under docs/superpowers/. Non-repoman ending: ff-merge to main from the primary checkout and close the issue.
-Stage: code-review:delta
+Stage: committing
 Rung: heavy (start-floor heavy: hard-trigger — the diff changes manifest.verify, the trust check, and scripts/sign-manifest.py, which reads the root key; BR2 REV1 NOV1 INT2 FC2 = 8; Lens: "a manifest without the field is unchanged"; "No current manifest is re-signed in this task"; "an unsigned or wrong-root manifest with the field still rejected"). Dispatch floor was medium; the climb's cause is the evaluator's hard trigger.
 Spec: docs/superpowers/specs/2026-11-05-manifest-retractions-design.md   Plan: docs/superpowers/plans/2026-11-05-manifest-retractions.md
 Agency project: —
@@ -13,6 +13,7 @@ Pass 1 [spec+plan]: 4B/0S/0C/0R · fixed -/- · velocity = (—→4, escalation 
 passes: spec+plan 1 · heavy delta for the two behaviour-changing BLOCKER fixes folded into the whole-branch code pass, which reviews the fixed spec and its implementation together (A3's precedent)
 Pass 1 [code:branch]: 1B/1S/3C/0R · fixed 3/3 prior · velocity ↓ (4→5, escalation no)   # Stage 1 (same-model subagent, ran the suite: 787 passed) ∥ Stage 2 fresheyes gpt-6-astra on origin/main...d92e23e (REASON=-). BLOCKER (fresheyes major): sign-manifest case-folded --retract/--unretract before validating, so a Unicode spelling (AITA-ß → aita-ss) could match and drop a listed id → fixed: every flag must match the advisory-id grammar before folding; refusal tests assert the key is never read. SUBSTANTIVE (Stage 1): a relay-bot alias patch could pull a bot thread into the list for good, so the bot could lower an alert → fixed: only the root's ids and curator-patch aliases count; test. COSMETIC fixed: spec rollback note (downgrade after accepting a manifest with the key), follow-up ref (0drq). COSMETIC rebutted: retract's replay self-check is trivially true on an already-retracted thread (the event is built in code; the check still guards the open-thread path).
 Escalation: none (already heavy). The BLOCKER fix changes behaviour → one delta pass: fresheyes --since d92e23e --rebuttals.
+Pass 2 [code:branch delta]: 1B/0S/0C/0R · fixed 2/2 prior · velocity ↓ (5→1, escalation no)   # fresheyes gpt-6-astra --since d92e23e --rebuttals (2 standing; neither overturned; REASON=-) on f7b910c. BLOCKER: a curator patch that omits aliases still adopted aliases a bot patch added (new.aliases carries omitted fields) → fixed: only aliases a curator patch itself supplies count; test (bot alias, then curator title-only patch: not retracted; curator alias patch: retracted). Last pass (Review Cycle: no further pass); the fix is named in the kata comment as unreviewed beyond the gate.
 
 ## Chunks
 - [x] chunk 1 — manifest.py `retracted` field + tests

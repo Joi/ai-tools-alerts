@@ -573,9 +573,14 @@ def test_relay_bot_alias_patch_cannot_pull_a_thread_into_the_list(mirror):
     do_pull(mirror)
     [t] = threads()
     assert t.adv.aliases == ["CVE-2099-0010"] and not t.retracted
-    mirror.reply(mirror.cur_sec, root, mirror.patch_text(aliases=["CVE-2099-0010"]), created_at=T0 + 300)
+    # a curator patch that leaves aliases out does not adopt the bot's alias
+    mirror.reply(mirror.cur_sec, root, mirror.patch_text(title="Corrected"), created_at=T0 + 300)
     do_pull(mirror)
-    assert [t.retracted for t in threads()] == [True]  # a curator's alias counts
+    [t] = threads()
+    assert t.adv.aliases == ["CVE-2099-0010"] and not t.retracted
+    mirror.reply(mirror.cur_sec, root, mirror.patch_text(aliases=["CVE-2099-0010"]), created_at=T0 + 400)
+    do_pull(mirror)
+    assert [t.retracted for t in threads()] == [True]  # an alias a curator wrote counts
 
 
 def test_manifest_retracted_primary_id_matches_case_folded(mirror):
