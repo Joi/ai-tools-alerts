@@ -1,6 +1,6 @@
 # Run: poster-digest-group
 Instruction: Task ai-tools-alerts#qg7p per TASK-ai-tools-alerts#qg7p.md — poster digest groups by vendor release and lead scope: (a) group CVE notices/highs by primary source URL, critical one per advisory; (b) LEAD- ids one line per scope; (c) from_collector carries the fix version, the line says "fixed in" or "update available"; (d) header N is the line count, --json/ledger per advisory. /do-it with the rung floored at medium; security-shaped review on gpt-6-astra. Non-repoman repo (ff-merge ending).
-Stage: spec-review
+Stage: committing
 Rung: medium (start-floor medium: constraint-lens, evaluator BR1 REV1 NOV1 INT1 FC1 = 5, no hard trigger; dispatch floor medium)
 Lens: "--json/ledger keep every advisory"; "Under 300 changed lines; stdlib only"; "do not run any poster install or live send yourself"; "main is unchanged. The grouping is presentation only."
 Spec: docs/superpowers/specs/2026-11-05-poster-digest-group-design.md   Plan: docs/superpowers/plans/2026-11-05-poster-digest-group.md
@@ -24,10 +24,12 @@ Pass 1 [code:whole branch 14baa29]: Stage 1 0B/1S/4C · fresheyes (gpt-6-astra, 
 - Stage 1 C4 (the label is the last path segment, so an index URL reads `release security`): left; only plain CVE advisories sharing one URL and product group, which on today's inputs is a release page; the wording is the only effect and nothing leaks.
 - Stage 1 C5 (main's size loop can split one release across days): left; the count on each day's line is that day's members, nothing is lost, and grouping makes an oversized digest rare.
 - B1 changed behaviour: one delta pass `--since 14baa292d5ca063bf20171eeacffd3c35e7e608b`.
+Pass 2 [code:delta --since 14baa29, head bdb99c5]: 0B/1S/0C/0R · fixed 5/5 prior · velocity ↓ (9→1, escalation no)
+- fresheyes (gpt-6-astra, run 20261105-154653-15f007), graded major; classified SUBSTANTIVE (test coverage; the reviewer found the code correct): the lead test used only high leads, so it did not pin the title rule on its own. Fixed after the delta: two unverified trojanized notice leads stay two lines. No standing rebuttal overturned. No further pass (ruling jibot-code#41e2).
 
 ## Chunks
-- [ ] collector-fixed — from_collector reads the release's fix version
-- [ ] digest-group — digest groups releases and leads
+- [x] collector-fixed — from_collector reads the release's fix version
+- [x] digest-group — digest groups releases and leads
 
 ## Notes
 - Prior work: the collector record shape read from amplifier-bundle-joi e947e11a (`collect_apple` writes `(macOS <major> fixed in <v>)` in the source title; findings carry no `fixed` or ranges). candidates._url drops fragments, so the `#CVE` source fragments share one URL.

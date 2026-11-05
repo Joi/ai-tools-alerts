@@ -303,6 +303,9 @@ def test_digest_groups_keep_marks_and_kinds_apart():
     leads += [dataclasses.replace(_plain(i, "Chrome", REL, prefix="LEAD-2099-"), level="high") for i in (3, 4)]
     out = compose.digest(leads, "2026-11-06")
     assert "4 advisories" in out and "leads" not in out and out.count("unverified trojanized release") == 2
+    notice = [dataclasses.replace(a, level="notice") for a in leads[:2]]  # the title alone keeps them apart
+    out = compose.digest(notice, "2026-11-06")
+    assert "2 advisories" in out and "leads" not in out and out.count("unverified trojanized release") == 2
     # A group the guard refuses is one withheld item; the next group still prints.
     bad = [dataclasses.replace(a, products=[dataclasses.replace(a.products[0], name="host-alpha")],
                                title=f"host-alpha: security advisory ({a.id})") for a in real]
