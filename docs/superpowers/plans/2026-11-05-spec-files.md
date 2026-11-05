@@ -33,7 +33,7 @@
 - [ ] **2. Spec files.** Write the four JSON files. Verify: `for f in spec/*.json; do python3 -m json.tool "$f" >/dev/null || echo BAD $f; done` prints nothing.
 - [ ] **3. `schema.py`.** Implement per the spec's Approach. Verify: `python3 -m pytest tests/test_schema.py -q` passes; `python3 -c "from aitools_alerts.schema import VERBS, LEVELS; print(sorted(VERBS), sorted(LEVELS))"` prints `['disable_skill', 'remove_mcp_server', 'review_setting', 'rotate_credential', 'stop_using', 'upgrade'] ['critical', 'high', 'notice']`.
 - [ ] **4. Whole gate.** `scripts/test-gate.sh` passes (nostr and trust-root tests included). `git add -N spec aitools_alerts/schema.py tests docs/superpowers && git diff --stat origin/main` (intent-to-add, so new files count) reports the size; the 600-line guide is exceeded and recorded as a `decided:` on the issue.
-- [ ] **5. Leak check.** `grep -rniE 'nsec1|host-b|host-f|host-a|azbd|host-e|vm\.example' spec tests/fixtures/posts tests/test_schema.py aitools_alerts/schema.py` prints nothing.
+- [ ] **5. Leak check.** the A1 leak-check pattern (`nsec1` plus the fleet host names, kept out of this public file) over `spec`, `tests/fixtures/posts`, `tests/test_schema.py`, `aitools_alerts/schema.py` and these run artifacts prints nothing.
 - [ ] **6. Commit** `feat: advisory schema, verbs, scope tiers, primary domains` with the run artifacts.
 
 ## Acceptance

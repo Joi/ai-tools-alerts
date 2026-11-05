@@ -263,7 +263,7 @@ def _last_block(content: str):
     Ours opens only at column 0 with backticks and info string exactly
     INFO_STRING. Only the current candidate's body is held in memory."""
     last = _NONE
-    fence = None  # [fence char, length, is ours, body lines, body chars]
+    fence = None  # [fence char, length, is ours, body lines, body UTF-8 bytes]
     for line in _LINES.split(content):
         if fence is None:
             m = _FENCE_OPEN.match(line)
@@ -282,7 +282,7 @@ def _last_block(content: str):
                 last = _TOO_LARGE if fence[3] is None else "\n".join(fence[3])
             fence = None
         elif fence[2] and fence[3] is not None:
-            fence[4] += len(line) + 1
+            fence[4] += len(line.encode("utf-8", "surrogatepass")) + (1 if fence[3] else 0)
             if fence[4] > MAX_BLOCK_BYTES:
                 fence[3] = None  # drop the body; the block is rejected anyway
             else:

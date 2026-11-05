@@ -12,7 +12,7 @@
     {"name": "Node.js", "ecosystem": "node", "tier": 1, "match": ["node.js", "nodejs"]},
     {"name": "Python", "ecosystem": "python", "tier": 1, "match": ["cpython", "python software foundation"]},
     {"name": "Go", "ecosystem": "go", "tier": 1, "match": ["golang", "go toolchain", "go standard library"]},
-    {"name": "Rust", "ecosystem": "rust", "tier": 1, "match": ["rust toolchain", "rust-lang", "rust programming language", "rustup"]},
+    {"name": "Rust", "ecosystem": "rust", "tier": 1, "match": ["rust toolchain", "rust-lang", "rust programming language", "rustup", "rust cargo", "rust rustc", "rust compiler", "cargo package manager"]},
     {"name": "Docker", "ecosystem": "docker", "tier": 1, "match": ["docker", "containerd", "opencontainers runc", "runc container runtime", "moby"]},
     {"name": "Tailscale", "ecosystem": "tailscale", "tier": 1, "match": ["tailscale"]},
     {"name": "OpenSSH", "ecosystem": "openssh", "tier": 1, "match": ["openssh"]},

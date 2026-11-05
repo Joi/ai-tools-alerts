@@ -278,7 +278,18 @@ def test_oversized_block_rejected():
     many = "\n".join("x" * 100 for _ in range(1000))  # 101 kB in 1000 lines
     assert parse_post(f"b\n\n```aitools-alert\n{many}\n```\n" + post_with(raw)) is not None
     assert parse_post(post_with(raw) + f"```aitools-alert\n{many}\n```\n") is None
-    assert parse_post("x" * (schema.MAX_POST_CHARS + 1)) is None
+    post = post_with(raw)
+    pad = "x" * (schema.MAX_POST_CHARS - len(post) - 1) + "\n"
+    assert parse_post(pad + post) is not None  # exactly at the post limit
+    assert parse_post("x" + pad + post) is None  # one character over
+
+
+def test_block_exactly_at_byte_limit_accepted():
+    raw = json.dumps(valid_block())
+    exact = raw[:-1] + " " * (schema.MAX_BLOCK_BYTES - len(raw.encode())) + "}"
+    assert len(exact.encode()) == schema.MAX_BLOCK_BYTES
+    assert parse_post(post_with(exact)) is not None
+    assert parse_post(post_with(exact[:-1] + " }")) is None
 
 
 def test_render_rejects_body_with_unclosed_fence():
@@ -399,8 +410,13 @@ def test_render_post_type_errors_are_value_errors():
 
 def test_scope_patterns_avoid_common_words():
     entries = load_scope()
+    def scoped(text):
+        return [e.name for e in entries if any(m in text.lower() for m in e.match)]
     for text in ("foo truncate library", "trustcenter portal", "cargo shipping tracker"):
-        assert [e.name for e in entries if any(m in text for m in e.match)] == [], text
+        assert scoped(text) == [], text
+    for text in ("Rust Cargo", "Rust rustc", "The Rust Programming Language Cargo",
+                 "Opencontainers runc", "Anthropic Claude Code", "Apple macOS"):
+        assert scoped(text), text
     assert [e.ecosystem for e in entries] == [
         "claude-code", "codex", "cursor", "gemini-cli", "hermes", "openclaw", "mcp", "skill",
         "node", "python", "go", "rust", "docker", "tailscale", "openssh", "git",
