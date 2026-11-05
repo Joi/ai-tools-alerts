@@ -355,6 +355,8 @@ def _scope_mode(data) -> str:
     extra = set(data) - _SCOPE_KEYS
     if extra:
         _fail("scope", f"unknown keys {sorted(extra)}")
+    if "description" in data and not isinstance(data["description"], str):
+        _fail("scope.description", "not a string")
     mode = data.get("match_mode", "word")
     if mode not in SCOPE_MATCH_MODES:
         _fail("scope.match_mode", f"not one of {list(SCOPE_MATCH_MODES)}")

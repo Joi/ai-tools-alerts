@@ -166,6 +166,22 @@ matching (`dockerfile`, `chromebook`, `skills.shopify`, `tailscaledev`). The
 named daemon forms are added back. Rollback: revert the commit; a version-1
 file needs no code to read it.
 
+## Code review changes (pass 1, whole branch)
+
+- Added `opencontainers/runc` (GHSA package `github.com/opencontainers/runc`),
+  `getcursor/cursor` and `cursor-agent`.
+- A word-final edge that is a letter also ends where a digit starts a glued
+  version (`openssh9.8p1`, `cpython3.12`, `debian12`), which substrings matched.
+- `_norm` maps Unicode dashes to `-` and collapses whitespace runs.
+- A version-2 `description` must be a string.
+
+Accepted limits: `-` is a boundary, so a third-party name built on a product
+(`claude-code-router`, `jenkins docker plugin`) still matches it, as it did
+under substrings; CJK text glued to a Latin name (`Dockerの`) does not match,
+and no source in use writes product text in Japanese; an unknown
+`match_mode` on a hand-built entry uses the word rule, the stricter one,
+rather than raising inside the poster.
+
 ## Open questions
 
 None blocking. Follow-up: the KEV entry `Npm package | System Information

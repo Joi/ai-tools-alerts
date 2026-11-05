@@ -40,9 +40,15 @@ _SEVERE = re.compile(
 _TOKEN = re.compile(r"(?:[^\W_]|\.)+")
 
 
+_DASHES = re.compile("[\u2010-\u2015\u2212]")
+_SPACES = re.compile(r"\s+")
+
+
 def _norm(text: str) -> str:
-    """NFKC then lowercase, so compatibility characters cannot dodge a pattern."""
-    return unicodedata.normalize("NFKC", text).lower()
+    """NFKC, lowercase, Unicode dashes to "-", whitespace runs to one space, so
+    compatibility characters and spacing cannot dodge a pattern."""
+    text = unicodedata.normalize("NFKC", text).lower()
+    return _SPACES.sub(" ", _DASHES.sub("-", text))
 
 
 def _tokens(text: str) -> set[str]:
@@ -58,10 +64,14 @@ def _word_pattern(pattern: str) -> re.Pattern:
 
     An edge that is punctuation ("@scope/", a trailing "/") needs no boundary, so a
     package-scope prefix still matches every package under it. A word-final edge
-    takes one optional "s" first, so "mcp server" matches "MCP servers".
+    also ends at one plural "s" ("mcp server" matches "MCP servers") or where a
+    digit starts a version glued to a name ending in a letter ("openssh9.8p1").
     """
     head = r"(?<![^\W_])" if _WORD_CHAR.match(pattern[:1]) else ""
-    tail = r"s?(?![^\W_])" if _WORD_CHAR.match(pattern[-1:]) else ""
+    tail = ""
+    if _WORD_CHAR.match(pattern[-1:]):
+        version = r"|(?=\d)" if not pattern[-1].isdigit() else ""
+        tail = r"(?:s?(?![^\W_])" + version + ")"
     return re.compile(head + re.escape(pattern) + tail)
 
 
@@ -102,9 +112,10 @@ def scope_of(product_text, log: list[str] | None = None, entries=None) -> schema
 
     Each entry's ``match`` patterns are tested against the normalised text by the
     entry's ``match_mode``. "word" (the default): the pattern occurs with no letter
-    or digit touching an edge of it that is itself a letter or digit (one plural
-    "s" excepted at the end), so "skills.sh" does not match "skills.shopify" and
-    "mcp server" matches "MCP servers". "substring": any occurrence (a
+    or digit touching an edge of it that is itself a letter or digit (a plural
+    "s" or a glued version number excepted at the end), so "skills.sh" does not
+    match "skills.shopify", "mcp server" matches "MCP servers" and "openssh"
+    matches "OpenSSH9.8p1". "substring": any occurrence (a
     version-1 scope file). Tier-1 entries are tried first, so a tier-1 hit wins
     over any tier-2 hit.
     When nothing matches but the text holds a tier-1 vendor word as a whole token,

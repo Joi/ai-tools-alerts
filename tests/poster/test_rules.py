@@ -346,7 +346,14 @@ def test_short_pattern_does_not_match_inside_another_word():
     assert rules.scope_of("docker-compose").name == "Docker"
     assert rules.scope_of("Docker Desktop").name == "Docker"
     assert rules.scope_of("docker_sdk").name == "Docker"  # "_" separates, as in _tokens
-    assert rules.scope_of("Docker2") is None  # a digit continues the word
+    # A version glued to a name that ends in a letter still matches.
+    for text, name in (("OpenSSH9.8p1", "OpenSSH"), ("CPython3.12", "Python"),
+                       ("Debian12", "Linux distributions"), ("Docker2", "Docker")):
+        hit = rules.scope_of(text)
+        assert hit is not None and hit.name == name, (text, hit and hit.name)
+    # Whitespace runs and Unicode dashes normalise before matching.
+    for text in ("Claude  Code", "claude\u2011code", "claude\u2013code", "Claude\tCode"):
+        assert rules.scope_of(text).name == "Claude Code", text
     # The left edge is bounded too: a letter or digit before the pattern.
     for text in ("notdocker", "2docker", "\u00e9docker", "\u30c9docker", "xopenssh", "mycpython"):
         assert rules.scope_of(text) is None, text
@@ -405,6 +412,10 @@ SOURCE_FORMS = {
     "Moby (aka Docker CE, Docker Engine)": "Docker",
     "github.com/docker/cli": "Docker",
     "docker-ce": "Docker",
+    "opencontainers/runc": "Docker",
+    "github.com/opencontainers/runc": "Docker",
+    "getcursor/cursor": "Cursor",
+    "cursor-agent": "Cursor",
     "dockerd": "Docker",
     "tailscale/tailscale": "Tailscale",
     "tailscaled": "Tailscale",
@@ -452,7 +463,8 @@ def test_scope_file_versions(tmp_path):
     # A reader refuses a format it does not know.
     for bad in ({"version": 3}, {"version": True}, {"version": "2"}, {"version": 1.0},
                 {"version": 2, "match_mode": "regex"}, {"version": 2, "match_mode": None},
-                {"version": 1}, {"match_mode": "word"}, {"version": 2, "extra": 1}):
+                {"version": 1}, {"match_mode": "word"}, {"version": 2, "extra": 1},
+                {"version": 2, "description": 5}):
         with pytest.raises(ValueError):
             schema.load_scope(_scope_file(tmp_path, bad))
 
