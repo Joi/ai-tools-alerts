@@ -12,8 +12,9 @@ Spec: docs/superpowers/specs/2026-11-05-one-line-per-advisory-design.md
   review; the draft's max-by-level pick dropped matches).
 - [x] Skills and `snippets/AGENTS.md` (word-for-word twin, test_templates):
   document `threads`, and that `unseen_critical` lists every root.
-- [ ] `_matches` (~l.122): `threads = _entries(pull.active(...))`; the rest
-  unchanged.
+- [x] `_matches` (~l.122): `threads = _entries(pull.active(...),
+  a.__dict__.setdefault("warned", set()))` (one warning per command); the
+  rest unchanged.
 - [ ] `_match_json` (~l.149): add `"threads": list(t.root_ids)` after `thread`.
 - [ ] `cmd_check` (~l.158): the thread part reads `thread X` for one root and
   `threads X, Y` for more (helper `_thread_ref(t)`), in the match line and
