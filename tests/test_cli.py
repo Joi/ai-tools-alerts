@@ -451,3 +451,100 @@ def test_check_plan_and_notify_show_the_synthetic_mark(monkeypatch, capsys, sent
     assert cli.main(["notify"]) == 0
     assert len(sent["calls"]) == 2
     assert all(t.startswith("CRITICAL: SYNTHETIC TEST: Claude Code") for _, t in sent["calls"])
+
+
+def _two_copy_mirror(monkeypatch, **over):
+    """A relay-bot critical posted as one root per channel, as the poster does."""
+    from aitools_alerts import pull
+    from mirror_helpers import Mirror
+    m = Mirror()
+    crit = m.root_post(m.bot_sec, advisory(posted_by="relay-bot"), files=("critical.json",))
+    feed = m.root_post(m.bot_sec, advisory(posted_by="relay-bot", **over), files=("feed.json",),
+                       created_at=T0 + 101)
+    monkeypatch.setenv(cli.TRUST_ROOT_ENV, m.root)
+    monkeypatch.setattr(pull, "default_fetch", m.fetch)
+    write_config('mirror_url = "https://mirror.invalid/"\n')
+    return m, crit["id"], feed["id"]
+
+
+def test_a_critical_with_one_root_per_channel_lists_once(monkeypatch, capsys, sent):
+    m, crit, feed = _two_copy_mirror(monkeypatch)
+    assert cli.main(["pull"]) == 0
+    capsys.readouterr()
+    assert cli.main(["check"]) == 0
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("CRITICAL:")]
+    assert lines == [f"CRITICAL: Invented critical for tests [Claude Code 2.0.0: affected] "
+                     f"(id AITA-TEST-0001, threads {crit[:12]}, {feed[:12]})"]
+    assert cli.main(["check", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert len(data) == 1 and data[0]["thread"] == crit and data[0]["threads"] == [crit, feed]
+    for ref in ("AITA-TEST-0001", feed):
+        assert cli.main(["plan", ref]) == 0
+        assert capsys.readouterr().out.count("CRITICAL: Invented critical") == 1
+    assert cli.main(["run", "--json"]) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert len(out["matches"]) == 1 and out["unseen_critical"] == sorted([crit, feed])
+    assert len(sent["calls"]) == 1 and State.load().seen == {crit, feed}
+    assert cli.main(["notify"]) == 0 and len(sent["calls"]) == 1
+
+
+def test_a_seen_copy_makes_the_advisory_seen(monkeypatch, sent):
+    """State the old code wrote saw only one copy; the other does not re-alert."""
+    m, crit, feed = _two_copy_mirror(monkeypatch)
+    assert cli.main(["pull"]) == 0
+    st = State.load()
+    st.seen.add(feed)
+    st.save_seen()
+    assert cli.main(["notify"]) == 0 and sent["calls"] == []
+
+
+def test_different_ids_and_roles_still_list_apart(monkeypatch, capsys):
+    from aitools_alerts import pull
+    from mirror_helpers import Mirror
+    m = Mirror()
+    a = m.root_post(m.bot_sec, advisory(posted_by="relay-bot"))
+    b = m.root_post(m.bot_sec, advisory(id="AITA-TEST-0002", posted_by="relay-bot"), created_at=T0 + 101)
+    c = m.root_post(m.cur_sec, advisory(), created_at=T0 + 102)
+    h = m.root_post(m.bot_sec, advisory(id="AITA-TEST-0003", level="high", posted_by="relay-bot"),
+                    files=("feed.json",), created_at=T0 + 103)
+    monkeypatch.setenv(cli.TRUST_ROOT_ENV, m.root)
+    monkeypatch.setattr(pull, "default_fetch", m.fetch)
+    assert cli.main(["pull", "--mirror-url", "https://mirror.invalid/"]) == 0
+    capsys.readouterr()
+    assert cli.main(["check", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert [(d["id"], d["posted_by"], d["threads"]) for d in data] == [
+        ("AITA-TEST-0001", "relay-bot", [a["id"]]), ("AITA-TEST-0002", "relay-bot", [b["id"]]),
+        ("AITA-TEST-0001", "curator", [c["id"]]), ("AITA-TEST-0003", "relay-bot", [h["id"]])]
+    assert all(d["thread"] == d["threads"][0] for d in data)
+    assert cli.main(["check"]) == 0
+    out = capsys.readouterr().out
+    assert f"HIGH: Invented critical for tests [Claude Code 2.0.0: affected] (id AITA-TEST-0003, thread {h['id'][:12]})" in out
+    assert "4 advisories, 4 matches on this machine" in out
+
+
+def test_copies_that_differ_list_apart_and_say_so(monkeypatch, capsys, sent):
+    """An update one root has not had yet (here the feed copy names 2.x, which
+    the critical copy does not reach): neither copy's match or alert is lost."""
+    from aitools_alerts.schema import Product
+    m, crit, feed = _two_copy_mirror(monkeypatch, level="high", products=[
+        Product("Claude Code", "claude-code", "<3.0.0", "3.0.0")])
+    assert cli.main(["pull"]) == 0
+    capsys.readouterr()
+    assert cli.main(["run", "--json"]) == 2
+    io = capsys.readouterr()
+    data = json.loads(io.out)["matches"]
+    assert [(d["thread"], d["threads"], d["level"]) for d in data] == [
+        (crit, [crit], "critical"), (feed, [feed], "high")]
+    assert io.err.count("copies of AITA-TEST-0001 differ; listing each") == 1
+    assert State.load().seen == {crit}
+
+
+def test_a_seen_copy_does_not_hide_a_differing_one(monkeypatch, sent):
+    m, crit, feed = _two_copy_mirror(monkeypatch, posted_at=T0 + 50)
+    assert cli.main(["pull"]) == 0
+    st = State.load()
+    st.seen.add(crit)
+    st.save_seen()
+    assert cli.main(["notify"]) == 0 and len(sent["calls"]) == 1
+    assert State.load().seen == {crit, feed}

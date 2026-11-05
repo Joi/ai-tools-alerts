@@ -24,13 +24,16 @@ what to do. It never runs anything itself. Follow these rules exactly.
    - `pull_error`: null, or why the mirror could not be read. The rest is
      then the last good state; tell the person the alerts may be stale.
    - `matches`: one object per advisory that matches this machine:
-     `thread` (the advisory id to pass to `plan`), `id`, `level`, `title`,
+     `thread` (the advisory id to pass to `plan`), `threads` (every root
+     of the advisory: a critical is posted once per channel, which is
+     one advisory, not a duplicate post), `id`, `level`, `title`,
      `posted_by` (`curator` or `relay-bot`), `reason`, `installed` (name,
      version), `product` (name, affected, fixed), `actions`, `sources`
      (each `url`, `published_at`), `source` (the link to give the
      person: the first primary source, else the first source) and
      `source_primary` (false when no source is a primary source).
-   - `unseen_critical`: thread ids of critical matches not shown before.
+   - `unseen_critical`: thread ids (every root) of critical matches not
+     shown before; count advisories from `matches`, not from this list.
    Exit 2 means `unseen_critical` is not empty. Exit 0 or 1 with the JSON
    printed: nothing new is critical (1: a notification could not be sent).
    Exit 1 with nothing on stdout means the CLI failed: tell the person what

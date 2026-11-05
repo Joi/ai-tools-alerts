@@ -22,7 +22,7 @@ import json
 import os
 import shlex
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from urllib.parse import quote
 
 from . import TRUST_ROOT_PUBKEY, __version__, check, config, curator, inventory, nostr, notify, pull, relay, schema
@@ -125,13 +125,56 @@ def cmd_pull(a, st: State, s: config.Settings) -> int:
     return 0
 
 
+@dataclass(frozen=True)
+class Entry:
+    """One advisory as check, plan and notify show it: every current root
+    (thread) a poster role posted under one advisory id with equal content.
+    A critical has one root per channel. ``root_id`` is the first root."""
+    root_id: str
+    root_ids: tuple[str, ...]
+    adv: schema.Advisory
+
+
+def _entries(threads: list, warned: set) -> list[Entry]:
+    """Group threads by (advisory id, poster role), in reader order; the first
+    root is shown. Only copies whose advisories are equal merge: copies that
+    differ (an update one root has not had yet) stay apart, so no copy's match
+    or notification is dropped, and stderr says so once per advisory."""
+    groups: dict[tuple[str, str], list[list]] = {}
+    for t in threads:
+        copies = groups.setdefault((t.adv.id.casefold(), t.adv.posted_by), [])
+        same = next((c for c in copies if c[0].adv == t.adv), None)
+        if same is None:
+            copies.append([t])
+        else:
+            same.append(t)
+    out = []
+    for key, copies in groups.items():
+        if len(copies) > 1 and key not in warned:
+            warned.add(key)
+            _err(f"copies of {copies[0][0].adv.id} differ; listing each")
+        out += [Entry(c[0].root_id, tuple(t.root_id for t in c), c[0].adv) for c in copies]
+    return out
+
+
+def _seen(t: Entry, st: State) -> bool:
+    return not st.seen.isdisjoint(t.root_ids)
+
+
+def _thread_ref(t: Entry) -> str:
+    if len(t.root_ids) == 1:
+        return f"thread {t.root_id[:12]}"
+    return "threads " + ", ".join(r[:12] for r in t.root_ids)
+
+
 def _matches(a, st: State) -> tuple[list, list]:
-    """Current threads, and (thread, Match) pairs for this machine. State
-    pulled under another trust root is not used."""
+    """Current advisories (one Entry per advisory id and poster role), and
+    (entry, Match) pairs for this machine. State pulled under another trust
+    root is not used."""
     if st.manifest is not None and st.manifest_root != a.root:
         _err("the stored state was pulled under another trust root; run: aitools-alerts pull")
         return [], []
-    threads = pull.active(pull.advisories(st))
+    threads = _entries(pull.active(pull.advisories(st)), a.__dict__.setdefault("warned", set()))
     ms = check.match([t.adv for t in threads], inventory.collect())
     by_adv = {id(t.adv): t for t in threads}
     return threads, [(by_adv[id(m.adv)], m) for m in ms]
@@ -154,7 +197,7 @@ def _source_line(adv) -> str:
 
 def _match_json(t, m) -> dict:
     source, primary = _source(t.adv)
-    return {"thread": t.root_id, "id": t.adv.id, "level": t.adv.level, "title": t.adv.title,
+    return {"thread": t.root_id, "threads": list(t.root_ids), "id": t.adv.id, "level": t.adv.level, "title": t.adv.title,
             "posted_by": t.adv.posted_by, "reason": m.reason, "source": source,
             "source_primary": primary, "sources": [asdict(x) for x in t.adv.sources],
             "installed": asdict(m.installed), "product": asdict(m.product) if m.product else None,
@@ -171,25 +214,26 @@ def cmd_check(a, st: State, s: config.Settings) -> int:
     for t, m in pairs:
         ver = m.installed.version or "unknown version"
         print(f"{t.adv.level.upper()}: {t.adv.title} [{m.installed.name} {ver}: {m.reason}] "
-              f"(id {t.adv.id}, thread {t.root_id[:12]})")
+              f"(id {t.adv.id}, {_thread_ref(t)})")
     matched = {t.root_id for t, _ in pairs}
     other = [t for t in threads if t.adv.level == "critical" and t.root_id not in matched]
     if other:
         print("Critical advisories not installed here:")
         for t in other:
-            print(f"  CRITICAL: {t.adv.title} (id {t.adv.id}, thread {t.root_id[:12]})")
+            print(f"  CRITICAL: {t.adv.title} (id {t.adv.id}, {_thread_ref(t)})")
     print(f"{len(threads)} advisories, {len(pairs)} matches on this machine")
     return 0
 
 
 def _unseen_critical(a, st: State) -> list:
     _, pairs = _matches(a, st)
-    return [(t, m) for t, m in pairs if t.adv.level == "critical" and t.root_id not in st.seen]
+    return [(t, m) for t, m in pairs if t.adv.level == "critical" and not _seen(t, st)]
 
 
 def _notify(st: State, s: config.Settings, pending) -> int:
-    """Send each pending thread once, under the state lock: a concurrent run
-    waits, then re-reads seen and skips what this one already sent."""
+    """Send each pending advisory once, under the state lock: a concurrent
+    run waits, then re-reads seen and skips what this one already sent. Every
+    root of an advisory is marked seen; one seen root makes it seen."""
     if not pending:
         return 0
     if not s.notify:
@@ -198,7 +242,7 @@ def _notify(st: State, s: config.Settings, pending) -> int:
     status = 0
     with st.locked():
         for t, m in pending:
-            if t.root_id in st.seen:
+            if _seen(t, st):
                 continue  # sent already (by this run, or a concurrent one)
             text = notify.format_text(t.adv, m)
             accepted = False
@@ -207,7 +251,7 @@ def _notify(st: State, s: config.Settings, pending) -> int:
                 print(f"{ch}: {r.detail}")
                 accepted = accepted or r.accepted
             if accepted:
-                st.seen.add(t.root_id)
+                st.seen.update(t.root_ids)
                 st.save_seen()
             else:
                 status = 1
@@ -220,7 +264,7 @@ def cmd_notify(a, st: State, s: config.Settings) -> int:
 
 def cmd_plan(a, st: State, s: config.Settings) -> int:
     threads, pairs = _matches(a, st)
-    wanted = [t for t in threads if a.advisory_id in (t.root_id, t.adv.id)]
+    wanted = [t for t in threads if a.advisory_id in (*t.root_ids, t.adv.id)]
     if not wanted:
         _err(f"no current advisory {a.advisory_id!r}")
         return 1
@@ -263,7 +307,7 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
     if a.json:
         _, pairs = _matches(a, st)
         out = {"pull_error": res.error, "matches": [_match_json(t, m) for t, m in pairs],
-               "unseen_critical": sorted({t.root_id for t, _ in pending})}
+               "unseen_critical": sorted({r for t, _ in pending for r in t.root_ids})}
     elif not a.quiet:
         a.json = False
         cmd_check(a, st, s)
