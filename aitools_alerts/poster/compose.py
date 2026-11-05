@@ -25,6 +25,7 @@ import re
 import socket
 import time
 from dataclasses import asdict
+from urllib.parse import urlsplit
 
 from aitools_alerts import schema
 from aitools_alerts.poster import candidates
@@ -269,10 +270,49 @@ def reply_post(prev: schema.Advisory, c, changes: dict, *, reason: str | None = 
     return _guard(out)
 
 
+_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
+
+
+def _single(a: schema.Advisory) -> str:
+    fixed = f"fixed in {a.products[0].fixed}" if a.products[0].fixed else "no fix yet"
+    mark = f"({SYNTHETIC}) " if is_synthetic(a.id) else ""
+    return f"- {mark}{a.title}; {fixed}. {_primary(a.sources)}"
+
+
+def _group_key(a: schema.Advisory):
+    """Advisories that share one digest line, or None for a line of its own. A
+    critical is always its own line; so is any title but the plain kind, so a shared
+    catalog URL (every KEV entry) never reads as one release and "unverified" stays."""
+    name, syn = a.products[0].name, is_synthetic(a.id)
+    if a.level == "critical":
+        return None
+    if a.id.startswith("LEAD-"):
+        return ("lead", name, syn)
+    if a.id.startswith("CVE-") and a.title == f"{name}: security advisory ({a.id})":
+        return ("release", name, syn, _primary(a.sources))
+    return None
+
+
+def _group_line(key, members) -> str:
+    mark = f"({SYNTHETIC}) " if key[2] else ""
+    if key[0] == "lead":
+        return f"- {mark}{key[1]}: {len(members)} unrated leads."
+    url = key[3]
+    seg = next((p for p in reversed(urlsplit(url).path.split("/")) if p), "")
+    label = f"release {seg}" if _LABEL.fullmatch(seg) else "one release"
+    fixes = {a.products[0].fixed for a in members}
+    fix = f"fixed in {fixes.pop()}" if len(fixes) == 1 and None not in fixes \
+        else "update available" if schema.is_primary(url) else "see the release"
+    return f"- {mark}{key[1]}: {label}, {len(members)} CVEs; {fix}. {url}"
+
+
 def digest(advs_today, date) -> str:
     """The daily digest: every advisory once per id and product (latest posted_at
-    wins), critical first. An item that fails the publication guard is withheld
-    and counted, never the whole digest."""
+    wins), critical first. Within high and notice, plain CVE advisories sharing a
+    primary source URL and product are one line (a vendor release), and leads are one
+    line per scope; N counts lines. An item that fails the publication guard is
+    withheld and counted, never the whole digest. The ledger and --json keep every
+    advisory: this grouping is presentation only."""
     latest: dict[tuple, schema.Advisory] = {}
     for adv in advs_today:
         if not (adv.products and adv.sources):
@@ -283,16 +323,20 @@ def digest(advs_today, date) -> str:
     day = date.isoformat() if hasattr(date, "isoformat") else str(date)
     if not latest:
         return f"Daily digest for {day}: no advisories."
-    n = len(latest)
-    lines, withheld = [f"Daily digest for {day}: {n} advisor{'y' if n == 1 else 'ies'}."], 0
+    sections = {}
     for level in ("critical", "high", "notice"):
-        group = sorted((a for a in latest.values() if a.level == level), key=lambda a: (a.posted_at, a.id))
-        if group:
-            lines += ["", f"{level.capitalize()} ({len(group)})"]
-            for a in group:
-                fixed = f"fixed in {a.products[0].fixed}" if a.products[0].fixed else "no fix yet"
-                mark = f"({SYNTHETIC}) " if is_synthetic(a.id) and not a.title.startswith(SYNTHETIC + ": ") else ""
-                line = f"- {mark}{a.title}; {fixed}. {_primary(a.sources)}"
+        groups: dict = {}
+        for a in sorted((a for a in latest.values() if a.level == level), key=lambda a: (a.posted_at, a.id)):
+            k = _group_key(a)
+            groups.setdefault(k if k is not None else ("single", a.id, a.products[0].name), []).append(a)
+        sections[level] = [_single(m[0]) if k[0] == "single" or len(m) == 1 else _group_line(k, m)
+                           for k, m in groups.items()]
+    n = sum(len(v) for v in sections.values())
+    lines, withheld = [f"Daily digest for {day}: {n} advisor{'y' if n == 1 else 'ies'}."], 0
+    for level, items in sections.items():
+        if items:
+            lines += ["", f"{level.capitalize()} ({len(items)})"]
+            for line in items:
                 try:
                     lines.append(_guard(line))
                 except ValueError:

@@ -246,3 +246,59 @@ def test_synthetic_digest_and_reply_keep_one_mark():
     assert compose.reply_post(adv, c, {"level": "high"}).count("SYNTHETIC") == 0  # block: changed fields
     with pytest.raises(ValueError, match="template title"):  # the writer never sends an unmarked title
         compose.reply_post(adv, c, {"title": legacy.title})
+
+
+REL = "https://vendor.example.com/en-us/149521"
+USN = "https://distro.example.com/security/notices/USN-8928-1"
+KEV = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
+
+
+def _plain(i, product, url, level="notice", fixed=None, prefix="CVE-2099-", **kw):
+    c = cand(id=f"{prefix}{i:04d}", aliases=(), product_text=product, injection_exec=False,
+             fixed=fixed, affected=None, sources=(Source(url, None),), **kw)
+    return compose.root_post(c, (level, level), scope(c), posted_at=NOW + i)[1]
+
+
+def test_digest_groups_releases_and_leads():
+    advs = [_plain(i, "macOS", REL) for i in range(1, 45)]
+    advs += [_plain(100 + i, "Ubuntu linux kernel", USN) for i in range(9)]
+    advs += [_plain(200 + i, "Chrome", f"https://social.example.com/@bot/{i}", prefix="LEAD-2099-")
+             for i in range(12)]
+    crit = dataclasses.replace(_plain(300, "macOS", REL), level="critical")
+    out = compose.digest(advs + [crit], "2026-11-06")
+    lines = out.split("\n")
+    assert lines[0] == "Daily digest for 2026-11-06: 4 advisories."
+    assert "Critical (1)" in lines and "Notice (3)" in lines
+    assert f"- (SYNTHETIC TEST) macOS: release 149521, 44 CVEs; see the release. {REL}" in lines
+    assert f"- (SYNTHETIC TEST) Linux distributions: release USN-8928-1, 9 CVEs; see the release. {USN}" in lines
+    assert "- Browsers: 12 unrated leads." in lines  # a LEAD id is never a reserved one
+    assert out.count("CVE-2099-0300") == 1 and "CVE-2099-0001" not in out
+    # An allowlisted vendor URL says an update exists; one fixed version is named.
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(schema, "is_primary", lambda url, domains=None: url == REL)
+        assert "44 CVEs; update available." in compose.digest(advs, "2026-11-06")
+    same = [_plain(i, "macOS", REL, fixed="27.2") for i in range(1, 4)]
+    assert "3 CVEs; fixed in 27.2." in compose.digest(same, "2026-11-06")
+
+
+def test_digest_groups_keep_marks_and_kinds_apart():
+    real = [_plain(i, "macOS", REL, prefix="CVE-2026-") for i in (1, 2)]
+    syn = [_plain(i, "macOS", REL) for i in (3, 4)]
+    out = compose.digest(real + syn, "2026-11-06")
+    assert f"- macOS: release 149521, 2 CVEs; see the release. {REL}" in out.split("\n")
+    assert "(SYNTHETIC TEST) macOS: release 149521, 2 CVEs" in out and "2 advisories" in out
+    # A shared catalog URL is not a release, and unverified titles keep their mark.
+    kev = [_plain(i, "macOS", KEV, level="high", exploited=True, prefix="CVE-2026-") for i in (5, 6)]
+    c = cand(id="CVE-2026-0007", aliases=(), product_text="macOS", injection_exec=False,
+             sources=(Source(REL, None),))
+    unv = [compose.root_post(dataclasses.replace(c, id=f"CVE-2026-000{i}"), ("high", "unverified"),
+                             scope(c), posted_at=NOW)[1] for i in (7, 8)]
+    out = compose.digest(kev + unv, "2026-11-06")
+    assert "4 advisories" in out and "CVEs" not in out and out.count("unverified") == 2
+    # A group the guard refuses is one withheld item; the next group still prints.
+    bad = [dataclasses.replace(a, products=[dataclasses.replace(a.products[0], name="host-alpha")],
+                               title=f"host-alpha: security advisory ({a.id})") for a in real]
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(socket, "gethostname", lambda: "host-alpha")
+        out = compose.digest(bad + syn, "2026-11-06")
+    assert "1 item withheld" in out and "host-alpha" not in out and "2 CVEs" in out
