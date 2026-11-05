@@ -106,7 +106,7 @@ def test_heartbeat_unreadable_or_malformed_never_raises(tmp_path):
     assert from_heartbeat(tmp_path).skipped["run.json unreadable"] == 1
     for bad in ([], {"findings": "x"}, {"findings": None}):
         out = from_heartbeat(_write_run(tmp_path, bad))
-        assert list(out) == [] and sum(out.skipped.values()) == 1
+        assert list(out) == [] and sum(out.skipped.values()) == 1 and out.rejected is not None
     record = {"findings": {
         "a": ["not", "a", "dict"],
         "b": {"id": 5, "ids": "x", "aliases": "y", "source": ["https://x.example"],
@@ -205,7 +205,10 @@ def test_collector_untrusted_input():
     for bad in (None, [], {"schema_version": 2, "findings": []}, {"schema_version": True, "findings": []},
                 {"schema_version": "1", "findings": []}):
         assert from_collector(bad).skipped["schema_version"] == 1
+        assert from_collector(bad).rejected == "schema_version"
     assert from_collector({"schema_version": 1, "findings": {}}).skipped["findings not a list"] == 1
+    assert from_collector({"schema_version": 1, "findings": {}}).rejected == "findings not a list"
+    assert from_collector({"schema_version": 1, "findings": [1]}).rejected is None  # one bad item only
     src = [{"url": "https://example.com/x", "published_at": "2026-11-01"}]
     record = {"schema_version": 1, "unknown": object(), "findings": [
         {"id": "CVE-2026-7", "product": "P", "sources": src, "exploited": "true",

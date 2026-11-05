@@ -90,11 +90,18 @@ class Candidate:
 
 
 class CandidateList(list):
-    """A list of Candidates with a count of skipped input items by reason."""
+    """A list of Candidates with a count of skipped input items by reason.
+    ``rejected`` is the reason when the whole input was refused, else None."""
 
     def __init__(self, *args):
         super().__init__(*args)
         self.skipped: Counter = Counter()
+        self.rejected: str | None = None
+
+    def reject(self, reason: str) -> "CandidateList":
+        self.skipped[reason] += 1
+        self.rejected = reason
+        return self
 
 
 # ---------------------------------------------------------------- helpers
@@ -339,23 +346,19 @@ def from_heartbeat(run_dir: Path) -> CandidateList:
     try:
         path = Path(run_dir) / "run.json"
         if path.stat().st_size > MAX_RUN_BYTES:
-            out.skipped["run.json too large"] += 1
-            return out
+            return out.reject("run.json too large")
         record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError, RecursionError):
-        out.skipped["run.json unreadable"] += 1
-        return out
+        return out.reject("run.json unreadable")
     if not isinstance(record, dict):
-        out.skipped["run.json not an object"] += 1
-        return out
+        return out.reject("run.json not an object")
     findings = record.get("findings")
     if isinstance(findings, dict):
         items = list(findings.items())
     elif isinstance(findings, list):
         items = [(None, f) for f in findings]
     else:
-        out.skipped["findings not a dict or list"] += 1
-        return out
+        return out.reject("findings not a dict or list")
 
     names = _record_hosts(record)
     for key, f in items:
@@ -414,12 +417,10 @@ def from_kev(kev_json: dict, since_date: str) -> CandidateList:
         raise ValueError(f"since_date must be YYYY-MM-DD, got {since_date!r}")
     out = CandidateList()
     if not isinstance(kev_json, dict):
-        out.skipped["kev not an object"] += 1
-        return out
+        return out.reject("kev not an object")
     items = kev_json.get("vulnerabilities", kev_json.get("items"))
     if not isinstance(items, list):
-        out.skipped["kev items not a list"] += 1
-        return out
+        return out.reject("kev items not a list")
     hosts = _Hosts(FLEET_HOSTS)
 
     def one(it):
@@ -455,12 +456,10 @@ def from_collector(record: dict) -> CandidateList:
     out = CandidateList()
     if not isinstance(record, dict) or record.get("schema_version") != 1 \
             or isinstance(record.get("schema_version"), bool):
-        out.skipped["schema_version"] += 1
-        return out
+        return out.reject("schema_version")
     findings = record.get("findings")
     if not isinstance(findings, list):
-        out.skipped["findings not a list"] += 1
-        return out
+        return out.reject("findings not a list")
     names = _record_hosts(record)
     for f in findings:
         if isinstance(f, dict):

@@ -300,3 +300,22 @@ def test_bad_cached_catalog_means_an_unconditional_fetch(tmp_path, catalog):
     cache.write_text(json.dumps({"last_modified": LM, "catalog": catalog}))
     f = Fetch(status=304)
     assert inputs.load_kev(cache, f) is None and f.seen == [{}]
+
+
+def test_fetch_kev_reports_status(tmp_path):
+    cache = tmp_path / "kev.json"
+    assert inputs.fetch_kev(cache, Fetch(status=304)) == (None, "unavailable")  # no cache to serve
+    assert inputs.fetch_kev(cache, Fetch(headers={"last-modified": LM})) == (CATALOG, "ok")
+    assert inputs.fetch_kev(cache, Fetch(status=304)) == (CATALOG, "304")
+    assert inputs.fetch_kev(cache, Fetch(status=500)) == (None, "unavailable")
+
+
+def test_read_kev_file_never_fetches_or_caches(tmp_path, monkeypatch):
+    monkeypatch.setattr(inputs, "urllib_fetch", None)
+    monkeypatch.setattr(inputs, "write_json", None)
+    f = tmp_path / "k.json"
+    f.write_text(json.dumps({"vulnerabilities": [{"cveID": "CVE-2099-0001", "vulnerabilityName": "SYNTHETIC TEST x"}]}))
+    assert inputs.read_kev_file(f)["vulnerabilities"][0]["cveID"] == "CVE-2099-0001"
+    f.write_text('{"vulnerabilities": [{"vulnerabilityName": "SYNTHETIC TEST"}], "vulnerabilities": []}')
+    with pytest.raises(inputs.ConfigError):
+        inputs.read_kev_file(f)  # duplicate keys are refused, as every strict read

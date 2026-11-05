@@ -39,7 +39,11 @@ MAX_RUN_DIRS = 48
 RUN_DIR = re.compile(r"\d{4}-\d{2}-\d{2}T\d{6}Z")
 
 _STATE_KEYS = {"schema_version", "since", "heartbeat", "collector", "kev_since",
-               "digest_date", "digest_at", "digest_roots", "held", "digested", "outbox", "deferred"}
+               "digest_date", "digest_at", "digest_roots", "digest_ids", "held", "digested",
+               "outbox", "deferred"}
+MAX_DIGEST_IDS = 10  # the event ids of the last digests sent, oldest first
+SYNTHETIC = "SYNTHETIC TEST"
+SYNTHETIC_ID = re.compile(r"CVE-2099-\d{4,}", re.IGNORECASE)  # as compose.SYNTHETIC_ID
 _ITEM_KEYS = {"key", "kind", "scope", "ids", "channel", "text", "adv", "exploited", "date", "sent", "root"}
 _CANDIDATE_FIELDS = frozenset(Candidate.__dataclass_fields__)
 _KINDS = {"root", "copy", "reply", "digest"}
@@ -167,7 +171,7 @@ def read_json(path: Path, limit: int):
 def new_state(now: int, backfill_days: int) -> dict:
     since = now - backfill_days * 86400
     return {"schema_version": 1, "since": since, "heartbeat": None, "collector": None,
-            "kev_since": None, "digest_date": None, "digest_at": since, "digest_roots": [],
+            "kev_since": None, "digest_date": None, "digest_at": since, "digest_roots": [], "digest_ids": [],
             "held": [], "digested": [], "outbox": [], "deferred": []}
 
 
@@ -256,11 +260,15 @@ def load_state(path: Path, now: int, backfill_days: int) -> dict:
         return new_state(now, backfill_days)
     except (OSError, ValueError, RecursionError) as e:
         raise LedgerError(f"state {path} unreadable: {e}") from None
+    if isinstance(st, dict) and set(st) == _STATE_KEYS - {"digest_ids"}:
+        st["digest_ids"] = []  # a state file written before digest_ids existed
     try:
         ok = (isinstance(st, dict) and set(st) == _STATE_KEYS
               and type(st["schema_version"]) is int and st["schema_version"] == 1
               and type(st["since"]) is int and type(st["digest_at"]) is int
               and isinstance(st["digest_roots"], list) and all(isinstance(i, str) for i in st["digest_roots"])
+              and isinstance(st["digest_ids"], list) and len(st["digest_ids"]) <= MAX_DIGEST_IDS
+              and all(isinstance(i, str) and _HEX64.fullmatch(i) for i in st["digest_ids"])
               and all(st[k] is None or (isinstance(st[k], str) and RUN_DIR.fullmatch(st[k]))
                       for k in ("heartbeat", "collector"))
               and all(st[k] is None or _date_ok(st[k]) for k in ("kev_since", "digest_date"))
@@ -329,6 +337,12 @@ def _catalog_ok(c) -> bool:
 
 def load_kev(cache: Path, fetch=urllib_fetch, deadline: float | None = None) -> dict | None:
     """The KEV catalog this run fetched (or the cache on 304); None when unavailable."""
+    return fetch_kev(cache, fetch, deadline)[0]
+
+
+def fetch_kev(cache: Path, fetch=urllib_fetch, deadline: float | None = None) -> tuple[dict | None, str]:
+    """(catalog, status): status ``ok`` (fetched), ``304`` (the cache, not modified)
+    or ``unavailable`` (catalog None)."""
     cached = None
     try:
         c = read_json(cache, MAX_KEV * 2)
@@ -340,24 +354,44 @@ def load_kev(cache: Path, fetch=urllib_fetch, deadline: float | None = None) -> 
     headers = {"If-Modified-Since": lm} if isinstance(lm, str) and lm else {}
     got = _bounded(fetch, KEV_URL, headers, KEV_DEADLINE if deadline is None else deadline)
     if not (isinstance(got, tuple) and len(got) == 3):
-        return None
+        return None, "unavailable"
     status, hdrs, body = got
     if status == 304:
-        return cached["catalog"] if cached else None
+        return (cached["catalog"], "304") if cached else (None, "unavailable")
     if status != 200 or not isinstance(body, bytes) or len(body) > MAX_KEV:
-        return None
+        return None, "unavailable"
     try:
         catalog = json.loads(body)
     except (ValueError, RecursionError):
-        return None
+        return None, "unavailable"
     if not _catalog_ok(catalog):
-        return None
+        return None, "unavailable"
     lm = _header(hdrs, "Last-Modified") if isinstance(hdrs, dict) else None
     try:
         write_json(cache, {"last_modified": lm if isinstance(lm, str) else None, "catalog": catalog})
     except OSError:
         pass  # a cache failure only costs a full fetch next hour
-    return catalog
+    return catalog, "ok"
+
+
+def read_kev_file(path: Path) -> dict:
+    """A local KEV catalog for a synthetic check (``run --kev-file``): strict JSON in the
+    CISA shape, at least one entry, and every entry's vulnerabilityName saying
+    SYNTHETIC TEST, so a real catalog cannot be posted through this path by mistake.
+    ConfigError otherwise. Nothing is fetched or cached."""
+    try:
+        c = read_json(Path(path), MAX_KEV)
+    except (OSError, ValueError, RecursionError) as e:
+        raise ConfigError(f"kev file {path} unreadable: {e}") from None
+    if not _catalog_ok(c) or not c["vulnerabilities"]:
+        raise ConfigError(f"kev file {path}: not a KEV catalog with entries")
+    if not all(isinstance(v, dict) and isinstance(v.get("vulnerabilityName"), str)
+               and SYNTHETIC in v["vulnerabilityName"] for v in c["vulnerabilities"]):
+        raise ConfigError(f"kev file {path}: every entry's vulnerabilityName must say {SYNTHETIC}")
+    if not all(isinstance(v.get("cveID"), str) and SYNTHETIC_ID.fullmatch(v["cveID"])
+               for v in c["vulnerabilities"]):
+        raise ConfigError(f"kev file {path}: every cveID must be a reserved synthetic id (CVE-2099-NNNN)")
+    return c
 
 
 # ---------------------------------------------------------------- run dirs
@@ -374,9 +408,11 @@ def heartbeat_dirs(root: Path, after: str | None) -> list[Path]:
     return dirs[-1:] if after is None else dirs[-MAX_RUN_DIRS:]
 
 
-def collector_record(root: Path, after: str | None, counts: Counter):
+def collector_record(root: Path, after: str | None, counts: Counter, rejected: list | None = None):
     """(dir name, record) for the newest collector record, if newer than ``after``
-    and validated (job.json steps.validate.out == "ok"); else None."""
+    and validated (job.json steps.validate.out == "ok"); else None. A refused record
+    appends (dir name, reason) to ``rejected``. Only the newest record is ever read:
+    each one is a whole snapshot, so a newer record supersedes a refused one."""
     try:
         names = sorted(p.name for p in root.iterdir()
                        if RUN_DIR.fullmatch(p.name) and (p / "run-record.json").is_file())
@@ -391,9 +427,13 @@ def collector_record(root: Path, after: str | None, counts: Counter):
         ok = False
     if not ok:
         counts["collector not validated"] += 1
+        if rejected is not None:
+            rejected.append((names[-1], "not validated"))
         return None
     try:
         return names[-1], read_json(d / "run-record.json", MAX_RECORD)
     except (OSError, ValueError, RecursionError):
         counts["collector unreadable"] += 1
+        if rejected is not None:
+            rejected.append((names[-1], "unreadable"))
         return None

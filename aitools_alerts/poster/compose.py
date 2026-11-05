@@ -39,6 +39,15 @@ _COMPARATOR = re.compile(r"(<=|>=|<|>|=)(.+)")
 _KINDS = ("known exploited vulnerability", "trojanized release",
           "injection to code execution", "security advisory")
 UNVERIFIED = "unverified: no primary source confirmed it"
+SYNTHETIC = "SYNTHETIC TEST"
+# Ids reserved for synthetic checks (``run --kev-file`` accepts no others). The id is
+# the provenance: it survives the ledger, the digest and every later run, so a
+# synthetic advisory is marked wherever it is listed.
+SYNTHETIC_ID = re.compile(r"CVE-2099-\d{4,}", re.IGNORECASE)
+
+
+def is_synthetic(ids) -> bool:
+    return any(isinstance(i, str) and SYNTHETIC_ID.fullmatch(i) for i in ids)
 
 
 def schema_fixed(v) -> str | None:
@@ -136,9 +145,10 @@ def _ids(raw, exclude: str) -> list[str]:
     return out
 
 
-def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, schema.Advisory]:
+def root_post(c, level, scope, *, posted_at: int | None = None, test: bool = False) -> tuple[str, schema.Advisory]:
     """(post text, Advisory) for a new thread: four body lines, then the block.
-    ``level`` is ``rules.level_for``'s (level, reason), or a bare level."""
+    ``level`` is ``rules.level_for``'s (level, reason), or a bare level. ``test``
+    marks a post from a synthetic check (``run --kev-file``) in its head line."""
     level, reason = level if isinstance(level, tuple) else (level, None)
     fixed = schema_fixed(c.fixed)
     sources = _sources(c.sources)
@@ -152,7 +162,8 @@ def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, sc
         sources=sources, posted_by=POSTED_BY,
         posted_at=int(time.time()) if posted_at is None else posted_at, expires_at=None)))
     p = adv.products[0]
-    head = adv.level.upper() + (f" ({UNVERIFIED})" if reason == "unverified" else "")
+    head = adv.level.upper() + (f" ({SYNTHETIC})" if test else "") \
+        + (f" ({UNVERIFIED})" if reason == "unverified" else "")
     # A fix the schema cannot express is still a fix: say so, and name no version.
     unexpressed = fixed is None and isinstance(c.fixed, str) and c.fixed.strip() != ""
     body = [f"{head}: {adv.title}",
@@ -284,7 +295,8 @@ def digest(advs_today, date) -> str:
             lines += ["", f"{level.capitalize()} ({len(group)})"]
             for a in group:
                 fixed = f"fixed in {a.products[0].fixed}" if a.products[0].fixed else "no fix yet"
-                line = f"- {a.title}; {fixed}. {_primary(a.sources)}"
+                mark = f"({SYNTHETIC}) " if is_synthetic([a.id, *a.aliases]) else ""
+                line = f"- {mark}{a.title}; {fixed}. {_primary(a.sources)}"
                 try:
                     lines.append(_guard(line))
                 except ValueError:

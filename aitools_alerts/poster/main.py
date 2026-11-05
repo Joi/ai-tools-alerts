@@ -18,6 +18,13 @@ watermarks advance only when every send of the run succeeded.
 
 Every post is relay-bot and composed by ``compose``, which refuses text naming a
 host, a local path or a kata ref; this module adds nothing to post text.
+
+The summary line ends with ``inputs=kev:<ok|304|file|unavailable>,
+collector:<off|none|ok|rejected>,heartbeat:<off|accepted/read>``; a rejected input
+sets no watermark past itself and is named on stderr. ``run --digest-now`` sends
+today's digest whatever the hour, once per Tokyo date; ``run --kev-file PATH``
+reads a synthetic KEV catalog instead of fetching (every post from it carries
+SYNTHETIC TEST in its head line, and ``kev_since`` does not move).
 """
 
 from __future__ import annotations
@@ -53,9 +60,11 @@ def _fold(ids) -> set[str]:
 
 
 class Run:
-    def __init__(self, now, config: Config, led: Ledger, state: dict, channels, ssh, http_status):
+    def __init__(self, now, config: Config, led: Ledger, state: dict, channels, ssh, http_status,
+                 *, digest_now=False):
         self.now, self.config, self.led, self.state = now, config, led, state
         self.channels, self.ssh, self.http_status = channels, ssh, http_status
+        self.digest_now = digest_now  # run --digest-now: today's digest whatever the hour
         self.n = Counter()
         self.deferred: dict[tuple, dict] = {}  # (scope, id) -> candidate dict, for the next run
 
@@ -165,9 +174,13 @@ class Run:
         else:  # digest: acknowledge exactly the notices and ledger cutoff it was built from
             snap = set(it["adv"]["held"])
             keep = [h for h in self.state["held"] if not set(self._notice_keys(h["scope"], h["adv"])) <= snap]
+            ids = self.state["digest_ids"]
+            if eid not in ids:  # a replay after a crash records it once
+                ids = (ids + [eid])[-inputs.MAX_DIGEST_IDS:]
             self.state.update(digest_date=it["date"], digest_at=it["adv"]["cutoff"],
-                              digest_roots=it["adv"]["roots"],
+                              digest_roots=it["adv"]["roots"], digest_ids=ids,
                               held=keep, digested=(self.state["digested"] + sorted(snap))[-MAX_DIGESTED:])
+            _say(f"digest {it['date']} sent: {eid}")
 
     def busy(self, ids, scope) -> bool:
         """True when this advisory has journaled work or a send in flight. Its ids are
@@ -198,7 +211,14 @@ class Run:
     def defer(self, pairs):
         """Keep candidates for the next run: a source record can be replaced before then."""
         for c, scope in pairs:
+            if self.is_synthetic(c):
+                continue  # never kept: a later run would post it without its marker
             self.deferred[(scope.name, c.id.casefold())] = c.to_dict()
+
+    @staticmethod
+    def is_synthetic(c) -> bool:
+        """A candidate carrying a reserved synthetic id (compose.SYNTHETIC_ID), from any input."""
+        return compose.is_synthetic([c.id, *c.aliases])
 
     def one(self, c, scope):
         ids = [c.id, *c.aliases]
@@ -208,6 +228,9 @@ class Run:
             return
         level, reason = self.level(c, scope)
         entry = self.led.lookup(ids, scope=scope.name)
+        if self.is_synthetic(c) and entry is not None:
+            self.n["withheld"] += 1  # a synthetic entry only ever starts a thread
+            return
         try:
             items = self.plan_new(c, scope, level, reason, ids) if entry is None \
                 else self.plan_known(c, scope, level, reason, ids, entry)
@@ -218,8 +241,11 @@ class Run:
             self.enqueue(items)
 
     def plan_new(self, c, scope, level, reason, ids):
-        text, adv = compose.root_post(c, (level, reason), scope, posted_at=self.now)
+        test = self.is_synthetic(c)
+        text, adv = compose.root_post(c, (level, reason), scope, posted_at=self.now, test=test)
         if level == "notice":
+            if test:  # the digest would list it without its marker
+                raise ValueError("a synthetic entry is never held for the digest")
             self.hold(scope.name, adv)
             return []
         chans = CHANNELS_FOR[level]
@@ -289,9 +315,15 @@ class Run:
     def digest(self):
         local = _dt.datetime.fromtimestamp(self.now, TOKYO)
         today = local.date().isoformat()
-        if local.hour < self.config.digest_hour or self.state["digest_date"] == today:
+        if self.state["digest_date"] == today:
+            if self.digest_now:
+                _say(f"digest for {today} already sent; --digest-now does nothing")
+            return
+        if local.hour < self.config.digest_hour and not self.digest_now:
             return
         if any(it["kind"] == "digest" for it in self.state["outbox"]):
+            if self.digest_now:
+                _say("a digest is journaled and waits to send; --digest-now does nothing")
             return  # today's (or an earlier) digest is journaled and drains first
         # Ledger posts oldest change first (so a backlog larger than one post moves forward
         # day by day), then held notices loudest first: (advisory, held entry, last_change).
@@ -357,52 +389,98 @@ def _utc_date(t: int) -> str:
     return _dt.datetime.fromtimestamp(t, _dt.timezone.utc).date().isoformat()
 
 
-def gather(config: Config, state: dict, now: int, kev_fetch, counts: Counter):
-    """(candidates, watermarks to set when the run succeeds)."""
+def _say(msg: str) -> None:
+    print(f"aitools-alerts-poster: {msg}", file=sys.stderr)
+
+
+def gather(config: Config, state: dict, now: int, kev_fetch, counts: Counter, kev_catalog=None):
+    """(candidates, watermarks to set when the run succeeds, input status).
+
+    A rejected input sets no watermark past itself, so the next run reads it again
+    (re-reading is idempotent: ledger lookup and held-notice dedup). The status dict
+    is the summary's ``inputs=`` field."""
     out, marks = [], {}
+    status = {"kev": "unavailable", "collector": "off", "heartbeat": "off"}
     if config.heartbeat_runs is not None:
         dirs = inputs.heartbeat_dirs(config.heartbeat_runs, state["heartbeat"])
+        ok, held = 0, False
         for d in dirs:
             got = candidates.from_heartbeat(d)
             counts.update(got.skipped)
+            if got.rejected is not None:
+                _say(f"heartbeat {d.name} rejected: {got.rejected}")
+                held = True  # the mark stops before the first rejected dir
+                continue
+            ok += 1
             out += got
-        if dirs:
-            marks["heartbeat"] = dirs[-1].name
+            if not held:
+                marks["heartbeat"] = d.name
+        status["heartbeat"] = f"{ok}/{len(dirs)}"
     if config.collector_runs is not None:
-        rec = inputs.collector_record(config.collector_runs, state["collector"], counts)
-        if rec is not None:
+        refused: list = []
+        rec = inputs.collector_record(config.collector_runs, state["collector"], counts, refused)
+        status["collector"] = "none"
+        if refused:  # no mark: the record is read again unless a newer one supersedes it
+            status["collector"] = "rejected"
+            _say(f"collector {refused[0][0]} rejected: {refused[0][1]}")
+        elif rec is not None:
             got = candidates.from_collector(rec[1])
             counts.update(got.skipped)
-            out += got
-            marks["collector"] = rec[0]
+            if got.rejected is not None:
+                status["collector"] = "rejected"
+                _say(f"collector {rec[0]} rejected: {got.rejected}")
+            else:
+                status["collector"] = "ok"
+                out += got
+                marks["collector"] = rec[0]
     # B1 c:6mnrdz: from_kev marks every entry exploited, so only the catalog this
-    # run fetched from CISA reaches it, never the heartbeat's feeds.json.
-    catalog = inputs.load_kev(config.kev_cache, kev_fetch)
-    if catalog is None:
-        counts["kev unavailable"] += 1
-    else:
-        got = candidates.from_kev(catalog, state["kev_since"] or _utc_date(now - config.backfill_days * 86400))
+    # run fetched from CISA (or the operator's --kev-file) reaches it, never the
+    # heartbeat's feeds.json.
+    if kev_catalog is not None:
+        # Every entry of the file, whatever kev_since says; kev_since stays where it
+        # is, since the real catalog was not read this run.
+        got = candidates.from_kev(kev_catalog, "0001-01-01")
         counts.update(got.skipped)
         out += got
-        marks["kev_since"] = _utc_date(now - 86400)
-    return out, marks
+        status["kev"] = "file"
+    else:
+        catalog, status["kev"] = inputs.fetch_kev(config.kev_cache, kev_fetch)
+        if catalog is None:
+            _say("kev unavailable: fetch failed or the catalog was refused")
+        else:
+            # With no KEV watermark yet, the floor is the state's own (fixed at its first
+            # run), so a KEV outage from the first run on loses no entries.
+            got = candidates.from_kev(catalog, state["kev_since"] or _utc_date(state["since"]))
+            counts.update(got.skipped)
+            out += got
+            marks["kev_since"] = _utc_date(now - 86400)
+    return out, marks, status
+
+
+def _inputs_field(status) -> str:
+    if status is None:
+        return "-"  # the run stopped before reading its inputs
+    return ",".join(f"{k}:{status[k]}" for k in ("kev", "collector", "heartbeat"))
 
 
 def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
-        http_status=rules.http_status, channels: dict | None = None) -> tuple[int, str]:
-    """One poster run. Returns (exit code, one-line summary)."""
+        http_status=rules.http_status, channels: dict | None = None,
+        digest_now: bool = False, kev_catalog: dict | None = None) -> tuple[int, str]:
+    """One poster run. Returns (exit code, one-line summary). ``digest_now`` sends
+    today's digest whatever the hour (once per date); ``kev_catalog`` replaces the
+    KEV fetch with a synthetic catalog (``inputs.read_kev_file``)."""
     if not isinstance(config, Config):
         config = inputs.load_config(config)
     channels = channels or inputs.load_channels()
-    n, code, err = Counter(), 0, None
+    n, code, err, status, skipped = Counter(), 0, None, None, Counter()
     try:
         with Ledger(config.ledger) as led:
             state = inputs.load_state(config.state, now, config.backfill_days)
-            r = Run(now, config, led, state, channels, ssh, http_status)
+            r = Run(now, config, led, state, channels, ssh, http_status, digest_now=digest_now)
             n = r.n
             merged = None  # set once the old deferred list has been folded into this run
             try:
-                cands, marks = gather(config, state, now, kev_fetch, Counter())
+                cands, marks, status = gather(config, state, now, kev_fetch, skipped, kev_catalog)
                 deferred = [inputs.candidate_from(d) for d in state["deferred"]]
                 n["candidates"] = len(cands) + len(deferred)
                 review, pairs, later = [], [], []
@@ -412,7 +490,8 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
                         later.append((c, scope))
                 for c in cands:
                     t = _observed(c)
-                    if t is not None and t < state["since"] and led.lookup([c.id, *c.aliases]) is None:
+                    if t is not None and t < state["since"] and not r.is_synthetic(c) \
+                            and led.lookup([c.id, *c.aliases]) is None:
                         n["old"] += 1
                         continue
                     scope = rules.scope_of(c.product_text, log=review)
@@ -442,7 +521,10 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
         code, err = 1, str(e)
     except Exception as e:  # never die without the summary line
         code, err = 1, f"internal error: {type(e).__name__}: {e}"
-    summary = "aitools-alerts-poster: " + " ".join(f"{k}={n[k]}" for k in SUMMARY)
+    if skipped:
+        _say("skipped: " + ", ".join(f"{k}={v}" for k, v in sorted(skipped.items())))
+    summary = "aitools-alerts-poster: " + " ".join(f"{k}={n[k]}" for k in SUMMARY) \
+        + " inputs=" + _inputs_field(status)
     if err:
         print(f"aitools-alerts-poster: {err}", file=sys.stderr)
         summary += " error=" + ("internal" if err.startswith("internal error") else "ledger")
@@ -455,14 +537,21 @@ def main(argv=None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     rp = sub.add_parser("run", help="one poster run")
     rp.add_argument("--config", type=Path, default=inputs.DEFAULT_CONFIG)
+    rp.add_argument("--digest-now", action="store_true",
+                    help="send today's digest (Asia/Tokyo) now, whatever the hour; once per date")
+    rp.add_argument("--kev-file", type=Path, metavar="PATH",
+                    help="read KEV from this local file instead of fetching (synthetic checks: "
+                         "every entry must say SYNTHETIC TEST, and every post from it is marked so)")
     a = p.parse_args(argv)
     try:
         cfg = inputs.load_config(a.config)
         channels = inputs.load_channels()
+        kev_catalog = inputs.read_kev_file(a.kev_file) if a.kev_file is not None else None
     except ConfigError as e:
         print(f"aitools-alerts-poster: config error: {e}", file=sys.stderr)
         return 2
-    code, summary = run(int(time.time()), cfg, channels=channels)
+    code, summary = run(int(time.time()), cfg, channels=channels, digest_now=a.digest_now,
+                        kev_catalog=kev_catalog)
     print(summary)
     return code
 

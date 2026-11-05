@@ -7,6 +7,7 @@ import shlex
 import subprocess
 
 import pytest
+from pathlib import Path
 
 from aitools_alerts.poster import inputs, main
 from aitools_alerts.poster.ledger import Ledger, LedgerError
@@ -98,10 +99,10 @@ def env(tmp_path):
             if feeds is not None:
                 (d / "feeds.json").write_text(json.dumps(feeds))
 
-        def run(self, now=T0, ssh=None, kev=None):
+        def run(self, now=T0, ssh=None, kev=None, **kw):
             ssh = ssh if ssh is not None else FakeSSH()
             code, summary = main.run(now, self.config, ssh=ssh, kev_fetch=kev or self.kev,
-                                     http_status=lambda url, timeout: 200, channels=CHANNELS)
+                                     http_status=lambda url, timeout: 200, channels=CHANNELS, **kw)
             return code, summary, ssh
 
         def state(self):
@@ -634,3 +635,229 @@ def test_ledger_error_keeps_unplanned_candidates(env, monkeypatch):
     env.collector([])  # the collector's newest record no longer names either
     code, summary, ssh = env.run(now=T0 + 3600)
     assert code == 0 and len(env.ledger()[0]) == 2 and len(ssh.calls) == 1
+
+
+# ---------------------------------------------------------------- akq9: inputs, digest ids, flags
+
+SYNTHETIC = Path(__file__).resolve().parents[1] / "fixtures" / "kev-synthetic.json"
+
+
+def test_summary_shows_kev_unavailable_and_rejected_collector(env, capsys):
+    d = env.col / "2026-11-05T000000Z"
+    d.mkdir()
+    (d / "run-record.json").write_text(json.dumps({"schema_version": 2, "findings": []}))
+    (d / "job.json").write_text(json.dumps({"steps": {"validate": {"out": "ok"}}}))
+    env.heartbeat("2026-11-05T000000Z", [])
+    code, summary, _ = env.run(kev=FakeKEV(status=503))
+    err = capsys.readouterr().err
+    assert code == 0 and summary.endswith(" inputs=kev:unavailable,collector:rejected,heartbeat:1/1")
+    assert "kev unavailable" in err and "collector 2026-11-05T000000Z rejected: schema_version" in err
+    assert env.state()["kev_since"] is None
+    env.collector([finding()], validate="failed", name="2026-11-05T010000Z")  # newer, not validated
+    _, summary, _ = env.run(now=T0 + 3600)
+    assert "inputs=kev:ok,collector:rejected,heartbeat:0/0" in summary
+    assert "collector 2026-11-05T010000Z rejected: not validated" in capsys.readouterr().err
+    (env.col / "2026-11-05T010000Z" / "job.json").write_text(json.dumps({"steps": {"validate": {"out": "ok"}}}))
+    (env.col / "2026-11-05T010000Z" / "run-record.json").write_text("{not json")
+    _, summary, _ = env.run(now=T0 + 5400)
+    assert "collector:rejected" in summary
+    assert "collector 2026-11-05T010000Z rejected: unreadable" in capsys.readouterr().err
+    _, summary, _ = env.run(now=T0 + 7200, kev=FakeKEV(status=304))
+    assert "kev:304" in summary  # served from the cache the 200 wrote
+
+
+def test_quiet_hour_with_healthy_inputs(env):
+    code, summary, _ = env.run()
+    assert code == 0 and summary.endswith(" inputs=kev:ok,collector:none,heartbeat:0/0")
+    env.config = inputs.Config(ledger=env.config.ledger, kev_cache=env.config.kev_cache)
+    code, summary, _ = env.run(now=T0 + 3600, kev=FakeKEV(status=304))
+    assert code == 0 and summary.endswith(" inputs=kev:304,collector:off,heartbeat:off")
+
+
+def test_rejected_collector_holds_watermark(env):
+    env.collector([finding()], name="2026-11-05T000000Z")
+    env.run()
+    d = env.col / "2026-11-05T010000Z"
+    d.mkdir()
+    (d / "run-record.json").write_text(json.dumps({"schema_version": 1, "findings": "nope"}))
+    (d / "job.json").write_text(json.dumps({"steps": {"validate": {"out": "ok"}}}))
+    code, summary, _ = env.run(now=T0 + 3600)
+    assert code == 0 and "collector:rejected" in summary
+    assert env.state()["collector"] == "2026-11-05T000000Z"  # the rejected record is read again
+    (d / "run-record.json").write_text(json.dumps({"schema_version": 1, "findings": []}))
+    _, summary, _ = env.run(now=T0 + 7200)
+    assert "collector:ok" in summary and env.state()["collector"] == "2026-11-05T010000Z"
+
+
+def test_rejected_heartbeat_holds_watermark(env):
+    env.heartbeat("2026-11-05T000000Z", [])
+    env.run()
+    assert env.state()["heartbeat"] == "2026-11-05T000000Z"
+    env.heartbeat("2026-11-05T010000Z", [])
+    (env.hb / "2026-11-05T010000Z" / "run.json").write_text("{not json")
+    env.heartbeat("2026-11-05T020000Z", [{"id": "CVE-2026-5000", "product": "macOS", "source": APPLE}])
+    code, summary, ssh = env.run(now=T0 + 3600)
+    assert code == 0 and "heartbeat:1/2" in summary and "held=1" in summary  # the good dir is still read
+    assert env.state()["heartbeat"] == "2026-11-05T000000Z"  # held before the rejected dir
+    (env.hb / "2026-11-05T010000Z" / "run.json").write_text(json.dumps({"schema": 1, "findings": []}))
+    code, summary, ssh = env.run(now=T0 + 7200)
+    assert "heartbeat:2/2" in summary and "held=0" in summary  # re-read: nothing is held twice
+    assert env.state()["heartbeat"] == "2026-11-05T020000Z"
+
+
+def test_digest_id_recorded_and_printed(env, capsys):
+    env.collector([MAC])
+    env.run()
+    st = env.state()
+    st["digest_ids"] = [f"{i:064x}" for i in range(0xa0, 0xaa)]  # ten already
+    env.config.state.write_text(json.dumps(st))
+    code, _, ssh = env.run(now=at(5, 9))
+    st = env.state()
+    assert code == 0 and len(ssh.calls) == 1 and len(st["digest_ids"]) == 10
+    assert st["digest_ids"][0] == f"{0xa1:064x}"  # the oldest dropped
+    sent = st["digest_ids"][-1]
+    assert f"digest 2026-11-05 sent: {sent}" in capsys.readouterr().err
+
+
+def test_old_state_without_digest_ids_loads(env):
+    env.run()
+    st = env.state()
+    del st["digest_ids"]
+    env.config.state.write_text(json.dumps(st))
+    env.collector([MAC])
+    code, _, _ = env.run(now=at(5, 9))
+    assert code == 0 and len(env.state()["digest_ids"]) == 1
+    st = env.state()
+    st["digest_ids"] = ["not-hex"]
+    env.config.state.write_text(json.dumps(st))
+    code, summary, _ = env.run(now=at(5, 10))
+    assert code == 1 and "error=ledger" in summary
+
+
+def test_digest_replay_records_id_once(env, monkeypatch):
+    env.collector([MAC])
+    env.run()
+    real = main.Run._record
+
+    def boom(self, it):
+        if it["kind"] == "digest":
+            raise LedgerError("disk full")
+        return real(self, it)
+
+    monkeypatch.setattr(main.Run, "_record", boom)
+    code, _, ssh = env.run(now=at(5, 9))
+    assert code == 1 and len(ssh.calls) == 1
+    monkeypatch.setattr(main.Run, "_record", real)
+    code, _, ssh = env.run(now=at(5, 10))
+    assert code == 0 and ssh.calls == [] and len(env.state()["digest_ids"]) == 1
+
+
+def test_digest_now_once_per_date(env, capsys):
+    env.collector([MAC])
+    code, _, ssh = env.run(digest_now=True)  # 06:20 Tokyo, before the digest hour
+    assert code == 0 and len(ssh.calls) == 1 and "Daily digest for 2026-11-05" in ssh.calls[0][2]
+    assert env.state()["digest_date"] == "2026-11-05"
+    code, _, ssh = env.run(now=T0 + 600, digest_now=True)
+    assert code == 0 and ssh.calls == []
+    assert "digest for 2026-11-05 already sent; --digest-now does nothing" in capsys.readouterr().err
+    _, _, ssh = env.run(now=at(5, 9))
+    assert ssh.calls == []  # the 09:00 run sends no second digest
+    _, _, ssh = env.run(now=at(6, 6))
+    assert ssh.calls == []  # without the flag, the next date still waits for the hour
+
+
+def test_kev_file_bypasses_fetch_and_marks_posts(env):
+    kev = FakeKEV()
+    catalog = inputs.read_kev_file(SYNTHETIC)
+    code, summary, ssh = env.run(now=at(20, 6), kev=kev, kev_catalog=catalog)  # dateAdded long past
+    assert code == 0, summary
+    assert kev.headers == [] and not env.config.kev_cache.exists()
+    assert "inputs=kev:file," in summary and "roots=1" in summary
+    assert chans(ssh) == [("critical", None), ("feed", None)]
+    assert ssh.calls[0][2].startswith("CRITICAL (SYNTHETIC TEST): Claude Code") and "CVE-2099-0001" in ssh.calls[0][2]
+    assert env.state()["kev_since"] is None  # the real catalog was not read
+    code, summary, ssh = env.run(now=at(20, 7), kev=kev, kev_catalog=catalog)
+    assert code == 0 and ssh.calls == [] and "withheld=1" in summary  # known: never a reply
+
+
+def test_kev_file_candidate_never_deferred(env):
+    catalog = inputs.read_kev_file(SYNTHETIC)
+    code, _, _ = env.run(ssh=FakeSSH("unknown"), kev_catalog=catalog)
+    assert code == 1
+    assert env.state()["deferred"] == []
+    code, summary, ssh = env.run(now=T0 + 3600, kev_catalog=catalog)
+    assert code == 0 and ssh.calls == [] and env.state()["deferred"] == []  # busy: dropped
+
+
+def test_kev_file_notice_is_withheld(env, tmp_path):
+    catalog = {"vulnerabilities": [{"cveID": "CVE-2099-0002", "vendorProject": "Apple", "product": "macOS",
+                                    "vulnerabilityName": "SYNTHETIC TEST", "dateAdded": "2026-11-05"}]}
+    code, summary, ssh = env.run(kev_catalog=catalog)
+    # macOS is tier 2: an exploited tier-2 entry is high, so it posts marked; never held
+    assert code == 0 and env.state()["held"] == []
+    assert all(c[2].startswith("HIGH (SYNTHETIC TEST)") for c in ssh.calls)
+
+
+@pytest.mark.parametrize("body", [
+    "{not json",
+    json.dumps({"vulnerabilities": []}),
+    json.dumps({"items": [], "vulnerabilities": [{"vulnerabilityName": "SYNTHETIC TEST"}]}),
+    json.dumps({"vulnerabilities": [{"cveID": "CVE-2026-0001", "vulnerabilityName": "Real bug"}]}),
+    json.dumps({"vulnerabilities": [{"cveID": "CVE-2026-0001", "vulnerabilityName": "SYNTHETIC TEST"}]}),
+])
+def test_kev_file_refused_exits_2(tmp_path, capsys, body):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(f'ledger = "{tmp_path / "ledger.json"}"\nkev_cache = "{tmp_path / "kev.json"}"\n')
+    bad = tmp_path / "kev.json.in"
+    bad.write_text(body)
+    assert main.main(["run", "--config", str(cfg), "--kev-file", str(bad)]) == 2
+    assert "config error: kev file" in capsys.readouterr().err
+    assert not (tmp_path / "ledger.json").exists()
+
+
+def test_synthetic_fixture_says_so():
+    c = inputs.read_kev_file(SYNTHETIC)
+    assert [v["cveID"] for v in c["vulnerabilities"]] == ["CVE-2099-0001"]
+
+
+def test_synthetic_advisory_is_marked_in_the_digest(env):
+    catalog = inputs.read_kev_file(SYNTHETIC)
+    code, summary, ssh = env.run(kev_catalog=catalog, digest_now=True)  # the same run digests it
+    assert code == 0 and "digest=1" in summary
+    (body,) = [c[2] for c in ssh.calls if c[2].startswith("Daily digest")]
+    (line,) = [ln for ln in body.splitlines() if "CVE-2099-0001" in ln]
+    assert line.startswith("- (SYNTHETIC TEST) Claude Code")
+    env.kev.catalog = {"vulnerabilities": [kev_item(cve="CVE-2099-0003")]}  # any input: the id decides
+    _, _, ssh = env.run(now=at(6, 6))
+    assert ssh.calls and all(c[2].startswith("CRITICAL (SYNTHETIC TEST)") for c in ssh.calls)
+
+
+def test_kev_floor_without_watermark_is_the_state_floor(env):
+    env.run(kev=FakeKEV(status=503))  # first run: state since = Nov 3, KEV down
+    for day in (6, 7, 8, 9):
+        env.run(now=at(day, 6), kev=FakeKEV(status=503))
+    assert env.state()["kev_since"] is None
+    env.kev.catalog = {"vulnerabilities": [kev_item(added="2026-11-04")]}
+    code, _, ssh = env.run(now=at(10, 6))
+    assert code == 0 and chans(ssh) == [("critical", None), ("feed", None)]  # not lost to the outage
+
+
+def test_digest_now_while_a_digest_is_journaled(env, capsys):
+    env.collector([MAC])
+    env.run()
+    code, _, ssh = env.run(now=at(5, 9), ssh=FakeSSH("unknown"))
+    assert code == 1 and len(env.state()["outbox"]) == 1
+    capsys.readouterr()
+    code, summary, ssh = env.run(now=at(5, 10), digest_now=True)
+    assert ssh.calls == [] and "busy=1" in summary
+    assert "a digest is journaled and waits to send; --digest-now does nothing" in capsys.readouterr().err
+    assert env.state()["digest_ids"] == []
+
+
+def test_digest_ids_longer_than_ten_refused(env):
+    env.run()
+    st = env.state()
+    st["digest_ids"] = [f"{i:064x}" for i in range(11)]
+    env.config.state.write_text(json.dumps(st))
+    code, summary, _ = env.run(now=T0 + 3600)
+    assert code == 1 and "error=ledger" in summary

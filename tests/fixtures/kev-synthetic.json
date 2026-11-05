@@ -1,0 +1,19 @@
+{
+ "title": "SYNTHETIC TEST catalog for the poster's live check (plan Task E3); not CISA data",
+ "catalogVersion": "synthetic-1",
+ "count": 1,
+ "vulnerabilities": [
+  {
+   "cveID": "CVE-2099-0001",
+   "vendorProject": "Anthropic",
+   "product": "Claude Code",
+   "vulnerabilityName": "SYNTHETIC TEST: not a real vulnerability",
+   "dateAdded": "2026-11-05",
+   "shortDescription": "SYNTHETIC TEST entry for the ai-tools-alerts poster check. Retract the posts it makes.",
+   "requiredAction": "None: this is a test.",
+   "dueDate": "2026-11-26",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": ""
+  }
+ ]
+}
