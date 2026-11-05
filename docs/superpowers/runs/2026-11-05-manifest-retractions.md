@@ -1,6 +1,6 @@
 # Run: manifest-retractions
 Instruction: start at medium. Task: TASK-ai-tools-alerts#jpzy.md in the worktree root (kata ai-tools-alerts#jpzy): implement decisions 1-4 (manifest `retracted` list honoured by readers regardless of key state; sign-manifest --retract/--unretract; idempotent curator retract; pull docstring on ignoring 9005) with tests, spec+plan+run manifest under docs/superpowers/. Non-repoman ending: ff-merge to main from the primary checkout and close the issue.
-Stage: committing
+Stage: done
 Rung: heavy (start-floor heavy: hard-trigger — the diff changes manifest.verify, the trust check, and scripts/sign-manifest.py, which reads the root key; BR2 REV1 NOV1 INT2 FC2 = 8; Lens: "a manifest without the field is unchanged"; "No current manifest is re-signed in this task"; "an unsigned or wrong-root manifest with the field still rejected"). Dispatch floor was medium; the climb's cause is the evaluator's hard trigger.
 Spec: docs/superpowers/specs/2026-11-05-manifest-retractions-design.md   Plan: docs/superpowers/plans/2026-11-05-manifest-retractions.md
 Agency project: —
@@ -22,6 +22,7 @@ Pass 2 [code:branch delta]: 1B/0S/0C/0R · fixed 2/2 prior · velocity ↓ (5→
 - [x] chunk 4 — curator retract idempotent + tests
 
 ## Notes
+- Landed: rebased on origin/main 3777e4c, gate 799 passed, ff-merged to main at 6721f5a (feature 1fe9e92, fixes 0d0907f and 6721f5a). Code and tests: 334 insertions, 31 deletions. The delta-raised fix 6721f5a had no further pass (Review Cycle).
 - Execution inline per the plan's chunks (TDD: each chunk's tests failed first), as every earlier task of this build; Agency MCP not used (recorded, not skipped silently). Code was written while the spec review ran; the review's fixes were applied to code and spec together.
 - Gate after the spec-review fixes: scripts/test-gate.sh 787 passed.
 - Follow-up ai-tools-alerts#0drq (Atom withdrawal for manifest-listed ids; the Atom builder also reads a curator kind 9005 'retract').
