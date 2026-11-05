@@ -247,6 +247,16 @@ class Ledger:
     def has_pending(self, key: str) -> bool:
         return any(p["key"] == key for p in self._state()["pending"])
 
+    def has_event(self, event_id: str) -> bool:
+        """True when any thread already records ``event_id`` (root, channel copy or reply)."""
+        return any(event_id == e["root_event_id"] or event_id in e["channel_ids"].values()
+                   or any(event_id in r.values() for r in e["replies"])
+                   for e in self._state()["entries"])
+
+    def pending_entries(self) -> list[dict]:
+        """Every send in flight (copies), oldest first: ``aitools-alerts-poster pending``."""
+        return sorted((dict(p) for p in self._state()["pending"]), key=lambda p: p["at"])
+
     def pending_for(self, aliases) -> list[dict]:
         want = _keys(aliases)
         return [p for p in self._state()["pending"] if _keys(p["aliases"]) & want]

@@ -25,6 +25,11 @@ sets no watermark past itself and is named on stderr. ``run --digest-now`` sends
 today's digest whatever the hour, once per Tokyo date; ``run --kev-file PATH``
 reads a synthetic KEV catalog instead of fetching (every post from it carries
 SYNTHETIC TEST in its head line, and ``kev_since`` does not move).
+
+After an unknown send, ``pending`` lists what is in flight and ``resolve <key>
+--delivered <event id> | --not-delivered --reason <text>`` settles it, both under
+the ledger lock: delivered records as a successful send would; not delivered
+expires the pending entry (24 h after the attempt) so the next run sends again.
 """
 
 from __future__ import annotations
@@ -549,6 +554,87 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
     return code, summary
 
 
+def _iso(t: int) -> str:
+    return _dt.datetime.fromtimestamp(t, _dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def pending(now: int, config) -> tuple[int, list[str]]:
+    """Every send in flight with its journal item, under the ledger lock; never writes.
+    Prints no post text: key, kind, channel, times and outcome only."""
+    lines, n = [], Counter()
+    try:
+        with Ledger(config.ledger) as led:
+            items = {it["key"]: it for it in inputs.load_state(config.state, now, config.backfill_days)["outbox"]}
+            for p in led.pending_entries():
+                it = items.get(p["key"])
+                outcome = "no-journal-item" if it is None else f"sent:{it['sent']}" if it["sent"] else "unknown"
+                n[{"no-journal-item": "orphan", "unknown": "unknown"}.get(outcome, "sent")] += 1
+                lines.append(f"{p['key']} kind={it['kind'] if it else '-'} channel={it['channel'] if it else '-'} "
+                             f"attempted_at={_iso(p['at'])} expires_at={_iso(p['at'] + ledger.PENDING_EXPIRY)} "
+                             f"outcome={outcome}")
+    except LedgerError as e:
+        return 1, [f"aitools-alerts-poster: {e}"]
+    except Exception as e:  # never a traceback: say what failed
+        return 1, [f"aitools-alerts-poster: internal error: {type(e).__name__}: {e}"]
+    total = n["unknown"] + n["sent"] + n["orphan"]
+    lines.append(f"aitools-alerts-poster: pending={total} unknown={n['unknown']} sent={n['sent']} orphan={n['orphan']}")
+    return 0, lines
+
+
+def resolve(now: int, config, key: str, *, delivered: str | None = None,
+            reason: str | None = None) -> tuple[int, list[str]]:
+    """Settle one send whose outcome was unknown, under the ledger lock. ``delivered``:
+    the post's event id, recorded exactly as a successful send records it (Run.deliver
+    with ``sent`` set). Otherwise expire the pending entry (24 h rule) so it sends again.
+    Returns 2, changing nothing, when the request cannot apply."""
+    def refuse(msg):
+        return 2, [f"aitools-alerts-poster: resolve {key}: {msg}"]
+    if delivered is not None and not transport._HEX64.fullmatch(delivered):
+        return refuse("event id must be 64 lowercase hex characters")
+    if delivered is None and not (reason or "").strip():
+        return refuse("--not-delivered needs a non-blank --reason")
+    try:
+        with Ledger(config.ledger) as led:
+            p = next((p for p in led.pending_entries() if p["key"] == key), None)
+            if p is None:
+                return refuse("not pending")
+            state = inputs.load_state(config.state, now, config.backfill_days)
+            it = next((it for it in state["outbox"] if it["key"] == key), None)
+            if delivered is not None:
+                if it is None:
+                    return refuse("no journal item to record")
+                if it["sent"] not in (None, delivered):
+                    return refuse(f"the journal already holds event id {it['sent']}")
+                r = Run(now, config, led, state, {}, None, None)
+                if it["sent"] is None:  # the checks _record makes, before anything is written
+                    if led.has_event(delivered) or delivered in state["digest_ids"]:
+                        return refuse("that event id is already recorded for another post")
+                    if it["kind"] == "root":
+                        e = led.lookup(it["ids"], scope=it["scope"])
+                        if e is not None:
+                            return refuse(f"thread {e.root_event_id} already holds these ids")
+                    elif it["kind"] in ("copy", "reply"):
+                        try:
+                            r._entry(it)
+                        except LedgerError:
+                            return refuse("no thread recorded for it yet; resolve its root first")
+                it["sent"] = delivered
+                r.save()  # the journal holds the id before the ledger records it, as after a send
+                r.deliver(it)
+                return 0, [f"aitools-alerts-poster: resolved {key}: delivered as {delivered}, recorded"]
+            if it is not None and it["sent"]:
+                return refuse(f"the journal says it was delivered as {it['sent']}; use --delivered")
+            if now - p["at"] < ledger.PENDING_EXPIRY:
+                return refuse(f"pending under 24 hours; --not-delivered is allowed from "
+                              f"{_iso(p['at'] + ledger.PENDING_EXPIRY)}")
+            led.expire_pending(key, reason, now=now)
+            return 0, [f"aitools-alerts-poster: resolved {key}: expired; the next run sends it again"]
+    except LedgerError as e:
+        return 1, [f"aitools-alerts-poster: {e}"]
+    except Exception as e:  # never a traceback: say what failed
+        return 1, [f"aitools-alerts-poster: internal error: {type(e).__name__}: {e}"]
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="aitools-alerts-poster",
                                 description="Post ai-tools security alerts to the relay (hourly).")
@@ -560,7 +646,29 @@ def main(argv=None) -> int:
     rp.add_argument("--kev-file", type=Path, metavar="PATH",
                     help="read KEV from this local file instead of fetching (synthetic checks: "
                          "every entry must say SYNTHETIC TEST, and every post from it is marked so)")
+    pp = sub.add_parser("pending", help="list sends in flight (outcome unknown); no post text")
+    pp.add_argument("--config", type=Path, default=inputs.DEFAULT_CONFIG)
+    sp = sub.add_parser("resolve", help="settle one unknown send after checking the channel")
+    sp.add_argument("key", help="a key printed by 'pending'")
+    sp.add_argument("--config", type=Path, default=inputs.DEFAULT_CONFIG)
+    how = sp.add_mutually_exclusive_group(required=True)
+    how.add_argument("--delivered", metavar="EVENT_ID", help="it posted: record it, never resend")
+    how.add_argument("--not-delivered", action="store_true",
+                     help="it did not post: send it again on the next run (24 h after the attempt)")
+    sp.add_argument("--reason", help="why it is known not delivered (required with --not-delivered)")
     a = p.parse_args(argv)
+    if a.cmd in ("pending", "resolve"):
+        try:
+            cfg = inputs.load_config(a.config)
+        except ConfigError as e:
+            print(f"aitools-alerts-poster: config error: {e}", file=sys.stderr)
+            return 2
+        if a.cmd == "pending":
+            code, lines = pending(int(time.time()), cfg)
+        else:
+            code, lines = resolve(int(time.time()), cfg, a.key, delivered=a.delivered, reason=a.reason)
+        print("\n".join(lines), file=sys.stdout if code == 0 else sys.stderr)
+        return code
     try:
         cfg = inputs.load_config(a.config)
         channels = inputs.load_channels()

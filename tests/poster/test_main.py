@@ -229,6 +229,114 @@ def test_unknown_outcome_keeps_pending(env):
     assert len(env.ledger()[0]) == 1
 
 
+# ---------------------------------------------------------------- pending / resolve
+
+
+def test_pending_on_an_empty_journal(env):
+    assert main.pending(T0, env.config) == (0, ["aitools-alerts-poster: pending=0 unknown=0 sent=0 orphan=0"])
+
+
+def _unknown_root(env):
+    env.collector([finding()])
+    env.run(ssh=FakeSSH("unknown"))
+    (it,) = env.state()["outbox"]
+    return it
+
+
+def test_pending_lists_an_unknown_send_without_its_text(env):
+    it = _unknown_root(env)
+    code, lines = main.pending(T0 + 60, env.config)
+    assert code == 0 and lines[-1] == "aitools-alerts-poster: pending=1 unknown=1 sent=0 orphan=0"
+    assert lines[0] == (f"{it['key']} kind=root channel=feed attempted_at=2026-11-04T21:20:00Z "
+                        "expires_at=2026-11-05T21:20:00Z outcome=unknown")
+    assert it["text"] not in "\n".join(lines) and "GHSA-abcd" in it["key"]
+
+
+def test_resolve_delivered_records_as_a_send_would(env):
+    it = _unknown_root(env)
+    eid = "ab" * 32
+    assert main.resolve(T0 + 600, env.config, it["key"], delivered=eid)[0] == 0
+    entries, pending = env.ledger()
+    assert pending == [] and env.state()["outbox"] == []
+    assert entries[0]["root_event_id"] == eid and entries[0]["channel_ids"] == {"feed": eid}
+    env.collector([finding()])
+    code, _, ssh = env.run(now=T0 + 3600)  # neither resent nor re-recorded
+    assert code == 0 and ssh.calls == [] and len(env.ledger()[0]) == 1
+
+
+def test_resolve_refuses_a_bad_id_or_a_key_not_pending(env):
+    it = _unknown_root(env)
+    before = (env.ledger(), env.state())
+    assert main.resolve(T0, env.config, it["key"], delivered="AB" * 32)[0] == 2
+    assert main.resolve(T0, env.config, "root:x:y:feed", delivered="ab" * 32)[0] == 2
+    assert main.resolve(T0 + 90000, env.config, "root:x:y:feed", reason="checked")[0] == 2
+    assert main.resolve(T0 + 90000, env.config, it["key"], reason=" ")[0] == 2
+    assert (env.ledger(), env.state()) == before
+
+
+def test_resolve_not_delivered_waits_24_hours_then_resends(env):
+    it = _unknown_root(env)
+    code, lines = main.resolve(T0 + 3600, env.config, it["key"], reason="not in the channel")
+    assert code == 2 and "allowed from 2026-11-05T21:20:00Z" in lines[0] and env.ledger()[1]
+    assert main.resolve(T0 + 90000, env.config, it["key"], reason="not in the channel")[0] == 0
+    with Ledger(env.config.ledger) as led:
+        assert led.pending_entries() == [] and led._state()["expired"][0]["reason"] == "not in the channel"
+    code, _, ssh = env.run(now=T0 + 90000)
+    assert code == 0 and chans(ssh) == [("feed", None)] and len(env.ledger()[0]) == 1
+
+
+def test_resolve_not_delivered_refuses_when_the_journal_says_sent(env):
+    it = _unknown_root(env)
+    st = env.state()
+    st["outbox"][0]["sent"] = "cd" * 32  # a run that crashed after journaling the id
+    inputs.save_state(env.config.state, st)
+    code, lines = main.pending(T0, env.config)
+    assert f"outcome=sent:{'cd' * 32}" in lines[0] and lines[-1].endswith("unknown=0 sent=1 orphan=0")
+    assert main.resolve(T0 + 90000, env.config, it["key"], reason="x")[0] == 2
+    assert main.resolve(T0, env.config, it["key"], delivered="ef" * 32)[0] == 2
+    assert main.resolve(T0, env.config, it["key"], delivered="cd" * 32)[0] == 0
+    assert env.ledger()[0][0]["root_event_id"] == "cd" * 32
+
+
+def test_resolve_delivered_refuses_what_would_not_record(env):
+    env.collector([finding(fid="GHSA-zzzz-zzzz-zzzz", sources=(GHSA2,))])
+    env.run()
+    known = env.ledger()[0][0]["root_event_id"]
+    it = _unknown_root(env)
+    before = (env.ledger(), env.state())
+    code, lines = main.resolve(T0, env.config, it["key"], delivered=known)  # another thread's id
+    assert code == 2 and "already recorded" in lines[0] and (env.ledger(), env.state()) == before
+    with Ledger(env.config.ledger):  # the hourly run holds the lock
+        assert main.resolve(T0, env.config, it["key"], delivered="ab" * 32)[0] == 1
+        assert main.pending(T0, env.config)[0] == 1
+    assert (env.ledger(), env.state()) == before
+
+
+def test_resolve_delivered_acknowledges_a_digest(env):
+    env.collector([MAC])
+    env.run()
+    env.run(now=at(5, 9), ssh=FakeSSH("unknown"))
+    (it,) = env.state()["outbox"]
+    assert main.resolve(at(5, 10), env.config, it["key"], delivered="ab" * 32)[0] == 0
+    st = env.state()
+    assert st["outbox"] == [] and st["held"] == [] and st["digest_ids"] == ["ab" * 32]
+    assert st["digest_date"] == "2026-11-05" and env.ledger()[1] == []
+
+
+def test_pending_and_resolve_from_the_command_line(env, tmp_path, capsys, monkeypatch):
+    it = _unknown_root(env)
+    monkeypatch.setattr(main.time, "time", lambda: T0 + 60)
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(f'ledger = "{env.config.ledger}"\nkev_cache = "{env.config.kev_cache}"\n')
+    assert main.main(["pending", "--config", str(cfg)]) == 0
+    assert it["key"] in capsys.readouterr().out
+    assert main.main(["resolve", it["key"], "--config", str(cfg), "--delivered", "xyz"]) == 2
+    assert main.main(["resolve", it["key"], "--config", str(cfg), "--not-delivered", "--reason", "x"]) == 2
+    assert "allowed from" in capsys.readouterr().err
+    assert main.main(["resolve", it["key"], "--config", str(cfg), "--delivered", "ab" * 32]) == 0
+    assert env.ledger()[1] == []
+
+
 # ---------------------------------------------------------------- failure paths
 
 
