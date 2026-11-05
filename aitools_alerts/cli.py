@@ -159,9 +159,19 @@ def _entries(threads: list, warned: set) -> list[Entry]:
         if len(copies) > 1 and key not in warned:
             warned.add(key)
             _err(f"copies of {copies[0][0].adv.id} differ; listing each")
-        out += [Entry(c[0].root_id, tuple(t.root_id for t in c), c[0].adv, c[0].translations)
-                for c in copies]
+        out += [Entry(c[0].root_id, tuple(t.root_id for t in c), c[0].adv, _merged(c)) for c in copies]
     return out
+
+
+def _merged(copies: list) -> dict:
+    """Per language, the latest translation on any copy (root) of an advisory."""
+    best: dict[str, tuple] = {}
+    for t in copies:
+        for lang, text in t.translations.items():
+            key = (t.translated_at[lang], t.root_id)
+            if lang not in best or key > best[lang][0]:
+                best[lang] = (key, text)
+    return {lang: v[1] for lang, v in best.items()}
 
 
 def _seen(t: Entry, st: State) -> bool:

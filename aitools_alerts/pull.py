@@ -392,7 +392,8 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
     is kept, the latest per language, when it names the current version: the
     root (``of`` absent or the root id) until a reply changes the advisory,
     then that reply. A change drops the translations before it, so a
-    translation never describes a superseded advisory.
+    translation never describes a superseded advisory. A relay-bot
+    translation never replaces a curator's.
     Last, a thread is retracted if any id it has carried (the root's id and
     aliases, and aliases a curator patch itself supplied) is in the manifest's
     ``retracted``, whoever posted or retracted it, compared case-folded as
@@ -433,7 +434,9 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
         if first.startswith("lang:"):  # a translation, never a patch or a retraction
             tr = parse_translation(ev["content"])
             if tr is not None and (tr[1] or ref) == t[6]:  # the current version
-                t[5][tr[0]] = (tr[2], ev["created_at"])
+                prev = t[5].get(tr[0])
+                if role == "curator" or prev is None or not prev[2]:  # a curator's stands
+                    t[5][tr[0]] = (tr[2], ev["created_at"], role == "curator")
             continue
         if first == "retract":
             if role == "curator":

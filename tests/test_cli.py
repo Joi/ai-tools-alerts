@@ -11,6 +11,7 @@ from aitools_alerts.config import Settings
 from aitools_alerts.inventory import Installed, Inventory
 from aitools_alerts.notify import SendResult
 from aitools_alerts.state import State
+from aitools_alerts.schema import Action, Source
 from mirror_helpers import FIXTURE_MIRROR, FIXTURE_ROOT, T0, advisory
 
 MIRROR = FIXTURE_MIRROR.as_uri() + "/"
@@ -632,3 +633,28 @@ def test_lang_en_ignores_translations_except_in_json(monkeypatch, capsys):
     assert "日本語" not in out and "CRITICAL: Invented critical for tests [Claude Code" in out
     assert cli.main(["check", "--json"]) == 0
     assert any(d["translations"] for d in json.loads(capsys.readouterr().out))
+
+
+def test_translation_merged_across_copies_and_long_title_falls_back(monkeypatch, capsys):
+    from aitools_alerts import pull
+    from mirror_helpers import Mirror
+    m = Mirror()
+    adv = advisory(posted_by="relay-bot")
+    feed = m.root_post(m.bot_sec, adv, files=("feed.json",))
+    crit = m.root_post(m.bot_sec, adv, files=("critical.json",))
+    m.reply(m.bot_sec, feed, "lang: ja\n\n古い訳", created_at=T0 + 200)
+    m.reply(m.bot_sec, crit, "lang: ja\n\n新しい訳", created_at=T0 + 300)
+    monkeypatch.setenv(cli.TRUST_ROOT_ENV, m.root)
+    monkeypatch.setattr(pull, "default_fetch", m.fetch)
+    write_config('lang = "ja"\n')
+    assert cli.main(["pull", "--mirror-url", "https://mirror.invalid/"]) == 0
+    capsys.readouterr()
+    assert cli.main(["check"]) == 0
+    out = capsys.readouterr().out
+    assert "CRITICAL: 新しい訳 [Claude Code" in out and out.count("CRITICAL: ") == 1
+    acts = [Action("upgrade", "Claude Code", "99.0.0")] * 20
+    pad = notify.MAX_TEXT - 50 - len(notify.format_text(advisory(actions=acts, sources=[])))
+    big = advisory(sources=[Source("https://example.invalid/" + "a" * (pad - 33), None)], actions=acts)
+    english = notify.format_text(big)
+    assert notify.MAX_TEXT - 60 < len(english) <= notify.MAX_TEXT
+    assert notify.format_text(big, None, "長" * 200 + "\n本文" * 600) == english

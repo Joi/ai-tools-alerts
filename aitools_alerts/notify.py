@@ -41,7 +41,8 @@ class SendResult:
 def format_text(adv, m: Match | None = None, translation: str | None = None) -> str:
     """Level and title, what is affected, the action, the primary source.
     With a translation, its title and text replace the English title; only
-    the text is shortened, so Affected, Action and Source always fit."""
+    the text is shortened, and when the translated title would not fit
+    with Affected, Action and Source, the English text is sent."""
     title = pull.translation_title(translation, adv.id) if translation else adv.title
     lines = [f"{adv.level.upper()}: {title}"]
     p = m.product if m is not None and m.product is not None else (adv.products[0] if adv.products else None)
@@ -53,6 +54,8 @@ def format_text(adv, m: Match | None = None, translation: str | None = None) -> 
     lines += [f"Action: {check.describe(a)}" for a in actions] or ["Action: see the advisory"]
     if adv.sources:
         lines.append(f"Source: {adv.sources[0].url}")
+    if translation and len("\n".join(lines)) > MAX_TEXT:
+        return format_text(adv, m)
     if translation:
         body = "\n".join(translation.split("\n")[1:]).strip("\n")
         room = MAX_TEXT - len("\n".join(lines)) - 1

@@ -751,3 +751,11 @@ def test_translation_text_loses_control_and_bidi_characters():
     lang, of, text = pull.parse_translation("lang: ja\n\n\x1b[31m赤‮字​\r\n二行目\x07  \n")
     assert (lang, of, text) == ("ja", None, "[31m赤字\n二行目")
     assert pull.translation_title("\n  題  \n本文", "CVE-2099-0001") == "SYNTHETIC TEST: 題"
+
+
+def test_relay_bot_translation_never_replaces_a_curators_on_a_bot_thread(mirror):
+    root = mirror.root_post(mirror.bot_sec)
+    mirror.reply(mirror.cur_sec, root, "lang: ja\n\nキュレーター")
+    mirror.reply(mirror.bot_sec, root, "lang: ja\n\nボット", created_at=T0 + 300)
+    do_pull(mirror)
+    assert threads()[0].translations == {"ja": "キュレーター"}

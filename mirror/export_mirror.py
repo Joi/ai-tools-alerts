@@ -351,13 +351,33 @@ def atom_doc(events: list[dict], m, generated_at: str, mirror_url: str, lang: st
             return max(ev["created_at"] + 1, retraction[ev["id"]]["created_at"])
         return ev["created_at"]
     roots.sort(key=lambda ev: (updated(ev), ev["id"]), reverse=True)
-    ja = {t.root_id: t for t in pull.threads_from(dated, m) if "ja" in t.translations} if lang == "ja" else {}
+    ja, last = {}, {}  # root id -> Japanese text; root id -> its newest reply
+    if lang == "ja":
+        threads = pull.threads_from(dated, m)
+        ja = {t.root_id: t.translations["ja"] for t in threads if "ja" in t.translations}
+        advisory_roots = {t.root_id for t in threads}  # the CLI's rule decides these
+        role = {ev["id"]: mf.role_of(m, ev["pubkey"]) for ev in roots}
+        plain = {}  # a root with no advisory block (a digest): the latest lang reply naming it
+        for ev in sorted(dated, key=lambda e: (e["created_at"], e["id"])):
+            target = _reply_target(ev)
+            if target not in role:
+                continue
+            last[target] = ev["created_at"]
+            tr = pull.parse_translation(ev["content"])
+            by = mf.role_of(m, ev["pubkey"])
+            if (tr and tr[0] == "ja" and (tr[1] or target) == target and target not in advisory_roots
+                    and (by == "curator" or role[target] != "curator")
+                    and (by == "curator" or not plain.get(target, (0, False))[1])):
+                plain[target] = (tr[2], by == "curator")
+        ja.update({rid: v[0] for rid, v in plain.items()})
 
     def shown(ev):
-        if ev["id"] not in ja:
+        # Japanese: never earlier than the thread's newest reply (a
+        # translation, or a change that dropped one), past it for a
+        # withdrawal, so a reader fetches the entry again.
+        if ev["id"] not in last:
             return updated(ev)
-        at = ja[ev["id"]].translated_at["ja"]
-        return max(updated(ev), at + 1 if ev["id"] in retraction else at)
+        return max(updated(ev), last[ev["id"]] + (ev["id"] in retraction))
 
     ET.register_namespace("", ATOM_NS)
     q = lambda tag: f"{{{ATOM_NS}}}{tag}"  # noqa: E731
@@ -382,8 +402,7 @@ def atom_doc(events: list[dict], m, generated_at: str, mirror_url: str, lang: st
         title = adv.title if adv is not None else _first_line(ev["content"])
         body = _body_before_block(ev["content"]) if adv is not None else ev["content"]
         if ev["id"] in ja:
-            text = ja[ev["id"]].translations["ja"]
-            title, body = pull.translation_title(text, ja[ev["id"]].adv.id), text
+            title, body = pull.translation_title(ja[ev["id"]], adv.id if adv else None), ja[ev["id"]]
         if ev["id"] in retraction:
             title = (ATOM_JA["retracted"] if lang == "ja" else "Retracted: ") + title
             body = retraction[ev["id"]]["content"].strip()

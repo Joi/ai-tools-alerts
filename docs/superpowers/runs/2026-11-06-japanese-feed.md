@@ -1,16 +1,18 @@
 # Run: japanese-feed
 Instruction: Task ai-tools-alerts#yxd6 (reader side of the Japanese feed: CLI lang, feed.ja.atom, index 日本語 section, skill lines) per TASK-ai-tools-alerts#yxd6.md in the worktree root. /do-it with the rung floored at medium; security-shaped review on gpt-6-astra. Non-repoman repo: ending is the brief's ff-merge ending.
-Stage: executing
+Stage: verifying
 Rung: medium (start-floor medium: evaluator BR2 REV1 NOV1 INT1 FC1 = 6, prod-shaped exporter + byte-identical constraint, no hard trigger; Lens: feed.atom byte-identical with default lang; commands and version strings never translated; a lang reply carrying a block is ignored entirely; skill/snippet word-for-word test green; under 400 changed lines)
 Spec: docs/superpowers/specs/2026-11-06-japanese-feed-design.md   Plan: docs/superpowers/plans/2026-11-06-japanese-feed.md
 Agency project: —
 Kata: ai-tools-alerts#yxd6
-Last reviewed: spec+plan f33742faba4436939246488e44f1024576d798bc
+Last reviewed: spec+plan f33742faba4436939246488e44f1024576d798bc; code:branch 8cc6e97aebf024a9f112d59906f3caac0816738b (git diff e6594cf 8cc6e97, the whole branch above hgs0)
 Pre-handoff review: — (not repoman-managed)
 
 ## Scorecards
 Pass 1 [spec+plan]: 2B/9S/0C/1R · fixed -/- · velocity = (—→12, escalation no)   # fresheyes gpt-6-astra (watchdog REASON=-), one combined pass on snapshot f33742fa. Two "critical" graded BLOCKER, both fixed: translated body in `plan` could imitate an `auto-apply (opted in):` section and a `command:` line → body quoted `    > `, adversarial test; bot text under curator attribution → the existing discussion rule applies to lang replies (no bot translation on a curator thread). SUBSTANTIVE fixed: stale translation after a patch → translation must name the current version, a change drops earlier ones; notify truncation could cut Affected/Action/Source → only the body is shortened, test; synthetic mark dropped by a translated title → re-marked (translation_title), test; mirror target rule differed from pull → exporter uses pull.threads_from; tie order → same (created_at, id) sort via threads_from; withdrawal and feed `updated` → spec rules; write-order test → plan names it. SUBSTANTIVE rebutted in part: no byte fixture for feed.atom exists → checked by running the old and new exporter on one input (signatures are random per run, so a stored byte fixture cannot be produced from the test keys); plus a test that en output ignores lang replies. R: snapshot commit message (dangling review snapshot, never on the branch).
 passes: spec+plan 1 · elapsed ~25 min
+Pass 1 [code:branch]: 0B/9S/3C/0R · fixed 11/11 prior (spec+plan; 1 rebutted in part) · velocity ↓ (12→12, escalation no)   # Stage 1 (same-model subagent) ∥ Stage 2 fresheyes gpt-6-astra (REASON=-) on e6594cf..8cc6e97. No BLOCKER from either. SUBSTANTIVE fixed: Japanese Atom updated moved backwards when a change dropped a translation (both reviewers) → updated is past the thread's newest reply, two-export test; CLI and Atom picked different translations for a critical's two copies (Stage 1) → Entry merges copies, latest wins, test; bot translation replaced a curator's on a bot thread (Stage 1) → curator flag per language, test; digest (plain) roots could not be translated in the Atom (fresheyes) → latest lang reply naming a plain root under the same rules, test; a long translated title could push Action/Source out of notify (fresheyes) → English text when it would not fit, boundary test; plan text out of date with the rules (fresheyes) → rewritten. SUBSTANTIVE rebutted: no e6594cf byte baseline in the tests (fresheyes) → test keys sign with random aux, so stored bytes cannot be reproduced; the old exporter (git show e6594cf) and the new one give identical feed.atom bytes on three inputs (scratchpad bytecheck.py, run after every change), plus the in-suite with/without-lang-replies byte test; over 400 changed lines (fresheyes) → decided: one landing (see Notes). COSMETIC: old CLIs would read a lang reply with a block as a patch (to rd8t: never send one); first line past 200 chars lost; tabs stripped — accepted.
+passes: code 1 (one whole-branch round; no BLOCKER, so no delta at medium)
 
 ## Chunks
 - [x] chunk 1 — CLI: pull translations, config lang, check/plan/notify, --json
@@ -18,4 +20,7 @@ passes: spec+plan 1 · elapsed ~25 min
 - [x] chunk 3 — skill lines
 
 ## Notes
+- Size: code+tests 463 insertions, 34 deletions against e6594cf (code 203/29), over the 400-line budget. decided: one landing; the growth is the tests and fixes the two reviews asked for, the podcast deadline is 2026-11-10, and the CLI side alone gives Japanese listeners nothing to subscribe to.
+- Execution inline (no Agency project); chunk 1 and the skill lines were written while the spec+plan review ran, as earlier runs did.
+- hgs0 not yet on origin/main at build time: chunks rebased onto its local branch head e6594cf; rebase again onto whatever lands.
 - Prior work: docs/superpowers/specs/2026-11-05-mirror-exporter-design.md (atom_doc, retraction rule), 2026-11-05-pull-state-notify-cli-design.md (thread rules).

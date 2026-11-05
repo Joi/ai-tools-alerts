@@ -54,7 +54,10 @@ until a reply changes the advisory (a patch or a level change applied), then
 that reply. Each change drops the translations before it, so a Japanese
 reader never sees a superseded advisory beside current actions; English
 shows until the poster translates the change (`of: <that reply's id>`).
-`Thread.translated_at` keeps each kept translation's created_at.
+`Thread.translated_at` keeps each kept translation's created_at. A relay-bot
+translation never replaces a curator's (code review). The CLI merges the
+copies of one advisory (a critical has a root per channel): the latest
+translation per language wins.
 
 Decided (review pass 1): the existing discussion rule applies unchanged. Once
 a curator posted or amended a thread, a relay-bot lang reply is discussion,
@@ -86,7 +89,9 @@ line.
   skill line says so.
 - `notify` (and `run`): `format_text` puts the Japanese title on the first line
   and the Japanese body after it; the rest (Affected, Action, Source) is
-  unchanged, and only the body is shortened to fit `MAX_TEXT`.
+  unchanged, and only the body is shortened to fit `MAX_TEXT`; when the
+  translated title itself would push those fields past `MAX_TEXT`, the
+  English text is sent.
 
 Without a translation for the configured language, everything is English as
 today. Level words, ids, thread refs, product names, versions, `describe()`
@@ -105,12 +110,15 @@ in the same order; the feed `title` is `ai-tools セキュリティアラート`
 and self link are `feed.ja.atom`, `xml:lang="ja"` on the feed; an entry with a
 Japanese translation of its root (same parse and same curator-over-bot rule as
 pull: `pull.threads_from` over the feed channel's events) takes the
-translation's title and body, and its `updated` is the later of the English
-entry's and the translation's time, so readers fetch it again; an entry
-without one is the English entry unchanged. A retracted root reads
-`撤回: <title>` (Japanese title when translated) with the retraction's text as
-the body, and its `updated` is past both the English withdrawal's and the
-translation's time. The feed `updated` is the latest entry `updated`. Entry
+translation's title and body. A root with no advisory block (the daily
+digest) takes the latest `lang: ja` reply naming it under the same discussion
+and curator rules. A Japanese entry's `updated` is the later of the English
+entry's and the thread's newest reply (one past it for a withdrawal), so a
+translation, or a change that dropped one, makes readers fetch it again; an
+entry without a translation otherwise reads as the English one. A retracted
+root reads `撤回: <title>` (Japanese title when translated) with the
+retraction's text as the body. The feed `updated` is the latest entry
+`updated`. Entry
 ids are `urn:nostr:event:<id>:ja`, so a reader subscribed to both feeds does
 not merge the two languages as one entry.
 

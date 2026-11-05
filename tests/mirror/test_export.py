@@ -822,8 +822,8 @@ def test_ja_atom_translated_untranslated_and_retracted(env, tmp_path):
     assert ea.findtext(f"{ATOM}updated") == "2026-11-05T08:01:40Z"  # the translation's time
     assert (eb.findtext(f"{ATOM}title"), eb.findtext(f"{ATOM}content")) == ("Beta", "Beta body.")
     assert ed.findtext(f"{ATOM}title") == "撤回: デルタ" and ed.findtext(f"{ATOM}content") == "retract\nwrong"
-    assert ed.findtext(f"{ATOM}updated") == "2026-11-05T08:02:00Z"  # the withdrawal's time
-    assert feed.findtext(f"{ATOM}updated") == "2026-11-05T08:02:00Z"
+    assert ed.findtext(f"{ATOM}updated") == "2026-11-05T08:02:01Z"  # past the thread's newest reply
+    assert feed.findtext(f"{ATOM}updated") == "2026-11-05T08:02:01Z"
     # feed.atom is the same bytes with or without the lang replies.
     out2 = tmp_path / "out2"
     out2.mkdir()
@@ -859,3 +859,27 @@ def test_index_has_a_japanese_section(env):
     ja = page(env).split('<section id="ja" lang="ja">')[1].split("</section>")[0]
     assert "<h2>日本語</h2>" in ja and 'href="https://mirror.example.invalid/alerts/feed.ja.atom"' in ja
     assert em.PIPX_LINE in ja and 'lang = "ja"' in ja and "#security-feed" in ja
+
+
+def test_ja_atom_updated_moves_forward_when_a_change_drops_a_translation(env):
+    a = ev(BOT_SEC, advisory_post("Alpha", "x"), 1793865600)
+    rows = [a, _ja(a, "アルファ", 1793865700)]
+    run_export(env, rows_reader(rows))
+    feed = ET.parse(env[2] / "feed.ja.atom").getroot()
+    assert feed.find(f"{ATOM}entry").findtext(f"{ATOM}updated") == "2026-11-05T08:01:40Z"
+    run_export(env, rows_reader(rows + [ev(CUR_SEC, "level: notice", 1793865800,
+                                           tags=[("e", a["id"], "", "root")])]))
+    entry = ET.parse(env[2] / "feed.ja.atom").getroot().find(f"{ATOM}entry")
+    assert entry.findtext(f"{ATOM}title") == "Alpha"  # the translation was of the old version
+    assert entry.findtext(f"{ATOM}updated") == "2026-11-05T08:03:20Z"
+
+
+def test_ja_atom_translates_a_plain_digest_root(env):
+    digest = ev(BOT_SEC, "Daily digest\nTwo advisories today.", 1793865600)
+    curated = ev(CUR_SEC, "Curator note\ntext", 1793865610)
+    run_export(env, rows_reader([digest, curated, _ja(digest, "今日のまとめ\n本日は二件", 1793865700),
+                                 _ja(curated, "ボット", 1793865710)]))
+    titles = {x.findtext(f"{ATOM}id"): (x.findtext(f"{ATOM}title"), x.findtext(f"{ATOM}content"))
+              for x in ET.parse(env[2] / "feed.ja.atom").getroot().findall(f"{ATOM}entry")}
+    assert titles[f"urn:nostr:event:{digest['id']}:ja"] == ("今日のまとめ", "今日のまとめ\n本日は二件")
+    assert titles[f"urn:nostr:event:{curated['id']}:ja"][0] == "Curator note"

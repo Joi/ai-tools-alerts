@@ -11,12 +11,15 @@ Spec: docs/superpowers/specs/2026-11-06-japanese-feed-design.md. Budget: under
   - `parse_translation(content) -> tuple[str, str | None, str] | None` and
     `translation_title(text) -> str` per the spec; both in `__all__`.
   - `Thread` gains `translations: dict = field(default_factory=dict)`.
-  - `advisories`: the root record gains a sixth slot, `{lang: (text, by_curator)}`.
-    In the reply loop, right after the `t is None or t[1]` check and BEFORE the
-    discussion check: if `_first_line(content).startswith("lang:")`, parse; if
-    it parses, its target (`of` or `ref`) equals `ref`, and not (role is
-    relay-bot and the slot holds a curator translation), store it; `continue`
-    in every case. Build `Thread(..., translations={k: v[0] for ...})`.
+  - `advisories` becomes `threads_from(events, m)` (the exporter calls it too).
+    The root record gains `{lang: (text, at, by_curator)}` and the id of the
+    current version (the root, then the last reply that changed the advisory).
+    In the reply loop, AFTER the discussion check (a bot reply on a curator
+    thread is discussion, lang replies included): if
+    `_first_line(content).startswith("lang:")`, parse; if it parses, names the
+    current version (`of` or the root id), and does not replace a curator's
+    translation with a bot's, store it; `continue` in every case. A patch or
+    level change clears the translations and becomes the current version.
 - [ ] `aitools_alerts/config.py`: `LANGS = ("en", "ja")`; `Settings.lang = "en"`;
   `load` validates `lang`; TEMPLATE gains
   `# lang = "ja"   # show advisory text in Japanese where a translation exists`.
@@ -29,7 +32,10 @@ Spec: docs/superpowers/specs/2026-11-06-japanese-feed-design.md. Budget: under
   - `_title(t, s)`: Japanese title or `t.adv.title`.
   - check text lines, the critical-not-installed list, plan header and the
     "nothing installed" line use `_title`; plan prints the body (lines after
-    the title, indented four spaces) before `source:`.
+    the title, each quoted `    > `) before `source:`.
+  - `Entry.translations` merges the copies (the latest per language).
+  - notify: when the translated title would not fit with Affected/Action/
+    Source, the English text is sent.
   - `_notify` passes `_tr(t, s)` to `format_text`.
   - `_match_json` adds `"translations": dict(t.translations)`.
 - [ ] Tests
@@ -49,13 +55,14 @@ Spec: docs/superpowers/specs/2026-11-06-japanese-feed-design.md. Budget: under
 ## Chunk 2 — mirror (after `git fetch origin` and a rebase onto hgs0)
 
 - [ ] `mirror/export_mirror.py`
-  - `_translations(events, m, roots)`: per root id, the winning translation via
-    `pull.parse_translation`, target = `of` or `_reply_target(ev)`, manifest
-    key only, curator not replaced by bot, query (created_at) order.
+  - Translations of advisory roots from `pull.threads_from` (the CLI's rule);
+    roots with no block (a digest) take the latest `lang: ja` reply naming
+    them under the same discussion and curator rules, in (created_at, id) order.
   - `atom_doc(..., lang="en")`: `ja` changes feed title/id/self link,
     `xml:lang`, entry id suffix `:ja`, title/body from the translation,
-    `updated = max(updated(ev), translation created_at)`, retraction prefix
-    `撤回: `. `en` output byte-identical (existing tests pin it).
+    `updated` = the later of the English entry's and the thread's newest
+    reply (past it for a withdrawal), retraction prefix `撤回: `. `en` output
+    byte-identical: checked against the e6594cf exporter on one input.
   - `export` writes `feed.ja.atom` right after `feed.atom`; result gains
     `atom_ja_entries` only if summary_line needs it (keep the summary as is).
   - index.html (hgs0's writer): add the 日本語 section with the Japanese
