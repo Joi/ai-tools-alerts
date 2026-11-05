@@ -128,10 +128,23 @@ Channel ids come from the packaged `spec/channels.json` (`feed`, `critical`).
 
 ### Run state
 
-`<ledger dir>/poster-state.json`, written atomically (temp file, fsync,
-rename, directory fsync) and only while the ledger's lock is held (the run
-holds the ledger context throughout). A malformed state file is refused like a
-malformed ledger: `LedgerError`, exit 1, nothing sent. Shape:
+`<ledger path>.poster-state.json` (named after the ledger, so two ledgers in
+one directory never share a journal under different locks), written
+atomically (temp file, fsync — `F_FULLFSYNC` on macOS, where plain fsync does
+not flush the drive cache — rename, directory fsync) and only while the
+ledger's lock is held (the run holds the ledger context throughout). The
+config refuses relative paths and any overlap between the ledger, its lock,
+the journal and the KEV cache (by real path), so a KEV write can never replace
+the ledger or its lock. The file is read strictly (duplicate keys and
+NaN refused, as `schema.decode_block`). A malformed state file is refused like
+a malformed ledger: `LedgerError`, exit 1, nothing sent. Malformed means any
+of: a wrong key set or type; a watermark that is not a run-dir name or a real
+date; a held notice whose advisory fails `schema.validate`; two outbox items
+with one key; an item whose kind lacks what finishing it needs (`root` and
+`reply`: a scope and an advisory that validates; `copy`: a scope and a valid
+advisory or none; `digest`: no scope, a real date, `{"held": [...], "cutoff":
+int}`), or whose `sent` is not a 64-hex event id. Nothing can fail after a
+journaled post is public. Shape:
 
 ```
 {"schema_version": 1,
@@ -175,13 +188,16 @@ dict|null, "exploited": bool, "date": str|null, "sent": str|null}`.
 
 ### Privacy guard
 
-`candidates._PRIVATE` (B1, also compose's guard) gains `/Volumes/`, `/opt/`,
-`/srv/`, `/mnt/`, `/root/`, `/usr/local/`, a drive letter followed by either
-slash (`C:/`, `C:\`, but not `x://`), and a UNC prefix (`\\server`); tests show
-source URLs carrying each, plain and percent-encoded, are dropped.
-`/Library/`, `/Applications/` and `/System/Volumes/` are matched with their
-capital (a second, case-sensitive pattern), so a local `/Library/Logs/...`
-path is dropped while Apple's public `/library/` documentation URLs stay.
+`candidates._PRIVATE` (B1, also compose's guard) gains `/opt/`, `/srv/`,
+`/mnt/`, `/root/`, `/usr/local/`, `/media/`, `/run/user/`, the local Library
+subfolders in any case (`/library/logs/`, `/library/caches/`, `application
+support`, `containers`, and the like), an `.app` bundle under `/applications/`
+in any case, a drive letter followed by either slash (`C:/`, `C:\`, but not
+`x://`), and a UNC prefix (`\\server`). A second, case-sensitive pattern
+catches `/Library/`, `/Applications/`, `/System/Volumes/`, `/Volumes/` and
+`/Network/` with their capitals, so Apple's `/library/archive/...`
+documentation and the `/volumes/` pages of Docker and Kubernetes stay. Tests
+cover each root in source URLs and the kept public URLs.
 `compose._guard` lowercases text for the host-name check, so it also runs
 `_private` on the case-preserved text and its decoded form; a cased path in an
 alias handed to `reply_post` is refused there too.

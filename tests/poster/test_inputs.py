@@ -1,5 +1,6 @@
 """The poster's inputs (Task B4): config, run state, the KEV fetch, run dirs. No network."""
 
+import dataclasses
 import json
 import threading
 import time
@@ -9,6 +10,29 @@ import pytest
 
 from aitools_alerts.poster import inputs
 from aitools_alerts.poster.ledger import LedgerError
+
+ADV = {"id": "CVE-2026-0001", "aliases": [], "level": "high", "advisory_severity": None,
+       "title": "Claude Code: security advisory (CVE-2026-0001)",
+       "products": [{"name": "Claude Code", "ecosystem": "claude-code", "affected": None, "fixed": "2.1.0"}],
+       "actions": [{"verb": "upgrade", "target": "Claude Code", "value": "2.1.0"}],
+       "sources": [{"url": "https://github.com/anthropics/claude-code/security/advisories/GHSA-abcd-efgh-ijkl",
+                    "published_at": None}],
+       "posted_by": "relay-bot", "posted_at": 1_800_000_000, "expires_at": None}
+
+
+def item(**kw):
+    base = {"key": "root:Claude Code:CVE-2026-0001:feed", "kind": "root", "scope": "Claude Code",
+            "ids": ["CVE-2026-0001"], "channel": "feed", "text": "t", "adv": ADV, "exploited": False,
+            "date": None, "sent": None}
+    base.update(kw)
+    return base
+
+
+def digest_item(**kw):
+    base = dict(key="digest:2026-11-05", kind="digest", scope=None, ids=["digest:2026-11-05"],
+                adv={"held": [], "cutoff": 1}, date="2026-11-05")
+    base.update(kw)
+    return item(**base)
 
 LM = "Tue, 03 Nov 2026 10:00:00 GMT"
 CATALOG = {"vulnerabilities": [{"cveID": "CVE-2026-0001"}]}
@@ -23,7 +47,7 @@ def test_load_config_defaults_and_expands(tmp_path):
     c = inputs.load_config(cfg)
     assert c.heartbeat_runs.is_absolute() and "~" not in str(c.heartbeat_runs)
     assert (c.digest_hour, c.backfill_days) == (9, 2)
-    assert c.state == c.ledger.parent / "poster-state.json"
+    assert c.state == c.ledger.with_name("ledger.json.poster-state.json")
 
 
 def test_config_unknown_key_is_error(tmp_path):
@@ -59,9 +83,9 @@ def test_state_fresh_has_backfill_floor(tmp_path):
 def test_state_roundtrip_atomic(tmp_path):
     path = tmp_path / "d" / "s.json"
     st = inputs.new_state(1_800_000_000, 2)
-    st["outbox"].append({"key": "root:X:CVE-1:feed", "kind": "root", "scope": "X", "ids": ["CVE-1"],
-                         "channel": "feed", "text": "t", "adv": {}, "exploited": False,
-                         "date": None, "sent": None})
+    st["outbox"] += [item(), item(key="copy:Claude Code:CVE-2026-0001:critical", kind="copy",
+                                  channel="critical", adv=None, sent="ab" * 32), digest_item()]
+    st["held"].append({"scope": "Claude Code", "adv": ADV})
     inputs.save_state(path, st)
     assert inputs.load_state(path, 0, 0) == st
     assert [p.name for p in path.parent.iterdir()] == ["s.json"]
@@ -75,6 +99,25 @@ def test_state_roundtrip_atomic(tmp_path):
     lambda st: st["outbox"].append({"key": "k", "kind": "post", "scope": None, "ids": ["a"], "channel": "feed",
                                     "text": "t", "adv": None, "exploited": False, "date": None, "sent": None}),
     lambda st: st["held"].append({"adv": {}}),
+    lambda st: st["held"].append({"scope": "X", "adv": ADV, "extra": 1}),
+    lambda st: st["outbox"].extend([item(), item()]),  # one key twice
+    lambda st: st["outbox"].append(item(sent="")),
+    lambda st: st["outbox"].append(item(sent="AB" * 32)),
+    lambda st: st["outbox"].append(item(adv={})),
+    lambda st: st["outbox"].append(item(adv=None)),
+    lambda st: st["outbox"].append(item(scope=None)),
+    lambda st: st["outbox"].append(item(kind=[])),
+    lambda st: st["outbox"].append(item(ids=[])),
+    lambda st: st["outbox"].append(item(exploited=1)),
+    lambda st: st["outbox"].append(item(channel="other")),
+    lambda st: st["outbox"].append(digest_item(date="2026-13-40")),
+    lambda st: st["outbox"].append(item(key="digest:x", kind="digest", scope=None, adv={"held": []},
+                                        date="2026-11-05")),
+    lambda st: st.update(schema_version=True),
+    lambda st: st.update(since=True),
+    lambda st: st.update(kev_since="junk"),
+    lambda st: st.update(heartbeat="~"),
+    lambda st: st.update(digest_date="2026-02-30"),
 ])
 def test_malformed_state_is_ledger_error(tmp_path, mutate):
     st = inputs.new_state(0, 0)
@@ -215,3 +258,40 @@ def test_collector_newest_validated_only(tmp_path):
 def test_load_channels_reads_spec():
     ch = inputs.load_channels()
     assert set(ch) >= {"feed", "critical"}
+
+
+def test_duplicate_json_keys_in_state_are_refused(tmp_path):
+    st = inputs.new_state(0, 0)
+    st["outbox"].append(item(sent="ab" * 32))
+    text = json.dumps(st).replace('"sent": "' + "ab" * 32 + '"', '"sent": "' + "ab" * 32 + '", "sent": null')
+    path = tmp_path / "s.json"
+    path.write_text(text)
+    with pytest.raises(LedgerError):
+        inputs.load_state(path, 0, 0)
+
+
+@pytest.mark.parametrize("text", [
+    'ledger = "/s/l.json"\nkev_cache = "/s/l.json"\n',
+    'ledger = "/s/l.json"\nkev_cache = "/s/l.json.lock"\n',
+    'ledger = "/s/l.json"\nkev_cache = "/s/l.json.poster-state.json"\n',
+    'ledger = "relative/l.json"\n',
+])
+def test_overlapping_or_relative_paths_are_refused(tmp_path, text):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(text)
+    with pytest.raises(inputs.ConfigError):
+        inputs.load_config(cfg)
+
+
+def test_two_ledgers_in_one_directory_have_two_journals():
+    a = inputs.Config(ledger=inputs.Path("/s/a.json"))
+    assert a.state != dataclasses.replace(a, ledger=inputs.Path("/s/b.json")).state
+
+
+@pytest.mark.parametrize("catalog", [{"vulnerabilities": {}}, {"items": []},
+                                     {"vulnerabilities": [], "items": [{"cveID": "CVE-2026-1"}]}])
+def test_bad_cached_catalog_means_an_unconditional_fetch(tmp_path, catalog):
+    cache = tmp_path / "kev.json"
+    cache.write_text(json.dumps({"last_modified": LM, "catalog": catalog}))
+    f = Fetch(status=304)
+    assert inputs.load_kev(cache, f) is None and f.seen == [{}]

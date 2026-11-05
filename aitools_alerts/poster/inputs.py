@@ -8,9 +8,12 @@ cannot read its journal could send a message twice.
 
 from __future__ import annotations
 
+import datetime as _dt
+import fcntl
 import json
 import os
 import re
+import sys
 import tempfile
 import threading
 import time
@@ -38,6 +41,8 @@ _STATE_KEYS = {"schema_version", "since", "heartbeat", "collector", "kev_since",
                "digest_date", "digest_at", "held", "digested", "outbox"}
 _ITEM_KEYS = {"key", "kind", "scope", "ids", "channel", "text", "adv", "exploited", "date", "sent"}
 _KINDS = {"root", "copy", "reply", "digest"}
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 class ConfigError(ValueError):
@@ -55,7 +60,16 @@ class Config:
 
     @property
     def state(self) -> Path:
-        return self.ledger.parent / "poster-state.json"
+        """The run journal, named after the ledger whose lock guards it, so two ledgers
+        in one directory never share a journal."""
+        return self.ledger.with_name(self.ledger.name + ".poster-state.json")
+
+    def check_paths(self) -> None:
+        """The ledger, its lock, the journal and the KEV cache are four distinct files."""
+        files = [self.ledger, self.ledger.with_name(self.ledger.name + ".lock"), self.state, self.kev_cache]
+        real = [os.path.realpath(p) for p in files]
+        if len(set(real)) != len(real):
+            raise ConfigError("ledger, ledger lock, state and kev_cache must be different files")
 
 
 def load_config(path) -> Config:
@@ -73,16 +87,23 @@ def load_config(path) -> Config:
             if not isinstance(raw[k], str) or not raw[k]:
                 raise ConfigError(f"{k} must be a path string")
             out[k] = Path(raw[k]).expanduser()
+            if not out[k].is_absolute():  # launchd runs from /: a relative path would move
+                raise ConfigError(f"{k} must be an absolute path")
     for k, lo, hi in (("digest_hour", 0, 23), ("backfill_days", 0, 30)):
         if k in raw:
             if type(raw[k]) is not int or not lo <= raw[k] <= hi:
                 raise ConfigError(f"{k} must be an integer {lo}-{hi}")
             out[k] = raw[k]
-    return Config(**out)
+    cfg = Config(**out)
+    cfg.check_paths()
+    return cfg
 
 
 def load_channels() -> dict:
-    ch = json.loads((schema.SPEC_DIR / "channels.json").read_text(encoding="utf-8"))
+    try:
+        ch = json.loads((schema.SPEC_DIR / "channels.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise ConfigError(f"spec/channels.json unreadable: {e}") from None
     if not (isinstance(ch, dict) and all(isinstance(ch.get(k), str) for k in ("feed", "critical"))):
         raise ConfigError("spec/channels.json needs feed and critical")
     return ch
@@ -99,7 +120,7 @@ def write_json(path: Path, data) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=1, sort_keys=True)
             fh.flush()
-            os.fsync(fh.fileno())
+            _sync(fh.fileno())
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -114,12 +135,25 @@ def write_json(path: Path, data) -> None:
         os.close(dfd)
 
 
+def _sync(fd: int) -> None:
+    """fsync; on macOS F_FULLFSYNC, since fsync there does not flush the drive cache."""
+    if sys.platform == "darwin":
+        try:
+            fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+            return
+        except OSError:
+            pass
+    os.fsync(fd)
+
+
 def read_json(path: Path, limit: int):
+    """Strict: duplicate keys and NaN/Infinity are refused (as schema.decode_block)."""
     with open(path, "rb") as fh:
         data = fh.read(limit + 1)
     if len(data) > limit:
         raise ValueError("file too large")
-    return json.loads(data)
+    return json.loads(data, object_pairs_hook=schema._no_duplicates,
+                      parse_constant=schema._reject_constant)
 
 
 # ---------------------------------------------------------------- run state
@@ -136,13 +170,46 @@ def _strs(v) -> bool:
     return isinstance(v, list) and all(isinstance(i, str) and i for i in v)
 
 
+def _date_ok(v) -> bool:
+    if not (isinstance(v, str) and _DATE.fullmatch(v)):
+        return False
+    try:
+        _dt.date.fromisoformat(v)
+    except ValueError:
+        return False
+    return True
+
+
+def _adv_ok(v) -> bool:
+    try:
+        schema.validate(v)
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
 def _item_ok(it) -> bool:
-    return (isinstance(it, dict) and set(it) == _ITEM_KEYS and it["kind"] in _KINDS
-            and isinstance(it["key"], str) and it["channel"] in ("feed", "critical")
-            and isinstance(it["text"], str) and it["text"] and _strs(it["ids"]) and it["ids"]
-            and type(it["exploited"]) is bool
-            and all(it[k] is None or isinstance(it[k], str) for k in ("scope", "date", "sent"))
-            and (it["adv"] is None or isinstance(it["adv"], dict)))
+    """A journal item that a later run can finish: every field its kind needs is there
+    and well formed, so nothing fails after the post is public."""
+    if not (isinstance(it, dict) and set(it) == _ITEM_KEYS and isinstance(it["kind"], str)
+            and it["kind"] in _KINDS and isinstance(it["key"], str) and it["key"]
+            and it["channel"] in ("feed", "critical") and isinstance(it["text"], str) and it["text"]
+            and _strs(it["ids"]) and it["ids"] and type(it["exploited"]) is bool
+            and (it["sent"] is None or (isinstance(it["sent"], str) and _HEX64.fullmatch(it["sent"])))):
+        return False
+    kind, adv = it["kind"], it["adv"]
+    if kind == "digest":
+        return (it["scope"] is None and _date_ok(it["date"]) and isinstance(adv, dict)
+                and set(adv) == {"held", "cutoff"} and type(adv["cutoff"]) is int
+                and isinstance(adv["held"], list) and all(isinstance(k, str) for k in adv["held"]))
+    if not (isinstance(it["scope"], str) and it["scope"] and it["date"] is None):
+        return False
+    return (adv is None and kind == "copy") or _adv_ok(adv)
+
+
+def _held_ok(h) -> bool:
+    return isinstance(h, dict) and set(h) == {"scope", "adv"} and isinstance(h["scope"], str) \
+        and _adv_ok(h["adv"])
 
 
 def load_state(path: Path, now: int, backfill_days: int) -> dict:
@@ -153,15 +220,19 @@ def load_state(path: Path, now: int, backfill_days: int) -> dict:
         return new_state(now, backfill_days)
     except (OSError, ValueError, RecursionError) as e:
         raise LedgerError(f"state {path} unreadable: {e}") from None
-    ok = (isinstance(st, dict) and set(st) == _STATE_KEYS and st["schema_version"] == 1
-          and type(st["since"]) is int and type(st["digest_at"]) is int
-          and all(st[k] is None or isinstance(st[k], str)
-                  for k in ("heartbeat", "collector", "kev_since", "digest_date"))
-          and isinstance(st["held"], list)
-          and all(isinstance(h, dict) and isinstance(h.get("scope"), str) and isinstance(h.get("adv"), dict)
-                  for h in st["held"])
-          and isinstance(st["digested"], list) and all(isinstance(i, str) for i in st["digested"])
-          and isinstance(st["outbox"], list) and all(_item_ok(it) for it in st["outbox"]))
+    try:
+        ok = (isinstance(st, dict) and set(st) == _STATE_KEYS
+              and type(st["schema_version"]) is int and st["schema_version"] == 1
+              and type(st["since"]) is int and type(st["digest_at"]) is int
+              and all(st[k] is None or (isinstance(st[k], str) and RUN_DIR.fullmatch(st[k]))
+                      for k in ("heartbeat", "collector"))
+              and all(st[k] is None or _date_ok(st[k]) for k in ("kev_since", "digest_date"))
+              and isinstance(st["held"], list) and all(_held_ok(h) for h in st["held"])
+              and isinstance(st["digested"], list) and all(isinstance(i, str) for i in st["digested"])
+              and isinstance(st["outbox"], list) and all(_item_ok(it) for it in st["outbox"])
+              and len({it["key"] for it in st["outbox"]}) == len(st["outbox"]))  # one item per key
+    except (TypeError, KeyError, AttributeError):
+        ok = False
     if not ok:
         raise LedgerError(f"state {path} malformed; refusing to send")
     return st
@@ -170,7 +241,7 @@ def load_state(path: Path, now: int, backfill_days: int) -> dict:
 def save_state(path: Path, st: dict) -> None:
     try:
         write_json(path, st)
-    except OSError as e:
+    except (OSError, TypeError, ValueError) as e:
         raise LedgerError(f"cannot write state {path}: {e}") from None
 
 
@@ -212,12 +283,18 @@ def _bounded(fetch, url, headers, deadline):
     return result[0]
 
 
+def _catalog_ok(c) -> bool:
+    """The CISA catalog shape only: never the heartbeat feeds.json ``items`` shape,
+    which from_kev also parses (B1 c:6mnrdz)."""
+    return isinstance(c, dict) and isinstance(c.get("vulnerabilities"), list) and "items" not in c
+
+
 def load_kev(cache: Path, fetch=urllib_fetch, deadline: float | None = None) -> dict | None:
     """The KEV catalog this run fetched (or the cache on 304); None when unavailable."""
     cached = None
     try:
         c = read_json(cache, MAX_KEV * 2)
-        if isinstance(c, dict) and isinstance(c.get("catalog"), dict):
+        if isinstance(c, dict) and _catalog_ok(c.get("catalog")):  # else: an unconditional fetch
             cached = c
     except (OSError, ValueError, RecursionError):
         pass
@@ -235,7 +312,7 @@ def load_kev(cache: Path, fetch=urllib_fetch, deadline: float | None = None) -> 
         catalog = json.loads(body)
     except (ValueError, RecursionError):
         return None
-    if not isinstance(catalog, dict) or not isinstance(catalog.get("vulnerabilities"), list):
+    if not _catalog_ok(catalog):
         return None
     lm = _header(hdrs, "Last-Modified") if isinstance(hdrs, dict) else None
     try:

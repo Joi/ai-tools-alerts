@@ -346,6 +346,14 @@ def test_private_detail_in_product_or_id_drops_the_item(field, value):
     "https://example.com/advisory?share=%5C%5Cfileserver%5Ccase",
     "https://example.org/advisory?evidence=/Library/Logs/private.log",
     "https://example.org/advisory?evidence=%2FLibrary%2FLogs%2Fprivate.log",
+    "https://example.org/advisory?file=/library/Logs/private.log",
+    "https://example.org/advisory?app=/applications/Secret.app/Contents",
+    "https://example.org/advisory?d=/Volumes/Work/x",
+    "https://example.org/advisory?d=/srv/data/x", "https://example.org/advisory?d=/mnt/x/y",
+    "https://example.org/advisory?d=/root/notes", "https://example.org/advisory?d=/usr/local/etc/x",
+    "https://example.org/advisory?d=/media/joi/usb", "https://example.org/advisory?d=/run/user/501/x",
+    "https://example.org/advisory?d=/Applications/X.app", "https://example.org/advisory?d=/System/Volumes/Data",
+    "https://example.org/advisory?d=C:%5CUsers%5Cx", "https://example.org/advisory?d=%5C%5Cserver%5Cshare",
 ])
 def test_percent_encoded_private_detail_in_source_url_is_dropped(url):
     record = {"schema_version": 1, "host_coverage": [{"host": "node-7"}], "findings": [
@@ -467,4 +475,12 @@ def test_fixed_length_boundary_never_truncates(fixed, kept):
 def test_apple_developer_library_url_is_kept():
     url = "https://developer.apple.com/library/archive/releasenotes/x.html"
     record = {"schema_version": 1, "findings": [{"id": "CVE-2026-72", "product": "P", "sources": [{"url": url}]}]}
+    assert [s.url for s in from_collector(record)[0].sources] == [url]
+
+
+@pytest.mark.parametrize("url", ["https://kubernetes.io/docs/concepts/storage/volumes/",
+                                 "https://docs.docker.com/engine/storage/volumes/",
+                                 "https://example.com/jdbc:h2://x"])
+def test_public_volume_docs_and_double_slash_schemes_are_kept(url):
+    record = {"schema_version": 1, "findings": [{"id": "CVE-2026-73", "product": "P", "sources": [{"url": url}]}]}
     assert [s.url for s in from_collector(record)[0].sources] == [url]

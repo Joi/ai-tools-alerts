@@ -50,7 +50,10 @@ _OP_SPACE = re.compile(r"([<>=!~^]{1,2}) +")
 # not hide them). Over-matching drops a field, which is the safe failure.
 _PRIVATE = re.compile(
     r"/Users/|/home/|/private/|/var/|/tmp/|/etc/|~/"
-    r"|/Volumes/|/opt/|/srv/|/mnt/|/root/|/usr/local/"
+    r"|/opt/|/srv/|/mnt/|/root/|/usr/local/|/media/|/run/user/"
+    r"|/library/(?:logs|caches|preferences|containers|group containers|application support"
+    r"|keychains|mobile documents|cloudstorage|launchagents|daemoncontainers)/"
+    r"|/applications/[^/\s]+\.app\b"
     r"|(?<![A-Za-z0-9])[A-Za-z]:[\\/](?!/)|\\\\[A-Za-z0-9]"
     r"|\b[a-z][a-z0-9-]*#[0-9a-z]{4}\b",
     re.I,
@@ -111,9 +114,10 @@ def _flag(v) -> bool:
     return v is True
 
 
-# macOS roots matched with their capital, so Apple's public /library/ documentation
-# paths stay allowed while a local /Library/... path does not.
-_PRIVATE_CASED = re.compile(r"/Library/|/Applications/|/System/Volumes/")
+# macOS roots matched with their capital, so Apple's /library/ documentation and the
+# /volumes/ pages of Docker and Kubernetes stay allowed; a lowercase spelling of the
+# local Library subfolders and of an .app bundle is caught by _PRIVATE above.
+_PRIVATE_CASED = re.compile(r"/Library/|/Applications/|/System/Volumes/|/Volumes/|/Network/")
 
 
 def _private(s: str | None) -> bool:
