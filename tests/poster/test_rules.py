@@ -461,7 +461,7 @@ def test_scope_file_versions(tmp_path):
     v2s = schema.load_scope(_scope_file(tmp_path, {"version": 2, "match_mode": "substring"}))
     assert rules.scope_of("skills.shopify", entries=v2s).name == "Skills"
     # A reader refuses a format it does not know.
-    for bad in ({"version": 3}, {"version": True}, {"version": "2"}, {"version": 1.0},
+    for bad in ({"version": 4}, {"version": True}, {"version": "2"}, {"version": 1.0},
                 {"version": 2, "match_mode": "regex"}, {"version": 2, "match_mode": None},
                 {"version": 1}, {"match_mode": "word"}, {"version": 2, "extra": 1},
                 {"version": 2, "description": 5}):
@@ -476,3 +476,82 @@ def test_entries_without_a_mode_use_the_word_rule():
     sub = schema.ScopeEntry(name="X", ecosystem="x", tier=1, match=["skills.sh"],
                             match_mode="substring")
     assert rules.scope_of("skills.shopify", entries=[sub]).name == "X"
+
+
+# ------------------------------------------------ not_match (ai-tools-alerts#3r9h)
+
+# The live KEV catalog's vendorProject/product for CVE-2021-21315, as from_kev joins them.
+KEV_NODE_LIBRARY = "Npm package System Information Library for Node.JS"
+
+
+def test_node_library_is_not_the_node_runtime():
+    log: list[str] = []
+    assert rules.scope_of(KEV_NODE_LIBRARY, log) is None
+    assert log == [KEV_NODE_LIBRARY]  # an exclusion is kept for human review
+    for text in ("Node.js Node.js", "nodejs/node", "Node.js", "NodeJS", "Node.js runtime"):
+        assert rules.scope_of(text).name == "Node.js", text
+
+
+def test_other_not_match_lists():
+    for text in ("Jenkins Git client Plugin",
+                 "Example library for Golang", "Example Golang library",
+                 "Example Chrome extension", "Example add-on for Firefox"):
+        assert rules.scope_of(text) is None, text
+    for text, name in (("Git Git", "git"), ("Docker Desktop", "Docker"), ("golang/go", "Go"),
+                       ("Docker Engine docker plugin install", "Docker"),
+                       ("Google Chromium V8", "Browsers"), ("Mozilla Firefox", "Browsers")):
+        assert rules.scope_of(text).name == name, text
+
+
+def test_every_not_match_pattern_excludes_its_own_entry():
+    entries = schema.load_scope()
+    assert any(e.not_match for e in entries)
+    for e in entries:
+        for m in e.not_match:
+            hit = rules.scope_of(m)
+            assert hit is None or hit.name != e.name, (m, e.name)
+
+
+def test_an_excluded_entry_does_not_stop_the_search():
+    first = schema.ScopeEntry("A", "a", 1, ["node.js"], not_match=("for node.js",))
+    second = schema.ScopeEntry("B", "b", 1, ["library"])
+    tier2 = schema.ScopeEntry("C", "c", 2, ["node.js"])
+    assert rules.scope_of("a library for node.js", entries=[first, second]).name == "B"
+    assert rules.scope_of("tool for node.js", entries=[first, tier2]).name == "C"
+    sub = schema.ScopeEntry("S", "s", 1, ["node"], match_mode="substring", not_match=("npm",))
+    assert rules.scope_of("nodex", entries=[sub]).name == "S"
+    assert rules.scope_of("npmjs nodex", entries=[sub]) is None  # same mode as match
+
+
+def test_kev_node_library_does_not_post_and_the_runtime_still_does():
+    kev = {"vulnerabilities": [
+        {"cveID": "CVE-2099-0031", "dateAdded": "2099-01-02", "vendorProject": "Npm package",
+         "product": "System Information Library for Node.JS"},
+        {"cveID": "CVE-2099-0032", "dateAdded": "2099-01-02", "vendorProject": "Node.js",
+         "product": "Node.js"},
+    ]}
+    lib, runtime = candidates.from_kev(kev, "2099-01-01")
+    assert lib.product_text == KEV_NODE_LIBRARY and rules.scope_of(lib.product_text) is None
+    scope = rules.scope_of(runtime.product_text)
+    assert scope.name == "Node.js" and scope.tier == 1
+    assert rules.level_for(runtime, scope, False)[0] == "critical"
+
+
+def test_scope_file_not_match_needs_version_3(tmp_path):
+    import json
+    p = tmp_path / "scope.json"
+
+    def load(top, **extra):
+        p.write_text(json.dumps(dict(top, entries=[
+            dict({"name": "N", "ecosystem": "node", "tier": 1, "match": ["node.js"]}, **extra)])))
+        return schema.load_scope(p)
+
+    assert load({"version": 3})[0].not_match == ()
+    assert load({"version": 3}, not_match=["npm package"])[0].not_match == ("npm package",)
+    assert load({"version": 2})[0].not_match == ()
+    for top, nm in (({"version": 2}, ["npm package"]), ({}, ["npm package"]),
+                    ({"version": 3}, []), ({"version": 3}, "npm package"),
+                    ({"version": 3}, ["NPM"]), ({"version": 3}, [" npm"]),
+                    ({"version": 3}, [5])):
+        with pytest.raises(ValueError):
+            load(top, not_match=nm)

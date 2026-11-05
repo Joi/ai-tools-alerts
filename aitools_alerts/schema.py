@@ -104,6 +104,8 @@ class ScopeEntry:
     # How ``match`` patterns are tested: "word" (bounded) or "substring". Set from
     # the scope file's version and match_mode; never a key of a JSON entry.
     match_mode: str = "word"
+    # Version 3: the entry does not match where any of these hits, by the same mode.
+    not_match: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------- validation
@@ -348,27 +350,29 @@ def _load_json(path: Path):
         return json.load(f, object_pairs_hook=_no_duplicates)
 
 
-SCOPE_VERSION = 2
+SCOPE_VERSION = 3
+SCOPE_VERSIONS = (2, 3)  # what load_scope reads besides an unversioned (v1) file
 SCOPE_MATCH_MODES = ("word", "substring")
 _SCOPE_KEYS = frozenset({"version", "description", "match_mode", "entries"})
 _SCOPE_ENTRY_KEYS = {"name", "ecosystem", "tier", "match"}
 
 
-def _scope_mode(data) -> str:
-    """The match mode a scope file declares, by its version.
+def _scope_mode(data) -> tuple[str, int]:
+    """The match mode and version a scope file declares.
 
     No ``version``: version 1, substring patterns, extra top-level keys ignored.
-    ``version`` 2: top-level keys limited to _SCOPE_KEYS, ``match_mode`` one of
-    SCOPE_MATCH_MODES, default "word". Any other version is refused.
+    ``version`` 2 or 3: top-level keys limited to _SCOPE_KEYS, ``match_mode`` one
+    of SCOPE_MATCH_MODES, default "word"; version 3 entries may carry
+    ``not_match``. Any other version is refused.
     """
     if not isinstance(data, dict):
-        return "substring"  # the entries check below reports the bad file
+        return "substring", 1  # the entries check below reports the bad file
     if "version" not in data:
         if "match_mode" in data:
             _fail("scope.match_mode", "needs version 2")
-        return "substring"
-    if type(data["version"]) is not int or data["version"] != SCOPE_VERSION:
-        _fail("scope.version", f"not {SCOPE_VERSION}")
+        return "substring", 1
+    if type(data["version"]) is not int or data["version"] not in SCOPE_VERSIONS:
+        _fail("scope.version", f"not one of {list(SCOPE_VERSIONS)}")
     extra = set(data) - _SCOPE_KEYS
     if extra:
         _fail("scope", f"unknown keys {sorted(extra)}")
@@ -377,16 +381,30 @@ def _scope_mode(data) -> str:
     mode = data.get("match_mode", "word")
     if mode not in SCOPE_MATCH_MODES:
         _fail("scope.match_mode", f"not one of {list(SCOPE_MATCH_MODES)}")
-    return mode
+    return mode, data["version"]
+
+
+def _scope_patterns(v, at: str) -> list[str]:
+    out = _list(v, at, 1, 100)
+    for j, m in enumerate(out):
+        _text(m, f"{at}[{j}]", 1, 200)
+        if m != m.lower() or m != m.strip():
+            _fail(f"{at}[{j}]", "not lowercase and trimmed")
+    return list(out)
 
 
 def load_scope(path: Path | None = None) -> list[ScopeEntry]:
     data = _load_json(path or SPEC_DIR / "scope.json")
-    mode = _scope_mode(data)
+    mode, version = _scope_mode(data)
     entries, names = [], set()
     for i, e in enumerate(_list(data.get("entries") if isinstance(data, dict) else None,
                                 "scope.entries", 1, 1000)):
         at = f"scope.entries[{i}]"
+        if version >= 3 and isinstance(e, dict) and "not_match" in e:
+            e = dict(e)
+            not_match = tuple(_scope_patterns(e.pop("not_match"), at + ".not_match"))
+        else:
+            not_match = ()  # before version 3, not_match is an unknown key below
         e = _obj(e, at, ScopeEntry, _SCOPE_ENTRY_KEYS)
         name = _text(e["name"], at + ".name", 1, 200)
         if name in names:
@@ -394,17 +412,14 @@ def load_scope(path: Path | None = None) -> list[ScopeEntry]:
         names.add(name)
         if type(e["tier"]) is not int or e["tier"] not in (1, 2):
             _fail(at + ".tier", "not 1 or 2")
-        match = _list(e["match"], at + ".match", 1, 100)
-        for j, m in enumerate(match):
-            _text(m, f"{at}.match[{j}]", 1, 200)
-            if m != m.lower() or m != m.strip():
-                _fail(f"{at}.match[{j}]", "not lowercase and trimmed")
+        match = _scope_patterns(e["match"], at + ".match")
         entries.append(ScopeEntry(
             name=name,
             ecosystem=_pattern(e["ecosystem"], at + ".ecosystem", _ECOSYSTEM),
             tier=e["tier"],
             match=list(match),
             match_mode=mode,
+            not_match=not_match,
         ))
     return entries
 

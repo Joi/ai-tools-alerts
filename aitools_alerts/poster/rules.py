@@ -116,10 +116,13 @@ def scope_of(product_text, log: list[str] | None = None, entries=None) -> schema
     "s" or a glued version number excepted at the end), so "skills.sh" does not
     match "skills.shopify", "mcp server" matches "MCP servers" and "openssh"
     matches "OpenSSH9.8p1". "substring": any occurrence (a
-    version-1 scope file). Tier-1 entries are tried first, so a tier-1 hit wins
-    over any tier-2 hit.
+    version-1 scope file). An entry whose ``not_match`` pattern also matches, by
+    the same mode, is skipped ("npm package ... for node.js" is not Node.js), and
+    the search goes on. Tier-1 entries are tried first, so a tier-1 hit wins over
+    any tier-2 hit.
     When nothing matches but the text holds a tier-1 vendor word as a whole token,
-    the text is appended to ``log`` (a list the caller owns) for human review.
+    or an entry was skipped by ``not_match``, the text is appended to ``log`` (a
+    list the caller owns) for human review.
     """
     if not isinstance(product_text, str):
         return None
@@ -128,14 +131,17 @@ def scope_of(product_text, log: list[str] | None = None, entries=None) -> schema
         return None
     default = entries is None
     entries = _default_entries() if default else tuple(entries)
+    excluded = False
     for tier in (1, 2):
         for e in entries:
             mode = getattr(e, "match_mode", "word")
             if _tier(e) == tier and any(m and _matches(m, text, mode) for m in e.match):
-                return e
+                if not any(m and _matches(m, text, mode) for m in getattr(e, "not_match", ())):
+                    return e
+                excluded = True
     if log is not None:
         words = _default_vendor_words() if default else vendor_words(entries)
-        if _tokens(text) & words:
+        if excluded or _tokens(text) & words:
             log.append(product_text)
     return None
 

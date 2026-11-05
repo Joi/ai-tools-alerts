@@ -906,3 +906,22 @@ def test_kev_added_on_the_floor_day_is_not_old(env):
     env.kev.catalog = {"vulnerabilities": [kev_item(added="2026-11-05")]}
     code, summary, ssh = env.run(now=start + 5 * 3600)
     assert code == 0 and "old=0" in summary and len(ssh.calls) == 2
+
+
+def test_deferred_candidate_dropped_by_scope_reaches_the_review_list(env, monkeypatch):
+    # ai-tools-alerts#3r9h: a candidate deferred under an older scope that not_match
+    # now excludes leaves the deferred list, and its text is kept for human review.
+    env.collector([finding()])
+    monkeypatch.setattr(Ledger, "record_root", lambda self, *a, **k: (_ for _ in ()).throw(LedgerError("x")))
+    assert env.run()[0] == 1
+    monkeypatch.undo()
+    st = env.state()
+    assert [d["id"] for d in st["deferred"]] == ["GHSA-abcd-efgh-ijkl"]
+    st["deferred"][0]["product_text"] = "Npm package System Information Library for Node.JS"
+    env.config.state.write_text(json.dumps(st))
+    env.collector([], name="2026-11-05T020000Z")
+    code, _, ssh = env.run(now=T0 + 3600)
+    assert code == 0 and ssh.calls == [] and env.state()["deferred"] == []
+    with Ledger(env.config.ledger) as led:
+        texts = [r["text"] for r in led._state()["review"]]
+    assert "Npm package System Information Library for Node.JS" in texts

@@ -503,7 +503,7 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
                 n["candidates"] = len(cands) + len(deferred)
                 review, pairs, later = [], [], []
                 for c in deferred:  # already past the backfill floor once
-                    scope = rules.scope_of(c.product_text)
+                    scope = rules.scope_of(c.product_text, log=review)  # a scope change can drop it
                     if scope is not None:
                         later.append((c, scope))
                 for c in cands:
