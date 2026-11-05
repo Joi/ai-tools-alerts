@@ -554,3 +554,18 @@ def test_unsendable_channel_never_marks_pending(env):
     code, summary = main.run(T0, env.config, ssh=FakeSSH(), kev_fetch=env.kev,
                              http_status=lambda url, timeout: 200, channels=bad)
     assert code == 1 and "withheld=1" in summary and env.ledger()[1] == []
+
+
+def test_oversized_digest_posts_what_fits_and_keeps_the_rest(env, monkeypatch):
+    env.collector([finding(fid=f"CVE-2026-50{i:02d}", product="macOS", severity=None, fixed=None,
+                           sources=(f"{APPLE}{i}",)) for i in range(6)])
+    env.run()
+    assert len(env.state()["held"]) == 6
+    monkeypatch.setattr(main.transport, "MAX_CONTENT", 400)  # room for a few items only
+    code, _, ssh = env.run(now=at(5, 9))
+    assert code == 0 and len(ssh.calls) == 1 and len(ssh.calls[0][2]) <= 400
+    listed = {f"CVE-2026-50{i:02d}" for i in range(6) if f"CVE-2026-50{i:02d}" in ssh.calls[0][2]}
+    st = env.state()
+    assert 0 < len(listed) < 6 and len(st["held"]) == 6 - len(listed)  # only what was posted is acknowledged
+    left = {h["adv"]["id"] for h in st["held"]}
+    assert left.isdisjoint(listed)
