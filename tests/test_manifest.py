@@ -557,10 +557,12 @@ def test_sign_script_merges_content_retracted(tmp_path, monkeypatch):
     ["--retract", "AITA-A", "--unretract", "AITA-A"],
     ["--retract", "AITA-B", "--unretract", "aita-b"],
     ["--retract", " bad id"],
+    ["--unretract", "AITA-\u00df"],  # folds to aita-ss; must be refused, not matched
+    ["--retract", "AITA-\u00df"],
 ])
 def test_sign_script_refuses_bad_flags_before_reading_key(tmp_path, monkeypatch, flags):
     sign, out, _ = _signer(monkeypatch, tmp_path)
-    assert sign(1, "--retract", "AITA-A") == 0
+    assert sign(1, "--retract", "AITA-A", "--retract", "AITA-SS") == 0
     before = out.read_bytes()
     runner = FakeRunner(stdout=b"")
     with pytest.raises(SystemExit):

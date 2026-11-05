@@ -39,7 +39,7 @@ REPO = Path(__file__).resolve().parent.parent
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from aitools_alerts import TRUST_ROOT_PUBKEY, manifest, nostr  # noqa: E402
+from aitools_alerts import TRUST_ROOT_PUBKEY, manifest, nostr, schema  # noqa: E402
 
 SECRET_NAME = "AITOOLS_ALERTS_ROOT_NSEC"
 HELPER = "source ~/dotfiles-private/scripts/lib/secrets.sh && get_secret " + SECRET_NAME
@@ -173,6 +173,12 @@ def main(argv=None, runner=subprocess.run) -> int:
             _die(f"existing {args.out} is not signed by the trust root; move it aside to replace it")
         if content["version"] <= previous.version:
             _die(f"version {content['version']} is not higher than the existing version {previous.version}")
+    # every flag is an advisory id (ASCII) before anything is folded, so no
+    # Unicode spelling can fold onto a listed id (fresheyes finding)
+    for flag, vals in (("--retract", args.retract), ("--unretract", args.unretract)):
+        for v in vals:
+            if not schema._IDENT.fullmatch(v):
+                _die(f"{flag} {v!r} is not an advisory id")
     # ids compare case-folded, as readers match them; the first spelling is kept
     ids: dict[str, str] = {}
     for i in [*(previous.retracted if previous else ()), *raw.get("retracted", []), *args.retract]:

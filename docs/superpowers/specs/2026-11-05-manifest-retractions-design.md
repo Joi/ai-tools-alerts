@@ -45,8 +45,10 @@ bump; the change is additive.
 **pull.advisories.** After the replies are applied, a thread is marked
 retracted when any advisory id it has carried is in the effective
 manifest's `retracted`: the root's `id`, the root's `aliases`, and the
-`aliases` of every patched state of the thread (so a later patch that drops
-an alias cannot take the thread out of the list). Ids compare
+`aliases` a curator patch gave the thread. A patch that drops an alias
+cannot take the thread out of the list (the root's aliases count), and a
+relay-bot patch that adds a listed id cannot pull a thread into it, since
+the bot never lowers an alert (Stage 1 code review finding). Ids compare
 case-folded, as the poster's ledger compares them (`cve-2099-0010` and
 `CVE-2099-0010` are one advisory); the manifest refuses two ids that differ
 only in case. The manifest used is
@@ -114,6 +116,9 @@ retracted thread.
   published only after the exporter and members run this version. This task
   signs no manifest; v3 stays live, unchanged.
 - Rollback: revert the commits; manifests without the key are unaffected.
+  A member whose state already accepted a manifest with the key cannot
+  downgrade without discarding that state (the older state load refuses
+  the key), which is one more reason the first such manifest waits.
 
 ## Non-goals
 

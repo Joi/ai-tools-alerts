@@ -320,7 +320,7 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
     discussion, so the bot can neither suppress, alter nor undo a curator's
     word. A patch that fails validation, or raises, is counted and skipped.
     Last, a thread is retracted if any id it has carried (the root's id and
-    aliases, and the aliases of every patched state) is in the manifest's
+    aliases, and the aliases a curator patch gave it) is in the manifest's
     ``retracted``, whoever posted or retracted it, compared case-folded as
     the poster's ledger compares ids. Deletion events (kinds 5 and 9005) are
     never read.
@@ -372,7 +372,8 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
             dropped["bad-patch"] += 1
         else:
             t[0], t[2], t[3] = new, ev["created_at"], t[3] or role == "curator"
-            t[4].update(i.casefold() for i in new.aliases)
+            if role == "curator":  # a bot patch can never pull a thread into the list
+                t[4].update(i.casefold() for i in new.aliases)
     listed = {i.casefold() for i in m.retracted}
     return [Thread(root_id=rid, adv=a, retracted=r or not ids.isdisjoint(listed), updated_at=u)
             for rid, (a, r, u, _, ids) in sorted(roots.items(), key=lambda kv: (kv[1][2], kv[0]))]

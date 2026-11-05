@@ -566,6 +566,18 @@ def test_manifest_retracted_matches_an_alias(mirror):
     assert [t.retracted for t in threads()] == [True]
 
 
+def test_relay_bot_alias_patch_cannot_pull_a_thread_into_the_list(mirror):
+    root = mirror.root_post(mirror.bot_sec, advisory(id="AITA-REAL-0001", posted_by="relay-bot"))
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(aliases=["CVE-2099-0010"]))
+    mirror.publish_manifest(retracted=["CVE-2099-0010"])
+    do_pull(mirror)
+    [t] = threads()
+    assert t.adv.aliases == ["CVE-2099-0010"] and not t.retracted
+    mirror.reply(mirror.cur_sec, root, mirror.patch_text(aliases=["CVE-2099-0010"]), created_at=T0 + 300)
+    do_pull(mirror)
+    assert [t.retracted for t in threads()] == [True]  # a curator's alias counts
+
+
 def test_manifest_retracted_primary_id_matches_case_folded(mirror):
     mirror.root_post(mirror.bot_sec, advisory(id="cve-2099-0010"))
     mirror.publish_manifest(retracted=["CVE-2099-0010"])
