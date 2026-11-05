@@ -1,6 +1,6 @@
 # Run: poster-compose-ledger
 Instruction: Task ai-tools-alerts#h2gf B3 (post composition + advisory ledger), per TASK-ai-tools-alerts#h2gf.md. Start at medium. Non-repoman ending (ff-merge to main by the session per the brief).
-Stage: committing
+Stage: done
 Rung: medium (start-floor medium: evaluator BR1 REV0 NOV1 INT2 FC1 = 5, constraint lens, no hard trigger; Lens: "B1's and B2's poster tests stay green"; "Nothing in a fixture, test, log or kata comment may carry a real secret or a fleet host name")
 Spec: docs/superpowers/specs/2026-11-05-poster-compose-ledger-design.md   Plan: docs/superpowers/plans/2026-11-05-poster-compose-ledger.md
 Agency project: —
@@ -26,3 +26,5 @@ passes: code 2 (one whole-branch, one delta)
 - Gate before commit: scripts/test-gate.sh 366 passed; import one-liner exit 0; staged leak grep prints nothing.
 - Gate at the delta-fix head: scripts/test-gate.sh 370 passed; leak grep on added lines prints nothing.
 - roborev: ai-tools-alerts is not enrolled (as in B2); post-push check skipped. The behaviour-changing BLOCKER fixes had their fresheyes delta before the push.
+- Rebased onto origin/main a557997 (C1 landed meanwhile); pre-rebase heads cf395da, 1cfb1c5, 6cd59da are cf3dca8, 859ec84, f0c9fc8. Gate on the rebased head: 397 passed. Landed on main by ff-merge at f0c9fc8.
+- Follow-up filed: ai-tools-alerts#qme5 (per-component product identity in scope.json).
