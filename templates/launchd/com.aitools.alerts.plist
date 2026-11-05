@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  ai-tools-alerts: pull, check and notify once an hour, and once at login.
+
+  Install:
+    cp com.aitools.alerts.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.aitools.alerts.plist
+  Remove:
+    launchctl bootout gui/$(id -u)/com.aitools.alerts
+
+  launchd expands neither ~ nor $HOME, so the job runs through /bin/sh,
+  which does. PATH covers pipx (~/.local/bin) and Homebrew. The log is
+  ~/Library/Logs/aitools-alerts.log.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aitools.alerts</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"; exec aitools-alerts run &lt;/dev/null &gt;&gt;"$HOME/Library/Logs/aitools-alerts.log" 2&gt;&amp;1</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
