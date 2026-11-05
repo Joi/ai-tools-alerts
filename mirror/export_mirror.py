@@ -50,7 +50,7 @@ PSQL_TIMEOUT = 120
 DEFAULT_MIRROR_URL = "https://buzz.ai-tools.md/alerts/"
 NIP01_KEYS = ("id", "pubkey", "created_at", "kind", "tags", "content", "sig")
 CHANNELS = ("feed", "critical")  # exactly these: the file names A5 reads
-_XML_ILLEGAL = re.compile("[^\t\n\r -퟿-�\U00010000-\U0010ffff]")
+_XML_ILLEGAL = re.compile(r"[^\t\n\r\u0020-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
 ATOM_NS = "http://www.w3.org/2005/Atom"
 MALFORMED = None  # a psql line that is not JSON
 
@@ -94,12 +94,14 @@ def psql_reader(prefix: list[str]):
         if proc.returncode != 0:
             raise ExportError(f"channel {name}: psql exited {proc.returncode}")
         rows = []
-        for line in proc.stdout.splitlines():
+        # psql -At ends each row with "\n"; JSON escapes "\n" inside strings
+        # but not U+0085/U+2028/U+2029, which str.splitlines() would split on.
+        for line in proc.stdout.split("\n"):
             if not line.strip():
                 continue
             try:
                 rows.append(json.loads(line))
-            except ValueError:
+            except (ValueError, RecursionError):
                 rows.append(MALFORMED)
         return rows
     return read
@@ -110,7 +112,7 @@ def file_reader(path):
     try:
         with open(path, encoding="utf-8") as f:
             obj = json.load(f)
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, RecursionError) as e:
         raise ExportError(f"rows file unreadable: {e.__class__.__name__}") from None
     if not isinstance(obj, dict):
         raise ExportError("rows file must be a JSON object")
@@ -217,23 +219,29 @@ def _is_root(ev: dict) -> bool:
 
 
 def atom_doc(events: list[dict], m, generated_at: str, mirror_url: str) -> bytes:
-    """Atom entries for the feed channel's root posts by manifest posters,
-    leaving out roots a curator retracted. Feed readers cannot verify
-    signatures, so the Atom carries only what the CLI would trust."""
+    """Atom entries for the feed channel's root posts by manifest posters.
+    Feed readers cannot verify signatures, so the Atom carries only what the
+    CLI would trust. A root a curator retracted keeps its entry id but is
+    rewritten as a withdrawal ("Retracted: ...", the retraction's text, the
+    retraction's time as updated), because readers keep entries they have
+    already fetched and an entry that just disappears is never withdrawn."""
     names = {p.pubkey: p.name for p in m.posters}
-    retracted = set()
-    for ev in events:
+    # created_at beyond 9999-12-31 has no Atom date: such an event stays in
+    # the JSON (it is signed and raw) but takes no part in the Atom.
+    dated = [ev for ev in events if ev["created_at"] <= schema.MAX_TIMESTAMP]
+    retraction = {}
+    for ev in dated:  # query order is created_at order: the latest wins
         if (mf.role_of(m, ev["pubkey"]) == "curator"
                 and _lines(ev["content"])[0].strip() == "retract"):
             target = _reply_target(ev)
             if target:
-                retracted.add(target)
-    # created_at beyond 9999-12-31 has no Atom date: such an event stays in
-    # the JSON (it is signed and raw) but gets no Atom entry.
-    roots = [ev for ev in events
-             if _is_root(ev) and mf.role_of(m, ev["pubkey"]) is not None
-             and ev["id"] not in retracted and ev["created_at"] <= schema.MAX_TIMESTAMP]
-    roots.sort(key=lambda ev: (ev["created_at"], ev["id"]), reverse=True)
+                retraction[target] = ev
+    roots = [ev for ev in dated
+             if _is_root(ev) and mf.role_of(m, ev["pubkey"]) is not None]
+
+    def updated(ev):
+        return max(ev["created_at"], retraction[ev["id"]]["created_at"]) if ev["id"] in retraction else ev["created_at"]
+    roots.sort(key=lambda ev: (updated(ev), ev["id"]), reverse=True)
 
     ET.register_namespace("", ATOM_NS)
     q = lambda tag: f"{{{ATOM_NS}}}{tag}"  # noqa: E731
@@ -247,7 +255,7 @@ def atom_doc(events: list[dict], m, generated_at: str, mirror_url: str) -> bytes
     feed = ET.Element(q("feed"))
     sub(feed, "id", mirror_url + "feed.atom")
     sub(feed, "title", "ai-tools security alerts")
-    sub(feed, "updated", _iso(roots[0]["created_at"]) if roots else generated_at)
+    sub(feed, "updated", _iso(updated(roots[0])) if roots else generated_at)
     sub(feed, "link", rel="self", href=mirror_url + "feed.atom")
     sub(feed, "link", rel="alternate", href=mirror_url + "feed.json")
     sub(sub(feed, "author"), "name", "ai-tools alerts")
@@ -255,10 +263,13 @@ def atom_doc(events: list[dict], m, generated_at: str, mirror_url: str) -> bytes
         adv = schema.parse_post(ev["content"])
         title = adv.title if adv is not None else _first_line(ev["content"])
         body = _body_before_block(ev["content"]) if adv is not None else ev["content"]
+        if ev["id"] in retraction:
+            title = "Retracted: " + title
+            body = retraction[ev["id"]]["content"].strip()
         entry = sub(feed, "entry")
         sub(entry, "id", f"urn:nostr:event:{ev['id']}")
         sub(entry, "title", title)
-        sub(entry, "updated", _iso(ev["created_at"]))
+        sub(entry, "updated", _iso(updated(ev)))
         sub(entry, "published", _iso(ev["created_at"]))
         sub(entry, "link", rel="alternate", href=mirror_url + "feed.json")
         sub(sub(entry, "author"), "name", names.get(ev["pubkey"], "unknown"))

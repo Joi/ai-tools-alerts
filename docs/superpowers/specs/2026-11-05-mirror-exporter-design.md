@@ -60,8 +60,10 @@ SELECT json_build_object('id',encode(id,'hex'),'pubkey',encode(pubkey,'hex'),'cr
   run: a JSON object `{"<channel name>": [row, ...]}` where each row is what
   one psql output line would decode to. A channel absent from the file is a
   read failure.
-- psql `-At` prints one JSON object per line (JSON escapes newlines inside
-  strings). Each non-empty line is decoded; a line that is not a JSON object
+- psql `-At` prints one JSON object per row, ending each with `\n` (JSON
+  escapes `\n` inside strings but leaves U+0085, U+2028 and U+2029 raw, so
+  the output is split on `\n` only, never `splitlines()`). Each non-empty
+  line is decoded; a line that is not JSON (or nests too deeply to decode)
   is counted as `malformed` and dropped.
 
 ### Verification
@@ -113,8 +115,13 @@ signatures, so it shows only what the CLI would trust:
 - Only events whose pubkey has a role in the verified manifest
   (`manifest.role_of`); others are left out of the Atom (they stay in the
   JSON).
-- A root that a curator-role event retracts is left out, matching A5's rule
-  that a retracted root is hidden. The retracting event is from a curator key,
+- A root that a curator-role event retracts is published as a withdrawal,
+  not left out: feed readers keep entries they already fetched, so an entry
+  that disappears is never withdrawn (RFC 6721's problem). The entry keeps
+  its id, its title becomes `Retracted: <title>`, its content becomes the
+  retraction's text, and its `updated` (and so the feed's) moves to the
+  retraction's time. A5 hides the root from `check`; the Atom shows the
+  withdrawal. The retracting event is from a curator key,
   its content's first line (split on CommonMark line endings, as
   `parse_post` does) stripped is `retract`, and its target is the one root it
   replies to under NIP-10 marked tags: its `e` tag marked `root`, else its

@@ -99,7 +99,7 @@ def test_export_writes_atomically(env, monkeypatch):
     monkeypatch.setattr(em.os, "replace", spy)
     run_export(env, rows_reader([ev(CUR_SEC, "hello")]))
     assert {d.name for _, d in seen} == NAMES
-    assert seen[0][1].name == "manifest.json" and seen[-1][1].name == "feed.atom"
+    assert [d.name for _, d in seen] == ["manifest.json", "critical.json", "feed.json", "feed.atom"]
     for src, dst in seen:
         assert src.parent == dst.parent == out
         assert src.name.startswith(".") and not src.exists()
@@ -159,18 +159,26 @@ def test_atom_has_one_entry_per_root(env):
     d_retract = ev(CUR_SEC, "retract\nwrong product", 1793865650, tags=[("e", d["id"], "", "reply")])
     e = ev(BOT_SEC, "stays", 1793865660)
     e_fake = ev(STRANGER_SEC, "retract", 1793865670, tags=[("e", e["id"], "", "reply")])
-    run_export(env, rows_reader([a, reply, b, c, d, d_retract, e, e_fake]))
+    b_bot = ev(BOT_SEC, "retract", 1793865680, tags=[("e", b["id"], "", "reply")])  # relay-bot cannot retract
+    run_export(env, rows_reader([a, reply, b, c, d, d_retract, e, e_fake, b_bot]))
     tree = ET.parse(env[2] / "feed.atom")
     entries = tree.getroot().findall(f"{ATOM}entry")
     assert [x.findtext(f"{ATOM}id") for x in entries] == [
-        f"urn:nostr:event:{e['id']}", f"urn:nostr:event:{b['id']}", f"urn:nostr:event:{a['id']}"]
-    alpha = entries[2]
+        f"urn:nostr:event:{e['id']}", f"urn:nostr:event:{d['id']}",
+        f"urn:nostr:event:{b['id']}", f"urn:nostr:event:{a['id']}"]
+    withdrawn = entries[1]
+    assert withdrawn.findtext(f"{ATOM}title") == "Retracted: to be retracted"
+    assert withdrawn.findtext(f"{ATOM}content") == "retract\nwrong product"
+    assert withdrawn.findtext(f"{ATOM}updated") == "2026-11-05T08:00:50Z"
+    assert withdrawn.findtext(f"{ATOM}published") == "2026-11-05T08:00:40Z"
+    assert entries[0].findtext(f"{ATOM}title") == "stays"
+    assert entries[2].findtext(f"{ATOM}title") == "First line"
+    alpha = entries[3]
     assert alpha.findtext(f"{ATOM}title") == "Alpha"
     assert alpha.findtext(f"{ATOM}content") == "Upgrade Example Tool now.\nSecond line."
     assert alpha.find(f"{ATOM}author/{ATOM}name").text == "Curator"
     assert alpha.find(f"{ATOM}link").get("href") == "https://buzz.ai-tools.md/alerts/feed.json"
-    assert entries[1].findtext(f"{ATOM}title") == "First line"
-    assert entries[1].findtext(f"{ATOM}content") == "First line\nmore"
+    assert entries[2].findtext(f"{ATOM}content") == "First line\nmore"
     assert tree.getroot().findtext(f"{ATOM}updated") == "2026-11-05T08:01:00Z"
 
 
@@ -315,9 +323,11 @@ def test_retract_needs_marked_reply(env):
     marked = ev(CUR_SEC, "retract", 1793865640,
                 tags=[("e", c["id"], "", "mention"), ("e", b["id"], "", "root")])
     run_export(env, rows_reader([a, b, c, mention, marked]))
-    ids = [x.findtext(f"{ATOM}id") for x in
-           ET.parse(env[2] / "feed.atom").getroot().findall(f"{ATOM}entry")]
-    assert ids == [f"urn:nostr:event:{c['id']}", f"urn:nostr:event:{a['id']}"]
+    titles = {x.findtext(f"{ATOM}id"): x.findtext(f"{ATOM}title") for x in
+              ET.parse(env[2] / "feed.atom").getroot().findall(f"{ATOM}entry")}
+    assert titles == {f"urn:nostr:event:{a['id']}": "alpha",
+                      f"urn:nostr:event:{b['id']}": "Retracted: beta",
+                      f"urn:nostr:event:{c['id']}": "gamma"}
 
 
 def test_atom_body_ignores_quoted_block(env):
@@ -359,3 +369,45 @@ def test_unit_execstart_runs_from_fresh_checkout(tmp_path):
                           cwd=tmp_path, capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr
     assert {p.name for p in (home / "alerts-mirror").iterdir()} == NAMES
+
+
+def test_psql_rows_keep_unicode_line_separators(env, monkeypatch):
+    """psql prints JSON with U+0085/U+2028/U+2029 unescaped (only "\\n" is a
+    row boundary); a signed event containing them must survive."""
+    odd = ev(CUR_SEC, "paste\u2028from a web page\u0085and\u2029more")
+    plain = ev(CUR_SEC, "plain")
+
+    class Done:
+        returncode = 0
+        stdout = "\n".join(json.dumps(e, ensure_ascii=False) for e in (odd, plain)) + "\n"
+    monkeypatch.setattr(em.subprocess, "run", lambda argv, **kw: Done())
+    result = run_export(env, em.psql_reader(["fake-psql"]))
+    assert result["channels"]["feed"] == {"kept": 2}
+    assert [e["id"] for e in json.loads((env[2] / "feed.json").read_text())["events"]] == [odd["id"], plain["id"]]
+
+
+def test_deeply_nested_row_is_malformed_not_a_crash(env, monkeypatch):
+    class Done:
+        returncode = 0
+        stdout = "[" * 200000 + "]" * 200000 + "\n" + json.dumps(ev(CUR_SEC, "ok")) + "\n"
+    monkeypatch.setattr(em.subprocess, "run", lambda argv, **kw: Done())
+    result = run_export(env, em.psql_reader(["fake-psql"]))
+    assert result["channels"]["feed"]["kept"] == 1 and result["channels"]["feed"]["malformed"] == 1
+
+
+def test_retraction_is_published_as_a_withdrawal(env):
+    """Two generations: readers keep entries they already fetched, so the
+    retracted root must reappear as a withdrawal under the same id, and the
+    feed's updated time must move forward."""
+    root = ev(BOT_SEC, "Upgrade now", 1793865600)
+    later = ev(BOT_SEC, "Unrelated", 1793865700)
+    run_export(env, rows_reader([root, later]))
+    first = ET.parse(env[2] / "feed.atom").getroot()
+    retract = ev(CUR_SEC, "retract\nwrong advice", 1793865800, tags=[("e", root["id"], "", "root")])
+    run_export(env, rows_reader([root, later, retract]))
+    second = ET.parse(env[2] / "feed.atom").getroot()
+    assert second.findtext(f"{ATOM}updated") > first.findtext(f"{ATOM}updated")
+    top = second.find(f"{ATOM}entry")
+    assert top.findtext(f"{ATOM}id") == f"urn:nostr:event:{root['id']}"
+    assert top.findtext(f"{ATOM}title") == "Retracted: Upgrade now"
+    assert "Upgrade now" not in top.findtext(f"{ATOM}content")
