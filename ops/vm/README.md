@@ -20,7 +20,7 @@ Owners of both: jibot (`d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55
 
 ### Who can post
 
-Buzz cannot restrict posting on a channel by role. A write is accepted from any channel member, or from any relay member on an `open` channel (`crates/buzz-auth/src/access.rs` `check_write_access`, `crates/buzz-relay/src/handlers/ingest.rs` `check_channel_membership`, buzz at `a5dbdf5e6`); no role gates posting, and the `guest` role is not checked on ingest. Making `security-critical` private would stop members from joining it. So both channels are open, anyone may reply, and trust comes from the CLI: it accepts an alert only when its signing key is in the trust manifest.
+Buzz cannot restrict posting on a channel by role. A write is accepted from any channel member, or from any relay member on an `open` channel (`crates/buzz-auth/src/access.rs` `check_write_access`, `crates/buzz-relay/src/handlers/ingest.rs` `check_channel_membership`, buzz at `a5dbdf5e6`); no role gates posting, and the `guest` role is not checked on ingest. Every key must first be a relay member: the relay refuses AUTH from any other key (`restricted: not a relay member`), even one added to a channel (jibot-code#gs18, 2026-11-05). A new poster's key is added with `buzz-npub-add` and removed with `buzz-admin remove-member`. Making `security-critical` private would stop members from joining it. So both channels are open, anyone may reply, and trust comes from the CLI: it accepts an alert only when its signing key is in the trust manifest.
 
 ## `buzz-send`
 
