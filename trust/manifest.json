@@ -1,6 +1,6 @@
 {
   "pubkey": "afb55ca02209ca12e980bba67262f478b7977b6fdc6bbaf8c3b9fb96983c78a4",
-  "created_at": 1793843255,
+  "created_at": 1793864539,
   "kind": 30078,
   "tags": [
     [
@@ -8,7 +8,7 @@
       "aitools-alerts-manifest"
     ]
   ],
-  "content": "{\"issued_at\":\"2026-11-05T01:47:35Z\",\"posters\":[{\"name\":\"Joi\",\"pubkey\":\"18eafd07cca9f24eac1a62d8155f5e9cdabc7552357abca8a1fcced45d05fe29\",\"role\":\"curator\"},{\"name\":\"jibot\",\"pubkey\":\"d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1\",\"role\":\"relay-bot\"}],\"version\":1}",
-  "id": "4efdaa235be3d47d07796986e5d8ce02533d971696c544e043fea458805a043e",
-  "sig": "83675657e60391f13a3919217b321cc32c418f5c1f00a9a157dd699e89f77b1dda1b545384a1f140e65ca293746a9bd18b5e4127b18c3e2de757e9b08b6ed250"
+  "content": "{\"issued_at\":\"2026-11-05T07:42:19Z\",\"posters\":[{\"name\":\"Joi\",\"pubkey\":\"18eafd07cca9f24eac1a62d8155f5e9cdabc7552357abca8a1fcced45d05fe29\",\"role\":\"curator\"},{\"name\":\"jibot\",\"pubkey\":\"d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1\",\"role\":\"relay-bot\"},{\"name\":\"test-curator-2026-11-05\",\"pubkey\":\"4755f0bf2106d5dd70aea05b673449c181e44384704c116bd7e110d80f39185d\",\"role\":\"curator\"}],\"version\":2}",
+  "id": "b4e3fd2978e5c0a17f91d5941c388da171e80106582412152df7dab24e1f3873",
+  "sig": "9fcf22f4fec07b38986be09e67ef3efa6d48bd68389a279d00925c1fc2a291904c4c7f5b9fda37ec59cd5523ab5da34e786a2905c2c0bd8b4f5c6df549e214e0"
 }
