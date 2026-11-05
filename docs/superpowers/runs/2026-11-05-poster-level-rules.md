@@ -1,6 +1,6 @@
 # Run: poster-level-rules
 Instruction: ai-tools-alerts#31x7 B2: level rules and scope matching — brief at TASK-ai-tools-alerts#31x7.md in the worktree. Start at medium (dispatched; never light). Non-repoman repo: ff-merge ending per the brief. Security-shaped: FRESHEYES_GPT_MODEL=gpt-6-astra.
-Stage: verifying
+Stage: done
 Rung: medium (start-floor medium: evaluator BR1 REV1 NOV1 INT1 FC1 = 5, prod-shaped medium floor, no hard trigger; Lens: none beyond the dispatch floor)
 Spec: docs/superpowers/specs/2026-11-05-poster-level-rules-design.md   Plan: docs/superpowers/plans/2026-11-05-poster-level-rules.md
 Agency project: 01a1a95e-dac7-771a-aba9-213213076665
@@ -22,3 +22,8 @@ passes: code 2 (one whole-branch, one delta)
 - Order: tests and rules.py were written while the spec+plan review ran (new files only; the reviewed snapshot is a dangling commit). Tests ran red (module missing) before the implementation. Recorded, not hidden.
 - Agency: project 01a1a95e-dac7-771a-aba9-213213076665, task 01a1a95e-edb5-7088-bb7d-835508e4e64c; execution inline by the executor under the composed prompt.
 - Size: 774 added lines with docs; code + tests ~500 (B1 precedent: count code+tests against the 600-line rule).
+- Rebased onto origin/main 3dd0387 (A3/A4 landed meanwhile); pre-rebase heads f0d5fc1, b7f312a, 00e56c0 are 72f7f88, 6ba9dce, cd1e7ba. Gate on the rebased head: 341 passed. Acceptance one-liner: 1 2 None. Leak check (added lines, docs excluded): 0.
+- The delta's two SUBSTANTIVE findings are fixed in cd1e7ba with no further pass, per ruling jibot-code#41e2; a mutation check shows the new tests catch both.
+- roborev: ai-tools-alerts is not enrolled; post-push check skipped. The behaviour-changing BLOCKER fix had its fresheyes delta before the push.
+- Follow-up filed: ai-tools-alerts#x838 (scope.json substring patterns over/under-match tier 1).
+- Size: 594 changed lines of code, tests and pyproject (under 600); 889 with the run docs.
