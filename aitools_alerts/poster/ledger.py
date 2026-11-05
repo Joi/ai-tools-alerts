@@ -139,12 +139,14 @@ class Ledger:
     def _save(self) -> None:
         data = self._state()
         fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=f".{self.path.name}.")
+        replaced = False
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, indent=1, sort_keys=True)
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(tmp, self.path)
+            replaced = True
             dfd = os.open(self.path.parent, os.O_RDONLY)  # the rename itself survives a crash
             try:
                 os.fsync(dfd)
@@ -155,7 +157,9 @@ class Ledger:
                 os.unlink(tmp)
             except OSError:
                 pass
-            self._data = json.loads(self._good)
+            # Before the rename the disk holds the last good state: undo in memory too.
+            # After it, disk and memory may disagree: refuse any further use until reopened.
+            self._data = None if replaced else json.loads(self._good)
             raise LedgerError(f"cannot write ledger {self.path}: {e}") from None
         self._good = json.dumps(data)
 
@@ -344,7 +348,8 @@ def _merged(members, scope_name, ledger):
         exploited = any(e.exploited is True for e in ledger.lookup_all(ids, scope_name))
     # fixed and affected come from one member, preferring a fix the schema can publish.
     fix = next((c for c in members if schema._FIXED.fullmatch((c.fixed or "").lstrip("vV"))),
-               next((c for c in members if c.fixed or c.affected), first))
+               next((c for c in members if c.fixed),
+                    next((c for c in members if c.affected), first)))
     severities = [c.advisory_severity for c in members if isinstance(c.advisory_severity, str)]
     return replace(
         first, aliases=tuple(a for a in ids if a != first.id),
@@ -353,5 +358,5 @@ def _merged(members, scope_name, ledger):
         injection_exec=any(c.injection_exec is True for c in members),
         fixed=fix.fixed, affected=fix.affected,
         # every member's severity text, so B2's rule sees it whichever order (never published)
-        advisory_severity="; ".join(dict.fromkeys(severities))[:500] or None,
+        advisory_severity="; ".join(dict.fromkeys(severities)) or None,
         sources=tuple(sources))

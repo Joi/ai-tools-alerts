@@ -187,3 +187,28 @@ def test_merge_keeps_severity_and_one_fix_in_either_order():
         (m, s), = ledger.merge([pair(x) for x in order])
         assert rules.level_for(m, s, False) == ("high", "fix-rce-tier1")
         assert (m.fixed, m.affected) == ("2.1.0", "<2.1.0")
+
+
+def test_delta_fixes(tmp_path, monkeypatch):
+    a = cand(affected="<2.0.0", fixed=None, advisory_severity="x" * 500)
+    b = cand(id="GHSA-q", aliases=("CVE-2026-0001",), fixed="2.0.0-rc.1", injection_exec=True,
+             advisory_severity="remote code execution")
+    for order in ([a, b], [b, a]):
+        (m, _), = ledger.merge([pair(x) for x in order])
+        assert m.fixed == "2.0.0-rc.1" and "remote code execution" in m.advisory_severity
+    with Ledger(tmp_path / "l.json") as led:
+        led.record_root(adv_for(cand()), "e1", {"feed": "e1"}, scope="Claude Code",
+                        exploited=False, now=T0)
+        real, calls = ledger.os.fsync, []
+
+        def fsync(fd):  # the file syncs; the directory sync after the rename fails
+            calls.append(fd)
+            if len(calls) > 1:
+                raise OSError("sync")
+            real(fd)
+        monkeypatch.setattr(ledger.os, "fsync", fsync)
+        with pytest.raises(LedgerError):
+            led.add_channel("e1", "critical", "c1")
+        monkeypatch.undo()
+        with pytest.raises(LedgerError):  # the context is unusable once disk and memory may differ
+            led.lookup(["CVE-2026-0001"])
