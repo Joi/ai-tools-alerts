@@ -46,8 +46,10 @@ SYNTHETIC = "SYNTHETIC TEST"
 SYNTHETIC_ID = re.compile(r"CVE-2099-\d{4,}", re.IGNORECASE)
 
 
-def is_synthetic(ids) -> bool:
-    return any(isinstance(i, str) and SYNTHETIC_ID.fullmatch(i) for i in ids)
+def is_synthetic(adv_id) -> bool:
+    """The primary id decides; an alias never does (main strips reserved aliases from
+    real inputs, so a typo in a feed cannot mark or silence a real advisory)."""
+    return isinstance(adv_id, str) and SYNTHETIC_ID.fullmatch(adv_id) is not None
 
 
 def schema_fixed(v) -> str | None:
@@ -295,7 +297,7 @@ def digest(advs_today, date) -> str:
             lines += ["", f"{level.capitalize()} ({len(group)})"]
             for a in group:
                 fixed = f"fixed in {a.products[0].fixed}" if a.products[0].fixed else "no fix yet"
-                mark = f"({SYNTHETIC}) " if is_synthetic([a.id, *a.aliases]) else ""
+                mark = f"({SYNTHETIC}) " if is_synthetic(a.id) else ""
                 line = f"- {mark}{a.title}; {fixed}. {_primary(a.sources)}"
                 try:
                     lines.append(_guard(line))

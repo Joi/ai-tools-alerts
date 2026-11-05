@@ -774,7 +774,8 @@ def test_kev_file_bypasses_fetch_and_marks_posts(env):
     assert kev.headers == [] and not env.config.kev_cache.exists()
     assert "inputs=kev:file," in summary and "roots=1" in summary
     assert chans(ssh) == [("critical", None), ("feed", None)]
-    assert ssh.calls[0][2].startswith("CRITICAL (SYNTHETIC TEST): Claude Code") and "CVE-2099-0001" in ssh.calls[0][2]
+    assert all(c[2].startswith("CRITICAL (SYNTHETIC TEST): Claude Code") and "CVE-2099-0001" in c[2]
+               for c in ssh.calls)  # the root and its feed copy
     assert env.state()["kev_since"] is None  # the real catalog was not read
     code, summary, ssh = env.run(now=at(20, 7), kev=kev, kev_catalog=catalog)
     assert code == 0 and ssh.calls == [] and "withheld=1" in summary  # known: never a reply
@@ -861,3 +862,39 @@ def test_digest_ids_longer_than_ten_refused(env):
     env.config.state.write_text(json.dumps(st))
     code, summary, _ = env.run(now=T0 + 3600)
     assert code == 1 and "error=ledger" in summary
+
+
+def test_reserved_alias_never_marks_or_silences_a_real_advisory(env):
+    env.collector([finding(aliases=("CVE-2099-1234",))])
+    code, _, ssh = env.run()
+    assert code == 0 and ssh.calls[0][2].startswith("HIGH: Claude Code")  # not marked
+    (e,), _ = env.ledger()
+    assert "CVE-2099-1234" not in e["aliases"]
+    env.collector([finding(aliases=("CVE-2099-1234",), fixed="2.2.0")])
+    code, summary, ssh = env.run(now=T0 + 3600)
+    assert code == 0 and "replies=1" in summary  # its update still posts
+
+
+def test_rejected_first_heartbeat_dir_sets_no_mark(env):
+    env.heartbeat("2026-11-05T000000Z", [])
+    (env.hb / "2026-11-05T000000Z" / "run.json").write_text("[]")
+    code, summary, _ = env.run()
+    assert code == 0 and "heartbeat:0/1" in summary and env.state()["heartbeat"] is None
+
+
+def test_synthetic_thread_takes_no_update_through_a_real_alias(env):
+    env.collector([finding(fid="CVE-2099-0005", aliases=("GHSA-abcd-efgh-ijkl",))])
+    code, _, ssh = env.run()
+    assert code == 0 and ssh.calls[0][2].startswith("HIGH (SYNTHETIC TEST)")
+    env.collector([finding(fixed="2.2.0", sources=(GHSA, GHSA2))])  # names only the GHSA
+    code, summary, ssh = env.run(now=T0 + 3600)
+    assert code == 0 and ssh.calls == [] and "withheld=1" in summary
+
+
+def test_kev_added_on_the_floor_day_is_not_old(env):
+    env.config = inputs.Config(ledger=env.config.ledger, kev_cache=env.config.kev_cache, backfill_days=0)
+    start = int(dt.datetime(2026, 11, 5, 10, tzinfo=dt.timezone.utc).timestamp())
+    env.run(now=start)
+    env.kev.catalog = {"vulnerabilities": [kev_item(added="2026-11-05")]}
+    code, summary, ssh = env.run(now=start + 5 * 3600)
+    assert code == 0 and "old=0" in summary and len(ssh.calls) == 2

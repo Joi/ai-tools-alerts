@@ -217,8 +217,8 @@ class Run:
 
     @staticmethod
     def is_synthetic(c) -> bool:
-        """A candidate carrying a reserved synthetic id (compose.SYNTHETIC_ID), from any input."""
-        return compose.is_synthetic([c.id, *c.aliases])
+        """A candidate whose primary id is a reserved synthetic id (compose.SYNTHETIC_ID)."""
+        return compose.is_synthetic(c.id)
 
     def one(self, c, scope):
         ids = [c.id, *c.aliases]
@@ -228,8 +228,10 @@ class Run:
             return
         level, reason = self.level(c, scope)
         entry = self.led.lookup(ids, scope=scope.name)
-        if self.is_synthetic(c) and entry is not None:
-            self.n["withheld"] += 1  # a synthetic entry only ever starts a thread
+        if entry is not None and (self.is_synthetic(c) or compose.is_synthetic(entry.advisory.get("id"))):
+            # A synthetic entry only ever starts a thread, and a synthetic thread takes no
+            # update (copy or reply) from any input: plan_known would compose it unmarked.
+            self.n["withheld"] += 1
             return
         try:
             items = self.plan_new(c, scope, level, reason, ids) if entry is None \
@@ -382,11 +384,20 @@ def _observed(c) -> int | None:
         return None
     if t.tzinfo is None:
         t = t.replace(tzinfo=_dt.timezone.utc)
+    if len(c.observed_at) == 10:  # a date only (KEV dateAdded): judged at its day's end, so an
+        return int(t.timestamp()) + 86399  # entry added on the floor's own day is never "old"
     return int(t.timestamp())
 
 
 def _utc_date(t: int) -> str:
     return _dt.datetime.fromtimestamp(t, _dt.timezone.utc).date().isoformat()
+
+
+def _real(got):
+    """Heartbeat and collector candidates never carry a reserved synthetic alias, so a
+    synthetic entry cannot merge into a real thread (or a real one into a synthetic)."""
+    return [replace(c, aliases=tuple(a for a in c.aliases if not compose.SYNTHETIC_ID.fullmatch(a)))
+            for c in got]
 
 
 def _say(msg: str) -> None:
@@ -412,7 +423,7 @@ def gather(config: Config, state: dict, now: int, kev_fetch, counts: Counter, ke
                 held = True  # the mark stops before the first rejected dir
                 continue
             ok += 1
-            out += got
+            out += _real(got)
             if not held:
                 marks["heartbeat"] = d.name
         status["heartbeat"] = f"{ok}/{len(dirs)}"
@@ -431,7 +442,7 @@ def gather(config: Config, state: dict, now: int, kev_fetch, counts: Counter, ke
                 _say(f"collector {rec[0]} rejected: {got.rejected}")
             else:
                 status["collector"] = "ok"
-                out += got
+                out += _real(got)
                 marks["collector"] = rec[0]
     # B1 c:6mnrdz: from_kev marks every entry exploited, so only the catalog this
     # run fetched from CISA (or the operator's --kev-file) reaches it, never the

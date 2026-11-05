@@ -26,6 +26,7 @@ from pathlib import Path
 
 from aitools_alerts import schema
 from aitools_alerts.poster import rules
+from aitools_alerts.poster.compose import SYNTHETIC, SYNTHETIC_ID
 from aitools_alerts.poster.candidates import Candidate
 from aitools_alerts.poster.ledger import LedgerError
 
@@ -42,8 +43,6 @@ _STATE_KEYS = {"schema_version", "since", "heartbeat", "collector", "kev_since",
                "digest_date", "digest_at", "digest_roots", "digest_ids", "held", "digested",
                "outbox", "deferred"}
 MAX_DIGEST_IDS = 10  # the event ids of the last digests sent, oldest first
-SYNTHETIC = "SYNTHETIC TEST"
-SYNTHETIC_ID = re.compile(r"CVE-2099-\d{4,}", re.IGNORECASE)  # as compose.SYNTHETIC_ID
 _ITEM_KEYS = {"key", "kind", "scope", "ids", "channel", "text", "adv", "exploited", "date", "sent", "root"}
 _CANDIDATE_FIELDS = frozenset(Candidate.__dataclass_fields__)
 _KINDS = {"root", "copy", "reply", "digest"}
