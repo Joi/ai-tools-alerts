@@ -5,7 +5,8 @@ A synthetic mirror in the layout `pull` reads: `manifest.json`, `feed.json`,
 with `nostr.keygen()`; the secret keys were discarded when the files were
 written and exist nowhere. None of them is a real poster or the real trust
 root, so the real CLI rejects this mirror unless the trust root is
-overridden for a test:
+overridden for a test, which also needs `trust_root_override = true` in
+`~/.config/aitools-alerts/config.toml`:
 
     AITOOLS_ALERTS_TRUST_ROOT=089ffb066d0b69300c159a17ccce243b57908f39add1a1f7733db9c102f8aad8 \
       aitools-alerts pull --mirror-url file://$PWD/tests/fixtures/mirror/

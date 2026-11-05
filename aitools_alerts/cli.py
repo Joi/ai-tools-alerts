@@ -51,14 +51,19 @@ def _err(msg: str) -> None:
     print(f"aitools-alerts: {msg}", file=sys.stderr)
 
 
-def _root() -> str:
+def _root(s: config.Settings) -> tuple[str, list[str]]:
+    """(root, ignored env vars). The variable counts only with trust_root_override:
+    a project's environment reaches the hook and must not silence alerts."""
     env = os.environ.get(TRUST_ROOT_ENV)
     if env is None:
-        return TRUST_ROOT_PUBKEY
+        return TRUST_ROOT_PUBKEY, []
+    if not s.trust_root_override:
+        _err(f"ignoring {TRUST_ROOT_ENV}: trust_root_override is not set in config.toml")
+        return TRUST_ROOT_PUBKEY, [TRUST_ROOT_ENV]
     if not nostr._is_hex(env, 32):
         raise SystemExit(f"aitools-alerts: {TRUST_ROOT_ENV} must be 64 lowercase hex characters")
     _err(f"warning: trust root overridden by {TRUST_ROOT_ENV} (for tests only)")
-    return env
+    return env, []
 
 
 def upgrade_command(ecosystem: str, fixed: str | None) -> list[str] | None:
@@ -306,7 +311,7 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
     pending = _unseen_critical(a, st)
     if a.json:
         _, pairs = _matches(a, st)
-        out = {"pull_error": res.error, "matches": [_match_json(t, m) for t, m in pairs],
+        out = {"pull_error": res.error, "ignored_env": a.ignored_env, "matches": [_match_json(t, m) for t, m in pairs],
                "unseen_critical": sorted({r for t, _ in pending for r in t.root_ids})}
     elif not a.quiet:
         a.json = False
@@ -353,10 +358,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_init(a)
         if a.cmd == "keygen":
             return cmd_keygen(a)
-        a.root = _root()
+        s = config.load()
+        a.root, a.ignored_env = _root(s)
         if a.cmd == "curator":
             return curator.cmd_curator(a, State.load())
-        s = config.load()
         st = State.load()
         return {"pull": cmd_pull, "check": cmd_check, "notify": cmd_notify,
                 "plan": cmd_plan, "run": cmd_run}[a.cmd](a, st, s)

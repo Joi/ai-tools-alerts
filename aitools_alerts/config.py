@@ -65,6 +65,7 @@ class Settings:
     telegram_chat_id: str | None = None
     webhook_url: str | None = None
     telegram_token_file: str | None = None
+    trust_root_override: bool = False  # a test setting: honour AITOOLS_ALERTS_TRUST_ROOT
 
     def check_config(self) -> Config:
         return Config(auto_apply=self.auto_apply)
@@ -105,6 +106,10 @@ def load(path: Path | None = None) -> Settings:
                                             if c in CHANNELS))
     if "auto_apply" in raw:
         out["auto_apply"] = frozenset(_strings(raw["auto_apply"], "auto_apply")) & schema.VERBS
+    if "trust_root_override" in raw:
+        if not isinstance(raw["trust_root_override"], bool):
+            raise ConfigError("trust_root_override must be true or false")
+        out["trust_root_override"] = raw["trust_root_override"]
     if "telegram_chat_id" in raw:
         v = raw["telegram_chat_id"]
         if isinstance(v, int) and not isinstance(v, bool):

@@ -26,6 +26,8 @@ def no_connect(*a):
 def mirror(home, monkeypatch):
     m = Mirror()
     monkeypatch.setenv(cli.TRUST_ROOT_ENV, m.root)
+    config.write_default()
+    config.config_path().write_text("trust_root_override = true\n")
     return m
 
 

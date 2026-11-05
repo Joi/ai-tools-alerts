@@ -20,6 +20,7 @@ FIXTURE_SOURCE = "https://github.com/anthropics/claude-code/security/advisories/
 @pytest.fixture(autouse=True)
 def env(home, monkeypatch):
     monkeypatch.setenv(cli.TRUST_ROOT_ENV, FIXTURE_ROOT)
+    write_config("")
     inv = Inventory(products={"claude-code": [Installed("Claude Code", "2.0.0", "/invented/bin/claude")],
                               "git": [Installed("git", "2.50.0", "/invented/bin/git")]})
     monkeypatch.setattr(inventory, "collect", lambda *a, **k: inv)
@@ -43,8 +44,8 @@ def sent(monkeypatch):
 
 
 def write_config(text: str):
-    config.write_default()
-    config.config_path().write_text(text)
+    config.write_default(force=True)
+    config.config_path().write_text("trust_root_override = true\n" + text)  # for FIXTURE_ROOT
 
 
 # ------------------------------------------------------------ plan tests
@@ -82,6 +83,7 @@ def test_notify_text_contains_level_title_action_source():
 
 
 def test_cli_init_writes_config_and_no_key_by_default(capsys):
+    config.config_path().unlink()
     assert cli.main(["init"]) == 0
     assert config.config_path().is_file()
     assert not config.key_path().exists()
@@ -92,6 +94,7 @@ def test_cli_init_writes_config_and_no_key_by_default(capsys):
 # ------------------------------------------------------------------- extra
 
 def test_init_make_key_writes_0600_and_prints_npub_not_nsec(capsys):
+    config.config_path().unlink()
     assert cli.main(["init", "--make-key"]) == 0
     out = capsys.readouterr().out
     p = config.key_path()
@@ -104,7 +107,9 @@ def test_init_make_key_writes_0600_and_prints_npub_not_nsec(capsys):
 
 
 def test_pull_then_check_prints_fixture_critical(capsys):
+    config.config_path().unlink()
     assert cli.main(["init"]) == 0
+    write_config("")
     assert cli.main(["pull", "--mirror-url", MIRROR]) == 0
     assert cli.main(["check"]) == 0
     out = capsys.readouterr()
@@ -154,9 +159,26 @@ def test_bad_trust_root_override(monkeypatch):
         cli.main(["check"])
 
 
+@pytest.mark.parametrize("value", ["ab" * 32, "nothex"])
+def test_trust_root_env_cannot_hide_an_alert_without_the_flag(sent, capsys, monkeypatch, value):
+    monkeypatch.setattr(cli, "TRUST_ROOT_PUBKEY", FIXTURE_ROOT)  # the pinned root signs the mirror
+    monkeypatch.setenv(cli.TRUST_ROOT_ENV, value)  # a project's environment points elsewhere
+    config.config_path().write_text(f'mirror_url = "{MIRROR}"\ntrust_root_override = false\n')
+    assert cli.main(["run", "--json"]) == 2
+    io = capsys.readouterr()
+    data = json.loads(io.out)
+    assert data["ignored_env"] == [cli.TRUST_ROOT_ENV] and len(data["unseen_critical"]) == 1
+    assert data["pull_error"] is None and f"ignoring {cli.TRUST_ROOT_ENV}" in io.err
+
+
+def test_trust_root_override_must_be_bool(capsys):
+    config.config_path().write_text('trust_root_override = "yes"\n')
+    assert cli.main(["check"]) == 1 and "must be true or false" in capsys.readouterr().err
+
+
 def test_pull_failure_exits_1(capsys):
     assert cli.main(["pull", "--mirror-url", "file:///nonexistent/mirror/"]) == 1
-    assert "manifest unreadable" in capsys.readouterr().err
+    assert "unreachable" in capsys.readouterr().err
 
 
 def test_upgrade_command_only_from_templates():
@@ -249,6 +271,7 @@ def test_run_json_and_quiet(sent, capsys):
     assert cli.main(["run", "--json"]) == 2
     data = json.loads(capsys.readouterr().out)
     assert data["pull_error"] is None and len(data["unseen_critical"]) == 1
+    assert data["ignored_env"] == []
     assert data["matches"][0]["level"] == "critical"
     assert data["matches"][0]["source"] == FIXTURE_SOURCE
     assert [x["url"] for x in data["matches"][0]["sources"]] == [FIXTURE_SOURCE]
@@ -313,13 +336,14 @@ def test_plan_auto_applies_an_opted_upgrade_from_a_curator_post(monkeypatch, cap
     out = capsys.readouterr().out
     assert "auto-apply (opted in):" in out and "prepare (ask first)" not in out
     assert "command: npm install -g @anthropic-ai/claude-code@99.0.0" in out
-    config.config_path().write_text("auto_apply = []\n")
+    write_config("auto_apply = []\n")
     cli.main(["plan", "AITA-TEST-0001"])
     out = capsys.readouterr().out
     assert "prepare (ask first)" in out and "auto-apply" not in out
 
 
 def test_init_make_key_force_with_existing_key_changes_nothing(capsys):
+    config.config_path().unlink()
     assert cli.main(["init", "--make-key"]) == 0
     config.config_path().write_text("notify = []\n")
     assert cli.main(["init", "--make-key", "--force"]) == 1

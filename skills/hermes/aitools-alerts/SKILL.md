@@ -33,6 +33,8 @@ how to use it. The rules below are fixed; follow them exactly.
    prints one JSON object:
    - `pull_error`: null, or why the mirror could not be read. The rest is
      then the last good state; tell the person the alerts may be stale.
+   - `ignored_env`: environment variables the CLI refused to obey; if not
+     empty, tell the person something tried to change the trust root.
    - `matches`: one object per advisory that matches this machine:
      `thread` (the advisory id to pass to `plan`), `threads` (every root
      of the advisory: a critical is posted once per channel, which is

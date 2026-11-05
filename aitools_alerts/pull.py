@@ -35,7 +35,7 @@ from .manifest import Manifest
 from .schema import Advisory
 from .state import EVENT_KEYS, State
 
-__all__ = ["FILES", "MAX_FETCH_BYTES", "MAX_EVENTS", "PullResult", "Thread",
+__all__ = ["FILES", "FetchError", "PULL_ERRORS", "MAX_FETCH_BYTES", "MAX_EVENTS", "PullResult", "Thread",
            "fetch", "default_fetch", "advisories", "active", "bundled_manifest"]
 
 FILES = ("feed.json", "critical.json")
@@ -68,6 +68,21 @@ class Thread:
 
 # ------------------------------------------------------------------ fetching
 
+# PullResult.error is None, "http <status>" or one of these: never server text.
+PULL_ERRORS = ("timeout", "unreachable", "too large", "bad manifest", "bad event file",
+               "manifest not signed by the trust root", "state limit reached: new events not stored")
+
+
+class FetchError(OSError):
+    """A fetch failure whose text is "http <status>" or a PULL_ERRORS string."""
+
+
+def _kind(e: Exception) -> str:
+    if isinstance(e, FetchError):
+        return str(e)
+    return "timeout" if isinstance(e, TimeoutError) else "unreachable"
+
+
 class _HttpsOnlyRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         if urlsplit(newurl).scheme != "https":
@@ -82,17 +97,20 @@ def default_fetch(url: str) -> bytes:
     """GET an https:// or file:// URL; at most MAX_FETCH_BYTES. Raises OSError."""
     scheme = urlsplit(url).scheme
     if scheme not in ("https", "file"):
-        raise OSError(f"refused URL scheme {scheme or '(none)'}: only https and file")
+        raise FetchError("unreachable")
     req = urllib.request.Request(url, headers={"User-Agent": "aitools-alerts"})
     try:
         with _OPENER.open(req, timeout=TIMEOUT) as r:
             data = r.read(MAX_FETCH_BYTES + 1)
+    except urllib.error.HTTPError as e:
+        e.close()
+        raise FetchError(f"http {e.code}" if 100 <= e.code <= 599 else "unreachable") from None
     except urllib.error.URLError as e:
-        raise OSError(str(getattr(e, "reason", e))) from None
-    except ValueError as e:  # malformed URL
-        raise OSError(str(e)) from None
+        raise FetchError(_kind(e.reason if isinstance(e.reason, Exception) else e)) from None
+    except (TimeoutError, OSError, ValueError) as e:  # a read timeout, a reset, a malformed URL
+        raise FetchError(_kind(e)) from None
     if len(data) > MAX_FETCH_BYTES:
-        raise OSError(f"larger than {MAX_FETCH_BYTES} bytes")
+        raise FetchError("too large")
     return data
 
 
@@ -203,12 +221,12 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float) -> PullRes
     # 1. manifest: well formed, not older than the floor
     try:
         m = manifest.load(get(base + "manifest.json"), previous=floor)
-    except manifest.ManifestError as e:
-        return fail(f"manifest refused: {e}")
+    except manifest.ManifestError:
+        return fail("bad manifest")
     except Exception as e:
-        return fail(f"manifest unreadable: {e}")
+        return fail(_kind(e))
     if floor is not None and m.issued_at < floor.issued_at:
-        return fail(f"manifest refused: issued_at {m.issued_at} is older than the accepted {floor.issued_at}")
+        return fail("bad manifest")
     # 2. signed by the trust root
     if not manifest.verify(m, root_pubkey):
         return fail("manifest not signed by the trust root")
@@ -217,10 +235,10 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float) -> PullRes
     for name in FILES:
         try:
             fetched += _events_file(get(base + name), name)
-        except ValueError as e:
-            error = f"mirror unreadable: {e}"
+        except ValueError:
+            error = "bad event file"
         except Exception as e:
-            error = f"mirror unreadable: {name}: {e}"
+            error = _kind(e)
         if error:
             break
     # 4. stored events first, then fetched, under the current manifest only.
