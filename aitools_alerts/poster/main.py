@@ -57,6 +57,7 @@ TOKYO = ZoneInfo("Asia/Tokyo")
 RANK = {"notice": 0, "high": 1, "critical": 2}
 CHANNELS_FOR = {"critical": ("critical", "feed"), "high": ("feed",), "notice": ()}
 MAX_DIGESTED = 5000
+MAX_JA = 200  # Japanese replies waiting in the journal; past it the oldest unsent one is dropped
 SUMMARY = ("candidates", "in_scope", "old", "roots", "copies", "replies", "held", "withheld",
            "busy", "digest", "failed", "unknown", "ja", "ja_failed")
 
@@ -92,7 +93,8 @@ class Run:
             raise ValueError("message too large or not sendable")
         return {"key": f"{kind}:{scope}:{key_id}:{channel}", "kind": kind, "scope": scope,
                 "ids": list(dict.fromkeys(ids)), "channel": channel, "text": text, "adv": adv,
-                "exploited": exploited is True, "date": date, "sent": None, "root": root, "ja": ja}
+                "exploited": exploited is True, "date": date, "sent": None, "root": root,
+                **({"ja": ja} if ja else {})}  # no key without a body: the poster before rd8t loads it
 
     def _ja(self, fn, *a, **kw):
         """A Japanese body, or None: a Japanese failure never withholds the English post."""
@@ -146,11 +148,15 @@ class Run:
                 if ja:
                     return False
                 raise _Stop from None
-            self.led.pending(it["key"], it["ids"], now=self.now)
+            self.led.pending(it["key"], [] if ja else it["ids"], now=self.now)  # ja: matches no advisory
             r = transport.send(self.channels[it["channel"]], it["text"], reply_to, ssh=self.ssh)
             if r.outcome != "ok":
                 if r.outcome == "failed":
                     self.led.clear_pending(it["key"])  # it certainly did not post: next hour
+                    if ja:  # last in line, so one refused translation never holds the others
+                        self.state["outbox"].remove(it)
+                        self.state["outbox"].append(it)
+                        self.save()
                 self.n["ja_failed" if ja else r.outcome] += 1
                 print(f"aitools-alerts-poster: {it['kind']} send {r.outcome} (exit {r.exit_code}): "
                       f"{r.stderr[-300:]}", file=sys.stderr)
@@ -185,6 +191,12 @@ class Run:
         except ValueError:
             self.n["ja_failed"] += 1
             return
+        waiting = [o for o in self.state["outbox"] if o["kind"] == "ja"]
+        idle = [o for o in waiting if o["sent"] is None and not self.led.has_pending(o["key"])]
+        if len(waiting) >= MAX_JA and idle:  # a backlog never grows the journal past its size limit
+            self.state["outbox"].remove(idle[0])
+            self.n["ja_failed"] += 1
+            _say(f"ja backlog full: dropped {idle[0]['key']}")
         self.state["outbox"].append({"key": key, "kind": "ja", "scope": it["scope"], "ids": [f"ja {key}"],
                                      "channel": it["channel"], "text": text, "adv": None,
                                      "exploited": False, "date": None, "sent": None, "root": target})
@@ -198,7 +210,7 @@ class Run:
                     continue
                 if not self.deliver(it):
                     return
-        except (LedgerError, OSError, KeyError, ValueError) as e:
+        except Exception as e:  # noqa: BLE001 - nothing here may reach the run's exit code
             self.n["ja_failed"] += 1
             _say(f"ja replies stopped: {e}")
 
@@ -564,7 +576,7 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
             state = inputs.load_state(config.state, now, config.backfill_days)
             r = Run(now, config, led, state, channels, ssh, http_status, digest_now=digest_now)
             n = r.n
-            merged = None  # set once the old deferred list has been folded into this run
+            merged, english_ok = None, False  # merged: set once the old deferred list is folded in
             try:
                 cands, marks, status = gather(config, state, now, kev_fetch, skipped, kev_catalog)
                 deferred = [inputs.candidate_from(d) for d in state["deferred"]]
@@ -594,7 +606,7 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
                     merged[i] = None  # planned (or deferred by one() itself)
                 r.digest()
                 state.update(marks)  # every send of this run succeeded; busy work is deferred
-                r.drain_ja()  # last: a Japanese reply never delays or stops an English post
+                english_ok = True
             except (_Stop, LedgerError) as e:
                 code = 1
                 if isinstance(e, LedgerError):
@@ -604,6 +616,8 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
             if merged is not None:
                 state["deferred"] = list(r.deferred.values())  # replaces last run's list only now
             r.save()
+            if english_ok:  # last, after marks and deferred are saved together
+                r.drain_ja()  # a Japanese reply never delays or stops an English post
     except LedgerError as e:
         code, err = 1, str(e)
     except Exception as e:  # never die without the summary line

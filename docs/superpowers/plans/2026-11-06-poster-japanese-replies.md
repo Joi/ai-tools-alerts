@@ -6,7 +6,7 @@ Spec: docs/superpowers/specs/2026-11-06-poster-japanese-replies-design.md. Kata 
 
 - [ ] Tables beside the English ones: `_JA_LEVEL`, `_JA_KINDS` (aligned with `_KINDS`), `_JA_OPS` (aligned with `_OPS`).
 - [ ] `_words_ja(affected)` → `（バージョン不明）`, `（全バージョン）`, `（1.0 以上、1.2 未満）`.
-- [ ] `_ja_title(adv)`: match `adv.title` against each `(pre, kind)` of `_titles`; render `{mark}{name}: {未検証の if pre}{ja kind} ({id})`; else the English title.
+- [ ] `_ja_title(adv)`: match `adv.title` against each `(pre, kind)` of `_titles`; render `{mark}{name}: {pre}{ja kind} ({id})`, with `pre` (`unverified `) kept in English; else the English title.
 - [ ] `root_post_ja(adv, reason, unexpressed)` → four Japanese lines (head with `SYNTHETIC TEST` and unverified marks in English; 影響/修正版; 対応; 出典).
 - [ ] `reply_post_ja(merged, keys, source_url, reason)` → unverified line (English) + one Japanese line per key in `sorted(keys)` + `出典:`.
 - [ ] `digest(advs, date, lang="en")` with a `_DIGEST` string table for `en` and `ja`; `_single` and `_group_line` take the table. English strings copied exactly.
@@ -38,7 +38,7 @@ Verify: `python3 -m pytest tests/poster -q`.
 - [ ] docs/design.md "Post format": the format paragraph from the issue, verbatim, after the thread paragraph.
 - [ ] README: one paragraph on the Japanese replies.
 
-Verify: `python3 -m pytest tests -q`; `git diff origin/main --stat` under 400 lines excluding docs/superpowers; the fleet-host grep over added lines of code, tests and docs outside docs/superpowers (`git diff origin/main -- aitools_alerts tests README.md docs/design.md | grep '^+' | grep -Eic '<the six host names>'`) prints 0.
+Verify: `python3 -m pytest tests -q`; `git diff origin/main --stat` under 400 lines excluding docs/superpowers; the fleet-host grep over added lines of code, tests and docs outside docs/superpowers (`git diff origin/main -- aitools_alerts tests README.md docs/design.md | grep '^+' | grep -Eic 'jibot''mac|mac''azbd|azbd''2|joi''mba|mac''ct|azbd''mini' || true`) prints 0 (the names are split by quotes so this line does not match itself).
 
 ## Acceptance
 
@@ -46,4 +46,4 @@ S1–S9 of the spec; the whole suite green; English text of every existing test 
 
 ## Rollback
 
-Revert the commits. Before reinstalling the old poster, the state file's outbox must hold no `ja` item (the old `_item_ok` refuses the kind).
+Revert the commits. Before reinstalling the old poster, the state file's outbox must hold no `ja` item and no item carrying a `ja` field (an English item with a Japanese body; the old `_item_ok` requires the old key set exactly): wait for an empty outbox, or remove those items and fields from the state file by hand under the ledger lock.

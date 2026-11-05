@@ -1108,9 +1108,10 @@ def test_unknown_japanese_send_never_holds_english_work(env):
     code, summary, ssh = env.run(ssh=FakeSSH(ja=["unknown"]))
     assert code == 0 and "ja_failed=1" in summary
     (p,) = env.ledger()[1]
-    assert p["key"].endswith(":ja") and p["aliases"] == [f"ja {p['key']}"]
-    # A new alias arrives: the English reply still posts, and its own ja reply too.
-    env.collector([finding(fid="CVE-2026-0002", aliases=("GHSA-abcd-efgh-ijkl",), sources=(GHSA, GHSA2))])
+    assert p["key"].endswith(":ja") and p["aliases"] == []  # matches no advisory id
+    # A new alias arrives (one spelled like the journal's id too): the English reply still posts.
+    env.collector([finding(fid="CVE-2026-0002", aliases=("GHSA-abcd-efgh-ijkl", f"ja {p['key']}"),
+                           sources=(GHSA, GHSA2))])
     code, summary, ssh = env.run(now=T0 + 3600)
     assert code == 0 and "replies=1" in summary and "busy=1" in summary  # the unknown ja waits
     assert [c[2].startswith("lang: ja\nof: ") for c in ssh.ja] == [True]
@@ -1120,7 +1121,7 @@ def test_journal_item_from_before_rd8t_loads_and_sends(env):
     env.collector([finding()])
     env.run(ssh=FakeSSH("fail"))
     st = env.state()
-    del st["outbox"][0]["ja"]  # the shape the deployed poster journals
+    del st["outbox"][0]["ja"]  # the shape the poster before rd8t journals
     env.config.state.write_text(json.dumps(st))
     code, summary, ssh = env.run(now=T0 + 3600)
     assert code == 0 and "roots=1" in summary and ssh.ja == []
@@ -1133,10 +1134,30 @@ def test_each_english_reply_keeps_its_own_japanese_reply(env):
     _, _, ssh1 = env.run(now=T0 + 3600, ssh=FakeSSH(ja=["fail"]))
     env.collector([finding(fid="CVE-2026-0003", aliases=("GHSA-abcd-efgh-ijkl",))])
     _, summary, ssh2 = env.run(now=T0 + 7200, ssh=FakeSSH(ja=["fail"]))  # the older one fails again
-    ja = [o for o in env.state()["outbox"] if o["kind"] == "ja"]
-    assert [o["text"].split("\n")[1] for o in ja] == [f"of: {ssh1.ids[0]}", f"of: {ssh2.ids[0]}"]
+    ja = [o for o in env.state()["outbox"] if o["kind"] == "ja"]  # a refused one goes last in line
+    assert [o["text"].split("\n")[1] for o in ja] == [f"of: {ssh2.ids[0]}", f"of: {ssh1.ids[0]}"]
     st = env.state()
     st["outbox"][0]["sent"] = "cd" * 32  # a crash after the id was journaled: finished, never resent
     env.config.state.write_text(json.dumps(st))
     _, summary, ssh3 = env.run(now=T0 + 9000)  # before the digest hour
     assert "ja=2" in summary and len(ssh3.ja) == 1 and env.state()["outbox"] == []
+
+
+def test_japanese_sends_start_after_marks_and_deferred_are_saved(env, monkeypatch):
+    env.collector([finding()])
+    env.run(ssh=FakeSSH("unknown"))  # the root is in flight: the next candidate is deferred
+    env.collector([finding()])
+    seen = []
+    monkeypatch.setattr(main.Run, "drain_ja", lambda self: seen.append(env.state()))
+    env.run(now=T0 + 3600)
+    assert seen == [env.state()] and [d["id"] for d in seen[0]["deferred"]] == ["GHSA-abcd-efgh-ijkl"]
+
+
+def test_japanese_backlog_is_bounded(env, monkeypatch):
+    monkeypatch.setattr(main, "MAX_JA", 1)
+    env.collector([finding()])
+    env.run(ssh=FakeSSH(ja=["fail"]))
+    env.collector([finding(fid="CVE-2026-0002", aliases=("GHSA-abcd-efgh-ijkl",), sources=(GHSA, GHSA2))])
+    _, summary, _ = env.run(now=T0 + 3600, ssh=FakeSSH(ja=["fail"]))
+    assert [o["kind"] for o in env.state()["outbox"]] == ["ja"]
+    assert env.state()["outbox"][0]["key"].startswith("reply:")  # the older root one was dropped

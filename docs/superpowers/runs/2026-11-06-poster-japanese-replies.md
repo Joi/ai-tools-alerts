@@ -7,6 +7,7 @@ Spec: docs/superpowers/specs/2026-11-06-poster-japanese-replies-design.md   Plan
 Agency project: — (no mcp__agency tools in this session; built inline, as the earlier runs on this repo did)
 Kata: ai-tools-alerts#rd8t
 Last reviewed: spec+plan 8c3c7ee2ebfa81961f0bb8d120eb092b5d7ca1d1 (pass 1, gpt-6-astra, run 20261106-051119-cf1db1)
+Last reviewed: code whole branch b48167a9e5a42d64f8e3546079a5760cc01670f2 (pass 1 launched: fresheyes gpt-6-astra ∥ Stage 1 subagent)
 
 ## Scorecards
 Pass 1 [spec+plan]: 5B/5S/1C/0R · fixed -/- · velocity = (—→11, escalation no)
@@ -14,6 +15,11 @@ Pass 1 [spec+plan]: 5B/5S/1C/0R · fixed -/- · velocity = (—→11, escalation
 - Fixed in the code built alongside the review: 1 (`_ja` forwards keywords), 2 (`_queue_ja` runs between the removal and the one save), 3 (a reply's key adds the full English event id; test `test_each_english_reply_keeps_its_own_japanese_reply`), 5 (target read from the ledger thread), 6 (`deliver_ja` finishes a journaled id without a send; same test). Fixed after it: 4 (pending id `ja <key>`, busy() skips Japanese items), 7 (drain_ja reports LedgerError/OSError/KeyError/ValueError, never the exit code), 8 (`unverified ` stays English in the Japanese title), 9 (`_queue_ja` checks only the target id, so resolve queues it; the two resolve tests now expect the queued Japanese item), 10 (plan's grep).
 - Rebutted: 11. The snapshot is a dangling review commit, never on the branch.
 - Medium rung: no delta on the documents; the fixes are code-reviewed in the whole-branch pass.
+
+Pass 1 [code:whole branch b48167a]: Stage 1 0B/2S/6C · fresheyes (gpt-6-astra, run 20261106-052402-d14407) 2B/5S/0C · fixed -/- · velocity = (—→15, escalation no)
+- fresheyes graded 1 critical, 6 major. BLOCKER: F1 (drain_ja saved the new watermarks before `deferred` was replaced: a crash there loses a deferred English update) — fixed, drain_ja runs after the final save of marks and deferred together (test `test_japanese_sends_start_after_marks_and_deferred_are_saved`); F2 (a candidate alias spelled `ja <key>` matched the Japanese pending entry and held English work) — fixed, the Japanese pending entry has no aliases (test: the colliding alias in `test_unknown_japanese_send_never_holds_english_work`). SUBSTANTIVE: F3 (unbounded Japanese backlog could push the journal past load_state's 16 MiB) — fixed, MAX_JA 200 drops the oldest unsent, unpending one (test `test_japanese_backlog_is_bounded`); F4 (rollback: every English item carried `ja`) — fixed, the field is written only with a body, and spec/plan rollback says empty outbox or remove the fields; F5 (spec approach key without the event id), F6 (plan/spec said `未検証の`), F7 (plan grep placeholder) — doc fixes.
+- Stage 1 S1 = F4, fixed. S2 (one refused translation holds all later ones forever): fixed, a failed Japanese item moves last in the journal. C (except list narrower than the promise): fixed, `except Exception`. Rebutted: C busy counter includes a Japanese item held pending (busy already means "waits for a human"); C arrival order after a resolve (readers pick by `of:` target, order does not matter); C no stderr at compose-time drop (counted in `ja_failed`; the drain prints); C resolve-test assertions changed (the new behaviour is correct: the Japanese reply is queued, not lost); C size (decided comment).
+- F1 and F2 changed behaviour: one delta pass `--since b48167a9e5a42d64f8e3546079a5760cc01670f2`.
 
 ## Chunks
 - [x] compose-ja — Japanese templates in compose.py
