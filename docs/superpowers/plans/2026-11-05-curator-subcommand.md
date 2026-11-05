@@ -67,8 +67,10 @@ Budget: the plan said under 600 changed lines; the review fixes took the code an
 - `python3 -m pytest -q` in the repo (stdlib only: the websockets test skips).
 - The scratchpad venv with `websockets` installed runs `tests/test_curator.py`
   so the fake-server test runs for real.
-- Leak grep over the code and tests only (aitools_alerts/, tests/, pyproject.toml; not
-  these docs, which name the pattern): the six fleet Mac names → 0 hits. Key disclosure
+- Leak grep over the files this task adds or changes (aitools_alerts/curator.py,
+  aitools_alerts/relay.py, aitools_alerts/cli.py, tests/test_curator.py, pyproject.toml):
+  the six fleet Mac names → 0 hits. The poster's denylist in poster/candidates.py and
+  its fixtures name them on purpose and are out of scope. Key disclosure
   is tested with generated keys: no part of the nsec, the hex key or its upper case in
   stdout or stderr on any refusal or a dry run.
 

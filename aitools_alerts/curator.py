@@ -50,7 +50,7 @@ def read_key(path: Path | None = None) -> str:
     path = Path(path) if path is not None else config.key_path()
     why = None
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)  # a FIFO never blocks
     except FileNotFoundError:
         why = "missing (run: aitools-alerts keygen)"
     except OSError:
@@ -339,22 +339,49 @@ def cmd_curator(a, st: State) -> int:
             if res.error:
                 raise CuratorError(f"pull failed ({res.error}); retry, or pass --no-pull")
         m = role_manifest(st, a.root)
+        _curator_pub(sec, m, a.root)  # a revocation the pull just fetched refuses here
         evs = []
-        for t, root_ev in find_threads(st, a.root, a.ref):
-            if a.curator_cmd == "amend":
+        pairs = find_threads(st, a.root, a.ref)
+        for t, root_ev in pairs:
+            if a.curator_cmd == "retract":
+                evs.append(retract_event(sec, m, a.root, st, t, root_ev, reason=a.reason))
+                continue
+            try:
                 evs.append(amend_event(sec, m, a.root, st, t, root_ev, level=a.level,
                                        fixed=a.fixed, title=a.title, sources=a.source,
                                        actions=a.action, expires_at=a.expires_at,
                                        no_expiry=a.no_expiry, note=a.note))
-            else:
-                evs.append(retract_event(sec, m, a.root, st, t, root_ev, reason=a.reason))
+            except CuratorError as e:
+                if str(e) != "nothing to change" or len(pairs) == 1:
+                    raise
+                print(f"{t.root_id}: already up to date, skipped")  # e.g. a retry after a partial send
+        if not evs:
+            raise CuratorError("nothing to change")
     if a.dry_run:
         print(json.dumps(evs, indent=2, ensure_ascii=False))
         return 0
+    if a.curator_cmd == "post":
+        print(f"advisory {schema.parse_post(evs[0]['content']).id}")
     m = role_manifest(st, a.root)
-    for ev in evs:
-        eid, ok, msg = relay.send(ev, a.relay_url, sec, manifest=m, root_pubkey=a.root)
+    for i, ev in enumerate(evs):
+        try:
+            eid, ok, msg = relay.send(ev, a.relay_url, sec, manifest=m, root_pubkey=a.root)
+        except relay.RelayError as e:
+            raise CuratorError(f"{e}{_recovery(a, evs, i)}") from None
         print(f"{eid}: {'accepted' if ok else 'rejected'}" + (f" ({msg})" if msg else ""))
         if not ok:
+            print(_recovery(a, evs, i).strip())
             return 1
     return 0
+
+
+def _recovery(a, evs: list, i: int) -> str:
+    """What to run after a send failed at event i of several."""
+    if i == 0:
+        return ""
+    if a.curator_cmd == "post":
+        adv = schema.parse_post(evs[i]["content"])
+        chan = next(k for k, v in channels().items() if v == evs[i]["tags"][0][1])
+        return (f"; {i} of {len(evs)} sent. To finish, post again with --id {adv.id} "
+                f"--channel {chan} (same advisory id)")
+    return f"; {i} of {len(evs)} sent. Rerun the same command: threads already changed are skipped"

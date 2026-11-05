@@ -25,7 +25,7 @@ AUTH_KIND = 22242
 TIMEOUT = 20
 MAX_MSG = 1 << 20
 MAX_READS = 100
-GRACE = 5  # seconds past the timeout for connect and close
+GRACE = 10  # seconds past the timeout for connect and close (above close_timeout)
 _LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
 INSTALL_HINT = "install the curator extra: pip install 'aitools-alerts[curator]'"
 
@@ -117,15 +117,24 @@ def _exchange(event, relay_url, key, connect, timeout, now, box) -> tuple:
             ws.send(json.dumps(["AUTH", auth]))
             ok = _read(ws, deadline, "OK", auth["id"])
             if not ok[2]:
-                raise RelayError(f"relay refused AUTH: {str(ok[3] if len(ok) > 3 else '')[:200]}")
+                raise RelayError(f"relay refused AUTH: {_clean(ok[3] if len(ok) > 3 else '')[:200]}")
             ws.send(json.dumps(["EVENT", event]))
             ok = _read(ws, deadline, "OK", event["id"])
+            box["ok"] = _result(ok)  # the relay's answer stands even if the close stalls
     except RelayError:
         raise
     except Exception as e:  # OSError, a closed or refused websocket: name it, nothing more
         raise RelayError(f"relay connection failed: {type(e).__name__}") from None
-    msg = ok[3] if len(ok) > 3 and isinstance(ok[3], str) else ""
-    return ok[1], ok[2], msg[:500]
+    return box["ok"]
+
+
+def _clean(text) -> str:
+    """Relay text for a terminal: printable characters only, bounded."""
+    return "".join(c if c.isprintable() else "?" for c in str(text))[:500]
+
+
+def _result(ok: list) -> tuple[str, bool, str]:
+    return ok[1], ok[2], _clean(ok[3]) if len(ok) > 3 and isinstance(ok[3], str) else ""
 
 
 def send(event: dict, relay_url: str = RELAY_URL, key: str | None = None, *, manifest=None,
@@ -140,21 +149,23 @@ def send(event: dict, relay_url: str = RELAY_URL, key: str | None = None, *, man
 
     def run():
         try:
-            box["ok"] = _exchange(event, relay_url, key, connect, timeout, now, box)
+            _exchange(event, relay_url, key, connect, timeout, now, box)
         except BaseException as e:  # handed to the caller below
             box["err"] = e
 
     t = threading.Thread(target=run, name="aitools-relay", daemon=True)
     t.start()
     t.join(timeout + GRACE)
+    if "ok" in box:
+        return box["ok"]  # answered; a close still in progress does not matter
     if t.is_alive():
         sock = getattr(box.get("ws"), "socket", None)
-        try:
-            if sock is not None:
-                sock.close()
-        except OSError:
-            pass
-        raise RelayError(f"relay exchange did not finish within {timeout + GRACE:.0f} s")
-    if "err" in box:
-        raise box["err"]
-    return box["ok"]
+        for stop in ("shutdown", "close"):  # shutdown wakes a blocked read or write
+            try:
+                getattr(sock, stop)(*((2,) if stop == "shutdown" else ()))
+            except (OSError, AttributeError, TypeError):
+                pass
+        t.join(1)
+        raise RelayError(f"relay exchange did not finish within {timeout + GRACE:.0f} s; "
+                         "the event may have been stored: check the channel before sending again")
+    raise box["err"]

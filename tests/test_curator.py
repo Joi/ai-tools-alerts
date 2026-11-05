@@ -326,3 +326,84 @@ def test_nip42_auth_then_event_ok(mirror):
     assert res == (ev["id"], True, "stored")
     assert got[0][1]["pubkey"] == mirror.cur and ["relay", url] in got[0][1]["tags"]
     assert got[1] == ["EVENT", ev]
+
+
+def test_fifo_key_is_refused_without_blocking(mirror, capsys):
+    import os
+    pulled(mirror)
+    p = config.key_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(p, 0o600)
+    assert cli.main(POST_ARGV + ["--dry-run"]) == 1
+    assert "not a regular file" in capsys.readouterr().err
+
+
+def test_amend_by_advisory_id_skips_threads_already_changed(mirror, capsys):
+    crit, feed = post(mirror, level="critical", adv_id="AITA-TEST-0043")
+    publish(mirror, crit, feed)
+    publish(mirror, amend(mirror, feed, level="high"))  # a partial send reached the feed only
+    write_key(nostr.nsec(mirror.cur_sec))
+    pulled(mirror)
+    assert cli.main(["curator", "amend", "AITA-TEST-0043", "--no-pull", "--dry-run", "--level", "high"]) == 0
+    out = capsys.readouterr().out
+    assert f"{feed['id']}: already up to date, skipped" in out
+    [ev] = json.loads(out[out.index("["):])
+    assert ev["tags"][1][1] == crit["id"] and ev["content"].startswith("level: high")
+    publish(mirror, ev)
+    pulled(mirror)
+    assert cli.main(["curator", "amend", "AITA-TEST-0043", "--no-pull", "--dry-run", "--level", "high"]) == 1
+    assert "nothing to change" in capsys.readouterr().err
+
+
+def test_partial_critical_post_names_the_recovery(mirror, capsys, monkeypatch):
+    pulled(mirror)
+    write_key(nostr.nsec(mirror.cur_sec))
+    calls = []
+
+    def fake_send(ev, url, key, **kw):
+        calls.append(ev)
+        if len(calls) == 2:
+            raise relay.RelayError("relay connection failed: ConnectionResetError")
+        return ev["id"], True, ""
+    monkeypatch.setattr(relay, "send", fake_send)
+    argv = POST_ARGV[:2] + ["--level", "critical"] + POST_ARGV[4:] + ["--id", "AITA-TEST-0044"]
+    assert cli.main(argv) == 1
+    err = capsys.readouterr().err
+    assert "1 of 2 sent" in err and "--id AITA-TEST-0044 --channel feed" in err
+
+
+def test_answer_counts_even_if_the_close_stalls(mirror, monkeypatch):
+    st = pulled(mirror)
+    [ev] = post(mirror)
+
+    class SlowClose(FakeWs):
+        def __exit__(self, *a):
+            time.sleep(60)
+    ws = SlowClose([["AUTH", "c"], lambda s: ["OK", s[-1][1]["id"], True, ""],
+                    lambda s: ["OK", s[-1][1]["id"], True, "stored\x1b[2J"]])
+    monkeypatch.setattr(relay, "GRACE", 0.3)
+    res = relay.send(ev, "ws://127.0.0.1:1", mirror.cur_sec, manifest=st.manifest,
+                     root_pubkey=mirror.root, connect=lambda *a: ws, timeout=0.5)
+    assert res == (ev["id"], True, "stored?[2J")  # control characters never reach the terminal
+
+
+def test_amend_pulls_first(mirror, capsys, monkeypatch):
+    root = publish(mirror, *post(mirror, actions=[Action("upgrade", "Claude Code", None)]))
+    pulled(mirror)  # the local state predates the next amendment
+    publish(mirror, amend(mirror, root, now=NOW + 50, sources=["https://example.invalid/new"]))
+    write_key(nostr.nsec(mirror.cur_sec))
+    monkeypatch.setattr(pull, "default_fetch", mirror.fetch)
+    assert cli.main(["curator", "amend", root["id"], "--dry-run", "--source", "https://example.invalid/other"]) == 0
+    out = capsys.readouterr().out
+    patch = json.loads(schema._last_block(json.loads(out)[0]["content"]))
+    assert [s["url"] for s in patch["sources"]] == [  # the fetched source is kept, never reverted
+        PRIMARY, "https://example.invalid/new", "https://example.invalid/other"]
+    def down(url):
+        raise OSError("unreachable")
+    monkeypatch.setattr(pull, "default_fetch", down)
+    assert cli.main(["curator", "retract", root["id"], "--dry-run"]) == 1
+    assert "pull failed" in capsys.readouterr().err
+    mirror.publish_manifest(posters=[{"pubkey": mirror.bot, "role": "relay-bot", "name": "bot"}])
+    monkeypatch.setattr(pull, "default_fetch", mirror.fetch)
+    assert cli.main(["curator", "retract", root["id"], "--dry-run"]) == 1
+    assert "no curator role" in capsys.readouterr().err

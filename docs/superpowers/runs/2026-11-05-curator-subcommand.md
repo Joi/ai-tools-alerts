@@ -1,19 +1,21 @@
 # Run: curator-subcommand
 Instruction: ai-tools-alerts#gctv A7 curator subcommand per TASK-ai-tools-alerts#gctv.md — start at medium (dispatched; never light). Not repoman-managed; non-repoman ending (ff-merge to main, close issue). Security-shaped: FRESHEYES_GPT_MODEL=gpt-6-astra.
-Stage: code-review:whole-branch
+Stage: verifying
 Rung: heavy (start-floor heavy: hard-trigger credential handling — reads the curator nsec and signs and sends under it; brief also says heavy), above the dispatch's "start at medium"
 Spec: docs/superpowers/specs/2026-11-05-curator-subcommand-design.md   Plan: docs/superpowers/plans/2026-11-05-curator-subcommand.md
 Agency project: — (executed inline, as A1 to A5 did)
 Kata: ai-tools-alerts#gctv
-Last reviewed: spec+plan 6cfa9f2f
+Last reviewed: spec+plan 6cfa9f2f; code (whole branch) 63a957ed03667478720c1effc89f6309f29ac8f8
 Pre-handoff review: — (not repoman-managed)
 
 ## Scorecards
 Pass 1 [spec+plan]: 0B/12S/0C/1R · fixed -/- · velocity = (—→13, escalation no)   # fresheyes gpt-6-astra on snapshot 6cfa9f2f (REASON=-), 13 major, none critical. SUBSTANTIVE fixed (10): role manifest fell back to the bundled one across a root switch (revocation rollback) → newest manifest known for the requested root; amend lookup used another root's state → refused unless pulled under the requested root; verifier applied the patch dict, not the serialized post → the signed reply is replayed through pull.advisories (retract state included), first line always the CLI's, one-line fence-free notes; ordering by created_at could put the amendment before one it saw → created_at after the thread's newest event; stale state could revert list fields → amend and retract pull first; recv-only deadline → the whole exchange runs in a joined worker thread, socket closed on overrun; RelayError escaped the CLI → every transport failure is RelayError, CLI exit 1, tested; no primary-source check → required; critical missing from the feed → critical posts to critical and feed, amend/retract by advisory id reply to every open thread; missing negative tests → added (wrong root, mis-signed, tampered, malformed keys, transport failures); leak-check scope → code and tests only, generated-key assertions. SUBSTANTIVE rebutted (1): size over 600 lines → kept as one deliverable (relay and curator are one interface; decided on the issue). R: snapshot commit message (a dangling review snapshot, never on a branch; as in A2 to A5).
 passes: spec+plan 1 · no BLOCKER, so no spec/plan delta; the whole-branch code pass reviews the amended spec and plan with the code.
+Pass 1 [code:whole-branch]: 0B/7S/2C/1R · fixed 11/12 prior · velocity ↓ (13→10, escalation no)   # whole branch at 63a957ed. Stage 2 fresheyes gpt-6-astra (REASON=-): 5 major, 0 critical. Stage 1 subagent: 0B/3S/2C (amend-by-id overlap with fresheyes counted once as R). SUBSTANTIVE fixed (6): timeout only closed the socket → shutdown(SHUT_RDWR) then close, a bounded join, and the error says the event may be stored; an already-updated thread stopped an amend by advisory id → unchanged threads are skipped and named, refused only when nothing changes; FIFO at the key path blocked → O_NONBLOCK, refused as not a regular file; plan's leak grep could not pass (the poster's denylist names the hosts) → scoped to the files this task changes; no CLI test of pull-before-amend → tests for a fetched source kept, a failed pull refused, a fetched revocation refused (role checked before the thread lookup); partial critical post left the feed short and a retry made a new id → the advisory id is printed and a partial send names the recovery (--id <id> --channel feed, or rerun the amend); an accepted event could be reported failed when the close stalled → the OK is recorded before the close, GRACE 10 s above close_timeout 5 s. COSMETIC fixed (2): relay text printed raw → control characters replaced; FIFO (same as above). SUBSTANTIVE rebutted (1): the websockets path is skipped in the stdlib-only gate → by design (the gate stays stdlib-only, per the brief); the fake-server test ran for real in a venv with websockets 17.4, 19 passed.
+Escalation: none (no BLOCKER; every SUBSTANTIVE fixed or rebutted). No BLOCKER fix → no delta pass (Review Cycle).
 
 ## Chunks
-- [ ] chunk 1 — relay, curator, CLI, tests
+- [x] chunk 1 — relay, curator, CLI, tests (63a957e); review fixes in the next commit
 
 ## Notes
 - Prior work: kata issue gctv itself; A5 run manifest (docs/superpowers/runs/2026-11-05-pull-state-notify-cli.md) set the reader rules this task writes for; B3's compose.apply_patch is reused for the patch contract.
