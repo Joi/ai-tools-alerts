@@ -175,20 +175,46 @@ def clean(rows, m) -> tuple[list[dict], Counter]:
     return kept, counts
 
 
-def cap(events: list[dict], name: str, generated_at: str) -> tuple[list[dict], int]:
-    """The newest events of a channel that fit MAX_CHANNEL_EVENTS and, as the
-    written file, MAX_CHANNEL_BYTES, in their original (query) order, with the
-    count dropped. The oldest go first, so the newest advice always stays."""
-    order = sorted(range(len(events)), key=lambda i: (events[i]["created_at"], events[i]["id"]))
-    budget = MAX_CHANNEL_BYTES - len(channel_doc(name, [], generated_at))
-    keep = set()
-    for i in reversed(order[-MAX_CHANNEL_EVENTS:]):
-        size = len(json.dumps(events[i], ensure_ascii=False, separators=(",", ":")).encode("utf-8")) + 1
-        if size > budget:
-            break
-        budget -= size
-        keep.add(i)
-    return [ev for i, ev in enumerate(events) if i in keep], len(events) - len(keep)
+def _event_size(ev: dict) -> int:
+    return len(json.dumps(ev, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) + 1
+
+
+def cap(events: dict[str, list[dict]], generated_at: str) -> tuple[dict[str, list[dict]], dict[str, int]]:
+    """Each channel's events within MAX_CHANNEL_EVENTS and, as the written
+    file, MAX_CHANNEL_BYTES, in their original (query) order, with the count
+    dropped per channel.
+
+    Threads (a root and every reply marked to it, in either channel) are kept
+    or dropped whole, newest thread first, across both channels together, so a
+    kept root never loses the retraction, level change or patch that amends it,
+    wherever that was posted. A thread that does not fit is skipped and the
+    next older one is tried, so one oversized event costs only its thread."""
+    def key(ev):
+        return _reply_target(ev) or ev["id"]
+
+    newest: dict[str, tuple] = {}
+    for evs in events.values():
+        for ev in evs:
+            k = key(ev)
+            newest[k] = max(newest.get(k, (0, "")), (ev["created_at"], ev["id"]))
+    count = {name: 0 for name in events}
+    budget = {name: MAX_CHANNEL_BYTES - len(channel_doc(name, [], generated_at)) for name in events}
+    members: dict[str, dict[str, list[int]]] = {}
+    for name, evs in events.items():
+        for i, ev in enumerate(evs):
+            members.setdefault(key(ev), {}).setdefault(name, []).append(i)
+    keep = {name: set() for name in events}
+    for k in sorted(newest, key=newest.get, reverse=True):
+        parts = members[k]
+        need = {name: (len(ix), sum(_event_size(events[name][i]) for i in ix)) for name, ix in parts.items()}
+        if any(count[n] + c > MAX_CHANNEL_EVENTS or b > budget[n] for n, (c, b) in need.items()):
+            continue
+        for n, (c, b) in need.items():
+            count[n] += c
+            budget[n] -= b
+            keep[n].update(parts[n])
+    out = {name: [ev for i, ev in enumerate(evs) if i in keep[name]] for name, evs in events.items()}
+    return out, {name: len(events[name]) - len(out[name]) for name in events}
 
 
 def check_manifest(path):
@@ -481,7 +507,9 @@ def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_
     events, counts = {}, {}
     for name, cid in channels.items():
         events[name], counts[name] = clean(reader(name, cid), m)
-        events[name], counts[name]["capped"] = cap(events[name], name, generated_at)
+    events, capped = cap(events, generated_at)
+    for name in channels:
+        counts[name]["capped"] = capped[name]
     atom, entries = atom_doc(events["feed"], m, generated_at, mirror_url)
     index, listed = index_doc(events, m, channels, now, mirror_url)
 

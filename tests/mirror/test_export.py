@@ -702,7 +702,8 @@ def test_channel_files_keep_the_newest_events_under_the_caps(env, monkeypatch):
     feed = json.loads((env[2] / "feed.json").read_text())["events"]
     # The newest five by created_at, whatever the row order; the row order is kept.
     assert [e["content"] for e in feed] == [f"post {i:02d}" for i in range(7, 2, -1)]
-    assert result["channels"]["feed"]["capped"] == 3 and result["channels"]["critical"]["capped"] == 0
+    # posts 00 and 01 are also in critical.json: their threads go from both files.
+    assert result["channels"]["feed"]["capped"] == 3 and result["channels"]["critical"]["capped"] == 2
     assert "capped=3" in em.summary_line(result)
 
     monkeypatch.setattr(em, "MAX_CHANNEL_EVENTS", 2000)
@@ -722,3 +723,35 @@ def test_caps_sit_inside_the_cli_limits():
     from aitools_alerts import pull
     assert em.MAX_CHANNEL_EVENTS <= pull.MAX_EVENTS // 2
     assert em.MAX_CHANNEL_BYTES <= pull.MAX_FETCH_BYTES // 2
+
+
+
+def test_cap_keeps_threads_whole_across_channels(env, monkeypatch):
+    """Fresheyes on the cap: a root kept in critical.json must keep its
+    retraction from feed.json, however many later feed events there are."""
+    monkeypatch.setattr(em, "MAX_CHANNEL_EVENTS", 3)
+    root = ev(BOT_SEC, _adv_post("Withdrawn", "AITA-TEST-0014", "critical"), 1793865000)
+    gone = ev(CUR_SEC, "retract", 1793865010, tags=[("e", root["id"], "", "root")])
+    later = [ev(BOT_SEC, f"later {i}", 1793865100 + i) for i in range(3)]
+    run_export(env, rows_reader([root, gone] + later, [root]))
+    feed = [e["id"] for e in json.loads((env[2] / "feed.json").read_text())["events"]]
+    crit = [e["id"] for e in json.loads((env[2] / "critical.json").read_text())["events"]]
+    assert feed == [e["id"] for e in later] and crit == []  # the whole thread went, not half of it
+    assert "Withdrawn" not in page(env)
+
+    monkeypatch.setattr(em, "MAX_CHANNEL_EVENTS", 5)
+    run_export(env, rows_reader([root, gone] + later, [root]))
+    feed = [e["id"] for e in json.loads((env[2] / "feed.json").read_text())["events"]]
+    assert gone["id"] in feed and root["id"] in feed
+    assert "Retracted: Withdrawn" in page(env)
+
+
+def test_cap_skips_an_oversized_event_and_keeps_older_ones(env, monkeypatch):
+    small = ev(BOT_SEC, _adv_post("Small", "AITA-TEST-0015"), 1793865000)
+    huge = ev(BOT_SEC, "x" * 20000, 1793865100)
+    limit = len(em.channel_doc("feed", [], "2026-11-05T08:05:00Z")) + 5000
+    monkeypatch.setattr(em, "MAX_CHANNEL_BYTES", limit)
+    result = run_export(env, rows_reader([small, huge]))
+    assert [e["id"] for e in json.loads((env[2] / "feed.json").read_text())["events"]] == [small["id"]]
+    assert result["channels"]["feed"]["capped"] == 1
+    assert "Small" in page(env)

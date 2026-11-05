@@ -115,9 +115,13 @@ An advisory whose `expires_at` has passed (the CLI's `pull.active` hides it from
 
 ## Directive c:bv22zx (2026-11-06), after the code review
 
-Each channel file keeps its newest events within half of the CLI's limits:
-`cap()` keeps the newest `MAX_CHANNEL_EVENTS = 2000` (by created_at, then id),
-then, newest first, as many as fit `MAX_CHANNEL_BYTES = 4 MiB` as the written
-file, in their original query order; the dropped count is `capped=` in the
+Each channel file keeps its newest events within half of the CLI's limits
+(`MAX_CHANNEL_EVENTS = 2000`, `MAX_CHANNEL_BYTES = 4 MiB` as the written
+file), in their original query order. `cap()` keeps whole threads (a root and
+every reply marked to it, in either channel) across both channels together,
+newest thread first, so a kept root never loses a retraction or patch posted
+in the other channel; a thread that does not fit is skipped and the next older
+one tried, so one oversized event costs only its own thread (fresheyes on the
+first cap commit); the dropped count is `capped=` in the
 summary line. The Atom and the page are built from the capped events, so they
 show what the CLI can read. No single poster can make the mirror unreadable.
