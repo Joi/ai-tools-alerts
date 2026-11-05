@@ -1,0 +1,13 @@
+# systemd user unit (relayuser on the relay VM). Started by
+# aitools-alerts-mirror.timer; runs from the checkout at ~/ai-tools-alerts.
+[Unit]
+Description=Export the ai-tools alert channels to the static mirror
+Documentation=https://github.com/Joi/ai-tools-alerts
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I %h/ai-tools-alerts/mirror/export_mirror.py --channels %h/ai-tools-alerts/spec/channels.json --manifest %h/ai-tools-alerts/trust/manifest.json --out %h/alerts-mirror
+UMask=0022
+NoNewPrivileges=yes
+Nice=10
+TimeoutStartSec=5min
