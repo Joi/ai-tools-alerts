@@ -73,10 +73,18 @@ silently dropped from the deferred state (review pass 1).
 
 | Entry | not_match | Shape it excludes |
 |---|---|---|
-| Node.js (tier 1) | `for node.js`, `for nodejs`, `node.js library`, `npm package` | a third-party library for the runtime; the coordinator's list |
-| Go (tier 1) | `for golang`, `golang library` | a third-party library for Go |
+| Node.js (tier 1) | `library for node.js`, `library for nodejs`, `node.js library`, `nodejs library` | a third-party library for the runtime |
+| Go (tier 1) | `library for golang`, `golang library` | a third-party library for Go |
 | git (tier 1) | `git client plugin` | the Jenkins "Git client Plugin", which `git client` matches |
-| Browsers (tier 2) | `chrome extension`, `for chrome`, `firefox extension`, `firefox add-on`, `for firefox`, `safari extension`, `for safari` | an extension is not the browser |
+| Browsers (tier 2) | `extension for chrome`, `extension for firefox`, `add-on for firefox`, `extension for safari` | a third-party extension is not the browser |
+
+Every pattern names a third-party product, never a phrase the vendor's own
+advisory could carry (code review pass 1, both stages): the coordinator's
+`for node.js` vetoed "Security update for Node.js", `npm package` vetoed
+"Node.js runtime (npm package manager included)" (Node.js releases patch the
+bundled npm), and `chrome extension` vetoed "Google Chrome Extensions API"
+(Chrome's own Extensions component, CVE-2025-3069). The KEV text is still
+excluded by `library for node.js`.
 
 Not added: Docker (review pass 1: `docker plugin install` is Docker Engine's
 own command, GHSA-pxq6-2prw-chj9, so `docker plugin` would drop a runtime
@@ -119,6 +127,8 @@ nothing under `trust/` changes.
 
 ## Accepted limits
 
-- An exclusion is text, so a runtime advisory phrased "a flaw in the npm
-  package manager for Node.js" would be excluded and logged, not posted. KEV
-  names the runtime `Node.js Node.js`; no KEV entry today reads that way.
+- A third-party product the lists do not name ("Express, a web framework for
+  Node.js") still matches Node.js. Over-alerting on such a text is the cheaper
+  error; a new shape gets a new pattern.
+- An exclusion vetoes the whole text, so "Node.js Node.js library" would be
+  excluded and logged. No source spells the runtime that way.

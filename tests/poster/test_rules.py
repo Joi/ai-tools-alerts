@@ -488,14 +488,19 @@ def test_node_library_is_not_the_node_runtime():
     log: list[str] = []
     assert rules.scope_of(KEV_NODE_LIBRARY, log) is None
     assert log == [KEV_NODE_LIBRARY]  # an exclusion is kept for human review
-    for text in ("Node.js Node.js", "nodejs/node", "Node.js", "NodeJS", "Node.js runtime"):
-        assert rules.scope_of(text).name == "Node.js", text
+    for text in ("Node.js Node.js", "nodejs/node", "Node.js", "NodeJS", "Node.js runtime",
+                 "Security update for Node.js", "Node.js runtime (npm package manager included)",
+                 "Node.js Node.js npm package", "Node.js npm package manager"):
+        assert rules.scope_of(text).name == "Node.js", text  # the vendor's own wording survives
+    for text in ("Google Chrome Extensions API", "Google Chromium Extensions",
+                 "Mozilla Firefox Add-ons Manager", "Apple Safari Extensions", "Security update for Golang"):
+        assert rules.scope_of(text) is not None, text
 
 
 def test_other_not_match_lists():
     for text in ("Jenkins Git client Plugin",
                  "Example library for Golang", "Example Golang library",
-                 "Example Chrome extension", "Example add-on for Firefox"):
+                 "Example extension for Chrome", "Example add-on for Firefox"):
         assert rules.scope_of(text) is None, text
     for text, name in (("Git Git", "git"), ("Docker Desktop", "Docker"), ("golang/go", "Go"),
                        ("Docker Engine docker plugin install", "Docker"),
@@ -529,8 +534,11 @@ def test_kev_node_library_does_not_post_and_the_runtime_still_does():
          "product": "System Information Library for Node.JS"},
         {"cveID": "CVE-2099-0032", "dateAdded": "2099-01-02", "vendorProject": "Node.js",
          "product": "Node.js"},
+        {"cveID": "CVE-2099-0033", "dateAdded": "2099-01-02", "vendorProject": "Node.js",
+         "product": "Node.js runtime (npm package manager included)"},
     ]}
-    lib, runtime = candidates.from_kev(kev, "2099-01-01")
+    lib, runtime, bundled = candidates.from_kev(kev, "2099-01-01")
+    assert rules.scope_of(bundled.product_text).name == "Node.js"
     assert lib.product_text == KEV_NODE_LIBRARY and rules.scope_of(lib.product_text) is None
     scope = rules.scope_of(runtime.product_text)
     assert scope.name == "Node.js" and scope.tier == 1
