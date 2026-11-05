@@ -16,9 +16,14 @@ A6 shipped a fallback sentence pointing at `#security-feed` because
 
 1. Every object in `check --json`, and in `run --json`'s `matches`, carries
    `sources`: the advisory's sources as a list of `{"url", "published_at"}`
-   in post order, and `source`: one URL string (rule below).
+   in post order, `source`: one URL string (rule below), and
+   `source_primary`: false when no source is on a primary host.
 2. `plan <id>` prints `  source: <url>` on the line after each matched
-   advisory's header line, same rule.
+   advisory's header line, same rule, with ` (not a primary source)`
+   appended when `source_primary` is false. The skills tell the agent to
+   say so (added after the Stage 1 code review: without it a relay-bot post
+   with only a blog link reached the person as "the source link" with no
+   caveat, where A6's text had said no primary source was given).
 3. The rule: the first source for which `schema.is_primary(url)` is true,
    else the first source (the schema requires at least one). This is the
    rule `poster/compose._primary` already uses.

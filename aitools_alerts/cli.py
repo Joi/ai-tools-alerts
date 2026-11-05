@@ -137,18 +137,26 @@ def _matches(a, st: State) -> tuple[list, list]:
     return threads, [(by_adv[id(m.adv)], m) for m in ms]
 
 
-def _source(adv) -> str:
-    """The link to give the person: the first primary source, else the first.
-    Percent-encoded to URL ASCII, so a space in a posted URL cannot put more
-    text on the line that carries it."""
-    url = next((s.url for s in adv.sources if schema.is_primary(s.url)), adv.sources[0].url)
-    return quote(url, safe=":/?#[]@!$&'()*+,;=%~")
+def _source(adv) -> tuple[str, bool]:
+    """The link to give the person, and whether it is a primary source: the
+    first primary source, else the first. Percent-encoded to URL ASCII, so a
+    space in a posted URL cannot put more text on the line that carries it."""
+    domains = schema.load_primary_domains()
+    url = next((s.url for s in adv.sources if schema.is_primary(s.url, domains)), None)
+    primary = url is not None
+    return quote(url if primary else adv.sources[0].url, safe=":/?#[]@!$&'()*+,;=%~"), primary
+
+
+def _source_line(adv) -> str:
+    url, primary = _source(adv)
+    return f"  source: {url}" if primary else f"  source: {url} (not a primary source)"
 
 
 def _match_json(t, m) -> dict:
+    source, primary = _source(t.adv)
     return {"thread": t.root_id, "id": t.adv.id, "level": t.adv.level, "title": t.adv.title,
-            "posted_by": t.adv.posted_by, "reason": m.reason, "source": _source(t.adv),
-            "sources": [asdict(x) for x in t.adv.sources],
+            "posted_by": t.adv.posted_by, "reason": m.reason, "source": source,
+            "source_primary": primary, "sources": [asdict(x) for x in t.adv.sources],
             "installed": asdict(m.installed), "product": asdict(m.product) if m.product else None,
             "actions": [asdict(x) for x in m.actions_allowed]}
 
@@ -225,7 +233,7 @@ def cmd_plan(a, st: State, s: config.Settings) -> int:
         p = check.plan(m, cfg)
         print(f"{t.adv.level.upper()}: {t.adv.title} [{m.installed.name} "
               f"{m.installed.version or 'unknown version'}] posted by {t.adv.posted_by}")
-        print(f"  source: {_source(t.adv)}")
+        print(_source_line(t.adv))
         for title, actions in (("auto-apply (opted in)", p.auto_apply),
                                ("prepare (ask first)", p.prepare)):
             if not actions:

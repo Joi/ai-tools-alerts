@@ -37,8 +37,9 @@ how to use it. The rules below are fixed; follow them exactly.
      `thread` (the advisory id to pass to `plan`), `id`, `level`, `title`,
      `posted_by` (`curator` or `relay-bot`), `reason`, `installed` (name,
      version), `product` (name, affected, fixed), `actions`, `sources`
-     (each `url`, `published_at`) and `source` (the link to give the
-     person: the first primary source, else the first source).
+     (each `url`, `published_at`), `source` (the link to give the
+     person: the first primary source, else the first source) and
+     `source_primary` (false when no source is a primary source).
    - `unseen_critical`: thread ids of critical matches not shown before.
    Exit 2 means `unseen_critical` is not empty. Exit 0 or 1 with the JSON
    printed: nothing new is critical (1: a notification could not be sent).
@@ -48,10 +49,12 @@ how to use it. The rules below are fixed; follow them exactly.
    (the hook or the hourly job may have marked it seen already), tell the
    person first, before anything else, for each critical match: the level,
    the title, the affected product and the installed version, the action,
-   and the source link (`source`).
+   and the source link (`source`); when `source_primary` is false, say
+   that it is not a primary source.
    Report `high` and `notice` matches too when the person asked.
 3. Run `aitools-alerts plan <thread>` for each match you reported. It
-   prints the advisory, a `source: <url>` line, then up to two sections:
+   prints the advisory, a `source: <url>` line (it ends in
+   `(not a primary source)` when it is not one), then up to two sections:
    - `auto-apply (opted in):` actions the person opted into in
      `~/.config/aitools-alerts/config.toml` (`auto_apply`), from a curator
      post that matches this machine exactly;

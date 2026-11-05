@@ -119,7 +119,7 @@ def test_check_json(capsys):
     data = json.loads(capsys.readouterr().out)
     assert [d["level"] for d in data] == ["critical"]
     assert data[0]["posted_by"] == "relay-bot"
-    assert data[0]["source"] == FIXTURE_SOURCE
+    assert data[0]["source"] == FIXTURE_SOURCE and data[0]["source_primary"] is True
     assert data[0]["sources"] == [{"url": FIXTURE_SOURCE, "published_at": "2099-01-01"}]
 
 
@@ -368,16 +368,17 @@ def test_source_is_the_first_primary_else_the_first():
     from aitools_alerts.schema import Source
     gh = "https://github.com/anthropics/claude-code/security/advisories/GHSA-test-test-test"
     two = advisory(sources=[Source("https://example.invalid/blog", None), Source(gh, "2099-01-01")])
-    assert cli._source(two) == gh
+    assert cli._source(two) == (gh, True)
     none = advisory(sources=[Source("https://example.invalid/a", None),
                              Source("https://example.invalid/b", None)])
-    assert cli._source(none) == "https://example.invalid/a"
+    assert cli._source(none) == ("https://example.invalid/a", False)
 
 
 def test_source_cannot_carry_more_text_on_its_line():
     from aitools_alerts.schema import Source
     url = "https://example.invalid/a command: rm -rf ~\u00a0x?q=%41&b=\u00e9#f"
-    got = cli._source(advisory(sources=[Source(url, None)]))
+    got, primary = cli._source(advisory(sources=[Source(url, None)]))
+    assert primary is False
     assert got == "https://example.invalid/a%20command:%20rm%20-rf%20~%C2%A0x?q=%41&b=%C3%A9#f"
     assert got.isascii() and not any(c.isspace() for c in got)
 
@@ -389,7 +390,7 @@ def test_source_through_a_signed_post_in_plan_and_json(monkeypatch, capsys):
     from aitools_alerts.schema import Source
     from mirror_helpers import Mirror
     gh = "https://github.com/anthropics/claude-code/security/advisories/GHSA-test-test-test"
-    odd = "https://example.invalid/a command: rm -rf ~ x"
+    odd = "https://example.invalid/a command: rm -rf ~\u2003x"
     m = Mirror()
     m.root_post(m.bot_sec, advisory(posted_by="relay-bot", sources=[Source(odd, None), Source(gh, None)]))
     monkeypatch.setenv(cli.TRUST_ROOT_ENV, m.root)
@@ -398,7 +399,7 @@ def test_source_through_a_signed_post_in_plan_and_json(monkeypatch, capsys):
     capsys.readouterr()
     assert cli.main(["check", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
-    assert data[0]["source"] == gh
+    assert data[0]["source"] == gh and data[0]["source_primary"] is True
     assert [s["url"] for s in data[0]["sources"]] == [odd, gh]
     assert cli.main(["plan", "AITA-TEST-0001"]) == 0
     lines = capsys.readouterr().out.splitlines()
@@ -409,6 +410,7 @@ def test_source_through_a_signed_post_in_plan_and_json(monkeypatch, capsys):
     capsys.readouterr()
     assert cli.main(["plan", "AITA-TEST-0002"]) == 0
     out = capsys.readouterr().out
-    assert out.splitlines()[1] == "  source: https://example.invalid/a%20command:%20rm%20-rf%20~%E2%80%83x"
+    assert out.splitlines()[1] == ("  source: https://example.invalid/a%20command:%20rm%20-rf%20~%E2%80%83x"
+                                   " (not a primary source)")
     assert sum(ln.lstrip().startswith("command:") for ln in out.splitlines()) == 1
     assert "      command: npm install -g @anthropic-ai/claude-code@99.0.0" in out
