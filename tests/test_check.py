@@ -1,3 +1,4 @@
+import dataclasses
 from pathlib import Path
 
 from aitools_alerts import check, versions
@@ -275,3 +276,45 @@ def test_prerelease_install_is_unparsable_end_to_end():
     assert m.reason == "unparsable-version" and m.actions_allowed == []
     p = check.plan(m, OPT_IN)
     assert p.notify and p.auto_apply == []
+
+
+# ------------------------------------------------ components (ai-tools-alerts#qme5)
+
+def _containerd_post(posted_by="curator"):
+    from aitools_alerts import schema
+    from aitools_alerts.poster import candidates, compose, rules
+    c = candidates.Candidate(
+        id="CVE-2026-0901", aliases=(), product_text="containerd containerd", advisory_severity=None,
+        local_level_hint=None, exploited=True, trojanized=False, injection_exec=False, fixed="1.7.29",
+        affected="< 1.7.29", observed_at=None,
+        sources=(candidates.Source("https://www.cisa.gov/known-exploited-vulnerabilities-catalog", None),))
+    text, _ = compose.root_post(c, "critical", rules.scope_of(c.product_text), posted_at=1_700_000_000)
+    a = schema.parse_post(text)
+    return dataclasses.replace(a, posted_by=posted_by)
+
+
+CONTAINERD = Installed("containerd", "1.7.20", "containerd")
+
+
+def test_component_advisory_matches_component_installation():
+    [m] = check.match([_containerd_post()], inv(docker=[CONTAINERD]))
+    assert m.reason == check.AFFECTED and m.installed == CONTAINERD
+    assert check.match([_containerd_post()], inv(docker=[Installed("Docker", "27.3.1", "docker")])) == []
+
+
+def test_docker_advisory_does_not_match_containerd():
+    a = adv([Product(name="Docker", ecosystem="docker", affected="<27.4.0", fixed="27.4.0")],
+            [Action(verb="upgrade", target="Docker", value="27.4.0")])
+    assert check.match([a], inv(docker=[CONTAINERD])) == []
+
+
+def test_component_installation_never_auto_applies():
+    [m] = check.match([_containerd_post()], inv(docker=[CONTAINERD]))
+    p = check.plan(m, Config(auto_apply=frozenset({"upgrade"})))
+    assert p.auto_apply == [] and [a.target for a in p.prepare] == ["containerd"]
+
+
+def test_aggregate_components_match_by_name():
+    remote = adv([Product(name="mcp-remote", ecosystem="mcp", affected=None, fixed="0.1.16")], [])
+    assert len(check.match([remote], inv(mcp=[Installed("mcp-remote", None, "/m")]))) == 1
+    assert check.match([remote], inv(mcp=[Installed("filesystem", None, "/m")])) == []

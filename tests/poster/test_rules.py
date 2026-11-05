@@ -4,6 +4,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from dataclasses import replace
 
 import pytest
 
@@ -325,7 +326,8 @@ def test_unmatched_log_is_caller_owned():
 
 def test_vendor_words_from_tier1_names():
     words = rules.vendor_words(schema.load_scope())
-    assert {"claude", "codex", "cursor", "docker", "git", "go", "anthropic", "openai"} <= words
+    assert {"claude", "codex", "cursor", "docker", "git", "go", "anthropic", "openai",
+            "containerd", "runc", "rustup"} <= words
     assert "ubuntu" not in words and "macos" not in words
 
 
@@ -341,14 +343,14 @@ def test_short_pattern_does_not_match_inside_another_word():
     assert rules.scope_of("Chromebook firmware") is None
     assert rules.scope_of("openclawd") is None
     # A bounded occurrence still matches, wherever it sits in the text.
-    assert rules.scope_of("skills.sh registry").name == "ClawHub and skills.sh"
-    assert rules.scope_of("skills.shopify and skills.sh").name == "ClawHub and skills.sh"
+    assert rules.scope_of("skills.sh registry").name == "skills.sh"
+    assert rules.scope_of("skills.shopify and skills.sh").name == "skills.sh"
     assert rules.scope_of("docker-compose").name == "Docker"
     assert rules.scope_of("Docker Desktop").name == "Docker"
     assert rules.scope_of("docker_sdk").name == "Docker"  # "_" separates, as in _tokens
     # A version glued to a name that ends in a letter still matches.
     for text, name in (("OpenSSH9.8p1", "OpenSSH"), ("CPython3.12", "Python"),
-                       ("Debian12", "Linux distributions"), ("Docker2", "Docker")):
+                       ("Debian12", "Debian"), ("Docker2", "Docker")):
         hit = rules.scope_of(text)
         assert hit is not None and hit.name == name, (text, hit and hit.name)
     # Whitespace runs and Unicode dashes normalise before matching.
@@ -381,9 +383,10 @@ def test_every_pattern_resolves_to_its_own_entry():
     entries = schema.load_scope()
     assert entries and all(e.match_mode == "word" for e in entries)
     for e in entries:
-        for m in e.match:
-            hit = rules.scope_of(m)
-            assert hit is not None and hit.name == e.name, (m, e.name, hit and hit.name)
+        for owner, patterns in [(e.name, e.match)] + [(c.name, c.match) for c in e.components]:
+            for m in patterns:
+                hit = rules.scope_of(m)
+                assert hit is not None and hit.name == owner, (m, owner, hit and hit.name)
 
 
 # GitHub repository slugs and advisory package names the sources use (2026-11-05).
@@ -401,7 +404,7 @@ SOURCE_FORMS = {
     "@openclaw/discord": "OpenClaw",
     "modelcontextprotocol/servers": "MCP servers and clients",
     "@modelcontextprotocol/server-filesystem": "MCP servers and clients",
-    "@modelcontextprotocol/sdk": "MCP servers and clients",
+    "@modelcontextprotocol/sdk": "MCP TypeScript SDK",
     "mcp-server-fetch": "MCP servers and clients",
     "nodejs/node": "Node.js",
     "python/cpython": "Python",
@@ -412,8 +415,8 @@ SOURCE_FORMS = {
     "Moby (aka Docker CE, Docker Engine)": "Docker",
     "github.com/docker/cli": "Docker",
     "docker-ce": "Docker",
-    "opencontainers/runc": "Docker",
-    "github.com/opencontainers/runc": "Docker",
+    "opencontainers/runc": "runc",
+    "github.com/opencontainers/runc": "runc",
     "getcursor/cursor": "Cursor",
     "cursor-agent": "Cursor",
     "dockerd": "Docker",
@@ -447,24 +450,17 @@ def _scope_file(tmp_path, top: dict, match=("skills.sh",)):
 
 
 def test_scope_file_versions(tmp_path):
-    # Version 1 (no version field) still reads, with its substring meaning.
-    v1 = schema.load_scope(_scope_file(tmp_path, {"description": "old", "other": 1}))
-    assert v1[0].match_mode == "substring"
-    assert rules.scope_of("skills.shopify", entries=v1).name == "Skills"
-    # Version 2 defaults to word matching.
-    v2 = schema.load_scope(_scope_file(tmp_path, {"version": 2}))
-    assert v2[0].match_mode == "word"
-    assert rules.scope_of("skills.shopify", entries=v2) is None
-    assert rules.scope_of("skills.sh", entries=v2).name == "Skills"
-    v2w = schema.load_scope(_scope_file(tmp_path, {"version": 2, "match_mode": "word"}))
-    assert v2w[0].match_mode == "word"
-    v2s = schema.load_scope(_scope_file(tmp_path, {"version": 2, "match_mode": "substring"}))
-    assert rules.scope_of("skills.shopify", entries=v2s).name == "Skills"
-    # A reader refuses a format it does not know.
-    for bad in ({"version": 4}, {"version": True}, {"version": "2"}, {"version": 1.0},
-                {"version": 2, "match_mode": "regex"}, {"version": 2, "match_mode": None},
-                {"version": 1}, {"match_mode": "word"}, {"version": 2, "extra": 1},
-                {"version": 2, "description": 5}):
+    # Version 4 is the only format read; it defaults to word matching.
+    v4 = schema.load_scope(_scope_file(tmp_path, {"version": 4}))
+    assert v4[0].match_mode == "word" and v4[0].components == ()
+    assert rules.scope_of("skills.shopify", entries=v4) is None
+    assert rules.scope_of("skills.sh", entries=v4).name == "Skills"
+    v4s = schema.load_scope(_scope_file(tmp_path, {"version": 4, "match_mode": "substring"}))
+    assert rules.scope_of("skills.shopify", entries=v4s).name == "Skills"
+    # A reader refuses a format it does not know, older ones included.
+    for bad in ({}, {"version": 1}, {"version": 2}, {"version": 3}, {"version": 5}, {"version": True},
+                {"version": "4"}, {"version": 4.0}, {"version": 4, "match_mode": "regex"},
+                {"match_mode": "word"}, {"version": 4, "extra": 1}, {"version": 4, "description": 5}):
         with pytest.raises(ValueError):
             schema.load_scope(_scope_file(tmp_path, bad))
 
@@ -504,7 +500,7 @@ def test_other_not_match_lists():
         assert rules.scope_of(text) is None, text
     for text, name in (("Git Git", "git"), ("Docker Desktop", "Docker"), ("golang/go", "Go"),
                        ("Docker Engine docker plugin install", "Docker"),
-                       ("Google Chromium V8", "Browsers"), ("Mozilla Firefox", "Browsers")):
+                       ("Google Chromium V8", "Chromium"), ("Mozilla Firefox", "Firefox")):
         assert rules.scope_of(text).name == name, text
 
 
@@ -545,7 +541,7 @@ def test_kev_node_library_does_not_post_and_the_runtime_still_does():
     assert rules.level_for(runtime, scope, False)[0] == "critical"
 
 
-def test_scope_file_not_match_needs_version_3(tmp_path):
+def test_scope_file_not_match(tmp_path):
     import json
     p = tmp_path / "scope.json"
 
@@ -554,12 +550,68 @@ def test_scope_file_not_match_needs_version_3(tmp_path):
             dict({"name": "N", "ecosystem": "node", "tier": 1, "match": ["node.js"]}, **extra)])))
         return schema.load_scope(p)
 
-    assert load({"version": 3})[0].not_match == ()
-    assert load({"version": 3}, not_match=["npm package"])[0].not_match == ("npm package",)
-    assert load({"version": 2})[0].not_match == ()
-    for top, nm in (({"version": 2}, ["npm package"]), ({}, ["npm package"]),
-                    ({"version": 3}, []), ({"version": 3}, "npm package"),
-                    ({"version": 3}, ["NPM"]), ({"version": 3}, [" npm"]),
-                    ({"version": 3}, [5])):
+    assert load({"version": 4})[0].not_match == ()
+    assert load({"version": 4}, not_match=["npm package"])[0].not_match == ("npm package",)
+    for top, nm in (({"version": 3}, ["npm package"]), ({}, ["npm package"]),
+                    ({"version": 4}, []), ({"version": 4}, "npm package"),
+                    ({"version": 4}, ["NPM"]), ({"version": 4}, [" npm"]),
+                    ({"version": 4}, [5])):
         with pytest.raises(ValueError):
             load(top, not_match=nm)
+
+
+# ------------------------------------------------ components (ai-tools-alerts#qme5)
+
+def _components_file(tmp_path, entries):
+    import json
+    p = tmp_path / "scope.json"
+    p.write_text(json.dumps({"version": 4, "entries": entries}))
+    return p
+
+
+def test_scope_file_components(tmp_path):
+    comp = {"name": "containerd", "match": ["containerd"]}
+    own = {"name": "D", "match": ["docker"], "not_match": ["docker plugin x"]}
+    base = {"name": "D", "ecosystem": "docker", "tier": 1, "components": [comp, own]}
+    [e] = schema.load_scope(_components_file(tmp_path, [base]))
+    assert e.match == [] and e.not_match == ()
+    assert e.components == (schema.ScopeComponent("containerd", ("containerd",)),
+                            schema.ScopeComponent("D", ("docker",), ("docker plugin x",)))
+    other = {"name": "O", "ecosystem": "go", "tier": 1, "match": ["golang"]}
+    bad_comps = ([{"match": ["x"]}], [{"name": "x", "match": []}], [{"name": "x", "match": ["X"]}],
+                 [{"name": "x", "match": ["x"], "extra": 1}], [{"name": "", "match": ["x"]}], [], "x",
+                 [comp, comp], [own, own])
+    for bad in [[dict(base, components=c)] for c in bad_comps] + [
+            [base, dict(other, name="containerd")], [{"name": "N", "ecosystem": "go", "tier": 1}],
+            [base, dict(other, components=[{"name": "containerd", "match": ["c2"]}])]]:
+        with pytest.raises(ValueError):
+            schema.load_scope(_components_file(tmp_path, bad))
+
+
+def test_scope_of_resolves_components():
+    for text, name, eco in (
+            ("containerd containerd", "containerd", "docker"), ("Opencontainers runc", "runc", "docker"),
+            ("Docker Desktop", "Docker", "docker"), ("containerd shim in Docker Engine", "containerd", "docker"),
+            ("@modelcontextprotocol/inspector", "MCP Inspector", "mcp"), ("mcp-remote", "mcp-remote", "mcp"),
+            ("Example MCP server", "MCP servers and clients", "mcp"), ("ClawHub", "ClawHub", "skill"),
+            ("skills.sh registry", "skills.sh", "skill"), ("Claude skill", "ClawHub and skills.sh", "skill"),
+            ("Ubuntu", "Ubuntu", "linux"), ("Google Chrome", "Chrome", "browser"),
+            ("rustup", "rustup", "rust"), ("Rust toolchain", "Rust", "rust")):
+        hit = rules.scope_of(text)
+        assert hit is not None and (hit.name, hit.ecosystem, hit.components) == (name, eco, ()), text
+    assert rules.scope_of("containerd").tier == 1 and rules.scope_of("Ubuntu").tier == 2
+    # The entry's not_match still vetoes every component: a third-party product.
+    assert rules.scope_of("Example extension for Chrome") is None
+
+
+def test_component_not_match_and_entry_not_match():
+    a = schema.ScopeComponent("A", ("alpha",), ("alpha plugin",))
+    b = schema.ScopeComponent("B", ("alpha plugin",))
+    e = schema.ScopeEntry("E", "e", 1, ["alpha"], not_match=("vendor x",), components=(a, b))
+    log: list[str] = []
+    assert rules.scope_of("alpha", log, entries=[e]).name == "A"
+    assert rules.scope_of("alpha plugin", log, entries=[e]).name == "B"
+    assert rules.scope_of("alpha plugin", log, entries=[replace(e, components=(a,))]).name == "E"  # fallback
+    assert rules.scope_of("alpha plugin", log, entries=[replace(e, match=[], components=(a,))]) is None
+    assert rules.scope_of("alpha by vendor x", log, entries=[e]) is None
+    assert log == ["alpha plugin", "alpha by vendor x"]

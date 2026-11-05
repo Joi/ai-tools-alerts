@@ -146,6 +146,8 @@ def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, sc
     ``level`` is ``rules.level_for``'s (level, reason), or a bare level. A reserved
     primary id (a synthetic check, ``run --kev-file``) marks the head line, and
     ``schema.validate`` marks the block's title; nothing else marks either."""
+    if getattr(scope, "components", ()):  # rules.scope_of resolves an entry to its component
+        raise ValueError("an unresolved scope entry would publish a group name")
     level, reason = level if isinstance(level, tuple) else (level, None)
     fixed = schema_fixed(c.fixed)
     sources = _sources(c.sources)

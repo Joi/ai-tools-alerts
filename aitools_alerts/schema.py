@@ -96,6 +96,13 @@ class Advisory:
 
 
 @dataclass(frozen=True)
+class ScopeComponent:  # a public product identity inside a scope entry (version 4)
+    name: str
+    match: tuple[str, ...]
+    not_match: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ScopeEntry:
     name: str
     ecosystem: str
@@ -104,8 +111,10 @@ class ScopeEntry:
     # How ``match`` patterns are tested: "word" (bounded) or "substring". Set from
     # the scope file's version and match_mode; never a key of a JSON entry.
     match_mode: str = "word"
-    # Version 3: the entry does not match where any of these hits, by the same mode.
+    # The entry does not match where any of these hits, by the same mode.
     not_match: tuple[str, ...] = ()
+    # Tried before ``match``; rules.scope_of returns the entry resolved to the one picked.
+    components: tuple[ScopeComponent, ...] = ()
 
 
 # ---------------------------------------------------------------- validation
@@ -350,29 +359,18 @@ def _load_json(path: Path):
         return json.load(f, object_pairs_hook=_no_duplicates)
 
 
-SCOPE_VERSION = 3
-SCOPE_VERSIONS = (2, 3)  # what load_scope reads besides an unversioned (v1) file
+SCOPE_VERSION = 4  # the only version load_scope reads
 SCOPE_MATCH_MODES = ("word", "substring")
 _SCOPE_KEYS = frozenset({"version", "description", "match_mode", "entries"})
-_SCOPE_ENTRY_KEYS = {"name", "ecosystem", "tier", "match"}
+_SCOPE_OPTIONAL = frozenset({"match", "not_match", "components"})
 
 
-def _scope_mode(data) -> tuple[str, int]:
-    """The match mode and version a scope file declares.
-
-    No ``version``: version 1, substring patterns, extra top-level keys ignored.
-    ``version`` 2 or 3: top-level keys limited to _SCOPE_KEYS, ``match_mode`` one
-    of SCOPE_MATCH_MODES, default "word"; version 3 entries may carry
-    ``not_match``. Any other version is refused.
-    """
+def _scope_mode(data) -> str:
+    """The match mode (default "word") of a version-4 file; any other version is refused."""
     if not isinstance(data, dict):
-        return "substring", 1  # the entries check below reports the bad file
-    if "version" not in data:
-        if "match_mode" in data:
-            _fail("scope.match_mode", "needs version 2")
-        return "substring", 1
-    if type(data["version"]) is not int or data["version"] not in SCOPE_VERSIONS:
-        _fail("scope.version", f"not one of {list(SCOPE_VERSIONS)}")
+        _fail("scope", "not an object")
+    if type(data.get("version")) is not int or data["version"] != SCOPE_VERSION:
+        _fail("scope.version", f"not {SCOPE_VERSION}")
     extra = set(data) - _SCOPE_KEYS
     if extra:
         _fail("scope", f"unknown keys {sorted(extra)}")
@@ -381,7 +379,7 @@ def _scope_mode(data) -> tuple[str, int]:
     mode = data.get("match_mode", "word")
     if mode not in SCOPE_MATCH_MODES:
         _fail("scope.match_mode", f"not one of {list(SCOPE_MATCH_MODES)}")
-    return mode, data["version"]
+    return mode
 
 
 def _scope_patterns(v, at: str) -> list[str]:
@@ -393,33 +391,51 @@ def _scope_patterns(v, at: str) -> list[str]:
     return list(out)
 
 
+def _scope_keys(v, at: str, required: set, optional: frozenset) -> dict:
+    return _obj(v, at, ScopeEntry, required | (set(v) & optional if isinstance(v, dict) else set()))
+
+
+def _scope_name(v, at: str, names: set, own: str | None = None) -> str:
+    """One namespace (the ledger keys threads by name); a component may repeat its entry's."""
+    name = _text(v, at, 1, 200)
+    if name in names and name != own:
+        _fail(at, "duplicate")
+    names.add(name)
+    return name
+
+
 def load_scope(path: Path | None = None) -> list[ScopeEntry]:
     data = _load_json(path or SPEC_DIR / "scope.json")
-    mode, version = _scope_mode(data)
+    mode = _scope_mode(data)
     entries, names = [], set()
-    for i, e in enumerate(_list(data.get("entries") if isinstance(data, dict) else None,
-                                "scope.entries", 1, 1000)):
+    for i, e in enumerate(_list(data.get("entries"), "scope.entries", 1, 1000)):
         at = f"scope.entries[{i}]"
-        if version >= 3 and isinstance(e, dict) and "not_match" in e:
-            e = dict(e)
-            not_match = tuple(_scope_patterns(e.pop("not_match"), at + ".not_match"))
-        else:
-            not_match = ()  # before version 3, not_match is an unknown key below
-        e = _obj(e, at, ScopeEntry, _SCOPE_ENTRY_KEYS)
-        name = _text(e["name"], at + ".name", 1, 200)
-        if name in names:
-            _fail(at + ".name", "duplicate")
-        names.add(name)
+        e = _scope_keys(e, at, {"name", "ecosystem", "tier"}, _SCOPE_OPTIONAL)
+        if "match" not in e and "components" not in e:
+            _fail(at, "needs match or components")
+        name = _scope_name(e["name"], at + ".name", names)
         if type(e["tier"]) is not int or e["tier"] not in (1, 2):
             _fail(at + ".tier", "not 1 or 2")
-        match = _scope_patterns(e["match"], at + ".match")
+        components, own = [], set()
+        for j, c in enumerate(_list(e["components"], at + ".components", 1, 50)
+                              if "components" in e else []):
+            cat = f"{at}.components[{j}]"
+            c = _scope_keys(c, cat, {"name", "match"}, frozenset({"not_match"}))
+            cname = _scope_name(c["name"], cat + ".name", names, own=None if name in own else name)
+            own.add(cname)
+            components.append(ScopeComponent(
+                name=cname, match=tuple(_scope_patterns(c["match"], cat + ".match")),
+                not_match=tuple(_scope_patterns(c["not_match"], cat + ".not_match"))
+                if "not_match" in c else ()))
         entries.append(ScopeEntry(
             name=name,
             ecosystem=_pattern(e["ecosystem"], at + ".ecosystem", _ECOSYSTEM),
             tier=e["tier"],
-            match=list(match),
+            match=_scope_patterns(e["match"], at + ".match") if "match" in e else [],
             match_mode=mode,
-            not_match=not_match,
+            not_match=tuple(_scope_patterns(e["not_match"], at + ".not_match"))
+            if "not_match" in e else (),
+            components=tuple(components),
         ))
     return entries
 

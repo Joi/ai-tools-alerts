@@ -349,10 +349,12 @@ def test_load_scope_rejects_bad_entries(tmp_path):
     for bad in (dict(good, match=["Upper"]), dict(good, match=[]),
                 dict(good, tier=3), dict(good, tier=True), dict(good, extra=1)):
         p = tmp_path / "scope.json"
-        p.write_text(json.dumps({"entries": [bad]}))
+        p.write_text(json.dumps({"version": 4, "entries": [bad]}))
         with pytest.raises(ValueError):
             load_scope(p)
-    p.write_text(json.dumps({"entries": [good, good]}))
+    p.write_text(json.dumps({"version": 4, "entries": [good]}))
+    assert load_scope(p)[0].name == "X"  # the control: only the defect refuses
+    p.write_text(json.dumps({"version": 4, "entries": [good, good]}))
     with pytest.raises(ValueError):
         load_scope(p)
 
@@ -411,7 +413,8 @@ def test_render_post_type_errors_are_value_errors():
 def test_scope_patterns_avoid_common_words():
     entries = load_scope()
     def scoped(text):
-        return [e.name for e in entries if any(m in text.lower() for m in e.match)]
+        return [e.name for e in entries
+                if any(m in text.lower() for m in [*e.match, *(m for c in e.components for m in c.match)])]
     for text in ("foo truncate library", "trustcenter portal", "cargo shipping tracker"):
         assert scoped(text) == [], text
     for text in ("Rust Cargo", "Rust rustc", "The Rust Programming Language Cargo",

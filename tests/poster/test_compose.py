@@ -270,8 +270,8 @@ def test_digest_groups_releases_and_leads():
     assert lines[0] == "Daily digest for 2026-11-06: 4 advisories."
     assert "Critical (1)" in lines and "Notice (3)" in lines
     assert f"- SYNTHETIC TEST: macOS: release 149521, 44 CVEs; see the release. {REL}" in lines
-    assert f"- SYNTHETIC TEST: Linux distributions: release USN-8928-1, 9 CVEs; see the release. {USN}" in lines
-    assert "- Browsers: 12 unrated leads." in lines  # a LEAD id is never a reserved one
+    assert f"- SYNTHETIC TEST: Linux kernel: release USN-8928-1, 9 CVEs; see the release. {USN}" in lines
+    assert "- Chrome: 12 unrated leads." in lines  # a LEAD id is never a reserved one
     assert out.count("CVE-2099-0300") == 1 and "CVE-2099-0001" not in out
     # An allowlisted vendor URL says an update exists; one fixed version is named.
     with pytest.MonkeyPatch.context() as m:
@@ -313,3 +313,32 @@ def test_digest_groups_keep_marks_and_kinds_apart():
         m.setattr(socket, "gethostname", lambda: "host-alpha")
         out = compose.digest(bad + syn, "2026-11-06")
     assert "1 item withheld" in out and "host-alpha" not in out and "2 CVEs" in out
+
+
+# ------------------------------------------------ components (ai-tools-alerts#qme5)
+
+def containerd_kev():
+    return cand(id="CVE-2026-0901", aliases=(), product_text="containerd containerd",
+                exploited=True, injection_exec=False, fixed="1.7.29", affected="< 1.7.29",
+                sources=(Source(KEV, None),))
+
+
+def test_containerd_kev_composes_containerd():
+    c = containerd_kev()
+    text, adv = root(c, ("critical", "kev"))
+    assert adv.title == "containerd: known exploited vulnerability (CVE-2026-0901)"
+    assert [(p.name, p.ecosystem, p.fixed) for p in adv.products] == [("containerd", "docker", "1.7.29")]
+    assert [(a.verb, a.target, a.value) for a in adv.actions] == [("upgrade", "containerd", "1.7.29")]
+    assert "Action: upgrade containerd to 1.7.29 or later." in text.split("\n")
+    assert "Docker" not in text
+
+
+def test_entry_fallback_composes_under_the_entry_name():
+    _, adv = root(cand(product_text="Example MCP server", fixed="1.2.0"))
+    assert adv.products[0].name == adv.actions[0].target == "MCP servers and clients"
+
+
+def test_root_post_refuses_unresolved_entry():
+    [docker] = [e for e in schema.load_scope() if e.name == "Docker"]
+    with pytest.raises(ValueError):
+        compose.root_post(containerd_kev(), "critical", docker, posted_at=NOW)

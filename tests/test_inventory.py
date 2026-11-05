@@ -114,3 +114,12 @@ def test_plugin_name_splits_on_last_at(tmp_path):
     (d / "installed_plugins.json").write_text(json.dumps({"plugins": {"@scope/x@market": []}}))
     got = inventory.collect(tmp_path, runner=lambda argv: None, apps_dirs=[])
     assert names(got, "skill") == ["@scope/x"]
+
+
+def test_docker_component_probes():
+    answers = {"containerd --version": "containerd github.com/containerd/containerd v1.7.20 8fc6bcff5\n",
+               "runc --version": "runc version 1.1.12\ncommit: v1.1.12-0-g51d5e94\n"}
+    inv = collect_fixture(runner=lambda argv: answers.get(" ".join(argv)) or fixture_runner(argv))
+    got = {(i.name, i.version) for i in inv.products["docker"]}
+    assert {("containerd", "1.7.20"), ("runc", "1.1.12")} <= got
+    assert not {"containerd", "runc"} & set(names(collect_fixture(), "docker"))

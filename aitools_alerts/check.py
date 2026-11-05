@@ -26,7 +26,8 @@ _NAME_ECOSYSTEMS = frozenset({"skill", "mcp"})
 _TARGETED = {"upgrade": None, "disable_skill": "skill", "remove_mcp_server": "mcp"}
 # Names that identify the probed tool itself. Not scope.json's match
 # patterns: those also name components (containerd under docker, rustup
-# under rust) whose versions are not the tool's.
+# under rust) whose versions are not the tool's. A component installation
+# (inventory's containerd and runc probes) is known by its own name only.
 IDENTITY = {
     "claude-code": {"claude code", "claude-code", "@anthropic-ai/claude-code"},
     "codex": {"codex", "codex cli", "codex-cli", "openai codex", "@openai/codex"},
@@ -69,8 +70,9 @@ class Plan:
 
 def _aliases(ecosystem: str, installed: Installed) -> set[str]:
     names = {installed.name.lower()}
-    if ecosystem not in _NAME_ECOSYSTEMS:
-        names |= IDENTITY.get(ecosystem, set()) | {ecosystem}
+    tool = IDENTITY.get(ecosystem, set()) | {ecosystem}
+    if ecosystem not in _NAME_ECOSYSTEMS and names & tool:  # the ecosystem's own tool
+        names |= tool
     return names
 
 

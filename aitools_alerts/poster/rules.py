@@ -17,6 +17,7 @@ import time
 import unicodedata
 import urllib.error
 import urllib.request
+from dataclasses import replace
 from urllib.parse import urljoin, urlsplit
 
 from aitools_alerts import schema
@@ -96,9 +97,10 @@ def vendor_words(entries) -> set[str]:
     words = set(EXTRA_VENDOR_WORDS)
     for e in entries:
         if _tier(e) == 1:
-            first = _norm(e.name).split()
-            if first and first[0].strip("."):
-                words.add(first[0].strip("."))
+            for name in [e.name, *(c.name for c in getattr(e, "components", ()))]:
+                first = _norm(name).split()
+                if first and first[0].strip("."):
+                    words.add(first[0].strip("."))
     return words
 
 
@@ -116,10 +118,12 @@ def scope_of(product_text, log: list[str] | None = None, entries=None) -> schema
     "s" or a glued version number excepted at the end), so "skills.sh" does not
     match "skills.shopify", "mcp server" matches "MCP servers" and "openssh"
     matches "OpenSSH9.8p1". "substring": any occurrence (a
-    version-1 scope file). An entry whose ``not_match`` pattern also matches, by
-    the same mode, is skipped ("npm package ... for node.js" is not Node.js), and
-    the search goes on. Tier-1 entries are tried first, so a tier-1 hit wins over
-    any tier-2 hit.
+    version-1 scope file). An entry's ``components`` go first: the first whose
+    ``match`` hits and own ``not_match`` does not comes back as the entry resolved
+    to it (its name, ``components`` empty: the product a post names and the ledger
+    keys); else the entry's ``match`` picks the entry. The entry's ``not_match``
+    vetoes either ("npm package ... for node.js" is not Node.js), and the search
+    goes on. Tier-1 entries are tried first, so a tier-1 hit wins over tier 2.
     When nothing matches but the text holds a tier-1 vendor word as a whole token,
     or an entry was skipped by ``not_match``, the text is appended to ``log`` (a
     list the caller owns) for human review.
@@ -132,13 +136,23 @@ def scope_of(product_text, log: list[str] | None = None, entries=None) -> schema
     default = entries is None
     entries = _default_entries() if default else tuple(entries)
     excluded = False
+
+    def hit(patterns, mode) -> bool:
+        return any(m and _matches(m, text, mode) for m in patterns)
+
     for tier in (1, 2):
         for e in entries:
-            mode = getattr(e, "match_mode", "word")
-            if _tier(e) == tier and any(m and _matches(m, text, mode) for m in e.match):
-                if not any(m and _matches(m, text, mode) for m in getattr(e, "not_match", ())):
-                    return e
-                excluded = True
+            if _tier(e) != tier:
+                continue
+            mode, comps = getattr(e, "match_mode", "word"), getattr(e, "components", ())
+            c = next((c for c in comps if hit(c.match, mode) and not hit(c.not_match, mode)), None)
+            excluded |= any(hit(x.match, mode) and hit(x.not_match, mode) for x in comps)
+            if c is None and not hit(e.match, mode):
+                continue
+            if not hit(getattr(e, "not_match", ()), mode):
+                return replace(e, components=()) if c is None else replace(
+                    e, name=c.name, match=list(c.match), not_match=e.not_match + c.not_match, components=())
+            excluded = True
     if log is not None:
         words = _default_vendor_words() if default else vendor_words(entries)
         if excluded or _tokens(text) & words:

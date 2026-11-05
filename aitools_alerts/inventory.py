@@ -64,6 +64,14 @@ TOOLS: dict[str, tuple[tuple[str, ...], re.Pattern]] = {
 }
 
 
+# Components of a scope entry that a host can report on its own, as
+# name -> (ecosystem, fixed argv, regex). check matches them by name only.
+COMPONENT_TOOLS: dict[str, tuple[str, tuple[str, ...], re.Pattern]] = {
+    "containerd": ("docker", ("containerd", "--version"), re.compile(rf"^containerd \S+ v?{_TOKEN}{_EDGE}")),
+    "runc": ("docker", ("runc", "--version"), re.compile(rf"^runc version {_TOKEN}{_EDGE}")),
+}
+
+
 def default_runner(argv: tuple) -> str | None:
     """Run one fixed argv; stdout (stderr if stdout is empty), or None."""
     try:
@@ -83,7 +91,10 @@ def _scope_names() -> dict[str, str]:
 
 
 def collect_tool(ecosystem: str, runner: Runner, name: str) -> Installed | None:
-    argv, rx = TOOLS[ecosystem]
+    return _probe(*TOOLS[ecosystem], runner, name)
+
+
+def _probe(argv: tuple, rx: re.Pattern, runner: Runner, name: str) -> Installed | None:
     out = runner(argv)
     if not isinstance(out, str):
         return None
@@ -230,6 +241,8 @@ def collect(home: Path | None = None, runner: Runner | None = None,
 
     for eco in TOOLS:
         add(eco, collect_tool, eco, runner, names.get(eco, eco))
+    for name, (eco, argv, rx) in COMPONENT_TOOLS.items():
+        add(eco, _probe, argv, rx, runner, name)
     add("cursor", collect_cursor, apps_dirs, names.get("cursor", "Cursor"))
     add("skill", collect_skills, home)
     add("mcp", collect_mcp, home)
