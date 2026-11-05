@@ -335,9 +335,18 @@ class FakeRunner:
         return subprocess.CompletedProcess(argv, self.returncode, self.stdout, self.stderr)
 
 
+@pytest.fixture(autouse=True)
+def secret_source(monkeypatch, tmp_path_factory):
+    helper = tmp_path_factory.mktemp("helper") / "secrets-helper.sh"  # a placeholder: the runner is faked
+    helper.write_text("")
+    monkeypatch.setenv("AITOOLS_ALERTS_SECRET_NAME", "ROOT_KEY_VAR")
+    monkeypatch.setenv("AITOOLS_ALERTS_SECRETS_HELPER", str(helper))
+    return helper
+
+
 @pytest.fixture
 def leaked_env(monkeypatch):
-    monkeypatch.setenv("AITOOLS_ALERTS_ROOT_NSEC", "f" * 64)
+    monkeypatch.setenv("ROOT_KEY_VAR", "f" * 64)
 
 
 def test_sign_script_reads_secret_with_throwaway_cache(leaked_env):
@@ -349,11 +358,12 @@ def test_sign_script_reads_secret_with_throwaway_cache(leaked_env):
     assert call["write_blocked"]
     assert not os.path.exists(call["cache"])
     env = call["kw"]["env"]
-    assert "AITOOLS_ALERTS_ROOT_NSEC" not in env
+    assert "ROOT_KEY_VAR" not in env
+    assert env["AITOOLS_ALERTS_SECRET_NAME"] == "ROOT_KEY_VAR"
     assert call["kw"]["stdin"] is subprocess.DEVNULL
     assert call["kw"]["capture_output"] is True
     assert sec not in " ".join(call["argv"])
-    assert "get_secret AITOOLS_ALERTS_ROOT_NSEC" in call["argv"][-1]
+    assert call["argv"][-1] == 'source "$AITOOLS_ALERTS_SECRETS_HELPER" && get_secret "$AITOOLS_ALERTS_SECRET_NAME"'
 
 
 def test_sign_script_accepts_nsec_value():
@@ -383,7 +393,7 @@ def test_sign_script_refuses_when_helper_wrote_to_cache():
     def runner(argv, **kw):
         cache = kw["env"]["SECRETS_CACHE_DIR"]
         os.chmod(cache, 0o700)  # a helper that forces its way in
-        Path(cache, "AITOOLS_ALERTS_ROOT_NSEC").write_text(sec)
+        Path(cache, "ROOT_KEY_VAR").write_text(sec)
         runner.cache = cache
         return subprocess.CompletedProcess(argv, 0, sec.encode(), b"")
 
@@ -576,4 +586,20 @@ def test_sign_script_refuses_unverified_previous(tmp_path, monkeypatch):
     runner = FakeRunner(stdout=b"")
     with pytest.raises(SystemExit, match="not signed by the trust root"):
         sign(2, runner=runner)
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize("name, helper", [(None, "ok"), ("", "ok"), ("root_key", "ok"), ("A; rm x", "ok"),
+                                          ("AITOOLS_ALERTS_SECRET_NAME", "ok"), ("ROOT_KEY_VAR", None),
+                                          ("ROOT_KEY_VAR", "relative.sh"), ("ROOT_KEY_VAR", "/no/such/helper")])
+def test_sign_script_needs_its_secret_source(monkeypatch, secret_source, name, helper):
+    for k, v in (("AITOOLS_ALERTS_SECRET_NAME", name),
+                 ("AITOOLS_ALERTS_SECRETS_HELPER", str(secret_source) if helper == "ok" else helper)):
+        if v is None:
+            monkeypatch.delenv(k)
+        else:
+            monkeypatch.setenv(k, v)
+    runner = FakeRunner(stdout=b"")
+    with pytest.raises(SystemExit):
+        _script().read_root_secret(runner=runner)
     assert runner.calls == []

@@ -1,13 +1,16 @@
 #!/bin/sh
 # Public scan: no tracked file names a fleet host, the relay VM's domain or login
-# user, or a home-directory path on the poster Mac. This file is the only place
+# user, a home-directory path on the poster Mac, the tailnet, the secrets
+# cache or the vault variable names. This file is the only place
 # the pattern is spelled, so it skips itself. Every tracked file is read as bytes,
 # binary ones included. Exit 0 clean, 1 on a hit (each hit printed as path:line),
 # 2 when the scan cannot run or a tracked file cannot be read.
 cd "$(dirname "$0")/.." || exit 2
 exec python3 -I - <<'PY'
 import re, subprocess, sys
-PATTERN = re.compile(rb"host-a|host-b|host-d|host-e|host-f|host-c|vm\.example|relayuser|/home/user", re.I)
+PATTERN = re.compile(rb"host-a|host-b|host-d|host-e|host-f|host-c|vm\.example|relayuser|/home/user"
+                     rb"|exampletailnet|\bts\.net\b|\.cache/amplifier|AITOOLS_ALERTS_ROOT_NSEC|BUZZ_AITOOLS_AGENT_NSEC"
+                     rb"|claude-pool", re.I)
 SELF = b"scripts/public-scan.sh"
 try:
     listed = subprocess.run(["git", "ls-files", "-z"], capture_output=True, check=True).stdout

@@ -76,7 +76,7 @@ _PRIVATE = re.compile(
     re.I,
 )
 # Source hosts that only resolve inside a network: never a public advisory.
-_INTERNAL_SUFFIXES = (".local", ".internal", ".lan", ".home.arpa", ".ts.net", ".localhost")
+_INTERNAL_SUFFIXES = (".local", ".internal", ".lan", ".home.arpa", ".localhost")
 _PRIVATE_URL_PATH = re.compile(r"/(?:Users|home)/|~/")
 HINTS = frozenset({"critical", "high", "medium", "low", "none", "not_affected", "out_of_scope"})
 

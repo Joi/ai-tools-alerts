@@ -77,7 +77,7 @@ that must never reach a post (design: "Nothing private leaves the fleet").
   path and query are then percent-decoded (up to three rounds) and rejected when they
   hold a host name, a path or a kata ref. A source whose host is an IP literal that
   is not globally routable (loopback, private, link-local, tailnet CGNAT), has no
-  dot, or ends in `.local`, `.internal`, `.lan`, `.home.arpa`, `.ts.net`,
+  dot, or ends in `.local`, `.internal`, `.lan`, `.home.arpa`, `.<tailnet-domain>`,
   `.<vm-domain>` or `.localhost` is dropped, and so is any URL whose host part is
   percent-encoded (it would hide those suffixes from the check). Path and kata-ref patterns are
   case-insensitive. A bare `#xxxx` with no project name is not treated as a kata ref.

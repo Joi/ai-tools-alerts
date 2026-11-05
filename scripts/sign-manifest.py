@@ -9,8 +9,10 @@ optionally "retracted". The signed "retracted" list is the one in the
 manifest already at --out (which must verify against TRUST_ROOT_PUBKEY), plus
 the content file's, plus each --retract, minus each --unretract; it is kept
 across versions until an --unretract drops an id, and left out when empty.
-The root secret is read with get_secret AITOOLS_ALERTS_ROOT_NSEC from the
-fleet's secrets helper, in a bash subprocess whose SECRETS_CACHE_DIR is a fresh
+The root secret is read with get_secret from the deployment's secrets helper:
+AITOOLS_ALERTS_SECRETS_HELPER is the helper's absolute path and
+AITOOLS_ALERTS_SECRET_NAME the root key's vault variable, both required (the
+public script names neither). The helper runs in a bash subprocess whose SECRETS_CACHE_DIR is a fresh
 temporary directory with no write permission, so the helper's cache write
 fails and the key never touches disk. Before the helper runs, the script
 refuses root and proves the directory refuses a write; afterwards it checks the
@@ -28,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -41,15 +44,28 @@ if str(REPO) not in sys.path:
 
 from aitools_alerts import TRUST_ROOT_PUBKEY, manifest, nostr, schema  # noqa: E402
 
-SECRET_NAME = "AITOOLS_ALERTS_ROOT_NSEC"
-HELPER = "source ~/dotfiles-private/scripts/lib/secrets.sh && get_secret " + SECRET_NAME
+NAME_ENV = "AITOOLS_ALERTS_SECRET_NAME"
+HELPER_ENV = "AITOOLS_ALERTS_SECRETS_HELPER"
+# Both values reach bash through its environment, quoted, never spliced into the command.
+HELPER = f'source "${HELPER_ENV}" && get_secret "${NAME_ENV}"'
+_SECRET_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 DEFAULT_OUT = REPO / "trust" / "manifest.json"
 
 
 # Removed from the helper's environment: a stale copy of the key (get_secret
-# falls back to it), and bash startup/trace hooks that would run code or trace
-# inside the process holding the key.
-_DROP_ENV = frozenset({SECRET_NAME, "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "BASH_XTRACEFD", "PS4"})
+# falls back to it; dropped by name in read_root_secret), and bash startup/trace
+# hooks that would run code or trace inside the process holding the key.
+_DROP_ENV = frozenset({"BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "BASH_XTRACEFD", "PS4"})
+
+
+def _secret_source() -> tuple[str, str]:
+    """The root key's vault variable name and the helper's path, from the environment."""
+    name, helper = os.environ.get(NAME_ENV, ""), os.environ.get(HELPER_ENV, "")
+    if not _SECRET_NAME.fullmatch(name) or name in (NAME_ENV, HELPER_ENV):
+        _die(f"set {NAME_ENV} to the root key's vault variable name")
+    if not os.path.isabs(helper) or not os.path.isfile(helper):
+        _die(f"set {HELPER_ENV} to the absolute path of the secrets helper")
+    return name, helper
 
 
 def _die(msg: str) -> None:
@@ -78,13 +94,14 @@ def read_root_secret(runner=subprocess.run) -> str:
     # directory refuses a write BEFORE the helper ever runs.
     if os.geteuid() == 0:
         _die("refusing to run as root: the read-only cache directory would not stop a write")
+    name, helper = _secret_source()
     cache = tempfile.mkdtemp(prefix="sign-manifest-")
     os.chmod(cache, 0o500)
     try:
         if not _refuses_writes(cache):
             _die("the throwaway cache directory accepts writes; not reading the root key")
-        env = {k: v for k, v in os.environ.items() if k not in _DROP_ENV}
-        env["SECRETS_CACHE_DIR"] = cache
+        env = {k: v for k, v in os.environ.items() if k not in _DROP_ENV and k != name}
+        env.update({"SECRETS_CACHE_DIR": cache, NAME_ENV: name, HELPER_ENV: helper})
         try:
             res = runner(["bash", "-c", HELPER], env=env, stdin=subprocess.DEVNULL,
                          capture_output=True, timeout=60)

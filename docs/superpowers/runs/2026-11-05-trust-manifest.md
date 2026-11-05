@@ -21,7 +21,7 @@ Pass 2 [code:branch delta]: 0B/0S/0C/0R · fixed 3/3 prior · velocity ↓ (8→
 
 ## Notes (execution)
 - Agency MCP not used: execution inline by the executor per the plan's chunks, as in A1/A2 (recorded, not skipped silently).
-- Real signing: VM relay-bot key re-read and matched; default cache had no AITOOLS_ALERTS_ROOT_NSEC entry before or after; the script's read-only-dir emptiness check passed (it would have refused otherwise); no sign-manifest-* temp dir left.
+- Real signing: VM relay-bot key re-read and matched; default cache had no <ROOT_KEY_VAR> entry before or after; the script's read-only-dir emptiness check passed (it would have refused otherwise); no sign-manifest-* temp dir left.
 - Leak check on the staged diff: no fleet host name, no nsec; 64-hex strings are the root pub, the two poster pubs, the event id (plus the 128-hex sig).
 
 ## Notes

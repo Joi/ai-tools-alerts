@@ -16,8 +16,8 @@
 - The CLI never executes a string from a post, never auto-applies from a `relay-bot` post, and auto-applies from a `curator` post only for verbs the member opted into in config.
 - Critical fires only by rule: product in scope tier 1 and (KEV exploited, or trojanized/malicious release confirmed by a primary source, or injection-to-execution with a fix). A critical whose cited primary source is not on the allowlist or did not fetch posts as `high` with the word "unverified" in the body.
 - Scope tier 2 (macOS, Linux distributions, browsers) never posts critical.
-- Trust root is a new dedicated key: vault line `AITOOLS_ALERTS_ROOT_NSEC` in Kura, used only to sign manifests. Public key pinned in the CLI as `TRUST_ROOT_PUBKEY` and in the README.
-- Secrets come from Kura helpers or mode-600 files, never argv, never printed. jibot's relay key on the VM is `~/.buzz-keys/agent.nsec`; the Kura copy is `BUZZ_AITOOLS_AGENT_NSEC`.
+- Trust root is a new dedicated key: vault line `<ROOT_KEY_VAR>` in Kura, used only to sign manifests. Public key pinned in the CLI as `TRUST_ROOT_PUBKEY` and in the README.
+- Secrets come from Kura helpers or mode-600 files, never argv, never printed. jibot's relay key on the VM is `~/.buzz-keys/agent.nsec`; the Kura copy is `<RELAY_KEY_VAR>`.
 - Relay: NIP-42 URL `wss://buzz.ai-tools.md`, HTTP API `https://buzz.ai-tools.md`, VM `<relay-vm>`, Buzz CLI `~/buzz/target/release/buzz`.
 - Model turns for the watch stay at four a day; the 25-minute budget per run holds.
 - Nothing private leaves the fleet: posts carry advisory, products, actions, sources; never host names, observed versions or evidence paths.
@@ -53,7 +53,7 @@ Kata: create project `ai-tools-alerts` after Task A1; file one issue per task be
 - [ ] **Step 3: Implement `aitools_alerts/nostr.py`** with pure-Python secp256k1 point arithmetic and BIP-340 sign/verify as in the BIP reference implementation, plus bech32 encode/decode for `npub`/`nsec`. No third-party imports.
 - [ ] **Step 4: Run** the tests — expect PASS.
 - [ ] **Step 5: Create the GitHub repo** `gh repo create Joi/ai-tools-alerts --public --description "Security alerts for people running AI agents: two Buzz channels, a signed mirror, and a CLI your agent can act on"` using the token from `get_github_token`. Push `main`.
-- [ ] **Step 6: Mint the trust root on the poster Mac**: `python3 -c 'from aitools_alerts.nostr import keygen; ...'` writing the sec hex to a 0600 temp file, append `AITOOLS_ALERTS_ROOT_NSEC=<hex>` to the Kura vault through `the Kura edit helper` with `EDITOR` set to a one-shot append script (the script appends the line from the temp file and exits), wipe the temp file, verify with `get_secret AITOOLS_ALERTS_ROOT_NSEC | wc -c` (65). Commit only `trust/root.pub` with the pub hex.
+- [ ] **Step 6: Mint the trust root on the poster Mac**: `python3 -c 'from aitools_alerts.nostr import keygen; ...'` writing the sec hex to a 0600 temp file, append `<ROOT_KEY_VAR>=<hex>` to the Kura vault through `the Kura edit helper` with `EDITOR` set to a one-shot append script (the script appends the line from the temp file and exits), wipe the temp file, verify with `get_secret <ROOT_KEY_VAR> | wc -c` (65). Commit only `trust/root.pub` with the pub hex.
 - [ ] **Step 7: Commit** `git commit -m "feat: nostr primitives, trust root public key"`.
 
 ### Task A2: Spec files
@@ -79,7 +79,7 @@ Kata: create project `ai-tools-alerts` after Task A1; file one issue per task be
 
 **Interfaces:**
 - Produces: `manifest.load(path_or_bytes) -> Manifest` where the manifest is a signed Nostr event of kind `30078`, tag `["d","aitools-alerts-manifest"]`, `content` = JSON `{"version": int, "issued_at": iso, "posters": [{"pubkey": hex, "role": "curator"|"relay-bot", "name": str}]}`; `manifest.verify(m: Manifest, root_pubkey: str) -> bool`; `manifest.role_of(m, pubkey) -> str|None`; constant `TRUST_ROOT_PUBKEY` in `aitools_alerts/__init__.py` equal to `trust/root.pub`.
-- `scripts/sign-manifest.py <content.json>`: reads the root nsec via `get_secret AITOOLS_ALERTS_ROOT_NSEC` (sourcing `the Kura secrets helper` in a subprocess), writes `trust/manifest.json`, prints the event id.
+- `scripts/sign-manifest.py <content.json>`: reads the root nsec via `get_secret <ROOT_KEY_VAR>` (sourcing `the Kura secrets helper` in a subprocess), writes `trust/manifest.json`, prints the event id.
 
 - [ ] **Step 1: Failing tests**: `test_manifest_signed_by_root_verifies`, `test_manifest_signed_by_other_key_rejected`, `test_manifest_version_must_increase` (loading v2 then v1 raises), `test_role_lookup`.
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.

@@ -35,7 +35,7 @@ No further pass (ruling jibot-code#41e2).
 - [x] C6 — model-turn counter read; forced digest not run (directive c:6d40h3, the hourly 2026-11-06 digest covers it); evidence lines on jibot-code#gr5b and gs18
 
 ## Evidence
-Transcripts are in the session scratchpad (not committed): /private/tmp/claude-501/-Users-joi-repos--worktrees-gs18-e3-live-acceptance-of-the-ai-tools-alert/8e226561-38a8-4032-ba04-47fd300e3876/scratchpad/e3-*.txt
+Transcripts are in the session scratchpad (not committed): <session scratchpad>/e3-*.txt
 
 1. Second poster, add: PASS. v2 signed by the root through Kura (sign-manifest.py printed the event id only), landed on main at 831d975, shipped 07:58:42Z with the patched installer (jibot-code#qwar open); https://buzz.ai-tools.md/alerts/manifest.json served version 2 at 08:00:28Z (1 min 46 s). Before v2, `curator post --dry-run` with the test key was refused: "key npub1ga2lp… has no curator role in manifest v1".
 2. Fresh install: PASS. Python 3.14.10 venv at ~/.local/share/aitools-alerts per the README's no-pipx path, `init` (config 0600, mirror_url https://buzz.ai-tools.md/alerts/, the default), `pull` "manifest v1: 6 new events, 6 stored, dropped: unknown-poster 11" (the 11 are the relay's own key 99b226af…, channel metadata kinds 39000–39002 and 40099), `check` "0 advisories". No account, no key. Hook script at ~/.claude/hooks/; the README's SessionStart entry and the skill in a scratch project, not the fleet-managed ~/.claude/settings.json. No hourly schedule installed (it would mark alerts seen before the hook test). Transcript e3-item2-install-transcript.txt.

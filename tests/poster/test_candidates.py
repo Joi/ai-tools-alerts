@@ -414,7 +414,6 @@ def test_heartbeat_deeply_nested_json_never_raises(tmp_path):
     "http://100.101.102.103/x",
     "http://10.0.0.5/x",
     "http://[fd7a:115c:a1e0::1]/x",
-    "https://studio.tail1234.ts.net/x",
     "https://buzz-ops.corp.example/x",
     "https://printer.local/x",
     "https://intranet/x",

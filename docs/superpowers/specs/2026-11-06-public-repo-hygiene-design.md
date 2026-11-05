@@ -71,9 +71,23 @@ it lives only in `scripts/public-scan.sh`, which no scan reads) hits
 ## Alternatives considered
 
 - Remove the whole `_INTERNAL_SUFFIXES` list from code: rejected; `.local`,
-  `.internal`, `.lan`, `.home.arpa`, `.ts.net`, `.localhost` are generic and
-  removing them weakens a default safety check for every installer. Only the
-  fleet-specific suffix moves to config.
+  `.internal`, `.lan`, `.home.arpa`, `.localhost` are generic and removing them
+  weakens a default safety check. The VM domain suffix moves to config, and so
+  (directive c:s5x5zq, which adds the tailnet domain to the scan) does the tailnet
+  suffix; only the fleet runs the poster, so no member loses a default.
+
+## Directive c:s5x5zq (addendum)
+
+The scan also covers the tailnet name and domain, the persistent secrets cache
+path, the two vault variable names and the pool's session paths. The docs use
+`<ROOT_KEY_VAR>`, `<RELAY_KEY_VAR>`, `<persistent secrets cache>`, `<session scratchpad>`.
+`scripts/sign-manifest.py` spelled the root key's vault variable and the
+secrets-helper path, so it now takes both from the environment
+(`AITOOLS_ALERTS_SECRET_NAME`, `AITOOLS_ALERTS_SECRETS_HELPER`), refuses before
+any helper runs when either is missing or malformed, and passes them to bash in
+its environment, never in the command text. This also closes ai-tools-alerts#2bf0.
+The tailnet pattern is `\bts\.net\b`, not the bare `ts\.net`, which matched
+`parts.netloc` in ordinary Python.
 - Thread strip hosts through every adapter and compose as parameters: cleaner
   but touches compose.py and every call site, colliding with sibling rd8t today.
 - Environment variables for the relay route: the poster's other settings are in
