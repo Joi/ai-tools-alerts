@@ -331,3 +331,136 @@ def test_vendor_words_from_tier1_names():
 
 def test_source_is_schema_source():
     assert candidates.Source is schema.Source
+
+
+# ------------------------------------------- bounded matching (ai-tools-alerts#x838)
+
+def test_short_pattern_does_not_match_inside_another_word():
+    assert rules.scope_of("Shopify skills.shopify") is None
+    assert rules.scope_of("dockerfile-x") is None
+    assert rules.scope_of("Chromebook firmware") is None
+    assert rules.scope_of("openclawd") is None
+    # A bounded occurrence still matches, wherever it sits in the text.
+    assert rules.scope_of("skills.sh registry").name == "ClawHub and skills.sh"
+    assert rules.scope_of("skills.shopify and skills.sh").name == "ClawHub and skills.sh"
+    assert rules.scope_of("docker-compose").name == "Docker"
+    assert rules.scope_of("Docker Desktop").name == "Docker"
+    assert rules.scope_of("docker_sdk").name == "Docker"  # "_" separates, as in _tokens
+    assert rules.scope_of("Docker2") is None  # a digit continues the word
+    # The left edge is bounded too: a letter or digit before the pattern.
+    for text in ("notdocker", "2docker", "\u00e9docker", "\u30c9docker", "xopenssh", "mycpython"):
+        assert rules.scope_of(text) is None, text
+    assert rules.scope_of("foo_docker").name == "Docker"
+    assert rules.scope_of("notdocker, then docker").name == "Docker"  # a later bounded hit counts
+    # One plural "s" at a word-final edge, no more.
+    for text, name in (("MCP servers", "MCP servers and clients"),
+                       ("MCP servers and clients", "MCP servers and clients"),
+                       ("Model Context Protocol clients", "MCP servers and clients"),
+                       ("Agent Skills", "ClawHub and skills.sh"),
+                       ("Claude skills", "ClawHub and skills.sh"),
+                       ("git clients", "git"), ("Rust toolchains", "Rust")):
+        hit = rules.scope_of(text)
+        assert hit is not None and hit.name == name, (text, hit and hit.name)
+    assert rules.scope_of("dockerss") is None
+
+
+def test_codex_cli_slug_matches_codex():
+    for text in ("openai/codex-cli", "codex-cli", "openai/codex", "@openai/codex",
+                 "OpenAI Codex CLI"):
+        assert rules.scope_of(text).name == "Codex", text
+
+
+def test_every_pattern_resolves_to_its_own_entry():
+    entries = schema.load_scope()
+    assert entries and all(e.match_mode == "word" for e in entries)
+    for e in entries:
+        for m in e.match:
+            hit = rules.scope_of(m)
+            assert hit is not None and hit.name == e.name, (m, e.name, hit and hit.name)
+
+
+# GitHub repository slugs and advisory package names the sources use (2026-11-05).
+SOURCE_FORMS = {
+    "anthropics/claude-code": "Claude Code",
+    "@anthropic-ai/claude-code": "Claude Code",
+    "openai/codex": "Codex",
+    "npm:@openai/codex": "Codex",
+    "cursor/cursor": "Cursor",
+    "Cursor CLI": "Cursor",
+    "google-gemini/gemini-cli": "Gemini CLI",
+    "@google/gemini-cli": "Gemini CLI",
+    "NousResearch/hermes-agent": "Hermes",
+    "openclaw/openclaw": "OpenClaw",
+    "@openclaw/discord": "OpenClaw",
+    "modelcontextprotocol/servers": "MCP servers and clients",
+    "@modelcontextprotocol/server-filesystem": "MCP servers and clients",
+    "@modelcontextprotocol/sdk": "MCP servers and clients",
+    "mcp-server-fetch": "MCP servers and clients",
+    "nodejs/node": "Node.js",
+    "python/cpython": "Python",
+    "golang/go": "Go",
+    "golang.org/x/crypto": "Go",
+    "rust-lang/rust": "Rust",
+    "moby/moby": "Docker",
+    "Moby (aka Docker CE, Docker Engine)": "Docker",
+    "github.com/docker/cli": "Docker",
+    "docker-ce": "Docker",
+    "dockerd": "Docker",
+    "tailscale/tailscale": "Tailscale",
+    "tailscaled": "Tailscale",
+    "openssh/openssh-portable": "OpenSSH",
+    "git/git": "git",
+    "Git Git": "git",  # KEV: vendorProject "Git", product "Git" (CVE-2025-48384)
+}
+
+
+def test_source_slugs_resolve():
+    for text, name in SOURCE_FORMS.items():
+        hit = rules.scope_of(text)
+        assert hit is not None and hit.name == name, (text, hit and hit.name)
+
+
+def test_vendor_only_text_is_logged_not_matched():
+    log: list[str] = []
+    for text in ("Python", "Go", "Git", "Rust", "Cursor"):
+        assert rules.scope_of(text, log) is None, text
+    assert log == ["Python", "Go", "Git", "Rust", "Cursor"]
+
+
+def _scope_file(tmp_path, top: dict, match=("skills.sh",)):
+    import json
+    p = tmp_path / "scope.json"
+    p.write_text(json.dumps(dict(top, entries=[
+        {"name": "Skills", "ecosystem": "skill", "tier": 1, "match": list(match)}])))
+    return p
+
+
+def test_scope_file_versions(tmp_path):
+    # Version 1 (no version field) still reads, with its substring meaning.
+    v1 = schema.load_scope(_scope_file(tmp_path, {"description": "old", "other": 1}))
+    assert v1[0].match_mode == "substring"
+    assert rules.scope_of("skills.shopify", entries=v1).name == "Skills"
+    # Version 2 defaults to word matching.
+    v2 = schema.load_scope(_scope_file(tmp_path, {"version": 2}))
+    assert v2[0].match_mode == "word"
+    assert rules.scope_of("skills.shopify", entries=v2) is None
+    assert rules.scope_of("skills.sh", entries=v2).name == "Skills"
+    v2w = schema.load_scope(_scope_file(tmp_path, {"version": 2, "match_mode": "word"}))
+    assert v2w[0].match_mode == "word"
+    v2s = schema.load_scope(_scope_file(tmp_path, {"version": 2, "match_mode": "substring"}))
+    assert rules.scope_of("skills.shopify", entries=v2s).name == "Skills"
+    # A reader refuses a format it does not know.
+    for bad in ({"version": 3}, {"version": True}, {"version": "2"}, {"version": 1.0},
+                {"version": 2, "match_mode": "regex"}, {"version": 2, "match_mode": None},
+                {"version": 1}, {"match_mode": "word"}, {"version": 2, "extra": 1}):
+        with pytest.raises(ValueError):
+            schema.load_scope(_scope_file(tmp_path, bad))
+
+
+def test_entries_without_a_mode_use_the_word_rule():
+    entry = schema.ScopeEntry(name="X", ecosystem="x", tier=1, match=["skills.sh"])
+    assert entry.match_mode == "word"
+    assert rules.scope_of("skills.shopify", entries=[entry]) is None
+    sub = schema.ScopeEntry(name="X", ecosystem="x", tier=1, match=["skills.sh"],
+                            match_mode="substring")
+    assert rules.scope_of("skills.shopify", entries=[sub]).name == "X"

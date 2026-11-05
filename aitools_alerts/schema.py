@@ -90,6 +90,9 @@ class ScopeEntry:
     ecosystem: str
     tier: int
     match: list[str]
+    # How ``match`` patterns are tested: "word" (bounded) or "substring". Set from
+    # the scope file's version and match_mode; never a key of a JSON entry.
+    match_mode: str = "word"
 
 
 # ---------------------------------------------------------------- validation
@@ -98,10 +101,10 @@ def _fail(path: str, why: str):
     raise ValueError(f"{path}: {why}")
 
 
-def _obj(v, path: str, cls) -> dict:
+def _obj(v, path: str, cls, want: set[str] | None = None) -> dict:
     if not isinstance(v, dict):
         _fail(path, "not an object")
-    want = {f.name for f in fields(cls)}
+    want = {f.name for f in fields(cls)} if want is None else want
     extra = set(v) - want
     if extra:
         _fail(path, f"unknown keys {sorted(extra)}")
@@ -328,13 +331,44 @@ def _load_json(path: Path):
         return json.load(f, object_pairs_hook=_no_duplicates)
 
 
+SCOPE_VERSION = 2
+SCOPE_MATCH_MODES = ("word", "substring")
+_SCOPE_KEYS = frozenset({"version", "description", "match_mode", "entries"})
+_SCOPE_ENTRY_KEYS = {"name", "ecosystem", "tier", "match"}
+
+
+def _scope_mode(data) -> str:
+    """The match mode a scope file declares, by its version.
+
+    No ``version``: version 1, substring patterns, extra top-level keys ignored.
+    ``version`` 2: top-level keys limited to _SCOPE_KEYS, ``match_mode`` one of
+    SCOPE_MATCH_MODES, default "word". Any other version is refused.
+    """
+    if not isinstance(data, dict):
+        return "substring"  # the entries check below reports the bad file
+    if "version" not in data:
+        if "match_mode" in data:
+            _fail("scope.match_mode", "needs version 2")
+        return "substring"
+    if type(data["version"]) is not int or data["version"] != SCOPE_VERSION:
+        _fail("scope.version", f"not {SCOPE_VERSION}")
+    extra = set(data) - _SCOPE_KEYS
+    if extra:
+        _fail("scope", f"unknown keys {sorted(extra)}")
+    mode = data.get("match_mode", "word")
+    if mode not in SCOPE_MATCH_MODES:
+        _fail("scope.match_mode", f"not one of {list(SCOPE_MATCH_MODES)}")
+    return mode
+
+
 def load_scope(path: Path | None = None) -> list[ScopeEntry]:
     data = _load_json(path or SPEC_DIR / "scope.json")
+    mode = _scope_mode(data)
     entries, names = [], set()
     for i, e in enumerate(_list(data.get("entries") if isinstance(data, dict) else None,
                                 "scope.entries", 1, 1000)):
         at = f"scope.entries[{i}]"
-        e = _obj(e, at, ScopeEntry)
+        e = _obj(e, at, ScopeEntry, _SCOPE_ENTRY_KEYS)
         name = _text(e["name"], at + ".name", 1, 200)
         if name in names:
             _fail(at + ".name", "duplicate")
@@ -351,6 +385,7 @@ def load_scope(path: Path | None = None) -> list[ScopeEntry]:
             ecosystem=_pattern(e["ecosystem"], at + ".ecosystem", _ECOSYSTEM),
             tier=e["tier"],
             match=list(match),
+            match_mode=mode,
         ))
     return entries
 

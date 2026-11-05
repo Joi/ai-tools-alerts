@@ -49,6 +49,28 @@ def _tokens(text: str) -> set[str]:
     return {t.strip(".") for t in _TOKEN.findall(text)} - {""}
 
 
+_WORD_CHAR = re.compile(r"[^\W_]")  # a letter or digit; "_" separates, as in _TOKEN
+
+
+@functools.lru_cache(maxsize=1024)
+def _word_pattern(pattern: str) -> re.Pattern:
+    """pattern, bounded on each edge that is a letter or digit.
+
+    An edge that is punctuation ("@scope/", a trailing "/") needs no boundary, so a
+    package-scope prefix still matches every package under it. A word-final edge
+    takes one optional "s" first, so "mcp server" matches "MCP servers".
+    """
+    head = r"(?<![^\W_])" if _WORD_CHAR.match(pattern[:1]) else ""
+    tail = r"s?(?![^\W_])" if _WORD_CHAR.match(pattern[-1:]) else ""
+    return re.compile(head + re.escape(pattern) + tail)
+
+
+def _matches(pattern: str, text: str, mode) -> bool:
+    if mode == "substring":
+        return pattern in text
+    return _word_pattern(pattern).search(text) is not None  # "word", and any unknown mode
+
+
 @functools.lru_cache(maxsize=1)
 def _default_entries() -> tuple[schema.ScopeEntry, ...]:
     return tuple(schema.load_scope())
@@ -78,8 +100,13 @@ def _default_vendor_words() -> frozenset[str]:
 def scope_of(product_text, log: list[str] | None = None, entries=None) -> schema.ScopeEntry | None:
     """The scope entry for product_text, or None when it is out of scope.
 
-    Each entry's ``match`` patterns are lowercase substrings of the normalised
-    text. Tier-1 entries are tried first, so a tier-1 hit wins over any tier-2 hit.
+    Each entry's ``match`` patterns are tested against the normalised text by the
+    entry's ``match_mode``. "word" (the default): the pattern occurs with no letter
+    or digit touching an edge of it that is itself a letter or digit (one plural
+    "s" excepted at the end), so "skills.sh" does not match "skills.shopify" and
+    "mcp server" matches "MCP servers". "substring": any occurrence (a
+    version-1 scope file). Tier-1 entries are tried first, so a tier-1 hit wins
+    over any tier-2 hit.
     When nothing matches but the text holds a tier-1 vendor word as a whole token,
     the text is appended to ``log`` (a list the caller owns) for human review.
     """
@@ -92,7 +119,8 @@ def scope_of(product_text, log: list[str] | None = None, entries=None) -> schema
     entries = _default_entries() if default else tuple(entries)
     for tier in (1, 2):
         for e in entries:
-            if _tier(e) == tier and any(m and m in text for m in e.match):
+            mode = getattr(e, "match_mode", "word")
+            if _tier(e) == tier and any(m and _matches(m, text, mode) for m in e.match):
                 return e
     if log is not None:
         words = _default_vendor_words() if default else vendor_words(entries)
