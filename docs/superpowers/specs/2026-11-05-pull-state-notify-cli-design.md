@@ -150,9 +150,12 @@ at once, and the last good events of keys still trusted are kept.
    event was in state, else `dropped["unknown-poster"]`). The block is parsed
    later, when advisories are built. A stored event whose key left the
    manifest is removed from state: the cache never vouches for it.
-   Retention: events older than 400 days are dropped (`aged-out`) unless a
-   kept reply points at them. Bound: when the result would exceed 20000
-   events or about 24 MiB, the fetched events are refused
+   Retention: a whole thread (a root and every reply to it) is dropped
+   (`aged-out`) when its newest event is older than 400 days; a thread is
+   never split, so a retraction or amendment never outlives or predeceases
+   it. Bound: when the result would exceed 20000 events, or the serialized
+   state of ALL roots would exceed 32 MiB (half the 64 MiB load limit), the
+   fetched events are refused
    (`state limit reached: new events not stored`) and the stored ones are
    filtered under the new manifest alone, so state always stays loadable and
    a revoking manifest always lands.

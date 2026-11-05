@@ -35,7 +35,7 @@ FILES = ("feed.json", "critical.json")
 MAX_FETCH_BYTES = 8 << 20
 MAX_EVENTS = 10000
 MAX_STORED_EVENTS = 20000
-MAX_STORED_BYTES = 24 << 20  # well under state.MAX_STATE_BYTES, so state stays loadable
+MAX_STORED_BYTES = 32 << 20  # serialized, all roots; half state.MAX_STATE_BYTES
 RETENTION_S = 400 * 86400
 TIMEOUT = 20
 _RANK = {"notice": 1, "high": 2, "critical": 3}
@@ -158,20 +158,19 @@ def _filter(stored: dict, fetched: list, m: Manifest, floor: Manifest | None,
 
 
 def _retain(kept: dict, now: float, res: PullResult) -> dict:
-    """Drop events older than RETENTION_S, except a root that a kept reply
-    still points at, so the store stays bounded and a thread never loses its
-    root while it is active."""
+    """Drop whole threads (a root and every reply to it) whose newest event
+    is older than RETENTION_S. A thread is kept or dropped as a unit, so a
+    retraction, a patch or a curator amendment never outlives or predeceases
+    its thread."""
     cutoff = now - RETENTION_S
-    young = {eid: ev for eid, ev in kept.items() if ev["created_at"] >= cutoff}
-    refs = {_thread_ref(ev) for ev in young.values()}
-    out = {eid: ev for eid, ev in kept.items() if eid in young or eid in refs}
+    newest: dict[str, int] = {}
+    for eid, ev in kept.items():
+        key = _thread_ref(ev) or eid
+        newest[key] = max(newest.get(key, 0), ev["created_at"])
+    out = {eid: ev for eid, ev in kept.items() if newest[_thread_ref(ev) or eid] >= cutoff}
     if len(out) < len(kept):
         res.dropped["aged-out"] += len(kept) - len(out)
     return out
-
-
-def _size(events: dict) -> int:
-    return sum(len(ev["content"]) + len(json.dumps(ev["tags"])) + 300 for ev in events.values())
 
 
 def _fetch(base_url, state: State, get, root_pubkey: str, now: float) -> PullResult:
@@ -222,7 +221,8 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float) -> PullRes
     # once, while the previous events of keys it still trusts are kept.
     res.manifest = m
     kept = _retain(_filter(before, [] if error else fetched, m, floor, res), now, res)
-    if _size(kept) > MAX_STORED_BYTES or len(kept) > MAX_STORED_EVENTS:
+    if (len(kept) > MAX_STORED_EVENTS
+            or state.size_with(root_pubkey, m, kept) > MAX_STORED_BYTES):
         res.dropped.clear()
         kept = _retain(_filter(before, [], m, floor, res), now, res)
         error = error or "state limit reached: new events not stored"

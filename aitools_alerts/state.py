@@ -155,13 +155,20 @@ class State:
         finally:
             os.close(fd)
 
+    def _record(self, roots: dict | None = None) -> dict:
+        roots = self.roots if roots is None else roots
+        return {"current": self.manifest_root,
+                "roots": {r: {"manifest": m.event, "events": evs} for r, (m, evs) in roots.items()}}
+
+    def size_with(self, root: str, m: Manifest, events: dict) -> int:
+        """Bytes events.json would take with ``root`` holding ``events``."""
+        rec = self._record({**self.roots, root: [m, events]})
+        return len(json.dumps(rec, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+
     def save_pull(self) -> None:
         """Write manifests and events (one file, one replace), then last_pull."""
         if self.manifest_root is not None:
-            write_json(self.dir / "events.json", {
-                "current": self.manifest_root,
-                "roots": {r: {"manifest": m.event, "events": evs}
-                          for r, (m, evs) in self.roots.items()}})
+            write_json(self.dir / "events.json", self._record())
         write_json(self.dir / "last_pull.json", self.last_pull)
 
     def save_last_pull(self) -> None:

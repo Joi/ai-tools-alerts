@@ -459,3 +459,28 @@ def test_telegram_chat_ids(home):
     p.write_text('telegram_chat_id = "1; rm"\n')
     with pytest.raises(config.ConfigError):
         config.load()
+
+
+# ------------------------------------------------------- delta review fixes
+
+def test_retention_keeps_a_thread_whole(mirror):
+    old = T0 - 500 * 86400
+    root = mirror.root_post(mirror.bot_sec, advisory(posted_by="relay-bot"), created_at=old)
+    mirror.reply(mirror.cur_sec, root, "retract", created_at=old + 50 * 86400)
+    mirror.reply(mirror.bot_sec, root, "still discussing", created_at=T0)
+    res, _ = do_pull(mirror)
+    assert res.dropped["aged-out"] == 0
+    [t] = threads()
+    assert t.retracted
+
+
+def test_size_bound_counts_serialized_bytes(monkeypatch, mirror):
+    first = mirror.root_post(mirror.cur_sec)
+    assert do_pull(mirror)[0].error is None
+    mirror.post(mirror.cur_sec, "\u0000" * 4000, created_at=T0 + 300)
+    st = State.load()
+    size_now = st.size_with(mirror.root, st.manifest, st.events)
+    monkeypatch.setattr(pull, "MAX_STORED_BYTES", size_now + 10000)  # 4000 chars, ~24000 bytes escaped
+    res, _ = do_pull(mirror)
+    assert res.error == "state limit reached: new events not stored"
+    assert list(State.load().events) == [first["id"]]
