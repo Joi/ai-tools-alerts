@@ -40,12 +40,16 @@ class Inventory:
     products: dict[str, list[Installed]]
 
 
-# ecosystem -> (fixed argv, regex capturing the version token on line 1)
-_TOKEN = r"([0-9]{1,9}(?:\.[0-9]{1,9}){1,4}(?:[a-z][a-z0-9]{0,15})?)"
-_TOKEN_ANY = r"([0-9]{1,9}(?:\.[0-9]{1,9}){0,4}(?:[a-z][a-z0-9]{0,15})?)"
-_EDGE = r"(?![0-9A-Za-z.])"
+# ecosystem -> (fixed argv, regex capturing the version token on line 1).
+# The token runs to the next space, comma, "(" or end of line, so a
+# pre-release such as 22.1.0-rc.1 is captured whole: versions cannot read it,
+# and check reports unparsable-version instead of comparing 22.1.0.
+_TOKEN = r"([0-9]{1,9}\.[0-9A-Za-z.+_~-]{1,63})"
+_TOKEN_ANY = r"([0-9][0-9A-Za-z.+_~-]{0,63})"
+_EDGE = r"(?=$|[\s,(])"
+_RAW = re.compile(r"[0-9][0-9A-Za-z.+_~-]{0,63}")
 TOOLS: dict[str, tuple[tuple[str, ...], re.Pattern]] = {
-    "claude-code": (("claude", "--version"), re.compile(rf"^v?{_TOKEN}{_EDGE}")),
+    "claude-code": (("claude", "--version"), re.compile(rf"^(?:claude-code/)?v?{_TOKEN}{_EDGE}")),
     "codex": (("codex", "--version"), re.compile(rf"^(?:codex(?:-cli)? )?v?{_TOKEN}{_EDGE}")),
     "gemini-cli": (("gemini", "--version"), re.compile(rf"^v?{_TOKEN}{_EDGE}")),
     "node": (("node", "--version"), re.compile(rf"^v{_TOKEN}{_EDGE}")),
@@ -56,7 +60,7 @@ TOOLS: dict[str, tuple[tuple[str, ...], re.Pattern]] = {
     "tailscale": (("tailscale", "version"), re.compile(rf"^{_TOKEN_ANY}{_EDGE}")),
     "openssh": (("ssh", "-V"), re.compile(rf"^OpenSSH_{_TOKEN}{_EDGE}")),
     "git": (("git", "--version"), re.compile(rf"^git version {_TOKEN}{_EDGE}")),
-    "macos": (("sw_vers", "-productVersion"), re.compile(rf"^{_TOKEN_ANY}$")),
+    "macos": (("sw_vers", "-productVersion"), re.compile(rf"^{_TOKEN_ANY}{_EDGE}")),
 }
 
 
@@ -85,8 +89,12 @@ def collect_tool(ecosystem: str, runner: Runner, name: str) -> Installed | None:
         return None
     lines = out.strip().splitlines()
     m = rx.match(lines[0].strip()) if lines else None
-    version = versions.normalize(m.group(1)) if m else None
-    if version is None:
+    if not m:
+        return None
+    # A token versions cannot read is kept raw: the tool is installed, and
+    # check() reports unparsable-version (notify, never act) for it.
+    version = versions.normalize(m.group(1)) or m.group(1)
+    if not _RAW.fullmatch(version):
         return None
     return Installed(name=name, version=version, path=argv[0])
 
@@ -158,7 +166,7 @@ def collect_skills(home: Path) -> list[Installed]:
     data = _json(plugins_file)
     plugins = data.get("plugins") if isinstance(data, dict) else None
     if isinstance(plugins, dict):
-        found += _named([k.split("@", 1)[0] for k in plugins if isinstance(k, str)],
+        found += _named([k.rsplit("@", 1)[0] for k in plugins if isinstance(k, str)],
                         plugins_file)
     return found
 

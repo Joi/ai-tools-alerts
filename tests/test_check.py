@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from aitools_alerts import check, versions
 from aitools_alerts.check import Config
 from aitools_alerts.inventory import Installed, Inventory
@@ -60,6 +62,15 @@ def test_suffix_ordering():
     assert versions.affected("1.0rc1", "<1.0", None)
     assert versions.affected("1.0rc1", "<1.0rc2", None)
     assert not versions.affected("9.9p2", "<9.9p1", None)
+    # PEP 440 spellings and phase order: dev < a < b < rc < release < p
+    assert not versions.affected("3.14.0a2", "*", "3.14.0alpha1")
+    assert versions.affected("3.14.0alpha1", "*", "3.14.0a2")
+    assert versions.affected("1.0dev1", "<1.0b1", None)
+    assert not versions.affected("1.0b2", None, "1.0beta1")
+    assert versions.affected("1.0b9", None, "1.0c1")
+    # a tag with no known order is unreadable, never compared by spelling
+    assert versions.check("1.0q1", "<1.0", None) is None
+    assert versions.check("1.0", None, "1.0zz1") is None
 
 
 def test_match_claude_code_below_fixed():
@@ -99,9 +110,9 @@ def test_skill_match_by_name():
 
 def test_relay_bot_post_never_auto_applies():
     every = Config(auto_apply=frozenset(check.schema.VERBS))
-    for m in check.match([claude_adv(posted_by="relay-bot")], CLAUDE_213):
-        p = check.plan(m, every)
-        assert p.notify and p.auto_apply == [] and p.prepare == [UPGRADE_FIXED]
+    [m] = check.match([claude_adv(posted_by="relay-bot")], CLAUDE_213)
+    p = check.plan(m, every)
+    assert p.notify and p.auto_apply == [] and p.prepare == [UPGRADE_FIXED]
 
 
 def test_curator_upgrade_auto_applies_when_opted_in():
@@ -180,3 +191,60 @@ def test_match_constructs_with_the_plan_fields():
     assert m.product is None
     p = check.plan(m, OPT_IN)
     assert p.auto_apply == [] and p.prepare == [UPGRADE]
+
+
+def test_hand_built_match_cannot_widen_auto_apply():
+    claude = CLAUDE_213.products["claude-code"][0]
+    every = Config(auto_apply=frozenset(check.schema.VERBS))
+    evil = Action(verb="disable_skill", target="evil", value=None)
+    other_tool = Action(verb="upgrade", target="codex", value=None)
+    product = Product(name="Claude Code", ecosystem="claude-code", affected="<2.1.4", fixed="2.1.4")
+    for m in (check.Match(claude_adv(), claude, [evil, other_tool], "affected", product),
+              check.Match(claude_adv(fixed="2.1.0"), claude, [UPGRADE], "affected",
+                          Product(name="Claude Code", ecosystem="claude-code",
+                                  affected=None, fixed="2.1.0"))):
+        assert check.plan(m, every).auto_apply == []
+
+
+def test_name_matches_never_auto_apply():
+    every = Config(auto_apply=frozenset(check.schema.VERBS))
+    both = inv(skill=[Installed("demo", None, "/s")], mcp=[Installed("demo", None, "/m")])
+    acts = [Action(verb="disable_skill", target="demo", value=None),
+            Action(verb="remove_mcp_server", target="demo", value=None)]
+    a = adv([Product(name="demo", ecosystem="skill", affected="*", fixed=None),
+             Product(name="demo", ecosystem="mcp", affected=None, fixed=None)], acts)
+    ms = check.match([a], both)
+    assert [m.reason for m in ms] == ["name", "name"]
+    for m in ms:
+        p = check.plan(m, every)
+        assert p.notify and p.auto_apply == [] and len(p.prepare) == 1
+
+
+def test_upgrade_naming_another_tool_is_dropped():
+    a = claude_adv(actions=(Action(verb="upgrade", target="codex", value=None),))
+    [m] = check.match([a], CLAUDE_213)
+    assert m.actions_allowed == []
+
+
+def test_two_products_naming_one_install_match_once():
+    rotate = Action(verb="rotate_credential", target="api key", value=None)
+    a = adv([Product(name=n, ecosystem="claude-code", affected="<2.1.4", fixed="2.1.4")
+             for n in ("Claude Code", "claude-code")], [rotate])
+    [m] = check.match([a], CLAUDE_213)
+    assert m.actions_allowed == [rotate]
+
+
+def test_prerelease_install_is_unparsable_end_to_end():
+    from aitools_alerts import inventory
+    outputs = {"node --version": "v22.1.0-rc.1\n", "claude --version": "claude-code/2.1.3\n",
+               "docker --version": "Docker version 27.0.0-rc.1, build abc\n"}
+    got = inventory.collect(Path("/nonexistent"), runner=lambda argv: outputs.get(" ".join(argv)),
+                            apps_dirs=[])
+    assert got.products["claude-code"][0].version == "2.1.3"
+    assert got.products["node"][0].version == "22.1.0-rc.1"
+    a = adv([Product(name="Node.js", ecosystem="node", affected="<22.2.0", fixed="22.2.0")],
+            [Action(verb="upgrade", target="node", value=None)])
+    [m] = check.match([a], got)
+    assert m.reason == "unparsable-version" and m.actions_allowed == []
+    p = check.plan(m, OPT_IN)
+    assert p.notify and p.auto_apply == []

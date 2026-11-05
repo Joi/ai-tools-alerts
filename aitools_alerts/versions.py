@@ -15,7 +15,11 @@ _SUFFIX = r"(?:[a-z][a-z0-9]{0,15})?"
 _VERSION = re.compile(rf"([0-9]{{1,9}}(?:\.[0-9]{{1,9}}){{0,4}})({_SUFFIX})")
 _COMPARATOR = re.compile(r"(<=|>=|<|>|=)(.+)")
 _TAG = re.compile(r"([a-z]+)([0-9]*)")
-_PRERELEASE = frozenset({"a", "alpha", "b", "beta", "dev", "pre", "rc"})
+# Suffix tags with a known order (PEP 440 spellings): dev < a < b < rc <
+# release < p (a patch level, OpenSSH's 9.9p1). Any other tag is unreadable.
+_TAG_ALIAS = {"alpha": "a", "beta": "b", "c": "rc", "pre": "rc", "preview": "rc"}
+_TAG_RANK = {"dev": 0, "a": 1, "b": 2, "rc": 3, "p": 5}
+_RELEASE_RANK = 4
 _PARTS = 5
 
 
@@ -40,9 +44,8 @@ def normalize(s: str | None) -> str | None:
 def parse(s: str | None) -> tuple | None:
     """A sort key for a version in the grammar, or None.
 
-    Numbers are padded to five parts. A suffix is a tag and a number; the tags
-    in _PRERELEASE sort below the bare release, any other tag (OpenSSH's
-    ``p1``) above it."""
+    Numbers are padded to five parts. A suffix is a tag and a number, ordered
+    by _TAG_RANK after _TAG_ALIAS; a tag outside both is unreadable (None)."""
     if not isinstance(s, str):
         return None
     m = _VERSION.fullmatch(s)
@@ -52,13 +55,14 @@ def parse(s: str | None) -> tuple | None:
     nums += [0] * (_PARTS - len(nums))
     suffix = m.group(2)
     if not suffix:
-        return (tuple(nums), (1, "", 0))
+        return (tuple(nums), (_RELEASE_RANK, 0))
     t = _TAG.fullmatch(suffix)
-    if not t:  # a suffix such as "a1b": readable grammar, unordered tag
+    if not t:  # a suffix such as "a1b": in the grammar, but no order
         return None
-    tag, num = t.group(1), int(t.group(2) or 0)
-    rank = 0 if tag in _PRERELEASE else 2
-    return (tuple(nums), (rank, tag, num))
+    tag = _TAG_ALIAS.get(t.group(1), t.group(1))
+    if tag not in _TAG_RANK:
+        return None
+    return (tuple(nums), (_TAG_RANK[tag], int(t.group(2) or 0)))
 
 
 def _holds(key: tuple, comparator: str) -> bool | None:

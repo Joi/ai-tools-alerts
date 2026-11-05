@@ -32,10 +32,11 @@ an incomplete action must never reach `auto_apply`.
   lowercase suffix of at most 16 characters), else `None`.
 - `parse(s) -> tuple | None`: a sort key. Numeric parts are padded to five.
   A suffix splits into a tag and a trailing number (`p1` -> `("p", 1)`,
-  `rc2` -> `("rc", 2)`). Tags `a`, `alpha`, `b`, `beta`, `dev`, `pre`, `rc`
-  sort below the bare release (pre-releases); any other tag (`p` in OpenSSH's
-  `9.9p1`) sorts above it (patch levels). Within a rank, tags compare by string,
-  then by number.
+  `rc2` -> `("rc", 2)`). PEP 440 spellings are folded (`alpha`->`a`,
+  `beta`->`b`, `c`/`pre`/`preview`->`rc`) and tags rank
+  `dev < a < b < rc < release < p` (`p` is OpenSSH's patch level, `9.9p1`).
+  Any other tag has no known order and is unreadable (`None`): tags are never
+  compared by spelling, which ranked `a2` above `alpha1`.
 - `check(installed, affected, fixed) -> bool | None`: `None` when any present
   argument is unreadable (installed missing or outside the grammar, `affected`
   not `*` or 1..4 comparators joined by `,`, `fixed` outside the grammar).
@@ -69,15 +70,22 @@ an incomplete action must never reach `auto_apply`.
   `docker: docker --version`, `tailscale: tailscale version`,
   `openssh: ssh -V`, `git: git --version`, `macos: sw_vers -productVersion`.
   `Installed.name` is the scope entry's name (`Claude Code`), `path` the argv[0].
-  `macos` and `tailscale` accept a one-part version; the others need two parts
-  so a stray number in a banner is not read as a version.
+  The captured token runs to the next space, comma, `(` or line end, so a
+  pre-release (`v22.1.0-rc.1`, `27.0.0-rc.1`) is captured whole, never
+  truncated to the release it precedes. A token `versions.normalize` reads is
+  stored normalized; one it cannot read is stored raw, so `check` reports
+  `unparsable-version` (notify, never act) instead of dropping the tool.
+  Output with no version-shaped token at all is `None`. The Claude Code
+  pattern accepts a `claude-code/` prefix. `macos` and `tailscale` accept a
+  one-part version; the others need a dot so a stray number in a banner is not
+  read as a version.
 - Cursor: `<apps_dir>/Cursor.app/Contents/Info.plist`, `plistlib`,
   `CFBundleShortVersionString`. `apps_dirs` defaults to `/Applications` and
   `home/Applications`; tests pass only the fixture's.
 - Name collectors return `list[Installed]` with `version=None`:
   - `skill`: subdirectory names of `home/.claude/skills`, and plugin names
     from the keys of `home/.claude/plugins/installed_plugins.json` `plugins`
-    (the part before `@`). Not the plugin directory names the plan wrote:
+    (the part before the last `@`). Not the plugin directory names the plan wrote:
     on a real install those are Claude Code's bookkeeping directories
     (`cache`, `marketplaces`, `repos`, ...), not plugins. Recorded as a
     `decided:` on the issue.
@@ -127,8 +135,13 @@ an incomplete action must never reach `auto_apply`.
     (an unknown verb then lands in `prepare`, below).
   - One `Match` per (advisory, product, installed); an `Advisory` is never a set
     member or dict key (A2: frozen, not hashable).
+- `match` yields one Match per (advisory, ecosystem, installed name), so two
+  products naming one installation do not duplicate advisory-wide actions.
 - `plan(m, config) -> Plan(notify, auto_apply, prepare)`: `notify` is True for
-  every match. An action goes to `auto_apply` only when ALL hold:
+  every match. `plan` re-checks what `match` established (product present and
+  naming the installation, the version readably inside the range, each
+  action concerning the product under the ecosystem rule), so a hand-built
+  `Match` cannot widen `auto_apply`. An action goes to `auto_apply` only when ALL hold:
   `m.adv.posted_by == "curator"`, the verb is in `schema.VERBS` and in
   `config.auto_apply`, `m.reason == "affected"`, and the action is complete.
   Complete: `upgrade` needs `m.product.fixed` and an installed version. Every

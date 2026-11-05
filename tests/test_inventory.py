@@ -106,3 +106,11 @@ def test_tool_table_is_constant():
         assert isinstance(argv, tuple) and all(isinstance(a, str) for a in argv)
         assert eco in {e.ecosystem for e in schema.load_scope()}
         assert not any(c in a for a in argv for c in " ;|&$`")
+
+
+def test_plugin_name_splits_on_last_at(tmp_path):
+    d = tmp_path / ".claude" / "plugins"
+    d.mkdir(parents=True)
+    (d / "installed_plugins.json").write_text(json.dumps({"plugins": {"@scope/x@market": []}}))
+    got = inventory.collect(tmp_path, runner=lambda argv: None, apps_dirs=[])
+    assert names(got, "skill") == ["@scope/x"]

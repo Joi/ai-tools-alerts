@@ -85,12 +85,16 @@ def _concerns(action: Action, ecosystem: str, aliases: set[str]) -> bool:
 
 
 def match(advs: list[Advisory], inv: Inventory) -> list[Match]:
+    """One Match per (advisory, ecosystem, installed name): two products in one
+    advisory naming the same installation yield the first that matches."""
     out = []
     for adv in advs:
+        seen = set()
         for product in adv.products:
             for inst in inv.products.get(product.ecosystem, []):
                 aliases = _aliases(product.ecosystem, inst)
-                if product.name.lower() not in aliases:
+                key = (product.ecosystem, inst.name.lower())
+                if product.name.lower() not in aliases or key in seen:
                     continue
                 if inst.version is None or (product.affected is None
                                             and product.fixed is None):
@@ -100,6 +104,7 @@ def match(advs: list[Advisory], inv: Inventory) -> list[Match]:
                     if hit is False:
                         continue
                     reason = AFFECTED if hit else UNPARSABLE
+                seen.add(key)
                 allowed = ([] if reason == UNPARSABLE else
                            [a for a in adv.actions
                             if _concerns(a, product.ecosystem, aliases)])
@@ -109,12 +114,20 @@ def match(advs: list[Advisory], inv: Inventory) -> list[Match]:
 
 
 def plan(m: Match, config: Config) -> Plan:
+    """Split m's actions into auto_apply and prepare. Re-checks everything
+    match() established, so a hand-built Match cannot widen auto_apply.
+    A5 builds any command from m.product.ecosystem, never from a target."""
     auto, prepare = [], []
     opted = frozenset(config.auto_apply) & schema.VERBS
-    trusted = m.adv.posted_by == "curator" and m.reason == AFFECTED
-    fixed = m.product.fixed if m.product is not None else None
+    p = m.product
+    aliases = _aliases(p.ecosystem, m.installed) if p is not None else set()
+    trusted = (m.adv.posted_by == "curator" and m.reason == AFFECTED
+               and p is not None and p.name.lower() in aliases
+               and versions.check(m.installed.version, p.affected, p.fixed) is True)
+    fixed = p.fixed if p is not None else None
     for a in m.actions_allowed:
-        ready = trusted and a.verb in schema.VERBS and a.verb in opted
+        ready = (trusted and a.verb in schema.VERBS and a.verb in opted
+                 and _concerns(a, p.ecosystem, aliases))
         if a.verb == "upgrade":
             # products[].fixed is authoritative (spec/actions.json), for a
             # prepared upgrade too; without it the upgrade is notify-only.
