@@ -1,6 +1,6 @@
 # Run: scope-bounded-match
 Instruction: ai-tools-alerts#x838: scope.json patterns bounded match + missing forms — brief at TASK-ai-tools-alerts#x838.md in the worktree. Start at medium (dispatched; never light). Non-repoman repo: ff-merge ending per the brief. Security-shaped: FRESHEYES_GPT_MODEL=gpt-6-astra.
-Stage: committing
+Stage: done
 Rung: medium (start-floor medium: evaluator BR1 REV1 NOV1 INT1 FC1 = 5, no hard trigger, medium by the instruction's constraints; Lens: existing test_rules.py tests stay green; schema change versioned, old files still read; vendor-only text stays unmatched and logged; brief's file list (schema.py departure decided on kata); qme5 not folded in; trust/ untouched)
 Spec: docs/superpowers/specs/2026-11-05-scope-bounded-match-design.md   Plan: docs/superpowers/plans/2026-11-05-scope-bounded-match.md
 Agency project: —
@@ -24,3 +24,6 @@ passes: code 1 (one whole-branch)
 - Agency: the agency MCP tools are not loaded in this session; execution inline by the executor, as in the B2 run.
 - Follow-up filed: ai-tools-alerts#3r9h (node.js pattern matches third-party Node libraries named in KEV).
 - schema.py is touched although the brief lists three files: load_scope is the reader that must check the version field. B4 owns transport.py and main.py only.
+- Review fixes committed in f5d5c6a after the reviewed head b907343; no BLOCKER, so no delta pass. Gate on f5d5c6a: 593 passed, 1 skipped. Base origin/main 60fe808 (B4 transport landed meanwhile; no overlap).
+- roborev: ai-tools-alerts is not enrolled; post-push check skipped. No behaviour-changing BLOCKER fix exists, so no pre-push delta is owed.
+- Leak check over added lines, docs excluded: 0 (the plan quotes the grep pattern, as earlier plans do).
