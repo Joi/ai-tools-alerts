@@ -295,6 +295,14 @@ def test_digest_groups_keep_marks_and_kinds_apart():
                              scope(c), posted_at=NOW)[1] for i in (7, 8)]
     out = compose.digest(kev + unv, "2026-11-06")
     assert "4 advisories" in out and "CVEs" not in out and out.count("unverified") == 2
+    # So do unverified or higher-rated leads: only plain notice leads are "unrated".
+    lc = cand(id="LEAD-2099-0001", aliases=(), product_text="Chrome", injection_exec=False,
+              trojanized=True, fixed=None, sources=(Source("https://social.example.com/@bot/1", None),))
+    leads = [compose.root_post(dataclasses.replace(lc, id=f"LEAD-2099-000{i}"), ("high", "unverified"),
+                               scope(lc), posted_at=NOW)[1] for i in (1, 2)]
+    leads += [dataclasses.replace(_plain(i, "Chrome", REL, prefix="LEAD-2099-"), level="high") for i in (3, 4)]
+    out = compose.digest(leads, "2026-11-06")
+    assert "4 advisories" in out and "leads" not in out and out.count("unverified trojanized release") == 2
     # A group the guard refuses is one withheld item; the next group still prints.
     bad = [dataclasses.replace(a, products=[dataclasses.replace(a.products[0], name="host-alpha")],
                                title=f"host-alpha: security advisory ({a.id})") for a in real]

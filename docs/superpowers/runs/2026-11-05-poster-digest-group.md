@@ -15,6 +15,16 @@ Pass 1 [spec+plan]: 6B/2S/1C/0R · fixed -/- · velocity = (—→9, escalation 
 - Rebutted: 9. The snapshot is a dangling review commit, never on the branch; its message is not a landed commit message.
 - Medium rung: no delta on the documents; the BLOCKER fixes are code-reviewed in the whole-branch pass.
 
+Pass 1 [code:whole branch 14baa29]: Stage 1 0B/1S/4C · fresheyes (gpt-6-astra, run 20261105-154116-51727d) 4B/0S/0C · fixed -/- · velocity = (—→9, escalation no)
+- fresheyes B1 = Stage 1 S1 (one cause: a LEAD- id grouped whatever its title, so "unverified", "trojanized" and a high rating became "N unrated leads"): fixed; a lead groups only with the plain title at notice. Test: two unverified trojanized high leads and two plain high leads stay four lines.
+- fresheyes B2 (spec Approach paragraph for from_collector still described the loose regex): fixed; it now states the implemented algorithm. Stage 1 C3 is the same finding.
+- fresheyes B3 (plan said fullmatch for a prefix pattern): fixed; the plan says `re.match`.
+- fresheyes B4 (plan expected `update available` for a non-allowlisted fixture host): fixed; the plan names both cases the tests pin.
+- Stage 1 C2 (an unusable `fixed` value also falls back to the Apple title): kept; the version is still Apple's, and S6 now says "absent or unusable".
+- Stage 1 C4 (the label is the last path segment, so an index URL reads `release security`): left; only plain CVE advisories sharing one URL and product group, which on today's inputs is a release page; the wording is the only effect and nothing leaks.
+- Stage 1 C5 (main's size loop can split one release across days): left; the count on each day's line is that day's members, nothing is lost, and grouping makes an oversized digest rare.
+- B1 changed behaviour: one delta pass `--since 14baa292d5ca063bf20171eeacffd3c35e7e608b`.
+
 ## Chunks
 - [ ] collector-fixed — from_collector reads the release's fix version
 - [ ] digest-group — digest groups releases and leads

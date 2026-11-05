@@ -284,11 +284,11 @@ def _group_key(a: schema.Advisory):
     critical is always its own line; so is any title but the plain kind, so a shared
     catalog URL (every KEV entry) never reads as one release and "unverified" stays."""
     name, syn = a.products[0].name, is_synthetic(a.id)
-    if a.level == "critical":
+    if a.level == "critical" or a.title != f"{name}: security advisory ({a.id})":
         return None
-    if a.id.startswith("LEAD-"):
-        return ("lead", name, syn)
-    if a.id.startswith("CVE-") and a.title == f"{name}: security advisory ({a.id})":
+    if a.id.startswith("LEAD-"):  # "unrated": a lead rated above notice keeps its own line
+        return ("lead", name, syn) if a.level == "notice" else None
+    if a.id.startswith("CVE-"):
         return ("release", name, syn, _primary(a.sources))
     return None
 
