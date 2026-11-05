@@ -2,47 +2,59 @@
 
 Spec: docs/superpowers/specs/2026-11-05-e3-live-acceptance-design.md. Scripts live in the session scratchpad; none is committed. Every evidence line goes to docs/superpowers/runs/2026-11-05-e3-live-acceptance.md as it is produced.
 
+## Environment
+
+One environment for reader and publisher, on this Mac, under the real HOME: no ~/.config/aitools-alerts or ~/.local/state/aitools-alerts existed before this run, so the real HOME is a fresh member's HOME for this service. The CLI is the README's "Without pipx" venv at ~/.local/share/aitools-alerts, linked as ~/.local/bin/aitools-alerts; the session-start hook puts ~/.local/bin first on PATH, so a new Claude Code session runs this same install against this same state. The test key is ~/.config/aitools-alerts/key.nsec, where `curator` reads it. The base install proves the no-account reader path; the `[curator]` extra (websockets) is added to the same venv afterwards for the publisher steps.
+
+The hook and the skill are not added to the fleet-managed ~/.claude/settings.json or ~/.claude/skills (both synced from dotfiles-private to every session on every Mac). The hook script goes to ~/.claude/hooks/ as the README says; the README's SessionStart entry and the skill go in a scratch project's .claude/settings.json and .claude/skills/, and the acceptance session starts in that project.
+
 ## C1: manifest v2
 
-- [ ] Mint the test key: a scratch script calls `aitools_alerts.nostr.keygen()`, writes the nsec to ~/.config/aitools-alerts/key.nsec with O_EXCL and mode 0600, prints the pubkey only. Verify: `stat -f %Lp` prints 600.
-- [ ] Write the v2 content file (scratch): version 2, issued_at now, the two v1 posters plus `{"name": "test-curator-2026-11-05", "pubkey": <hex>, "role": "curator"}`.
-- [ ] `python3 scripts/sign-manifest.py <content> --out trust/manifest.json`; it prints the event id only.
-- [ ] Verify: `python3 -m pytest -q` (scripts/test-gate.sh) green; a scratch check loads trust/manifest.json through `aitools_alerts.manifest` and lists three posters.
-- [ ] Commit trust/manifest.json with the spec, plan and run manifest. Independent review (fresheyes, gpt-6-astra) of the branch before landing.
+- [x] Mint the test key (pubkey printed only, file 0600).
+- [x] Sign v2 (v1 posters plus test-curator-2026-11-05).
+- [x] tests/test_manifest.py pins the exact committed release (version and poster tuples); the gate is green.
+- [ ] Independent review (fresheyes, gpt-6-astra); fixes committed.
 - [ ] Land: fetch, rebase, gate, push branch, fast-forward main from the primary checkout, push main. Pull main on host-b.
-- [ ] Ship: `notice:` on gs18; patched copy of cell-fleet's install-mirror.sh (unless qwar landed) run against /path/to/repos/ai-tools-alerts.
-- [ ] Verify: `curl -s https://buzz.ai-tools.md/alerts/manifest.json` content version 2 within 5 minutes. Evidence line 1.
+- [ ] Ship: `notice:` on gs18; the patched copy of cell-fleet's install-mirror.sh (qwar open) against /path/to/repos/ai-tools-alerts.
+- [ ] Verify: the mirror's manifest.json content says version 2 within 5 minutes. Evidence line 1.
 
 ## C2: fresh-machine install
 
-- [ ] Clean HOME-isolated venv in the scratchpad (`python3 -m venv`), `pip install git+https://github.com/Joi/ai-tools-alerts` (README "Without pipx" path), `init`, `pull`, `check`, transcript to a scratch file. HOME isolation keeps the real ~/.config/aitools-alerts untouched except the key file the brief names.
-- [ ] Install the hook per README (copy to ~/.claude/hooks/, add the SessionStart entry). Back up ~/.claude/settings.json first.
-- [ ] Evidence line 2 (mirror_url printed, transcript path).
+- [x] Base install, `init`, `pull`, `check`; transcript in the scratchpad.
+- [x] Hook script in ~/.claude/hooks/; scratch project with the SessionStart entry and the skill.
+- [ ] `pull` again after the ship: manifest v2 accepted. Evidence line 2.
 
-## C3: curator halves of items 4 and 5
+## C3: test key on the relay; curator halves of items 4 and 5
 
-- [ ] `notice:` on gs18: a SYNTHETIC TEST critical from the test curator key to critical and feed, retracted in this session.
-- [ ] `curator post --dry-run`, then live, SYNTHETIC TEST title, product matching an installed product, action upgrade.
-- [ ] After the exporter cycle: `pull`; with `auto_apply = ["upgrade"]` in the clean config, `plan <id>` shows auto-apply; `run` executes nothing (exit code and output recorded).
-- [ ] `curator retract <root id>`; `pull`; `check` no longer lists it. Evidence lines 4b and 5b.
+- [ ] `notice:` on gs18: the test pubkey becomes a member of both channels (jibot owns them), removed in C5.
+- [ ] `buzz-send channels add-member --channel <uuid> --pubkey <test> --role member`, each channel; `channels members` shows it.
+- [ ] Add the `[curator]` extra to the venv.
+- [ ] `notice:` on gs18: one SYNTHETIC TEST critical from the test key (Claude Code, affected `<=2.1.318`, fixed 2.1.999, action `upgrade:Claude Code:2.1.999`, alias CVE-2099-0001), retracted by advisory id in this session. Fixed 2.1.999 does not exist on npm, so even an agent that applied it would fail to install anything.
+- [ ] `curator post --dry-run`, then live. Record both root event ids.
+- [ ] After the next exporter cycle: `pull`; `check` lists it; `plan <advisory id>` with `auto_apply = []` (prepare) and with `auto_apply = ["upgrade"]` (auto-apply); `run` executes nothing (exit code, output, no new process). Restore `auto_apply = []`.
+- [ ] `curator retract <advisory id>` (both roots); after the next exporter cycle `pull`; `check` no longer lists it. Evidence lines 4b and 5b.
 
 ## C4: akq9-dependent items (3, 4a, 5a, 6)
 
 - [ ] Wait for akq9's landing comment on gs18 (re-probe `kata show ai-tools-alerts#akq9`).
+- [ ] Before the run: the relay-bot synthetic thread can be retracted for good only by a curator who stays in the manifest. A test-key retraction is dropped with the key at v3 (pull._filter drops every event of a revoked key, its retraction replies included), and the relay-bot root, still trusted, comes back active for 400 days. So the relay-bot thread is retracted with Joi's key, by Joi, before v3 ships: park class a (a credential only Joi holds) with the exact command.
 - [ ] host-b: pull, `uv tool install --force --reinstall`, by-hand run away from :20 with `--kev-file` on the fixture. `notice:` first.
-- [ ] Confirm posts (ledger event ids), `pull` shows them, hook line in a new Claude Code session, skill prepares and does not run, no iMessage (poster never messages; router dry-runs).
-- [ ] `plan` for the relay-bot advisory: upgrade under prepare. Retract the relay-bot thread with the test key. `pull`, `check`.
-- [ ] `run --digest-now` twice; first posts one digest, second sends nothing. Evidence lines 3, 4a, 5a, 6.
+- [ ] Confirm the posts (ledger event ids), `pull` shows them, the hook line in a new Claude Code session started in the scratch project, the skill prepares and does not run, no iMessage (the poster never messages; the security-watch router on host-b is `heartbeat`, so it dry-runs).
+- [ ] `plan` for the relay-bot advisory under `auto_apply = ["upgrade"]`: upgrade under prepare. If the KEV fixture carries no fixed version the poster emits no upgrade action; record that as it is and file it.
+- [ ] `run --digest-now` twice; the first posts one digest, the second sends nothing. Evidence lines 3, 4a, 5a, 6.
 
-## C5: manifest v3
+## C5: manifest v3 and cleanup
 
-- [ ] Sign v3 with the v1 posters, land, ship, mirror serves v3, `pull` drops the curator post. Delete key file and venv (`trash`). Evidence line 7.
+- [ ] Precondition: Joi's retraction of the relay-bot synthetic thread is on the mirror (C4). If it is not, v3 still ships (the test key must not stay trusted) and the resurrected thread is recorded as an open hand action on gs18.
+- [ ] Sign v3 (the v1 posters), update the pinned test to version 3, gate, land, ship, mirror serves v3; `pull` drops the test curator's events ("revoked" in the drop counts); `check` shows no synthetic advisory.
+- [ ] `buzz-send channels remove-member` for the test pubkey, each channel.
+- [ ] Delete the key file with `rm` (not `trash`: the Trash keeps the secret). Remove the venv, its link, ~/.config/aitools-alerts, ~/.local/state/aitools-alerts, the hook script and the scratch project. Evidence line 7.
 
 ## C6: close-out
 
 - [ ] Read `~/.local/state/security-watch/model-turns-<UTC date>` on host-b. Evidence line 8.
-- [ ] Post all lines on gr5b and gs18; close gs18 with `--test`; restore ~/.claude/settings.json hook decision noted; /finish-worktree.
+- [ ] Post all lines on gr5b and gs18; close gs18 with `--test`; /finish-worktree.
 
-## Rollback
+## Failure cleanup (any step after the v2 ship)
 
-v3 is the rollback of v2. A failed ship leaves the v1 or v2 mirror live; the test key's deletion ends its use either way. The settings.json backup restores the hook change.
+Whatever fails, the run ends with: every synthetic thread it posted retracted by a curator who stays trusted, or listed on gs18 as an open hand action with the command; v3 shipped; the test key off the channels and its file deleted. A step that fails is a finding on ai-tools-alerts with its evidence. If v3 cannot ship, the key file is still deleted, which stops new posts under it; the posts already made stay trusted until v3 ships, and gs18 stays open with that as the remaining action.

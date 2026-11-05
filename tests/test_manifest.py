@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 COMMITTED = ROOT / "trust" / "manifest.json"
 JOI = "18eafd07cca9f24eac1a62d8155f5e9cdabc7552357abca8a1fcced45d05fe29"
 JIBOT = "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1"
+TEST_CURATOR_E3 = "4755f0bf2106d5dd70aea05b673449c181e44384704c116bd7e110d80f39185d"
 
 ROOT_SEC, ROOT_PUB = nostr.keygen()
 CUR_SEC, CUR_PUB = nostr.keygen()
@@ -98,12 +99,15 @@ def test_role_lookup():
 def test_committed_manifest_verifies_against_pinned_root():
     m = manifest.load(COMMITTED)
     assert manifest.verify(m, TRUST_ROOT_PUBKEY)
-    # The committed manifest moves through versions (E3 added and removed a
-    # test curator), so pin only what every version must keep.
-    assert m.version >= 1
-    assert manifest.role_of(m, JOI) == "curator"
-    assert manifest.role_of(m, JIBOT) == "relay-bot"
-    assert len({p.pubkey for p in m.posters}) == len(m.posters)
+    # Pin the exact release: a commit that signs a new version updates this
+    # line with it (v2: the E3 test curator, jibot-code#gs18).
+    assert m.version == 2
+    assert {(p.name, p.pubkey, p.role) for p in m.posters} == {
+        ("Joi", JOI, "curator"),
+        ("jibot", JIBOT, "relay-bot"),
+        ("test-curator-2026-11-05", TEST_CURATOR_E3, "curator"),
+    }
+    assert len(m.posters) == 3
 
 
 # ---------------------------------------------------------------- inputs
