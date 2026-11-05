@@ -7,8 +7,12 @@
 The root secret is read with get_secret AITOOLS_ALERTS_ROOT_NSEC from the
 fleet's secrets helper, in a bash subprocess whose SECRETS_CACHE_DIR is a fresh
 temporary directory with no write permission, so the helper's cache write
-fails and the key never touches disk; the directory is checked empty and
-removed. The key travels only over the subprocess's stdout pipe into this
+fails and the key never touches disk. Before the helper runs, the script
+refuses root and proves the directory refuses a write; afterwards it checks the
+directory is empty and removes it. This relies on the helper caching only under
+$SECRETS_CACHE_DIR and not changing the mode of an existing directory (true of
+secrets.sh as of 2026-11-05: _ensure_secrets_cache_dir chmods only a directory
+it creates, and its cache writes are best effort). The key travels only over the subprocess's stdout pipe into this
 process: never in argv, never printed, logged or written to a file. The script refuses a key whose public key is not TRUST_ROOT_PUBKEY, and
 a version not higher than the manifest already at --out. It prints only the
 event id.
@@ -37,8 +41,26 @@ HELPER = "source ~/dotfiles-private/scripts/lib/secrets.sh && get_secret " + SEC
 DEFAULT_OUT = REPO / "trust" / "manifest.json"
 
 
+# Removed from the helper's environment: a stale copy of the key (get_secret
+# falls back to it), and bash startup/trace hooks that would run code or trace
+# inside the process holding the key.
+_DROP_ENV = frozenset({SECRET_NAME, "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "BASH_XTRACEFD", "PS4"})
+
+
 def _die(msg: str) -> None:
     raise SystemExit(f"sign-manifest: {msg}")
+
+
+def _refuses_writes(directory: str) -> bool:
+    """True if creating a file in directory fails (probe removed if it succeeds)."""
+    probe = os.path.join(directory, ".write-probe")
+    try:
+        fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError:
+        return True
+    os.close(fd)
+    os.unlink(probe)
+    return False
 
 
 def read_root_secret(runner=subprocess.run) -> str:
@@ -47,10 +69,16 @@ def read_root_secret(runner=subprocess.run) -> str:
     # at a fresh directory with no write permission makes each cache write fail
     # (the helper ignores that failure), so the key is never written to disk;
     # the directory is checked empty afterwards and removed.
+    # A privileged process ignores the mode, so refuse root, and prove the
+    # directory refuses a write BEFORE the helper ever runs.
+    if os.geteuid() == 0:
+        _die("refusing to run as root: the read-only cache directory would not stop a write")
     cache = tempfile.mkdtemp(prefix="sign-manifest-")
     os.chmod(cache, 0o500)
     try:
-        env = {k: v for k, v in os.environ.items() if k != SECRET_NAME}
+        if not _refuses_writes(cache):
+            _die("the throwaway cache directory accepts writes; not reading the root key")
+        env = {k: v for k, v in os.environ.items() if k not in _DROP_ENV}
         env["SECRETS_CACHE_DIR"] = cache
         try:
             res = runner(["bash", "-c", HELPER], env=env, stdin=subprocess.DEVNULL,
@@ -123,6 +151,8 @@ def main(argv=None, runner=subprocess.run) -> int:
         _die(f"invalid content: {e}")
     content = {"version": raw["version"], "issued_at": raw["issued_at"], "posters": raw["posters"]}
 
+    if not args.out.parent.is_dir():
+        _die(f"output directory {args.out.parent} does not exist")
     previous = None
     if args.out.exists():
         try:

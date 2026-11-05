@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -34,12 +35,21 @@ def content(version=1, **over) -> dict:
     return c
 
 
-def event(sec=ROOT_SEC, body=None, kind=30078, tags=None, raw_content=None) -> dict:
+def event(sec=ROOT_SEC, body=None, kind=30078, tags=None, raw_content=None, created_at=None) -> dict:
+    b = content() if body is None else body
+    if created_at is None:
+        created_at = 1793865600  # 2026-11-05T08:00:00Z
+        if isinstance(b, dict) and isinstance(b.get("issued_at"), str):
+            try:
+                created_at = int(datetime.strptime(b["issued_at"], "%Y-%m-%dT%H:%M:%SZ")
+                                 .replace(tzinfo=timezone.utc).timestamp())
+            except ValueError:
+                pass
     return nostr.sign_event(sec, {
-        "created_at": 1793865600,
+        "created_at": created_at,
         "kind": kind,
         "tags": [["d", "aitools-alerts-manifest"]] if tags is None else tags,
-        "content": raw_content if raw_content is not None else json.dumps(content() if body is None else body),
+        "content": raw_content if raw_content is not None else json.dumps(b),
     })
 
 
@@ -184,7 +194,12 @@ BAD = {
     "not_utf8": lambda: b"\xff\xfe{}",
     "top_level_list": lambda: b"[]",
     "oversize": lambda: b" " * (manifest.MAX_BYTES + 1) + make(),
+    "created_at_mismatch": lambda: make(created_at=1793865601),
     "deep_nesting": lambda: b"[" * 100000 + b"]" * 100000,
+    "big_int_event": lambda: _mutate_event(lambda e: e.update(created_at=0))
+        .replace(b'"created_at": 0', b'"created_at": ' + b"9" * 5000),
+    "big_int_content": lambda: make(raw_content='{"version": ' + "9" * 5000
+                                    + ', "issued_at": "2026-11-05T08:00:00Z", "posters": []}'),
 }
 
 
@@ -342,6 +357,53 @@ def test_sign_script_refuses_when_helper_wrote_to_cache():
         _script().read_root_secret(runner=runner)
     assert sec not in str(ei.value.code)
     assert not os.path.exists(runner.cache)
+
+
+def test_sign_script_refuses_root_before_reading(monkeypatch):
+    mod = _script()
+    monkeypatch.setattr(mod.os, "geteuid", lambda: 0)
+    runner = FakeRunner(stdout=b"")
+    with pytest.raises(SystemExit):
+        mod.read_root_secret(runner=runner)
+    assert runner.calls == []
+
+
+def test_sign_script_refuses_writable_cache_before_reading(monkeypatch, tmp_path):
+    mod = _script()
+    made = []
+
+    def mkdtemp(prefix=""):
+        d = tmp_path / "cache"
+        d.mkdir()
+        made.append(d)
+        return str(d)
+
+    monkeypatch.setattr(mod.tempfile, "mkdtemp", mkdtemp)
+    monkeypatch.setattr(mod.os, "chmod", lambda *a: None)  # the mode does not take
+    runner = FakeRunner(stdout=b"")
+    with pytest.raises(SystemExit):
+        mod.read_root_secret(runner=runner)
+    assert runner.calls == []
+    assert not made[0].exists()
+
+
+def test_sign_script_scrubs_bash_hooks(monkeypatch):
+    for k in ("BASH_ENV", "ENV", "SHELLOPTS", "BASH_XTRACEFD", "PS4"):
+        monkeypatch.setenv(k, "x")
+    sec, _ = nostr.keygen()
+    runner = FakeRunner(stdout=sec.encode())
+    _script().read_root_secret(runner=runner)
+    env = runner.calls[0]["kw"]["env"]
+    assert not {"BASH_ENV", "ENV", "SHELLOPTS", "BASH_XTRACEFD", "PS4"} & set(env)
+
+
+def test_sign_script_missing_out_dir_fails_before_reading(tmp_path):
+    src = tmp_path / "content.json"
+    src.write_text(json.dumps(content()))
+    runner = FakeRunner(stdout=b"")
+    with pytest.raises(SystemExit):
+        _script().main([str(src), "--out", str(tmp_path / "no" / "m.json")], runner=runner)
+    assert runner.calls == []
 
 
 def test_sign_script_timeout_cleans_cache():

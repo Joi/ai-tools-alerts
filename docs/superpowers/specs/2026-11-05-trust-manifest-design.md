@@ -78,7 +78,15 @@ Content: version 1, `issued_at` the signing time, posters Joi (`18eafd07…fe29`
 
 New files only, plus nothing modified outside them. Rollback is a revert of the commits. A bad `trust/manifest.json` is replaced by signing a higher version; until A5 ships, no member reads it.
 
+## Amendments from the code review (pass 1)
+
+- `load` rejects any `ValueError` from the JSON decoder (an integer over Python's 4300-digit limit) as `ManifestError`, and requires the event's `created_at` to equal `issued_at` in epoch seconds.
+- `sign-manifest.py` refuses to run as root (a privileged process ignores the 0500 mode) and, before the helper runs, proves the throwaway directory refuses a write; it drops `BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS`, `BASH_XTRACEFD`, `PS4` from the helper's environment; it checks the `--out` directory exists before reading the key.
+- Rollback protection holds only when the caller passes `previous`. A member with no stored state accepts any root-signed manifest, including an old one; A5 owns that (a freshness bound on `issued_at` or a pinned minimum version), and it is noted on ai-tools-alerts#z4hs.
+
 ## Assumes
+
+- The secrets helper caches only under `$SECRETS_CACHE_DIR`, chmods only a directory it creates, and treats a failed cache write as non-fatal (true of `secrets.sh` on 2026-11-05; checked by the code reviewer against the real helper with a throwaway vault). If that changes, the script's pre- and post-checks catch a writable directory or a written entry.
 
 - The vault value of `AITOOLS_ALERTS_ROOT_NSEC` is 64 hex characters (the brief's `wc -c` prints 65); the script also accepts `nsec1…`.
 - Signing happens on the Mac that runs this task, not the one plan step 5 names: the vault is one synced file, so any fleet Mac reads the same key (notice-class deviation, decided for jibot-code#zq90 in its comment c:688gdd and restated in the brief).

@@ -18,7 +18,7 @@ import os
 import re
 import unicodedata
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from . import nostr
 from .schema import ROLES
@@ -76,6 +76,11 @@ def _json(text: str):
                           parse_constant=_reject_constant)
     except json.JSONDecodeError as e:
         raise ManifestError(f"not JSON: {e.msg}") from None
+    except ManifestError:
+        raise
+    except ValueError:
+        # e.g. an integer literal over Python's 4300-digit conversion limit
+        raise ManifestError("not JSON: a value cannot be decoded") from None
     except RecursionError:
         raise ManifestError("JSON nested too deeply") from None
 
@@ -144,7 +149,11 @@ def _parse_event(ev) -> tuple[int, str, tuple[Poster, ...]]:
         raise ManifestError(f"event kind must be {KIND}")
     if ev["tags"] != [["d", D_TAG]]:
         raise ManifestError(f'event tags must be exactly [["d", "{D_TAG}"]]')
-    return parse_content(_json(ev["content"]))
+    version, issued_at, posters = parse_content(_json(ev["content"]))
+    issued = datetime.strptime(issued_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    if ev["created_at"] != int(issued.timestamp()):
+        raise ManifestError("event created_at must equal content issued_at")
+    return version, issued_at, posters
 
 
 def _read(src) -> bytes:
