@@ -1,8 +1,8 @@
 """Send one post to the relay: ssh to the VM, run the buzz-send wrapper, read the event id.
 
 The wrapper on the VM (``ops/vm/buzz-send``) holds jibot's key and the relay URL,
-so this side passes neither: no key, key path, ``--private-key`` or ``--relay``
-appears here. The post text goes on stdin; the remote command is one
+so this side passes neither: no key, key path, key flag or relay flag appears
+here. The post text goes on stdin; the remote command is one
 ``shlex.join``-ed string, so the remote shell sees each argument as one word.
 
 Every send ends in one of three outcomes. ``ok``: the relay accepted it and
@@ -25,21 +25,30 @@ from aitools_alerts import schema
 
 HOST = "relay-vm.example"
 WRAPPER = "/home/relay/bin/buzz-send"
-SSH_OPTIONS = ("-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
-               "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4")
+# -T and RequestTTY=no: no terminal, so stdin reaches the wrapper as bytes; RemoteCommand=none:
+# no ssh_config entry can replace the command. "--" ends options before the host.
+SSH_OPTIONS = ("-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
+               "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
+               "-o", "RequestTTY=no", "-o", "RemoteCommand=none")
 TIMEOUT = 120
 MAX_CONTENT = schema.MAX_POST_CHARS
 MAX_STDERR = 2000
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
-# ssh's own messages when the connection never reached a remote command.
+# ssh's own lines when the connection never reached a remote command, anchored per line
+# so the remote CLI's own text ("network error: ... connection refused") never matches.
 _SSH_NEVER_RAN = re.compile(
-    r"could not resolve hostname|connection refused|connection timed out|no route to host"
-    r"|permission denied|host key verification failed|network is unreachable|connect to host",
-    re.I,
+    r"^(?:ssh: connect to host \S+ port \d+: .+"
+    r"|ssh: Could not resolve hostname \S+: .+"
+    r"|\S+: Permission denied \(.+\)\.?"
+    r"|Host key verification failed\.)\r?$",
+    re.M,
 )
-_RELAY_4XX = re.compile(r"relay error 4\d\d\b")
+# Relay rejections that prove the event was not stored; any other status (a proxy's
+# 408, a 5xx) proves nothing.
+_RELAY_REJECTED = frozenset({400, 401, 403, 413, 422, 429})
+_RELAY_STATUS = re.compile(r"relay error (\d{3}):")
 # Exits that prove nothing was submitted: usage or not found (and the wrapper's own
 # refusals), auth or key, other (raised before submit), conflict, and the remote
 # command not starting (126, 127). Every other non-zero exit is unknown.
@@ -67,10 +76,28 @@ def remote_argv(channel_id: str, reply_to: str | None = None) -> list[str]:
     return argv
 
 
-def _text(b) -> str:
+def _decode(b) -> str:
     if isinstance(b, bytes):
         b = b.decode("utf-8", "replace")
-    return (b or "")[-MAX_STDERR:]
+    return b if isinstance(b, str) else ""
+
+
+def _cli_error(stderr: str) -> tuple[str | None, str]:
+    """The Buzz CLI's error line: one JSON object {"error": category, "message": ...},
+    the last such line on stderr (crates/buzz-cli/src/error.rs print_error)."""
+    for line in reversed(stderr.splitlines()):
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get("error"), str):
+            msg = obj.get("message")
+            return obj["error"], msg if isinstance(msg, str) else ""
+    return None, ""
+
+
+def _default_ssh(*args, **kwargs):
+    return subprocess.run(*args, **kwargs)
 
 
 def _classify(rc: int, stdout, stderr: str) -> tuple[str, str | None]:
@@ -82,39 +109,51 @@ def _classify(rc: int, stdout, stderr: str) -> tuple[str, str | None]:
         if not isinstance(out, dict):
             return "unknown", None
         if out.get("accepted") is False:
+            msg = out.get("message")
+            if isinstance(msg, str) and msg.lower().startswith("duplicate"):
+                return "unknown", None  # NIP-01: the relay already holds this event
             return "failed", None
         eid = out.get("event_id")
         if out.get("accepted") is True and isinstance(eid, str) and _HEX64.fullmatch(eid):
             return "ok", eid
         return "unknown", None
     if rc == 255:  # ssh itself failed: before the command ran, or mid-session?
-        return ("failed" if _SSH_NEVER_RAN.search(stderr) else "unknown"), None
-    if rc == 2:  # the CLI's network/relay/delivery-unknown code
-        low = stderr.lower()
-        if "delivery unknown" not in low and ("network error" in low or _RELAY_4XX.search(low)):
-            return "failed", None  # never stored: a connect failure or a rejection
-        return "unknown", None  # delivery unknown, a relay 5xx, or anything unrecognised
+        never_ran = _SSH_NEVER_RAN.search(stderr) and not _decode(stdout).strip()
+        return ("failed" if never_ran else "unknown"), None
+    if rc == 2:  # the CLI's network/relay/delivery-unknown code: read its own error line
+        category, message = _cli_error(stderr)
+        if category == "network_error":
+            return "failed", None  # the CLI keeps only never-received failures as network errors
+        if category == "relay_error":
+            m = _RELAY_STATUS.match(message)
+            if m and int(m.group(1)) in _RELAY_REJECTED:
+                return "failed", None
+        return "unknown", None  # delivery_unknown, a relay 5xx, or no recognisable error line
     if rc in _NEVER_SENT:
         return "failed", None
     return "unknown", None  # a signal (negative) or any other exit proves nothing
 
 
-def send(channel_id: str, content: str, reply_to: str | None = None, ssh=subprocess.run, *,
+def send(channel_id: str, content: str, reply_to: str | None = None, ssh=None, *,
          host: str = HOST, timeout: float = TIMEOUT) -> SendResult:
     """Post ``content`` to ``channel_id`` (optionally as a reply to ``reply_to``).
 
-    ``ssh`` is ``subprocess.run`` or a callable with its signature. Malformed
-    arguments raise ValueError before anything runs.
+    ``ssh`` is a callable with ``subprocess.run``'s signature; None means the real
+    ssh (looked up at call time, so tests can block it). Malformed arguments raise
+    ValueError before anything runs.
     """
     if not isinstance(content, str) or not content or len(content) > MAX_CONTENT or "\x00" in content:
         raise ValueError("content must be non-empty text within the post size cap, without NUL")
-    argv = ["ssh", *SSH_OPTIONS, host, shlex.join(remote_argv(channel_id, reply_to))]
+    if not isinstance(host, str) or not host or host.startswith("-"):
+        raise ValueError("host must be a host name")
+    argv = ["ssh", *SSH_OPTIONS, "--", host, shlex.join(remote_argv(channel_id, reply_to))]
+    ssh = ssh if ssh is not None else _default_ssh
     try:
         proc = ssh(argv, input=content.encode("utf-8"), capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return SendResult(False, None, None, "ssh timed out", "unknown")
     except OSError as e:
-        return SendResult(False, None, None, _text(f"ssh could not start: {e}"), "failed")
-    stderr = _text(proc.stderr)
-    outcome, eid = _classify(proc.returncode, proc.stdout, stderr)
-    return SendResult(outcome == "ok", eid, proc.returncode, stderr, outcome)
+        return SendResult(False, None, None, f"ssh could not start: {e}"[-MAX_STDERR:], "failed")
+    stderr = _decode(proc.stderr)
+    outcome, eid = _classify(proc.returncode, proc.stdout, stderr)  # on the whole stderr
+    return SendResult(outcome == "ok", eid, proc.returncode, stderr[-MAX_STDERR:], outcome)

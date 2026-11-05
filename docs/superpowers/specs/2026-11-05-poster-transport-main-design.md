@@ -66,16 +66,28 @@ record path).
   - exit 0 and stdout JSON object with `accepted` true and a 64-hex
     `event_id` → `ok`. Exit 0 with `accepted` false → `failed` (the relay
     refused it). Exit 0 with anything else → `unknown`.
-  - exit 255: ssh's own error. `failed` when stderr shows the connection never
-    reached a remote command (`Could not resolve hostname`, `Connection
-    refused`, `Connection timed out`, `No route to host`, `Permission denied`,
-    `Host key verification failed`, `Network is unreachable`, `connect to host`);
-    otherwise `unknown` (the session dropped mid-command).
-  - exit 2 (the Buzz CLI's network/relay/delivery-unknown code): `failed` only
-    when stderr carries `network error` (the CLI keeps connect failures as
-    Network and turns an ambiguous post-send failure into `delivery unknown`)
-    or `relay error 4xx` (a rejection), and never `delivery unknown`; anything
-    else, a relay 5xx included, is `unknown`.
+  - exit 255: ssh's own error. `failed` only when stdout is empty and stderr
+    has one of ssh's own connect-phase lines, anchored per line
+    (`ssh: connect to host <h> port <n>: ...`, `ssh: Could not resolve hostname
+    ...`, `<user@host>: Permission denied (...)`, `Host key verification
+    failed.`), so the remote CLI's own text cannot match; otherwise `unknown`
+    (the session dropped mid-command).
+  - exit 0 with `accepted` false and a `duplicate:` message → `unknown` (the
+    relay already holds the event, NIP-01).
+  - Classification reads the whole stderr; only the stored copy is capped.
+- ssh also gets `-T`, `-o RequestTTY=no`, `-o RemoteCommand=none` and `--`
+  before the host, so no ssh_config entry can add a terminal or replace the
+  command; a host starting with `-` is refused. `ssh=None` means the real ssh,
+  looked up at call time; `tests/poster/conftest.py` replaces it with one that
+  raises, so no poster test can reach the relay.
+  - exit 2 (the Buzz CLI's network/relay/delivery-unknown code) is read from
+    the CLI's own error line, the last stderr line that is a JSON object
+    `{"error": <category>, "message": ...}` (`print_error` in
+    crates/buzz-cli/src/error.rs). `network_error` → `failed` (the CLI keeps
+    connect failures as Network and turns an ambiguous post-send failure into
+    `delivery_unknown`); `relay_error` with status 400, 401, 403, 413, 422 or
+    429 → `failed`; anything else (`delivery_unknown`, another status, no error
+    line) → `unknown`. Free text in stderr never decides.
   - exit 1 (usage, not found, the wrapper's own refusals), 3 (auth or key),
     4 (other: raised before submit), 5 (conflict), 126 and 127 (the remote
     command could not start) → `failed`.
@@ -167,8 +179,10 @@ dict|null, "exploited": bool, "date": str|null, "sent": str|null}`.
 `/srv/`, `/mnt/`, `/root/`, `/usr/local/`, a drive letter followed by either
 slash (`C:/`, `C:\`, but not `x://`), and a UNC prefix (`\\server`); tests show
 source URLs carrying each, plain and percent-encoded, are dropped.
-`/Library/` is left out: the match is case-insensitive and Apple's developer
-URLs use `/library/`. Over-matching drops a field or item, never posts it.
+`/Library/`, `/Applications/` and `/System/Volumes/` are matched with their
+capital (a second, case-sensitive pattern), so a local `/Library/Logs/...`
+path is dropped while Apple's public `/library/` documentation URLs stay.
+Over-matching drops a field or item, never posts it.
 
 ## The run (`aitools_alerts/poster/main.py`)
 
@@ -222,9 +236,12 @@ Known entry (`prev = schema.validate(entry.advisory)`):
   stored root's id, so the template title matches what `reply_post` accepts,
   and a KEV-only candidate does not erase a known fix.
 - `text, new = compose.root_post(k, (level, reason), scope, posted_at=prev.posted_at)`.
-- `changes`: `level` and `title` when the level rises; `products` when `new`
-  has a fixed version and its product (affected range included) differs from
-  `prev`'s; `aliases` (the ids the
+- Identity first: ids the ledger entry lacks are added to it at once
+  (`Ledger.add_ids`, no post), so identity is learned even when the published
+  alias list is at its cap of 50 and no reply can say so.
+- `changes`: `level` and `title` when the level rises; `products` when `new`'s
+  product differs from `prev`'s (a fix, or a corrected affected range with or
+  without one; `k` keeps the stored fix and range when the candidate has none); `aliases` (the ids the
   ledger entry lacks) when `prev` has fewer than 50; `sources` (new URLs) when
   `prev` has fewer than 20.
 - Items, in order: a `copy` of `text` to each channel the level needs

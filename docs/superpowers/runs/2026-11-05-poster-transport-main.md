@@ -20,6 +20,11 @@ Pass 2 [spec+plan delta]: 9B/0S/1C/0R · fixed 12/12 prior · velocity ↓ (14�
 - Fixed in code, spec and tests: sent items drain before the pending filter (spec wording; the code already did), clear_pending before removing the item, busy candidates hold the watermarks, one journaled digest at a time, the digest acknowledges its journaled snapshot (notice keys, cutoff), the canonical copy keeps prev's aliases (spec wording; the code already did), a changed affected range posts a reply, drive-letter forward-slash and UNC paths in the guard, the manifest checklist.
 - Rebutted: the third landing is 832 lines, over 600: the journal and the planner cannot be tested apart, and the brief sized B4 as transport first, then main.
 
+Pass 1 [code:transport, whole branch d2f2fd7]: Stage 1 0B/4S/3C · fresheyes (gpt-6-astra, run 20261105-104159-5eb113) 6B/0S/0C · fixed -/- · velocity = (—→13, escalation no)
+- Stage 1 fixed: ssh connect-phase patterns anchored per line and stdout empty; classify on the whole stderr; `duplicate:` answer is unknown; ssh=None default with a conftest that blocks real ssh; relay 4xx allowlist; -T, RequestTTY=no, RemoteCommand=none, `--`, host check; tests for each.
+- fresheyes fixed: truncation (same as Stage 1); exit 2 now read from the CLI's JSON error line (category + status), never free text; docstring no longer spells the forbidden flags; for landings 2 and 3 (spec + working tree): identity learned past the alias cap (Ledger.add_ids), affected-range change without a fix, cased /Library/ guard.
+- The exit-2 fix changes behaviour: one delta pass `--since d2f2fd7`.
+
 ## Chunks
 - [ ] transport — `aitools_alerts/poster/transport.py`, `tests/poster/test_transport.py` (landing 1)
 - [ ] inputs — `aitools_alerts/poster/inputs.py`, `tests/poster/test_inputs.py`, `_PRIVATE` in candidates.py + tests (landing 2)

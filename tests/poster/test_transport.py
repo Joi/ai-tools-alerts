@@ -36,9 +36,10 @@ def test_argv_is_ssh_host_and_one_joined_remote_command():
     ssh = FakeSSH(stdout=accepted())
     transport.send(FEED, "hello $(rm -rf ~) `x`", ssh=ssh)
     (argv, kw), = ssh.calls
-    assert argv[:-1] == ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
+    assert argv[:-1] == ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
                          "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
-                         "relay-vm.example"]
+                         "-o", "RequestTTY=no", "-o", "RemoteCommand=none",
+                         "--", "relay-vm.example"]
     assert shlex.split(argv[-1]) == ["/home/relay/bin/buzz-send", "messages", "send",
                                      "--channel", FEED, "--content", "-"]
     assert kw["input"] == "hello $(rm -rf ~) `x`".encode()
@@ -86,7 +87,8 @@ def test_exit0_not_accepted_is_failed():
     assert (r.ok, r.event_id, r.outcome) == (False, None, "failed")
 
 
-@pytest.mark.parametrize("stdout", [b"", b"not json", b"[]", accepted(eid="zz"),
+@pytest.mark.parametrize("stdout", [b"", b"not json", b"[]", accepted(eid="zz"), accepted(eid="CD" * 32),
+                                    accepted(eid="c" * 63),
                                     json.dumps({"accepted": True}).encode(), b"\xff\xfe"])
 def test_exit0_garbage_is_unknown(stdout):
     r = transport.send(FEED, "x", ssh=FakeSSH(stdout=stdout))
@@ -105,15 +107,26 @@ def test_other_exits_are_unknown(rc):
     assert (r.ok, r.exit_code, r.outcome) == (False, rc, "unknown")
 
 
-@pytest.mark.parametrize("stderr", [b"delivery unknown: timed out after send", b"", b"something odd",
-                                    b"relay error 503: unavailable",
-                                    b"network error: reset; delivery unknown"])
+def cli_error(category, message):
+    return json.dumps({"error": category, "message": message, "retryable": False}).encode() + b"\n"
+
+
+@pytest.mark.parametrize("stderr", [
+    cli_error("delivery_unknown", "delivery unknown: timed out after send"),
+    b"", b"something odd", b"network error: error sending request",  # free text never decides
+    cli_error("relay_error", "relay error 503: unavailable"),
+    cli_error("relay_error", "relay error 503: upstream network error"),
+    cli_error("relay_error", "relay error 408: timeout"),
+    cli_error("network_error", "network error: reset") + cli_error("delivery_unknown", "delivery unknown: x"),
+])
 def test_exit2_delivery_unknown_is_unknown(stderr):
     assert transport.send(FEED, "x", ssh=FakeSSH(rc=2, stderr=stderr)).outcome == "unknown"
 
 
-@pytest.mark.parametrize("stderr", [b"network error: error sending request: connection refused",
-                                    b"relay error 400: bad event"])
+@pytest.mark.parametrize("stderr", [
+    cli_error("network_error", "network error: error sending request: connection refused"),
+    b"warning: retrying\n" + cli_error("relay_error", "relay error 400: bad event"),
+])
 def test_exit2_network_or_4xx_is_failed(stderr):
     assert transport.send(FEED, "x", ssh=FakeSSH(rc=2, stderr=stderr)).outcome == "failed"
 
@@ -147,3 +160,37 @@ def test_oserror_is_failed():
 def test_stderr_is_capped_and_decoded():
     r = transport.send(FEED, "x", ssh=FakeSSH(rc=4, stderr=b"\xff" + b"e" * 5000))
     assert len(r.stderr) == transport.MAX_STDERR and r.stderr.endswith("e")
+
+
+def test_duplicate_answer_is_unknown():
+    body = json.dumps({"accepted": False, "event_id": EID, "message": "duplicate: already have this event"})
+    assert transport.send(FEED, "x", ssh=FakeSSH(stdout=body.encode())).outcome == "unknown"
+
+
+def test_remote_connect_text_after_a_drop_is_unknown():
+    stderr = (b"network error: error sending request: connection refused (retrying)\n"
+              b"Connection to relay-vm.example closed by remote host.\n")
+    assert transport.send(FEED, "x", ssh=FakeSSH(rc=255, stderr=stderr)).outcome == "unknown"
+
+
+def test_ssh_message_with_remote_output_is_unknown():
+    stderr = b"ssh: connect to host relay-vm.example port 22: Connection refused\n"
+    assert transport.send(FEED, "x", ssh=FakeSSH(rc=255, stdout=b"{", stderr=stderr)).outcome == "unknown"
+
+
+def test_classification_reads_the_whole_stderr():
+    stderr = cli_error("delivery_unknown", "delivery unknown: " + "x" * 2100 + " network error: reset")
+    r = transport.send(FEED, "x", ssh=FakeSSH(rc=2, stderr=stderr))
+    assert r.outcome == "unknown" and len(r.stderr) == transport.MAX_STDERR
+
+
+def test_host_option_injection_refused():
+    ssh = FakeSSH(stdout=accepted())
+    with pytest.raises(ValueError):
+        transport.send(FEED, "x", ssh=ssh, host="-oProxyCommand=evil")
+    assert ssh.calls == []
+
+
+def test_default_ssh_is_blocked_in_tests():
+    with pytest.raises(RuntimeError, match="real ssh"):
+        transport.send(FEED, "x")
