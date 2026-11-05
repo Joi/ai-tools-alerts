@@ -269,8 +269,8 @@ def test_digest_groups_releases_and_leads():
     lines = out.split("\n")
     assert lines[0] == "Daily digest for 2026-11-06: 4 advisories."
     assert "Critical (1)" in lines and "Notice (3)" in lines
-    assert f"- (SYNTHETIC TEST) macOS: release 149521, 44 CVEs; see the release. {REL}" in lines
-    assert f"- (SYNTHETIC TEST) Linux distributions: release USN-8928-1, 9 CVEs; see the release. {USN}" in lines
+    assert f"- SYNTHETIC TEST: macOS: release 149521, 44 CVEs; see the release. {REL}" in lines
+    assert f"- SYNTHETIC TEST: Linux distributions: release USN-8928-1, 9 CVEs; see the release. {USN}" in lines
     assert "- Browsers: 12 unrated leads." in lines  # a LEAD id is never a reserved one
     assert out.count("CVE-2099-0300") == 1 and "CVE-2099-0001" not in out
     # An allowlisted vendor URL says an update exists; one fixed version is named.
@@ -286,7 +286,7 @@ def test_digest_groups_keep_marks_and_kinds_apart():
     syn = [_plain(i, "macOS", REL) for i in (3, 4)]
     out = compose.digest(real + syn, "2026-11-06")
     assert f"- macOS: release 149521, 2 CVEs; see the release. {REL}" in out.split("\n")
-    assert "(SYNTHETIC TEST) macOS: release 149521, 2 CVEs" in out and "2 advisories" in out
+    assert "SYNTHETIC TEST: macOS: release 149521, 2 CVEs" in out and "2 advisories" in out
     # A shared catalog URL is not a release, and unverified titles keep their mark.
     kev = [_plain(i, "macOS", KEV, level="high", exploited=True, prefix="CVE-2026-") for i in (5, 6)]
     c = cand(id="CVE-2026-0007", aliases=(), product_text="macOS", injection_exec=False,

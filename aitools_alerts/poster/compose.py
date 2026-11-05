@@ -275,7 +275,7 @@ _LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
 
 def _single(a: schema.Advisory) -> str:
     fixed = f"fixed in {a.products[0].fixed}" if a.products[0].fixed else "no fix yet"
-    mark = f"({SYNTHETIC}) " if is_synthetic(a.id) else ""
+    mark = f"({SYNTHETIC}) " if is_synthetic(a.id) and not a.title.startswith(SYNTHETIC + ": ") else ""
     return f"- {mark}{a.title}; {fixed}. {_primary(a.sources)}"
 
 
@@ -284,7 +284,8 @@ def _group_key(a: schema.Advisory):
     critical is always its own line; so is any title but the plain kind, so a shared
     catalog URL (every KEV entry) never reads as one release and "unverified" stays."""
     name, syn = a.products[0].name, is_synthetic(a.id)
-    if a.level == "critical" or a.title != f"{name}: security advisory ({a.id})":
+    plain = f"{name}: security advisory ({a.id})"  # schema.validate marks a reserved id's title
+    if a.level == "critical" or a.title not in (plain, f"{SYNTHETIC}: {plain}"):
         return None
     if a.id.startswith("LEAD-"):  # "unrated": a lead rated above notice keeps its own line
         return ("lead", name, syn) if a.level == "notice" else None
@@ -294,7 +295,7 @@ def _group_key(a: schema.Advisory):
 
 
 def _group_line(key, members) -> str:
-    mark = f"({SYNTHETIC}) " if key[2] else ""
+    mark = f"{SYNTHETIC}: " if key[2] else ""
     if key[0] == "lead":
         return f"- {mark}{key[1]}: {len(members)} unrated leads."
     url = key[3]
