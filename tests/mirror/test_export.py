@@ -18,7 +18,7 @@ REAL_MANIFEST = ROOT / "trust" / "manifest.json"
 ATOM = "{http://www.w3.org/2005/Atom}"
 FEED_ID = "11111111-2222-4333-8444-555555555555"
 CRIT_ID = "66666666-7777-4888-9999-aaaaaaaaaaaa"
-NAMES = {"manifest.json", "feed.json", "critical.json", "index.html", "feed.atom"}
+NAMES = {"manifest.json", "feed.json", "critical.json", "index.html", "feed.atom", "feed.ja.atom"}
 
 spec = importlib.util.spec_from_file_location("export_mirror", SCRIPT)
 em = importlib.util.module_from_spec(spec)
@@ -100,7 +100,8 @@ def test_export_writes_atomically(env, monkeypatch):
     monkeypatch.setattr(em.os, "replace", spy)
     run_export(env, rows_reader([ev(CUR_SEC, "hello")]))
     assert {d.name for _, d in seen} == NAMES
-    assert [d.name for _, d in seen] == ["manifest.json", "critical.json", "feed.json", "index.html", "feed.atom"]
+    assert [d.name for _, d in seen] == ["manifest.json", "critical.json", "feed.json", "index.html", "feed.atom",
+                                       "feed.ja.atom"]
     for src, dst in seen:
         assert src.parent == dst.parent == out
         assert src.name.startswith(".") and not src.exists()
@@ -519,8 +520,8 @@ def test_index_page_lists_advisories(env):
     text = page(env)
     assert text.startswith("<!DOCTYPE html>") and '<meta charset="utf-8">' in text
     assert "<script" not in text.lower() and not re.search(r"\son[a-z]+\s*=", text, re.I)
-    assert text.count("<section") == 3
-    assert [m for m in re.findall(r'<section id="([a-z]+)"', text)] == ["about", "advisories", "subscribe"]
+    assert text.count("<section") == 4
+    assert [m for m in re.findall(r'<section id="([a-z]+)"', text)] == ["about", "advisories", "subscribe", "ja"]
     about = text.split('<section id="about">')[1].split("</section>")[0]
     assert about.count(". ") + about.count(".</p>") == 2  # two sentences
     items = re.findall(r"<li><span class=\"level level-([a-z]+)\">[a-z]+</span> ([^<]*)<br>", text)
@@ -789,3 +790,72 @@ def test_retraction_reaches_a_cli_that_cached_an_outgrown_thread(env, tmp_path, 
     monkeypatch.setattr(em, "MAX_CHANNEL_BYTES", limit)
     run_export(env, rows_reader([root] + talk + [big], [root]))
     assert [e["id"] for e in json.loads((env[2] / "feed.json").read_text())["events"]] == [big["id"]]
+
+
+
+
+# ---------------------------------------------------------------- Japanese feed
+
+def _ja(target, text, at, sec=BOT_SEC, of=None):
+    head = "lang: ja\n" + (f"of: {of}\n" if of else "")
+    return ev(sec, head + "\n" + text, at, tags=[("e", target["id"], "", "root")])
+
+
+def test_ja_atom_translated_untranslated_and_retracted(env, tmp_path):
+    a = ev(BOT_SEC, advisory_post("Alpha", "English body."), 1793865600)
+    b = ev(BOT_SEC, advisory_post("Beta", "Beta body."), 1793865610)
+    d = ev(BOT_SEC, advisory_post("Delta", "Delta body."), 1793865620)
+    lang = [_ja(a, "アルファ\n日本語の本文", 1793865700),
+            _ja(b, "ブロック付き\n\n```aitools-alert\n{}\n```", 1793865710),  # ignored entirely
+            _ja(d, "デルタ", 1793865715),
+            ev(CUR_SEC, "retract\nwrong", 1793865720, tags=[("e", d["id"], "", "root")])]
+    run_export(env, rows_reader([a, b, d, *lang]))
+    feed = ET.parse(env[2] / "feed.ja.atom").getroot()
+    assert feed.get("{http://www.w3.org/XML/1998/namespace}lang") == "ja"
+    assert feed.findtext(f"{ATOM}title") == "ai-tools セキュリティアラート"
+    assert feed.findtext(f"{ATOM}id").endswith("/feed.ja.atom")
+    entries = {x.findtext(f"{ATOM}id"): x for x in feed.findall(f"{ATOM}entry")}
+    en_ids = [x.findtext(f"{ATOM}id") for x in ET.parse(env[2] / "feed.atom").getroot().findall(f"{ATOM}entry")]
+    assert list(entries) == [i + ":ja" for i in en_ids]  # same entries, same order
+    ea, eb, ed = (entries[f"urn:nostr:event:{x['id']}:ja"] for x in (a, b, d))
+    assert (ea.findtext(f"{ATOM}title"), ea.findtext(f"{ATOM}content")) == ("アルファ", "アルファ\n日本語の本文")
+    assert ea.findtext(f"{ATOM}updated") == "2026-11-05T08:01:40Z"  # the translation's time
+    assert (eb.findtext(f"{ATOM}title"), eb.findtext(f"{ATOM}content")) == ("Beta", "Beta body.")
+    assert ed.findtext(f"{ATOM}title") == "撤回: デルタ" and ed.findtext(f"{ATOM}content") == "retract\nwrong"
+    assert ed.findtext(f"{ATOM}updated") == "2026-11-05T08:02:00Z"  # the withdrawal's time
+    assert feed.findtext(f"{ATOM}updated") == "2026-11-05T08:02:00Z"
+    # feed.atom is the same bytes with or without the lang replies.
+    out2 = tmp_path / "out2"
+    out2.mkdir()
+    em.export(env[0], env[1], out2, rows_reader([a, b, d, lang[-1]]), now=1793865900)
+    assert (env[2] / "feed.atom").read_bytes() == (out2 / "feed.atom").read_bytes()
+
+
+def test_ja_atom_translation_rules_match_the_cli(env):
+    a = ev(BOT_SEC, advisory_post("Alpha", "x"), 1793865600)
+    c = ev(CUR_SEC, advisory_post("Curated", "x"), 1793865610)
+    other = ev(BOT_SEC, advisory_post("Other", "x"), 1793865620)
+    rows = [a, c, other,
+            _ja(c, "ボットの訳", 1793865700),  # discussion on a curator thread
+            ev(BOT_SEC, "lang: ja\n\n言及", 1793865710, tags=[("e", a["id"])]),  # unmarked: a mention
+            _ja(other, "別スレッド", 1793865720, of=a["id"]),  # names another thread's root
+            ev(BOT_SEC, "lang: ja\n\n同時刻B", 1793865730, tags=[("e", a["id"], "", "root")]),
+            ev(BOT_SEC, "lang: ja\n\n同時刻A", 1793865730, tags=[("e", a["id"], "", "root")])]
+    run_export(env, rows_reader(rows))
+    first = {x.findtext(f"{ATOM}id"): x.findtext(f"{ATOM}title") for x in
+                   ET.parse(env[2] / "feed.ja.atom").getroot().findall(f"{ATOM}entry")}
+    winner = max(rows[-2:], key=lambda e: e["id"])["content"].split("\n")[-1]
+    assert first == {f"urn:nostr:event:{a['id']}:ja": winner, f"urn:nostr:event:{c['id']}:ja": "Curated",
+                   f"urn:nostr:event:{other['id']}:ja": "Other"}
+    run_export(env, rows_reader(rows[:-2] + rows[-1:] + rows[-2:-1]))  # tie order does not matter
+    assert {x.findtext(f"{ATOM}id"): x.findtext(f"{ATOM}title") for x in
+            ET.parse(env[2] / "feed.ja.atom").getroot().findall(f"{ATOM}entry")} == first
+
+
+def test_index_has_a_japanese_section(env):
+    channels, manifest, out = env
+    em.export(channels, manifest, out, rows_reader([]), now=1793865900,
+              mirror_url="https://mirror.example.invalid/alerts")
+    ja = page(env).split('<section id="ja" lang="ja">')[1].split("</section>")[0]
+    assert "<h2>日本語</h2>" in ja and 'href="https://mirror.example.invalid/alerts/feed.ja.atom"' in ja
+    assert em.PIPX_LINE in ja and 'lang = "ja"' in ja and "#security-feed" in ja

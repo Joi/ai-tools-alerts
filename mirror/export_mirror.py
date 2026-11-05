@@ -72,6 +72,11 @@ URL_REFUSED = frozenset("\"'<>\\ \t\r\n")  # browsers read a backslash as a slas
 ATOM_SUBTITLE = ("Security alerts for people who run AI agents on their own machines. This feed is "
                  "for humans and feed readers; agents use the aitools-alerts CLI, which verifies "
                  "each alert's signature (" + REPO_URL + ").")
+ATOM_JA = {"file": "feed.ja.atom", "title": "ai-tools セキュリティアラート", "retracted": "撤回: ",
+           "subtitle": ("AIエージェントを自分のマシンで動かす人のためのセキュリティアラートです。このフィードは"
+                        "人とフィードリーダーのためのものです。エージェントは、各アラートの署名を検証する "
+                        "aitools-alerts CLI を使ってください (" + REPO_URL + ")。")}
+XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
 
 
 class ExportError(Exception):
@@ -311,13 +316,18 @@ def _is_root(ev: dict) -> bool:
     return not any(t and t[0] == "e" for t in ev["tags"])
 
 
-def atom_doc(events: list[dict], m, generated_at: str, mirror_url: str) -> bytes:
+def atom_doc(events: list[dict], m, generated_at: str, mirror_url: str, lang: str = "en") -> bytes:
     """Atom entries for the feed channel's root posts by manifest posters.
     Feed readers cannot verify signatures, so the Atom carries only what the
     CLI would trust. A root a curator retracted keeps its entry id but is
     rewritten as a withdrawal ("Retracted: ...", the retraction's text, the
     retraction's time as updated), because readers keep entries they have
-    already fetched and an entry that just disappears is never withdrawn."""
+    already fetched and an entry that just disappears is never withdrawn.
+
+    lang "ja" is feed.ja.atom: the same entries in the same order; an entry
+    whose thread has a Japanese translation of its current version (as the
+    CLI reads it, pull.threads_from) takes its title and text, and its
+    updated moves to the translation's time (past it, for a withdrawal)."""
     names = {p.pubkey: p.name for p in m.posters}
     # created_at beyond 9999-12-31 has no Atom date: such an event stays in
     # the JSON (it is signed and raw) but takes no part in the Atom.
@@ -341,6 +351,13 @@ def atom_doc(events: list[dict], m, generated_at: str, mirror_url: str) -> bytes
             return max(ev["created_at"] + 1, retraction[ev["id"]]["created_at"])
         return ev["created_at"]
     roots.sort(key=lambda ev: (updated(ev), ev["id"]), reverse=True)
+    ja = {t.root_id: t for t in pull.threads_from(dated, m) if "ja" in t.translations} if lang == "ja" else {}
+
+    def shown(ev):
+        if ev["id"] not in ja:
+            return updated(ev)
+        at = ja[ev["id"]].translated_at["ja"]
+        return max(updated(ev), at + 1 if ev["id"] in retraction else at)
 
     ET.register_namespace("", ATOM_NS)
     q = lambda tag: f"{{{ATOM_NS}}}{tag}"  # noqa: E731
@@ -351,25 +368,29 @@ def atom_doc(events: list[dict], m, generated_at: str, mirror_url: str) -> bytes
             el.text = _xml_safe(text)
         return el
 
-    feed = ET.Element(q("feed"))
-    sub(feed, "id", mirror_url + "feed.atom")
-    sub(feed, "title", "ai-tools security alerts")
-    sub(feed, "subtitle", ATOM_SUBTITLE)
-    sub(feed, "updated", _iso(updated(roots[0])) if roots else generated_at)
-    sub(feed, "link", rel="self", href=mirror_url + "feed.atom")
+    feed = ET.Element(q("feed"), {XML_LANG: "ja"} if lang == "ja" else {})
+    fname = ATOM_JA["file"] if lang == "ja" else "feed.atom"
+    sub(feed, "id", mirror_url + fname)
+    sub(feed, "title", ATOM_JA["title"] if lang == "ja" else "ai-tools security alerts")
+    sub(feed, "subtitle", ATOM_JA["subtitle"] if lang == "ja" else ATOM_SUBTITLE)
+    sub(feed, "updated", _iso(max(map(shown, roots))) if roots else generated_at)
+    sub(feed, "link", rel="self", href=mirror_url + fname)
     sub(feed, "link", rel="alternate", href=mirror_url + "feed.json")
     sub(sub(feed, "author"), "name", "ai-tools alerts")
     for ev in roots:
         adv = schema.parse_post(ev["content"])
         title = adv.title if adv is not None else _first_line(ev["content"])
         body = _body_before_block(ev["content"]) if adv is not None else ev["content"]
+        if ev["id"] in ja:
+            text = ja[ev["id"]].translations["ja"]
+            title, body = pull.translation_title(text, ja[ev["id"]].adv.id), text
         if ev["id"] in retraction:
-            title = "Retracted: " + title
+            title = (ATOM_JA["retracted"] if lang == "ja" else "Retracted: ") + title
             body = retraction[ev["id"]]["content"].strip()
         entry = sub(feed, "entry")
-        sub(entry, "id", f"urn:nostr:event:{ev['id']}")
+        sub(entry, "id", f"urn:nostr:event:{ev['id']}" + (":ja" if lang == "ja" else ""))
         sub(entry, "title", title)
-        sub(entry, "updated", _iso(updated(ev)))
+        sub(entry, "updated", _iso(shown(ev)))
         sub(entry, "published", _iso(ev["created_at"]))
         sub(entry, "link", rel="alternate", href=mirror_url + "feed.json")
         sub(sub(entry, "author"), "name", names.get(ev["pubkey"], "unknown"))
@@ -446,6 +467,7 @@ def index_doc(events: dict[str, list[dict]], m, channels: dict, now: int,
             f'<a href="{_esc(url)}">{_esc(url)}</a>{note}</span></li>')
     listing = "<ol>\n" + "\n".join(rows) + "\n</ol>" if rows else "<p>No advisories yet.</p>"
     atom = mirror_url + "feed.atom"
+    atom_ja = mirror_url + ATOM_JA["file"]
     feed_json = mirror_url + "feed.json"
     names = " and ".join(f"<code>#security-{_esc(n)}</code>" for n in sorted(channels, key=lambda n: n != "feed"))
     doc = f"""<!DOCTYPE html>
@@ -479,6 +501,18 @@ def index_doc(events: dict[str, list[dict]], m, channels: dict, now: int,
 <li>Source and instructions: <a href="{_esc(REPO_URL)}">{_esc(REPO_URL)}</a></li>
 </ul>
 <p>The channels {names} on {_esc(RELAY_HOST)} are for ai-tools community members; reading the relay needs a member's auth token.</p>
+</section>
+<section id="ja" lang="ja">
+<h2>日本語</h2>
+<p>同じアラートを日本語でも読めます。どれもアカウントは要りません。</p>
+<ul>
+<li>日本語の Atom フィード (フィードリーダー向け): <a href="{_esc(atom_ja)}">{_esc(atom_ja)}</a></li>
+<li>署名付き JSON (英語と同じもの): <a href="{_esc(feed_json)}">{_esc(feed_json)}</a></li>
+<li>エージェント向けのコマンドラインツール (各アラートの署名を検証します): <code>{_esc(PIPX_LINE)}</code>、続けて <code>aitools-alerts init</code>。設定ファイルに <code>lang = "ja"</code> と書くと日本語で表示します。</li>
+<li>ソースと説明: <a href="{_esc(REPO_URL)}">{_esc(REPO_URL)}</a></li>
+</ul>
+<p>{_esc(RELAY_HOST)} の {names} チャンネルは ai-tools コミュニティのメンバー用です。リレーを読むにはメンバーの認証トークンが必要です。</p>
+<p>翻訳がまだないアラートは英語のまま載ります。</p>
 </section>
 </main>
 </body>
@@ -527,6 +561,7 @@ def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_
     for name in channels:
         counts[name]["capped"] = capped[name]
     atom, entries = atom_doc(events["feed"], m, generated_at, mirror_url)
+    atom_ja, _ = atom_doc(events["feed"], m, generated_at, mirror_url, lang="ja")
     index, listed = index_doc(events, m, channels, now, mirror_url)
 
     # Manifest first: a reader never sees a new poster's event before the
@@ -536,6 +571,7 @@ def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_
         files.append((f"{name}.json", channel_doc(name, events[name], generated_at)))
     files.append(("index.html", index))
     files.append(("feed.atom", atom))
+    files.append((ATOM_JA["file"], atom_ja))
     for fname, data in files:
         write_atomic(out, fname, data)
     return {"channels": counts, "atom_entries": entries, "index_advisories": listed}

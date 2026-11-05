@@ -14,7 +14,7 @@ passes: spec+plan 1 · elapsed ~25 min
 
 ## Chunks
 - [x] chunk 1 — CLI: pull translations, config lang, check/plan/notify, --json
-- [ ] chunk 2 — mirror: feed.ja.atom, index.html 日本語 section (after hgs0 lands)
+- [x] chunk 2 — mirror: feed.ja.atom, index.html 日本語 section (built on hgs0 branch head e6594cf)
 - [x] chunk 3 — skill lines
 
 ## Notes
