@@ -1,6 +1,6 @@
 # Run: poster-digest-group
 Instruction: Task ai-tools-alerts#qg7p per TASK-ai-tools-alerts#qg7p.md — poster digest groups by vendor release and lead scope: (a) group CVE notices/highs by primary source URL, critical one per advisory; (b) LEAD- ids one line per scope; (c) from_collector carries the fix version, the line says "fixed in" or "update available"; (d) header N is the line count, --json/ledger per advisory. /do-it with the rung floored at medium; security-shaped review on gpt-6-astra. Non-repoman repo (ff-merge ending).
-Stage: committing
+Stage: done
 Rung: medium (start-floor medium: constraint-lens, evaluator BR1 REV1 NOV1 INT1 FC1 = 5, no hard trigger; dispatch floor medium)
 Lens: "--json/ledger keep every advisory"; "Under 300 changed lines; stdlib only"; "do not run any poster install or live send yourself"; "main is unchanged. The grouping is presentation only."
 Spec: docs/superpowers/specs/2026-11-05-poster-digest-group-design.md   Plan: docs/superpowers/plans/2026-11-05-poster-digest-group.md
@@ -33,3 +33,6 @@ Pass 2 [code:delta --since 14baa29, head bdb99c5]: 0B/1S/0C/0R · fixed 5/5 prio
 
 ## Notes
 - Prior work: the collector record shape read from amplifier-bundle-joi e947e11a (`collect_apple` writes `(macOS <major> fixed in <v>)` in the source title; findings carry no `fixed` or ranges). candidates._url drops fragments, so the `#CVE` source fragments share one URL.
+- Rebased on origin/main 3777e4c (hhe3: schema.validate marks a reserved id's title `SYNTHETIC TEST: ...`; h260 cli). The reviewed commits became d0b97ad, 849cde4, faf18a4, ac2dbe5. One adaptation commit 4149ddf after the last reviewed tree: a marked plain title still groups, a single line adds no second mark, a synthetic group line reads `SYNTHETIC TEST: <product>: ...`. It is not a BLOCKER fix and had no further pass (ruling jibot-code#41e2); `git diff ac2dbe5 4149ddf` shows it. Suite on 4149ddf: 775 passed, 1 skipped.
+- roborev: the repo is not enrolled (`roborev repo list` has no ai-tools-alerts row), so no post-push check runs; the one delta pass ran before the push.
+- Evaluator and spec review: spec/plan edits after the first review were made with a python replace (not Edit), checked by grep; later edits used Edit.
