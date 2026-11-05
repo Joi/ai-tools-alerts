@@ -22,7 +22,9 @@ trusted curator's retraction or by the manifest's ``retracted`` list.
 from __future__ import annotations
 
 import copy
+import http.client
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -78,8 +80,8 @@ class FetchError(OSError):
 
 
 def _kind(e: Exception) -> str:
-    if isinstance(e, FetchError):
-        return str(e)
+    if isinstance(e, FetchError):  # checked: an injected fetcher's FetchError is not trusted
+        return str(e) if str(e) in PULL_ERRORS or re.fullmatch(r"http [1-5][0-9][0-9]", str(e)) else "unreachable"
     return "timeout" if isinstance(e, TimeoutError) else "unreachable"
 
 
@@ -104,10 +106,10 @@ def default_fetch(url: str) -> bytes:
             data = r.read(MAX_FETCH_BYTES + 1)
     except urllib.error.HTTPError as e:
         e.close()
-        raise FetchError(f"http {e.code}" if 100 <= e.code <= 599 else "unreachable") from None
+        raise FetchError(_kind(FetchError(f"http {e.code}"))) from None
     except urllib.error.URLError as e:
         raise FetchError(_kind(e.reason if isinstance(e.reason, Exception) else e)) from None
-    except (TimeoutError, OSError, ValueError) as e:  # a read timeout, a reset, a malformed URL
+    except (TimeoutError, OSError, ValueError, http.client.HTTPException) as e:  # a read timeout, a reset, a malformed URL
         raise FetchError(_kind(e)) from None
     if len(data) > MAX_FETCH_BYTES:
         raise FetchError("too large")

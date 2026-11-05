@@ -159,11 +159,12 @@ def test_bad_trust_root_override(monkeypatch):
         cli.main(["check"])
 
 
+@pytest.mark.parametrize("flag", ["", "trust_root_override = false\n"])  # default, explicit
 @pytest.mark.parametrize("value", ["ab" * 32, "nothex"])
-def test_trust_root_env_cannot_hide_an_alert_without_the_flag(sent, capsys, monkeypatch, value):
+def test_trust_root_env_cannot_hide_an_alert_without_the_flag(sent, capsys, monkeypatch, value, flag):
     monkeypatch.setattr(cli, "TRUST_ROOT_PUBKEY", FIXTURE_ROOT)  # the pinned root signs the mirror
     monkeypatch.setenv(cli.TRUST_ROOT_ENV, value)  # a project's environment points elsewhere
-    config.config_path().write_text(f'mirror_url = "{MIRROR}"\ntrust_root_override = false\n')
+    config.config_path().write_text(f'mirror_url = "{MIRROR}"\n{flag}')
     assert cli.main(["run", "--json"]) == 2
     io = capsys.readouterr()
     data = json.loads(io.out)
@@ -171,7 +172,8 @@ def test_trust_root_env_cannot_hide_an_alert_without_the_flag(sent, capsys, monk
     assert data["pull_error"] is None and f"ignoring {cli.TRUST_ROOT_ENV}" in io.err
 
 
-def test_trust_root_override_must_be_bool(capsys):
+def test_trust_root_override_must_be_bool(capsys, tmp_path):
+    assert config.load(tmp_path / "missing.toml").trust_root_override is False
     config.config_path().write_text('trust_root_override = "yes"\n')
     assert cli.main(["check"]) == 1 and "must be true or false" in capsys.readouterr().err
 
