@@ -131,6 +131,11 @@ def level_for(c: Candidate, scope: schema.ScopeEntry, source_ok: bool) -> tuple[
     return "notice", "notice"
 
 
+def _countable(url) -> bool:
+    """A primary-source URL that is not the host's root page (which confirms nothing)."""
+    return isinstance(url, str) and schema.is_primary(url) and urlsplit(url).path not in ("", "/")
+
+
 def source_ok(c: Candidate, fetch) -> bool:
     """True when at least one source is a primary source and fetches with 200.
 
@@ -140,9 +145,7 @@ def source_ok(c: Candidate, fetch) -> bool:
     """
     for s in c.sources:
         url = getattr(s, "url", None)
-        if not isinstance(url, str) or not schema.is_primary(url):
-            continue
-        if urlsplit(url).path in ("", "/"):
+        if not _countable(url):
             continue
         try:
             status = fetch(url, FETCH_TIMEOUT)
@@ -192,8 +195,8 @@ def _request(opener, method: str, url: str, deadline: float) -> int:
             if not isinstance(location, str):
                 return 0
             url = urljoin(url, location)
-            if not schema.is_primary(url):
-                return 0  # a redirect off the primary-source list is refused
+            if not _countable(url):
+                return 0  # a redirect off the primary-source list, or to a root page, is refused
             continue
         except Exception:  # network, TLS, protocol: a failed fetch, never a crash
             return 0
@@ -210,11 +213,10 @@ def http_status(url: str, timeout: float = FETCH_TIMEOUT, opener=None) -> int:
 
     One wall-clock deadline of ``timeout`` seconds covers DNS, both methods and
     every redirect: the fetch runs in a daemon thread and its answer counts only
-    if it arrives in time. Refuses (0) a URL that is not a primary source, and
-    any redirect that leaves the primary-source list or runs past MAX_REDIRECTS
-    hops. Bodies are never read.
+    if it arrives in time. Refuses (0) a URL that is not a primary source or is
+    a root page, and any redirect to such a URL or past MAX_REDIRECTS hops. Bodies are never read.
     """
-    if not isinstance(url, str) or not schema.is_primary(url):
+    if not _countable(url):
         return 0
     opener = opener or _opener()
     deadline = time.monotonic() + timeout

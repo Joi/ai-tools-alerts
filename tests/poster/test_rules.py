@@ -166,10 +166,11 @@ def test_source_ok_needs_primary_and_200():
 
 class FakeResp:
     def __init__(self, status):
-        self.status, self.closed = status, False
+        self.status, self.closed, self.read_called = status, False, False
 
     def read(self, *a):
-        raise AssertionError("a response body was read")
+        self.read_called = True  # asserted in the test thread; a raise here would be lost
+        return b""
 
     def close(self):
         self.closed = True
@@ -206,7 +207,7 @@ class FakeOpener:
         return fp
 
     def all_closed(self):
-        return bool(self.made) and all(r.closed for r in self.made)
+        return bool(self.made) and all(r.closed and not r.read_called for r in self.made)
 
 
 A = "https://www.cisa.gov/a"
@@ -235,7 +236,8 @@ def test_redirects_followed_only_to_primary():
     for target in ("https://127.0.0.1/a", "http://www.cisa.gov/a", "https://169.254.169.254/latest",
                    "https://evil.example/a", "//evil.example/a",
                    "https://github.com/someone/x/security/advisories/1",
-                   "https://python.org/jobs/1", "file:///etc/passwd", None):
+                   "https://python.org/jobs/1", "file:///etc/passwd", "/", "https://www.cisa.gov",
+                   None):
         o = FakeOpener({A: (302, target)})
         assert rules.http_status(A, opener=o) == 0, target
         assert all(url == A for _, url in o.seen), target  # the target never reaches transport

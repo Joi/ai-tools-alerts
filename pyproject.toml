@@ -22,3 +22,5 @@ packages = ["aitools_alerts", "aitools_alerts.poster"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# An exception in a worker thread (the fetch thread) fails the test, not just warns.
+filterwarnings = ["error::pytest.PytestUnhandledThreadExceptionWarning"]

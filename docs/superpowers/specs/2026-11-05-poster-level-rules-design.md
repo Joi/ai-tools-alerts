@@ -99,6 +99,7 @@ Order matters; the first rule that applies wins.
   `fetch(url, 10)`; a status of exactly 200 returns True. Any exception from
   `fetch` counts as a failure for that source, never propagates.
 - A host's root page (path empty or `/`) never counts: it confirms nothing.
+  That holds for a redirect target too.
 - `http_status(url, timeout=10, opener=None)` is the production fetch. It
   refuses (0) a URL that is not `is_primary`. One wall-clock deadline of
   `timeout` seconds covers everything (DNS, HEAD, the fallback GET and every
