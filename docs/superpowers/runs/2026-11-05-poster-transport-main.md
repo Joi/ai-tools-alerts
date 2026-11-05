@@ -1,6 +1,6 @@
 # Run: poster-transport-main
 Instruction: start at medium. Task: ai-tools-alerts#kfq6 (B4) — relay transport and the aitools-alerts-poster command, per TASK-ai-tools-alerts#kfq6.md and the kata comments. Non-repoman repo (ff-merge ending). Security-shaped: fresheyes with FRESHEYES_GPT_MODEL=gpt-6-astra.
-Stage: spec-review
+Stage: done
 Rung: heavy (start-floor heavy: hard-trigger live deploy path, BR1 REV1 NOV1 INT1 FC2 = 6; posts go to the live relay channels)
 Lens: no `--private-key`, no `--relay`, no key path anywhere in this repo; nothing in a post may name a fleet host, a local path or a kata ref; no other live send from this task; transport tests never spawn a real ssh; the watermark advances only after every send of the run succeeded; send nothing more after one failure; a ValueError from compose withholds the advisory, never posts it.
 Spec: docs/superpowers/specs/2026-11-05-poster-transport-main-design.md   Plan: docs/superpowers/plans/2026-11-05-poster-transport-main.md
@@ -35,11 +35,13 @@ Pass 2 [code:inputs delta --since 9dd6636]: 2B/0S/0C/0R · fixed 13/13 prior · 
 Pass 1 [code:run, whole branch 00ea54d]: Stage 1 2B/2S/4C · fresheyes (run 20261105-111217-e3ad53) 4B/0S/0C · fixed 2/2 prior · velocity = (—→12, escalation no)
 - Fixed: deferred candidates in the state (a replaced collector record cannot lose a busy update; unplanned candidates after a stop wait there too); the journaled thread root for replies and copies; a widened unsent root dropped, never a second thread; a sent root against another thread is a LedgerError; bounded digest with snapshot-only acknowledgement; size checks before journaling and transport checks before pending; sent items drain before the held-back check; channel UUIDs checked at load; a summary line on any exception; held notices that later posted are listed once; the alias-cap test reaches the cap. Behaviour changed: one delta.
 - Cosmetic left: add_review runs on every read of the same input (counts grow; review text only, never posted).
+Pass 2 [code:run delta --since 00ea54d]: 4B/0S/0C/0R · fixed 8/8 prior · velocity ↓ (12→4, escalation no)
+- run 20261105-112237-654ad9. All fixed, no further pass: fresh candidates merge before deferred ones (a correction wins); digest acknowledgement per root at the cutoff time (a backlog moves forward); a new root's copies pinned to it when recorded; a LedgerError also defers unplanned candidates.
 
 ## Chunks
 - [x] transport — `aitools_alerts/poster/transport.py`, `tests/poster/test_transport.py` (landing 1)
 - [x] inputs — `aitools_alerts/poster/inputs.py`, `tests/poster/test_inputs.py`, `_PRIVATE` in candidates.py + tests (landing 2)
-- [ ] run — `aitools_alerts/poster/main.py`, `tests/poster/test_main.py`, `Ledger.entries_since`/`has_pending` + test, `pyproject.toml` console script (landing 3)
+- [x] run — `aitools_alerts/poster/main.py`, `tests/poster/test_main.py`, `Ledger.entries_since`/`has_pending` + test, `pyproject.toml` console script (landing 3)
 
 ## Notes
 - VM facts checked 2026-11-05 (read-only): `buzz messages send --help` on buzz a5dbdf5e6 has `--reply-to <REPLY_TO>` ("Event ID to reply to (creates a thread)"); stdout JSON carries `event_id` (ops/vm/README.md, E1).

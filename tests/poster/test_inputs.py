@@ -30,7 +30,7 @@ def item(**kw):
 
 def digest_item(**kw):
     base = dict(key="digest:2026-11-05", kind="digest", scope=None, ids=["digest:2026-11-05"],
-                adv={"held": [], "cutoff": 1}, date="2026-11-05")
+                adv={"held": [], "cutoff": 1, "roots": []}, date="2026-11-05")
     base.update(kw)
     return item(**base)
 

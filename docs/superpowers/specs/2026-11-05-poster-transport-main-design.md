@@ -150,7 +150,7 @@ journaled post is public. Shape:
 {"schema_version": 1,
  "since": int,                       # backfill floor, set on the first run
  "heartbeat": str|null, "collector": str|null, "kev_since": "YYYY-MM-DD"|null,
- "digest_date": "YYYY-MM-DD"|null, "digest_at": int,
+ "digest_date": "YYYY-MM-DD"|null, "digest_at": int, "digest_roots": [str],
  "held": [{"scope": str, "adv": advisory dict}],     # notices awaiting the digest
  "digested": ["<scope>|<id casefold>", ...],          # newest 5000
  "outbox": [item, ...],
@@ -161,7 +161,8 @@ An outbox item: `{"key", "kind": "root"|"copy"|"reply"|"digest", "scope":
 str|null, "ids": [str], "channel": "feed"|"critical", "text": str, "adv":
 dict|null, "exploited": bool, "date": str|null, "sent": str|null, "root":
 str|null}`. `root` is the thread's root event id, fixed when a reply (or a
-copy for a known thread) is planned; a reply must carry one.
+copy for a known thread) is planned, and filled into a new advisory's copies
+the moment its root is recorded; a reply must carry one.
 
 ### Sources
 
@@ -214,8 +215,10 @@ Over-matching drops a field or item, never posts it.
 ### Order of a run
 
 1. Open the ledger (lock); load state. LedgerError → exit 1, nothing sent.
-2. Gather candidates (the deferred ones from the state first, then the
-   sources); apply the backfill floor to the new ones; `rules.scope_of(...,
+2. Gather candidates (from the sources, then the deferred ones from the state,
+   in that order, so `ledger.merge`, which takes the first member's fix, lets a
+   fresh correction win over a deferred value); apply the backfill floor to
+   the new ones; `rules.scope_of(...,
    log=review)`; `ledger.add_review(review)`; `ledger.merge(pairs, ledger)`
    BEFORE `rules.level_for`.
 3. **Drain the outbox** (below), oldest first.
@@ -232,7 +235,8 @@ Over-matching drops a field or item, never posts it.
 
 After one failed or unknown send, or any LedgerError, the run sends nothing
 more: no further outbox item, plan or digest; the candidates not yet planned
-are deferred. Any other exception still prints the summary line (exit 1,
+are deferred (after a LedgerError too, whenever the state can still be
+written). Any other exception still prints the summary line (exit 1,
 `error=internal`).
 
 ### Levels
@@ -336,9 +340,13 @@ Due when the Asia/Tokyo hour (`zoneinfo`) is at or past `digest_hour` and
 `digest_date` is not today's Tokyo date. Items: the held notices that have not
 since posted plus every ledger entry whose `last_change` is after `digest_at`
 (`Ledger.entries_since(t)`, a new read-only method), deduplicated by
-`compose.digest`. When the text would exceed one post, the loudest and newest
-items that fit are taken and the rest wait: the snapshot names only the notices
-taken, and the cutoff moves only if every ledger item fit. One `digest` outbox item to `feed`, key `digest:<date>`,
+`compose.digest`. Ledger posts come first, oldest change first, then held
+notices loudest first; when the text would exceed one post, the prefix that
+fits is taken and the rest wait. The snapshot acknowledges exactly what was
+taken: the notice keys, and for ledger posts a cutoff (the last listed change
+time) plus the roots listed at that time (state `digest_roots`), so a backlog
+larger than one post, even one run's worth of changes at a single time, moves
+forward day by day. One `digest` outbox item to `feed`, key `digest:<date>`,
 whose `adv` journals the snapshot it was built from: the scoped notice keys and
 the ledger cutoff (`now`). No digest is planned while any digest item is in the
 outbox, so an unknown digest is never queued twice; when it later sends, it

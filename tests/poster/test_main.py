@@ -569,3 +569,68 @@ def test_oversized_digest_posts_what_fits_and_keeps_the_rest(env, monkeypatch):
     assert 0 < len(listed) < 6 and len(st["held"]) == 6 - len(listed)  # only what was posted is acknowledged
     left = {h["adv"]["id"] for h in st["held"]}
     assert left.isdisjoint(listed)
+
+
+def test_fresh_correction_wins_over_a_deferred_fix(env):
+    env.collector([finding(fid="CVE-2026-0001")])
+    env.kev.catalog = {"vulnerabilities": [kev_item()]}
+    env.run(ssh=FakeSSH("ok", "unknown"))  # critical root ok, feed copy unknown: busy
+    env.collector([finding(fid="CVE-2026-0001", fixed="2.1.5", sources=(GHSA2,))])
+    env.run(now=T0 + 3600)  # deferred with 2.1.5
+    with Ledger(env.config.ledger) as led:
+        (p,) = led._state()["pending"]
+        led.expire_pending(p["key"], "checked the channel: not delivered", now=T0 + 90000)
+    env.collector([finding(fid="CVE-2026-0001", fixed="2.2.0", sources=(GHSA2,))])  # the correction
+    code, _, ssh = env.run(now=T0 + 90000)
+    assert code == 0 and ssh.calls
+    assert all("2.2.0" in c[2] and "2.1.5" not in c[2] for c in ssh.calls[1:])
+
+
+def test_digest_backlog_moves_forward_day_by_day(env, monkeypatch):
+    env.collector([finding(fid=f"GHSA-aaaa-aaaa-aa{i:02d}", sources=(f"{GHSA}{i}",)) for i in range(6)])
+    env.run()
+    assert len(env.ledger()[0]) == 6
+    monkeypatch.setattr(main.transport, "MAX_CONTENT", 700)
+    seen = set()
+    for day in (5, 6, 7, 8, 9, 10):
+        _, _, ssh = env.run(now=at(day, 9))
+        if ssh.calls:
+            seen |= {f"GHSA-aaaa-aaaa-aa{i:02d}" for i in range(6) if f"aa{i:02d})" in ssh.calls[0][2]}
+    assert seen == {f"GHSA-aaaa-aaaa-aa{i:02d}" for i in range(6)}
+
+
+def test_new_roots_copy_stays_on_its_thread(env):
+    env.collector([finding(fid="GHSA-zzzz-zzzz-zzzz", sources=(GHSA2,))])  # an older feed thread A
+    env.run()
+    env.kev.catalog = {"vulnerabilities": [kev_item()]}  # a new critical thread B
+    env.run(now=T0 + 3600, ssh=FakeSSH("ok", "unknown"))
+    entries, _ = env.ledger()
+    b = next(e for e in entries if "CVE-2026-0001" in e["aliases"])
+    env.collector([finding(fid="GHSA-zzzz-zzzz-zzzz", aliases=("CVE-2026-0001",), sources=(GHSA2,))])
+    env.run(now=T0 + 7200)  # bridges B's ids to A while the copy is pending
+    with Ledger(env.config.ledger) as led:
+        (p,) = led._state()["pending"]
+        led.expire_pending(p["key"], "checked the channel: not delivered", now=T0 + 90000)
+    env.run(now=T0 + 90000)
+    entries, _ = env.ledger()
+    assert set(next(e for e in entries if e["root_event_id"] == b["root_event_id"])["channel_ids"]) \
+        == {"critical", "feed"}
+
+
+def test_ledger_error_keeps_unplanned_candidates(env, monkeypatch):
+    env.collector([finding(), finding(fid="GHSA-zzzz-zzzz-zzzz", sources=(GHSA2,))])
+    real = Ledger.record_root
+    calls = []
+
+    def boom(self, *a, **k):
+        calls.append(1)
+        raise LedgerError("disk full")
+
+    monkeypatch.setattr(Ledger, "record_root", boom)
+    code, _, _ = env.run()
+    assert code == 1 and calls
+    assert {d["id"] for d in env.state()["deferred"]} == {"GHSA-abcd-efgh-ijkl", "GHSA-zzzz-zzzz-zzzz"}
+    monkeypatch.setattr(Ledger, "record_root", real)
+    env.collector([])  # the collector's newest record no longer names either
+    code, summary, ssh = env.run(now=T0 + 3600)
+    assert code == 0 and len(env.ledger()[0]) == 2 and len(ssh.calls) == 1

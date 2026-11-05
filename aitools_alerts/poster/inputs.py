@@ -39,7 +39,7 @@ MAX_RUN_DIRS = 48
 RUN_DIR = re.compile(r"\d{4}-\d{2}-\d{2}T\d{6}Z")
 
 _STATE_KEYS = {"schema_version", "since", "heartbeat", "collector", "kev_since",
-               "digest_date", "digest_at", "held", "digested", "outbox", "deferred"}
+               "digest_date", "digest_at", "digest_roots", "held", "digested", "outbox", "deferred"}
 _ITEM_KEYS = {"key", "kind", "scope", "ids", "channel", "text", "adv", "exploited", "date", "sent", "root"}
 _CANDIDATE_FIELDS = frozenset(Candidate.__dataclass_fields__)
 _KINDS = {"root", "copy", "reply", "digest"}
@@ -167,7 +167,7 @@ def read_json(path: Path, limit: int):
 def new_state(now: int, backfill_days: int) -> dict:
     since = now - backfill_days * 86400
     return {"schema_version": 1, "since": since, "heartbeat": None, "collector": None,
-            "kev_since": None, "digest_date": None, "digest_at": since,
+            "kev_since": None, "digest_date": None, "digest_at": since, "digest_roots": [],
             "held": [], "digested": [], "outbox": [], "deferred": []}
 
 
@@ -208,8 +208,9 @@ def _item_ok(it) -> bool:
         return False  # a reply names its thread's root; a root or digest names none
     if kind == "digest":
         return (it["scope"] is None and _date_ok(it["date"]) and isinstance(adv, dict)
-                and set(adv) == {"held", "cutoff"} and type(adv["cutoff"]) is int
-                and isinstance(adv["held"], list) and all(isinstance(k, str) for k in adv["held"]))
+                and set(adv) == {"held", "cutoff", "roots"} and type(adv["cutoff"]) is int
+                and isinstance(adv["held"], list) and all(isinstance(k, str) for k in adv["held"])
+                and isinstance(adv["roots"], list) and all(isinstance(k, str) for k in adv["roots"]))
     if not (isinstance(it["scope"], str) and it["scope"] and it["date"] is None):
         return False
     return (adv is None and kind == "copy") or _adv_ok(adv)
@@ -259,6 +260,7 @@ def load_state(path: Path, now: int, backfill_days: int) -> dict:
         ok = (isinstance(st, dict) and set(st) == _STATE_KEYS
               and type(st["schema_version"]) is int and st["schema_version"] == 1
               and type(st["since"]) is int and type(st["digest_at"]) is int
+              and isinstance(st["digest_roots"], list) and all(isinstance(i, str) for i in st["digest_roots"])
               and all(st[k] is None or (isinstance(st[k], str) and RUN_DIR.fullmatch(st[k]))
                       for k in ("heartbeat", "collector"))
               and all(st[k] is None or _date_ok(st[k]) for k in ("kev_since", "digest_date"))

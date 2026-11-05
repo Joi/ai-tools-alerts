@@ -149,6 +149,10 @@ class Run:
             if e is None:
                 self.led.record_root(schema.validate(it["adv"]), eid, {ch: eid}, scope=it["scope"],
                                      exploited=it["exploited"], now=self.now, ids=it["ids"])
+            for o in self.state["outbox"]:  # its copies now name this thread, never a lookup
+                if o["kind"] == "copy" and o["root"] is None and o["scope"] == it["scope"] \
+                        and _fold(o["ids"]) & _fold(it["ids"]):
+                    o["root"] = eid
         elif it["kind"] == "copy":
             e = self._entry(it)
             if ch not in e.channel_ids:
@@ -161,7 +165,8 @@ class Run:
         else:  # digest: acknowledge exactly the notices and ledger cutoff it was built from
             snap = set(it["adv"]["held"])
             keep = [h for h in self.state["held"] if not set(self._notice_keys(h["scope"], h["adv"])) <= snap]
-            self.state.update(digest_date=it["date"], digest_at=max(self.state["digest_at"], it["adv"]["cutoff"]),
+            self.state.update(digest_date=it["date"], digest_at=it["adv"]["cutoff"],
+                              digest_roots=it["adv"]["roots"],
                               held=keep, digested=(self.state["digested"] + sorted(snap))[-MAX_DIGESTED:])
 
     def busy(self, ids, scope) -> bool:
@@ -288,20 +293,32 @@ class Run:
             return
         if any(it["kind"] == "digest" for it in self.state["outbox"]):
             return  # today's (or an earlier) digest is journaled and drains first
-        items = []  # (advisory, held entry or None), loudest and newest first
+        # Ledger posts oldest change first (so a backlog larger than one post moves forward
+        # day by day), then held notices loudest first: (advisory, held entry, last_change).
         posted = [h for h in self.state["held"]  # a notice that has since posted is listed once, as posted
                   if self.led.lookup([h["adv"]["id"], *h["adv"]["aliases"]], scope=h["scope"]) is not None]
-        for raw, h in [(h["adv"], h) for h in self.state["held"] if h not in posted] + \
-                      [(e.advisory, None) for e in self.led.entries_since(self.state["digest_at"])]:
+        led_items, held_items = [], []
+        at, done = self.state["digest_at"], set(self.state["digest_roots"])
+        for e in self.led.entries_since(at - 1):
+            if e.last_change == at and e.root_event_id in done:
+                continue  # listed by the last digest
             try:
-                items.append((schema.validate(raw), h))
+                led_items.append((schema.validate(e.advisory), None, (e.last_change, e.root_event_id)))
             except ValueError:
                 self.n["withheld"] += 1
-        items.sort(key=lambda x: (-RANK[x[0].level], -x[0].posted_at))
+        for h in self.state["held"]:
+            if h not in posted:
+                try:
+                    held_items.append((schema.validate(h["adv"]), h, None))
+                except ValueError:
+                    self.n["withheld"] += 1
+        led_items.sort(key=lambda x: x[2])
+        held_items.sort(key=lambda x: (-RANK[x[0].level], -x[0].posted_at))
+        items = led_items + held_items
         keep = len(items)
         while True:  # the largest prefix that fits one post; the rest waits for tomorrow
             try:
-                text = compose.digest([a for a, _ in items[:keep]], local.date())
+                text = compose.digest([x[0] for x in items[:keep]], local.date())
             except ValueError:
                 self.n["withheld"] += 1
                 return
@@ -309,11 +326,17 @@ class Run:
                 break
             keep //= 2
         taken = items[:keep]
-        ledger_all = sum(1 for _, h in taken if h is None) == sum(1 for _, h in items if h is None)
-        snap = {"held": sorted({k for _, h in taken if h is not None
+        led_taken = [x[2] for x in taken if x[2] is not None]
+        if len(led_taken) == len(led_items):
+            cutoff, roots = self.now, []
+        elif led_taken:  # acknowledged: every change up to the last one listed, by root at that time
+            cutoff = led_taken[-1][0]
+            roots = [r for t, r in led_taken if t == cutoff] + (sorted(done) if cutoff == at else [])
+        else:
+            cutoff, roots = at, sorted(done)
+        snap = {"held": sorted({k for _, h, _ in taken if h is not None
                                 for k in self._notice_keys(h["scope"], h["adv"])}),
-                # ledger posts left out are listed again tomorrow: the cutoff moves only when all fit
-                "cutoff": self.now if ledger_all else self.state["digest_at"]}
+                "cutoff": cutoff, "roots": roots}
         self.enqueue([self._item("digest", None, [f"digest:{today}"], "feed", text,
                                  key_id=today, adv=snap, date=today)])
 
@@ -377,16 +400,16 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
             state = inputs.load_state(config.state, now, config.backfill_days)
             r = Run(now, config, led, state, channels, ssh, http_status)
             n = r.n
-            merged = []
+            merged = None  # set once the old deferred list has been folded into this run
             try:
                 cands, marks = gather(config, state, now, kev_fetch, Counter())
                 deferred = [inputs.candidate_from(d) for d in state["deferred"]]
                 n["candidates"] = len(cands) + len(deferred)
-                review, pairs = [], []
+                review, pairs, later = [], [], []
                 for c in deferred:  # already past the backfill floor once
                     scope = rules.scope_of(c.product_text)
                     if scope is not None:
-                        pairs.append((c, scope))
+                        later.append((c, scope))
                 for c in cands:
                     t = _observed(c)
                     if t is not None and t < state["since"] and led.lookup([c.id, *c.aliases]) is None:
@@ -395,6 +418,7 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
                     scope = rules.scope_of(c.product_text, log=review)
                     if scope is not None:
                         pairs.append((c, scope))
+                pairs += later  # after the fresh ones: merge takes the first member's fix, so a correction wins
                 n["in_scope"] = len(pairs)
                 if review:
                     led.add_review(review, now=now)
@@ -405,10 +429,14 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
                     merged[i] = None  # planned (or deferred by one() itself)
                 r.digest()
                 state.update(marks)  # every send of this run succeeded; busy work is deferred
-            except _Stop:
+            except (_Stop, LedgerError) as e:
                 code = 1
-                r.defer([p for p in merged if p is not None])  # unplanned: they wait in the state
-            state["deferred"] = list(r.deferred.values())  # replaces last run's list only now
+                if isinstance(e, LedgerError):
+                    err = str(e)
+                if merged is not None:
+                    r.defer([p for p in merged if p is not None])  # unplanned: they wait in the state
+            if merged is not None:
+                state["deferred"] = list(r.deferred.values())  # replaces last run's list only now
             r.save()
     except LedgerError as e:
         code, err = 1, str(e)
