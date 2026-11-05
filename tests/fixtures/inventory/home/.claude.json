@@ -1,0 +1,5 @@
+{
+  "numStartups": 3,
+  "mcpServers": {"widget-db": {"command": "widget-db-server", "args": []}},
+  "projects": {"/tmp/example-project": {"mcpServers": {"weather-demo": {"type": "http", "url": "https://mcp.example.invalid/"}}}}
+}

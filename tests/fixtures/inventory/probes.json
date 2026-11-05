@@ -1,0 +1,12 @@
+{
+  "claude --version": "2.1.3 (Claude Code)\n",
+  "codex --version": "codex-cli 0.50.0\n",
+  "node --version": "v22.11.0\n",
+  "python3 --version": "Python 3.12.7\n",
+  "go version": "go version go1.22.1 darwin/arm64\n",
+  "tailscale version": "1.76.1\n  tailscale commit: 0000000\n",
+  "ssh -V": "OpenSSH_9.9p1, LibreSSL 3.3.6\n",
+  "git --version": "git version 2.45.2 (Apple Git-154)\n",
+  "sw_vers -productVersion": "26\n",
+  "rustc --version": "rustc unparsable\n"
+}

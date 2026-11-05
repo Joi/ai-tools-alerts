@@ -1,0 +1,4 @@
+model = "example-model"
+
+[mcp_servers.notes-sample]
+command = "notes-sample-server"
