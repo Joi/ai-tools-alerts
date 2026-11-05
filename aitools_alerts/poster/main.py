@@ -57,34 +57,64 @@ class Run:
         self.now, self.config, self.led, self.state = now, config, led, state
         self.channels, self.ssh, self.http_status = channels, ssh, http_status
         self.n = Counter()
+        self.deferred: dict[tuple, dict] = {}  # (scope, id) -> candidate dict, for the next run
 
     def save(self):
         inputs.save_state(self.config.state, self.state)
 
     # ------------------------------------------------------------ the journal
 
-    def _item(self, kind, scope, ids, channel, text, *, key_id, adv=None, exploited=False, date=None):
+    def _item(self, kind, scope, ids, channel, text, *, key_id, adv=None, exploited=False, date=None,
+              root=None):
+        """One journal item. ``root`` fixes a reply's or copy's thread at planning time, so a
+        later alias bridge cannot move it to another thread. Raises ValueError (withheld)
+        for a message the transport would refuse."""
+        if not text or len(text) > transport.MAX_CONTENT or "\x00" in text:
+            raise ValueError("message too large or not sendable")
         return {"key": f"{kind}:{scope}:{key_id}:{channel}", "kind": kind, "scope": scope,
                 "ids": list(dict.fromkeys(ids)), "channel": channel, "text": text, "adv": adv,
-                "exploited": exploited is True, "date": date, "sent": None}
+                "exploited": exploited is True, "date": date, "sent": None, "root": root}
 
     def drain(self):
         """Send every journaled item, oldest first; a pending one (and anything after it
         that shares its ids) waits for a human."""
         held_back: set[str] = set()
         for it in list(self.state["outbox"]):
+            if it not in self.state["outbox"]:
+                continue  # dropped with a superseded root
             keys = _fold(it["ids"])
-            if keys & held_back or (it["sent"] is None and self.led.pending_for(it["ids"])):
+            if it["sent"] is None and (keys & held_back or self.led.pending_for(it["ids"])):
                 held_back |= keys
                 self.n["busy"] += 1
                 continue
             self.deliver(it)
 
+    def _drop(self, items):
+        for it in items:
+            if it in self.state["outbox"]:
+                self.state["outbox"].remove(it)
+        self.save()
+
     def deliver(self, it):
         if it["sent"] is None:
+            if it["kind"] == "root" and self.led.lookup(it["ids"], scope=it["scope"]) is not None:
+                # Its ids were widened into a known thread while it waited: never a second
+                # thread. Drop it and its copies; the candidate is planned as known next run.
+                self._drop([it] + [o for o in self.state["outbox"] if o["kind"] == "copy"
+                                   and o["root"] is None and _fold(o["ids"]) & _fold(it["ids"])])
+                self.n["withheld"] += 1
+                return
             reply_to = self._entry(it).channel_ids.get(it["channel"]) if it["kind"] == "reply" else None
             if it["kind"] == "reply" and reply_to is None:
                 raise LedgerError(f"{it['key']}: no root in {it['channel']}")
+            try:  # every check the transport makes, before anything is marked pending
+                transport.remote_argv(self.channels[it["channel"]], reply_to)
+            except (ValueError, KeyError):
+                self._drop([it])
+                self.n["withheld"] += 1
+                print(f"aitools-alerts-poster: {it['kind']} not sendable (bad channel or root id)",
+                      file=sys.stderr)
+                raise _Stop from None
             self.led.pending(it["key"], it["ids"], now=self.now)
             r = transport.send(self.channels[it["channel"]], it["text"], reply_to, ssh=self.ssh)
             if r.outcome != "ok":
@@ -104,7 +134,7 @@ class Run:
         self.n[{"root": "roots", "copy": "copies", "reply": "replies", "digest": "digest"}[it["kind"]]] += 1
 
     def _entry(self, it):
-        e = self.led.lookup(it["ids"], scope=it["scope"])
+        e = self.led.thread(it["root"]) if it["root"] else self.led.lookup(it["ids"], scope=it["scope"])
         if e is None:
             raise LedgerError(f"{it['key']}: no thread recorded")
         return e
@@ -113,7 +143,10 @@ class Run:
         """Record a sent item in the ledger, idempotently (a replay after a crash)."""
         eid, ch = it["sent"], it["channel"]
         if it["kind"] == "root":
-            if self.led.lookup(it["ids"], scope=it["scope"]) is None:
+            e = self.led.lookup(it["ids"], scope=it["scope"])
+            if e is not None and e.root_event_id != eid:
+                raise LedgerError(f"{it['key']}: sent as {eid} but {e.root_event_id} holds these ids")
+            if e is None:
                 self.led.record_root(schema.validate(it["adv"]), eid, {ch: eid}, scope=it["scope"],
                                      exploited=it["exploited"], now=self.now, ids=it["ids"])
         elif it["kind"] == "copy":
@@ -157,10 +190,16 @@ class Run:
             level, reason = rules.level_for(c, scope, rules.source_ok(c, self.http_status))
         return level, reason
 
+    def defer(self, pairs):
+        """Keep candidates for the next run: a source record can be replaced before then."""
+        for c, scope in pairs:
+            self.deferred[(scope.name, c.id.casefold())] = c.to_dict()
+
     def one(self, c, scope):
         ids = [c.id, *c.aliases]
         if self.busy(ids, scope.name):
             self.n["busy"] += 1
+            self.defer([(c, scope)])  # its update (a fix, a promotion) is planned once the send resolves
             return
         level, reason = self.level(c, scope)
         entry = self.led.lookup(ids, scope=scope.name)
@@ -229,7 +268,8 @@ class Run:
             changes["aliases"] = unpublished
         if any(s.url not in prev_urls for s in new.sources) and len(prev.sources) < 20:
             changes["sources"] = new.sources
-        items = [self._item("copy", scope.name, ids, ch, text, key_id=prev.id, exploited=c.exploited)
+        items = [self._item("copy", scope.name, ids, ch, text, key_id=prev.id, exploited=c.exploited,
+                            root=entry.root_event_id)
                  for ch in CHANNELS_FOR[level] if ch not in entry.channel_ids]
         if changes:
             reply = compose.reply_post(prev, k, changes, reason=reason)
@@ -237,7 +277,7 @@ class Run:
             if merged is None:
                 raise ValueError("reply does not parse back")
             items += [self._item("reply", scope.name, ids, ch, reply, key_id=prev.id,
-                                 adv=asdict(merged), exploited=c.exploited)
+                                 adv=asdict(merged), exploited=c.exploited, root=entry.root_event_id)
                       for ch in entry.channel_ids]
         return items
 
@@ -248,20 +288,32 @@ class Run:
             return
         if any(it["kind"] == "digest" for it in self.state["outbox"]):
             return  # today's (or an earlier) digest is journaled and drains first
-        advs = []
-        for raw in [h["adv"] for h in self.state["held"]] + \
-                   [e.advisory for e in self.led.entries_since(self.state["digest_at"])]:
+        items = []  # (advisory, held entry or None), loudest and newest first
+        posted = [h for h in self.state["held"]  # a notice that has since posted is listed once, as posted
+                  if self.led.lookup([h["adv"]["id"], *h["adv"]["aliases"]], scope=h["scope"]) is not None]
+        for raw, h in [(h["adv"], h) for h in self.state["held"] if h not in posted] + \
+                      [(e.advisory, None) for e in self.led.entries_since(self.state["digest_at"])]:
             try:
-                advs.append(schema.validate(raw))
+                items.append((schema.validate(raw), h))
             except ValueError:
                 self.n["withheld"] += 1
-        try:
-            text = compose.digest(advs, local.date())
-        except ValueError:
-            self.n["withheld"] += 1
-            return
-        snap = {"held": sorted({k for h in self.state["held"] for k in self._notice_keys(h["scope"], h["adv"])}),
-                "cutoff": self.now}
+        items.sort(key=lambda x: (-RANK[x[0].level], -x[0].posted_at))
+        keep = len(items)
+        while True:  # the largest prefix that fits one post; the rest waits for tomorrow
+            try:
+                text = compose.digest([a for a, _ in items[:keep]], local.date())
+            except ValueError:
+                self.n["withheld"] += 1
+                return
+            if len(text) <= transport.MAX_CONTENT or keep == 0:
+                break
+            keep //= 2
+        taken = items[:keep]
+        ledger_all = sum(1 for _, h in taken if h is None) == sum(1 for _, h in items if h is None)
+        snap = {"held": sorted({k for _, h in taken if h is not None
+                                for k in self._notice_keys(h["scope"], h["adv"])}),
+                # ledger posts left out are listed again tomorrow: the cutoff moves only when all fit
+                "cutoff": self.now if ledger_all else self.state["digest_at"]}
         self.enqueue([self._item("digest", None, [f"digest:{today}"], "feed", text,
                                  key_id=today, adv=snap, date=today)])
 
@@ -325,11 +377,16 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
             state = inputs.load_state(config.state, now, config.backfill_days)
             r = Run(now, config, led, state, channels, ssh, http_status)
             n = r.n
+            merged = []
             try:
-                r.drain()
                 cands, marks = gather(config, state, now, kev_fetch, Counter())
-                n["candidates"] = len(cands)
+                deferred = [inputs.candidate_from(d) for d in state["deferred"]]
+                n["candidates"] = len(cands) + len(deferred)
                 review, pairs = [], []
+                for c in deferred:  # already past the backfill floor once
+                    scope = rules.scope_of(c.product_text)
+                    if scope is not None:
+                        pairs.append((c, scope))
                 for c in cands:
                     t = _observed(c)
                     if t is not None and t < state["since"] and led.lookup([c.id, *c.aliases]) is None:
@@ -341,20 +398,26 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
                 n["in_scope"] = len(pairs)
                 if review:
                     led.add_review(review, now=now)
-                for c, scope in ledger.merge(pairs, led):  # merge BEFORE level_for
+                merged = ledger.merge(pairs, led)  # merge BEFORE level_for
+                r.drain()
+                for i, (c, scope) in enumerate(merged):
                     r.one(c, scope)
+                    merged[i] = None  # planned (or deferred by one() itself)
                 r.digest()
-                if not r.n["busy"]:  # a busy candidate is read again once its send resolves
-                    state.update(marks)  # and every send of this run succeeded
-                r.save()
+                state.update(marks)  # every send of this run succeeded; busy work is deferred
             except _Stop:
                 code = 1
+                r.defer([p for p in merged if p is not None])  # unplanned: they wait in the state
+            state["deferred"] = list(r.deferred.values())  # replaces last run's list only now
+            r.save()
     except LedgerError as e:
         code, err = 1, str(e)
+    except Exception as e:  # never die without the summary line
+        code, err = 1, f"internal error: {type(e).__name__}: {e}"
     summary = "aitools-alerts-poster: " + " ".join(f"{k}={n[k]}" for k in SUMMARY)
     if err:
         print(f"aitools-alerts-poster: {err}", file=sys.stderr)
-        summary += " error=ledger"
+        summary += " error=" + ("internal" if err.startswith("internal error") else "ledger")
     return code, summary
 
 

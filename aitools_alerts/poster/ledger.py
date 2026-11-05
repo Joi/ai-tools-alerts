@@ -173,6 +173,13 @@ class Ledger:
                 if _keys(e["aliases"]) & want and (scope is None or e["scope"] == scope)]
         return [Entry(**e) for e in sorted(hits, key=lambda e: e["posted_at"])]
 
+    def thread(self, root_event_id: str) -> Entry | None:
+        """The entry whose root is ``root_event_id``, or None."""
+        for e in self._state()["entries"]:
+            if e["root_event_id"] == root_event_id:
+                return Entry(**e)
+        return None
+
     def entries_since(self, t: int) -> list[Entry]:
         """Every entry whose last change is after ``t``, oldest change first (the digest)."""
         hits = [e for e in self._state()["entries"] if e["last_change"] > t]

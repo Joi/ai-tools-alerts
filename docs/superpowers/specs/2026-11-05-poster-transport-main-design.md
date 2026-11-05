@@ -153,12 +153,15 @@ journaled post is public. Shape:
  "digest_date": "YYYY-MM-DD"|null, "digest_at": int,
  "held": [{"scope": str, "adv": advisory dict}],     # notices awaiting the digest
  "digested": ["<scope>|<id casefold>", ...],          # newest 5000
- "outbox": [item, ...]}
+ "outbox": [item, ...],
+ "deferred": [Candidate.to_dict(), ...]}  # candidates waiting for a busy send
 ```
 
 An outbox item: `{"key", "kind": "root"|"copy"|"reply"|"digest", "scope":
 str|null, "ids": [str], "channel": "feed"|"critical", "text": str, "adv":
-dict|null, "exploited": bool, "date": str|null, "sent": str|null}`.
+dict|null, "exploited": bool, "date": str|null, "sent": str|null, "root":
+str|null}`. `root` is the thread's root event id, fixed when a reply (or a
+copy for a known thread) is planned; a reply must carry one.
 
 ### Sources
 
@@ -211,22 +214,26 @@ Over-matching drops a field or item, never posts it.
 ### Order of a run
 
 1. Open the ledger (lock); load state. LedgerError → exit 1, nothing sent.
-2. **Drain the outbox** (below), oldest first. A failed or unknown send stops
-   the run here.
-3. Gather candidates; apply the backfill floor; `rules.scope_of(...,
-   log=review)`; `ledger.merge(pairs, ledger)` BEFORE `rules.level_for`.
+2. Gather candidates (the deferred ones from the state first, then the
+   sources); apply the backfill floor to the new ones; `rules.scope_of(...,
+   log=review)`; `ledger.add_review(review)`; `ledger.merge(pairs, ledger)`
+   BEFORE `rules.level_for`.
+3. **Drain the outbox** (below), oldest first.
 4. For each merged candidate, **plan** its messages (below); a plan is
-   journaled to the outbox in one state save, then drained at once.
+   journaled to the outbox in one state save, then drained at once. A busy
+   candidate is deferred: kept in the state's `deferred` list for the next run.
 5. The digest, when due, is planned and drained the same way.
-6. `ledger.add_review(review)` when there is any.
-7. Watermarks advance only when no send of this run failed or had an unknown
-   outcome, no LedgerError occurred, and nothing was busy (a journaled item
-   held back by a pending entry, or a candidate deferred because of one). A
-   busy candidate's update (a promotion, a fix) is therefore read again once
-   the send resolves; journaled work survives either way.
+6. Watermarks advance only when no send of this run failed or had an unknown
+   outcome and no LedgerError occurred. Busy and unplanned candidates do not
+   hold them: they wait in `deferred`, so replacing a source record (the
+   collector keeps only its newest) cannot lose their update.
+7. At the end, `deferred` becomes this run's deferred candidates (the old list
+   is replaced only then, so a crash mid-run keeps it).
 
 After one failed or unknown send, or any LedgerError, the run sends nothing
-more: no further outbox item, plan or digest.
+more: no further outbox item, plan or digest; the candidates not yet planned
+are deferred. Any other exception still prints the summary line (exit 1,
+`error=internal`).
 
 ### Levels
 
@@ -241,8 +248,9 @@ Identity: `ids = [c.id, *c.aliases]` (merged). A candidate is **busy** when an
 outbox item of the same scope shares an id (case-insensitive) or
 `ledger.pending_for(ids)` is non-empty. A busy candidate is not planned; its ids
 are unioned into every overlapping outbox item (saved), so a later candidate
-that carries only a newly learned id still finds the item (the A, A/B, B case).
-Counted `busy`.
+that carries only a newly learned id still finds the item (the A, A/B, B case),
+and the candidate itself is deferred (latest per scope and id), so its update is
+planned once the send resolves. Counted `busy`.
 
 No ledger entry (`ledger.lookup(ids, scope=scope.name)` is None):
 - `notice`: `compose.root_post`; held unless any `"<scope>|<id>"` of it is in
@@ -275,26 +283,34 @@ Known entry (`prev = schema.validate(entry.advisory)`):
   `compose.reply_post(prev, k, changes, reason=...)` and the merged advisory
   `compose.parse_reply(reply, prev)` stored in the item.
 
-Every message of a plan is composed before any is journaled. A `ValueError`
-from compose withholds the whole advisory (counted `withheld`): nothing is
-journaled, nothing sent.
+Every message of a plan is composed, and checked against the transport's size
+and NUL rules, before any is journaled. A `ValueError` withholds the whole
+advisory (counted `withheld`): nothing is journaled, nothing sent.
 
 ### Draining an item
 
 For each outbox item in order. An item with `sent` set goes straight to step 4
-(its pending entry is its own). Otherwise it is skipped (counted `busy`) when
-its ids are pending in the ledger or it shares ids with an earlier skipped item
-(a copy never goes before its root):
+(its pending entry is its own), whatever else is held back. Otherwise it is
+skipped (counted `busy`) when its ids are pending in the ledger or it shares
+ids with an earlier skipped item (a copy never goes before its root):
 
 1. If `sent` is set, the post happened but recording may not have: go to 4.
-2. `ledger.pending(key, ids, now)`. Then `transport.send(channel id, text,
-   reply_to)`, where `reply_to` (replies only) is the entry's root id in that
-   channel, read from the ledger at send time.
+2. An unsent `root` whose ids now find a thread in the ledger (they were
+   widened while it waited) is dropped with its copies, never sent: the
+   candidate is planned as known instead. The thread of a `reply` or `copy` is
+   its journaled `root`, never a lookup by ids, so an alias bridge cannot move
+   it. The channel id and `reply_to` are checked as the transport would
+   (`transport.remote_argv`) before anything is marked pending; an item that
+   fails is dropped (counted `withheld`) and the run stops.
+   Then `ledger.pending(key, ids, now)` and `transport.send(channel id, text,
+   reply_to)`, where `reply_to` (replies only) is that thread's root id in the
+   channel.
 3. `ok`: set `sent = event id`, save state. `failed`: `clear_pending`; the
    item stays for the next hour; stop. `unknown`: pending stays, the item
    stays; stop.
 4. Record, idempotently: `root` → `record_root(adv, eid, {channel: eid},
-   scope, exploited, ids)` unless the ledger already has the entry; `copy` →
+   scope, exploited, ids)` unless the ledger already has this root (another
+   thread holding its ids is a LedgerError for a human); `copy` →
    `add_channel(<entry root id>, channel, eid)` unless present; `reply` →
    `record_reply(<root id>, adv, {channel: eid}, ...)` unless a reply with that
    id is recorded; `digest` → `digest_date`, `digest_at` = the item's
@@ -317,10 +333,12 @@ both is a follow-up issue (filed at landing), not this build.
 ### Digest
 
 Due when the Asia/Tokyo hour (`zoneinfo`) is at or past `digest_hour` and
-`digest_date` is not today's Tokyo date. Items: the held notices plus every
-ledger entry whose `last_change` is after `digest_at`
+`digest_date` is not today's Tokyo date. Items: the held notices that have not
+since posted plus every ledger entry whose `last_change` is after `digest_at`
 (`Ledger.entries_since(t)`, a new read-only method), deduplicated by
-`compose.digest`. One `digest` outbox item to `feed`, key `digest:<date>`,
+`compose.digest`. When the text would exceed one post, the loudest and newest
+items that fit are taken and the rest wait: the snapshot names only the notices
+taken, and the cutoff moves only if every ledger item fit. One `digest` outbox item to `feed`, key `digest:<date>`,
 whose `adv` journals the snapshot it was built from: the scoped notice keys and
 the ledger cutoff (`now`). No digest is planned while any digest item is in the
 outbox, so an unknown digest is never queued twice; when it later sends, it

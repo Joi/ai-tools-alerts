@@ -26,6 +26,7 @@ from pathlib import Path
 
 from aitools_alerts import schema
 from aitools_alerts.poster import rules
+from aitools_alerts.poster.candidates import Candidate
 from aitools_alerts.poster.ledger import LedgerError
 
 DEFAULT_CONFIG = Path.home() / ".config" / "aitools-alerts-poster" / "config.toml"
@@ -38,8 +39,9 @@ MAX_RUN_DIRS = 48
 RUN_DIR = re.compile(r"\d{4}-\d{2}-\d{2}T\d{6}Z")
 
 _STATE_KEYS = {"schema_version", "since", "heartbeat", "collector", "kev_since",
-               "digest_date", "digest_at", "held", "digested", "outbox"}
-_ITEM_KEYS = {"key", "kind", "scope", "ids", "channel", "text", "adv", "exploited", "date", "sent"}
+               "digest_date", "digest_at", "held", "digested", "outbox", "deferred"}
+_ITEM_KEYS = {"key", "kind", "scope", "ids", "channel", "text", "adv", "exploited", "date", "sent", "root"}
+_CANDIDATE_FIELDS = frozenset(Candidate.__dataclass_fields__)
 _KINDS = {"root", "copy", "reply", "digest"}
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -105,8 +107,10 @@ def load_channels() -> dict:
         ch = json.loads((schema.SPEC_DIR / "channels.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         raise ConfigError(f"spec/channels.json unreadable: {e}") from None
-    if not (isinstance(ch, dict) and all(isinstance(ch.get(k), str) for k in ("feed", "critical"))):
-        raise ConfigError("spec/channels.json needs feed and critical")
+    uuid = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+    if not (isinstance(ch, dict) and all(isinstance(ch.get(k), str) and uuid.fullmatch(ch[k])
+                                         for k in ("feed", "critical"))):
+        raise ConfigError("spec/channels.json needs feed and critical as lowercase UUIDs")
     return ch
 
 
@@ -164,7 +168,7 @@ def new_state(now: int, backfill_days: int) -> dict:
     since = now - backfill_days * 86400
     return {"schema_version": 1, "since": since, "heartbeat": None, "collector": None,
             "kev_since": None, "digest_date": None, "digest_at": since,
-            "held": [], "digested": [], "outbox": []}
+            "held": [], "digested": [], "outbox": [], "deferred": []}
 
 
 def _strs(v) -> bool:
@@ -196,9 +200,12 @@ def _item_ok(it) -> bool:
             and it["kind"] in _KINDS and isinstance(it["key"], str) and it["key"]
             and it["channel"] in ("feed", "critical") and isinstance(it["text"], str) and it["text"]
             and _strs(it["ids"]) and it["ids"] and type(it["exploited"]) is bool
-            and (it["sent"] is None or (isinstance(it["sent"], str) and _HEX64.fullmatch(it["sent"])))):
+            and all(it[k] is None or (isinstance(it[k], str) and _HEX64.fullmatch(it[k]))
+                    for k in ("sent", "root"))):
         return False
     kind, adv = it["kind"], it["adv"]
+    if (kind == "reply") != (it["root"] is not None) and kind != "copy":
+        return False  # a reply names its thread's root; a root or digest names none
     if kind == "digest":
         return (it["scope"] is None and _date_ok(it["date"]) and isinstance(adv, dict)
                 and set(adv) == {"held", "cutoff"} and type(adv["cutoff"]) is int
@@ -206,6 +213,33 @@ def _item_ok(it) -> bool:
     if not (isinstance(it["scope"], str) and it["scope"] and it["date"] is None):
         return False
     return (adv is None and kind == "copy") or _adv_ok(adv)
+
+
+def candidate_from(d) -> Candidate:
+    """A Candidate rebuilt from Candidate.to_dict(); ValueError when it is not one."""
+    if not (isinstance(d, dict) and set(d) == _CANDIDATE_FIELDS):
+        raise ValueError("not a candidate")
+    strs = ("id", "product_text")
+    opt = ("advisory_severity", "local_level_hint", "fixed", "affected", "observed_at")
+    flags = ("exploited", "trojanized", "injection_exec")
+    if not (all(isinstance(d[k], str) and d[k] for k in strs)
+            and all(d[k] is None or isinstance(d[k], str) for k in opt)
+            and all(type(d[k]) is bool for k in flags) and _strs(d["aliases"])
+            and isinstance(d["sources"], list) and d["sources"]
+            and all(isinstance(s, dict) and set(s) == {"url", "published_at"} and isinstance(s["url"], str)
+                    and (s["published_at"] is None or isinstance(s["published_at"], str))
+                    for s in d["sources"])):
+        raise ValueError("not a candidate")
+    return Candidate(**{**d, "aliases": tuple(d["aliases"]),
+                        "sources": tuple(schema.Source(s["url"], s["published_at"]) for s in d["sources"])})
+
+
+def _deferred_ok(d) -> bool:
+    try:
+        candidate_from(d)
+    except ValueError:
+        return False
+    return True
 
 
 def _held_ok(h) -> bool:
@@ -231,7 +265,8 @@ def load_state(path: Path, now: int, backfill_days: int) -> dict:
               and isinstance(st["held"], list) and all(_held_ok(h) for h in st["held"])
               and isinstance(st["digested"], list) and all(isinstance(i, str) for i in st["digested"])
               and isinstance(st["outbox"], list) and all(_item_ok(it) for it in st["outbox"])
-              and len({it["key"] for it in st["outbox"]}) == len(st["outbox"]))  # one item per key
+              and len({it["key"] for it in st["outbox"]}) == len(st["outbox"])  # one item per key
+              and isinstance(st["deferred"], list) and all(_deferred_ok(d) for d in st["deferred"]))
     except (TypeError, KeyError, AttributeError):
         ok = False
     if not ok:

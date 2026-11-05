@@ -32,6 +32,10 @@ Pass 1 [code:inputs, whole branch 9dd6636]: Stage 1 1B/6S/9C · fresheyes (run 2
 Pass 2 [code:inputs delta --since 9dd6636]: 2B/0S/0C/0R · fixed 13/13 prior · velocity ↓ (22→2, escalation no)
 - run 20261105-110529-32750b. Both fixed in fb37d7f. Rebased onto 2569460, landed 75c73ec on main.
 
+Pass 1 [code:run, whole branch 00ea54d]: Stage 1 2B/2S/4C · fresheyes (run 20261105-111217-e3ad53) 4B/0S/0C · fixed 2/2 prior · velocity = (—→12, escalation no)
+- Fixed: deferred candidates in the state (a replaced collector record cannot lose a busy update; unplanned candidates after a stop wait there too); the journaled thread root for replies and copies; a widened unsent root dropped, never a second thread; a sent root against another thread is a LedgerError; bounded digest with snapshot-only acknowledgement; size checks before journaling and transport checks before pending; sent items drain before the held-back check; channel UUIDs checked at load; a summary line on any exception; held notices that later posted are listed once; the alias-cap test reaches the cap. Behaviour changed: one delta.
+- Cosmetic left: add_review runs on every read of the same input (counts grow; review text only, never posted).
+
 ## Chunks
 - [x] transport — `aitools_alerts/poster/transport.py`, `tests/poster/test_transport.py` (landing 1)
 - [x] inputs — `aitools_alerts/poster/inputs.py`, `tests/poster/test_inputs.py`, `_PRIVATE` in candidates.py + tests (landing 2)

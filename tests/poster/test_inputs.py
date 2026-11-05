@@ -23,7 +23,7 @@ ADV = {"id": "CVE-2026-0001", "aliases": [], "level": "high", "advisory_severity
 def item(**kw):
     base = {"key": "root:Claude Code:CVE-2026-0001:feed", "kind": "root", "scope": "Claude Code",
             "ids": ["CVE-2026-0001"], "channel": "feed", "text": "t", "adv": ADV, "exploited": False,
-            "date": None, "sent": None}
+            "date": None, "sent": None, "root": None}
     base.update(kw)
     return base
 
@@ -118,6 +118,9 @@ def test_state_roundtrip_atomic(tmp_path):
     lambda st: st.update(kev_since="junk"),
     lambda st: st.update(heartbeat="~"),
     lambda st: st.update(digest_date="2026-02-30"),
+    lambda st: st["outbox"].append(item(key="reply:x", kind="reply")),  # a reply names its root
+    lambda st: st["outbox"].append(item(root="ab" * 32)),  # a root names none
+    lambda st: st["deferred"].append({"id": "x"}),
 ])
 def test_malformed_state_is_ledger_error(tmp_path, mutate):
     st = inputs.new_state(0, 0)

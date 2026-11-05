@@ -428,12 +428,26 @@ def test_affected_range_correction_posts_a_reply(env):
     assert code == 0 and "replies=1" in summary and "below 2.1.0" in ssh.calls[0][2]
 
 
-def test_busy_candidate_holds_watermarks(env):
-    env.collector([finding()], name="2026-11-05T000000Z")
-    env.run(ssh=FakeSSH("unknown"))
-    env.collector([finding()], name="2026-11-05T010000Z")
-    code, _, _ = env.run(now=T0 + 3600)
-    assert code == 0 and env.state()["collector"] is None
+def test_busy_update_survives_its_source_being_replaced(env):
+    env.collector([finding(fixed=None, severity=None, fid="CVE-2026-0001")])
+    env.kev.catalog = {"vulnerabilities": [kev_item()]}
+    env.run(ssh=FakeSSH("ok", "unknown"))  # critical root ok, feed copy unknown
+    env.kev.catalog = {"vulnerabilities": []}
+    env.collector([finding(fid="CVE-2026-0001", sources=(GHSA2,))])  # the fix arrives while busy
+    code, _, ssh = env.run(now=T0 + 3600)
+    assert code == 0 and ssh.calls == []
+    st = env.state()
+    assert [d["id"] for d in st["deferred"]] == ["CVE-2026-0001"]
+    assert st["collector"] == "2026-11-05T010000Z"  # deferral, not the source, keeps the update
+    env.collector([], name="2026-11-05T020000Z")  # the next record no longer names it
+    with Ledger(env.config.ledger) as led:
+        (p,) = led._state()["pending"]
+        led.expire_pending(p["key"], "checked the channel: not delivered", now=T0 + 90000)
+    code, summary, ssh = env.run(now=T0 + 90000)
+    assert code == 0, summary
+    assert [c[0] for c in ssh.calls] == ["feed", "critical", "feed"]  # the copy, then the fix replies
+    assert all("Fixed in 2.1.0." in c[2] for c in ssh.calls[1:])
+    assert env.state()["deferred"] == []
 
 
 def test_finished_send_clears_pending_before_the_item_goes(env, monkeypatch):
@@ -462,16 +476,20 @@ def test_range_correction_without_a_fix_posts_a_reply(env):
 
 
 def test_ids_learned_past_the_alias_cap(env):
-    many = [f"ALIAS-{i:03d}" for i in range(50)]
-    env.collector([finding(aliases=many)])
+    env.collector([finding(aliases=[f"A-{i:03d}" for i in range(32)])])  # the adapter keeps 32
     env.run()
-    env.collector([finding(aliases=("CVE-2026-0777",))])
+    env.collector([finding(aliases=[f"B-{i:03d}" for i in range(32)])])
     env.run(now=T0 + 3600)
     (e,), _ = env.ledger()
-    assert "CVE-2026-0777" in e["aliases"]
-    env.collector([finding(fid="CVE-2026-0777")])
-    _, summary, ssh = env.run(now=T0 + 7200)
-    assert "roots=0" in summary and all(c[1] for c in ssh.calls)  # never a second root
+    assert len(e["advisory"]["aliases"]) == 50  # the published list is full
+    env.collector([finding(aliases=("CVE-2026-0777",))])
+    _, _, ssh = env.run(now=T0 + 7200)
+    assert ssh.calls == []  # nothing to publish
+    (e,), _ = env.ledger()
+    assert "CVE-2026-0777" in e["aliases"]  # but the identity is learned
+    env.collector([finding(fid="CVE-2026-0777", sources=(GHSA2,))])
+    _, summary, ssh = env.run(now=T0 + 10800)
+    assert "roots=0" in summary and len(env.ledger()[0]) == 1  # never a second thread
 
 
 def test_alias_reply_survives_a_stop_after_ids_were_learned(env, monkeypatch):
@@ -493,3 +511,46 @@ def test_alias_reply_survives_a_stop_after_ids_were_learned(env, monkeypatch):
     env.collector([twin])
     code, summary, ssh = env.run(now=T0 + 7200)
     assert code == 0 and "replies=1" in summary and "CVE-2026-0002" in ssh.calls[0][2]
+
+
+def test_reply_keeps_its_thread_when_ids_bridge_two_threads(env):
+    env.collector([finding(fid="CVE-2026-1111", sources=(GHSA2,)), finding()])
+    env.run()
+    entries, _ = env.ledger()
+    e1 = next(e for e in entries if "CVE-2026-1111" in e["aliases"])
+    e2 = next(e for e in entries if "GHSA-abcd-efgh-ijkl" in e["aliases"])
+    fix = finding(fixed="2.2.0")
+    env.collector([fix])
+    env.run(now=T0 + 3600, ssh=FakeSSH("unknown"))  # e2's reply: outcome unknown
+    env.collector([finding(aliases=("CVE-2026-1111",), fixed="2.2.0")])  # bridges e2 to e1
+    env.run(now=T0 + 7200)
+    with Ledger(env.config.ledger) as led:
+        (p,) = led._state()["pending"]
+        led.expire_pending(p["key"], "checked the channel: not delivered", now=T0 + 90000)
+    _, _, ssh = env.run(now=T0 + 90000)
+    assert ssh.calls[0][1] == e2["channel_ids"]["feed"]  # still e2's thread
+    entries, _ = env.ledger()
+    assert next(e for e in entries if e["root_event_id"] == e1["root_event_id"])["advisory"]["id"] == "CVE-2026-1111"
+
+
+def test_widened_root_never_starts_a_second_thread(env):
+    env.collector([finding(fid="CVE-2026-1111", sources=(GHSA2,))])
+    env.run()
+    env.collector([finding()])
+    env.run(now=T0 + 3600, ssh=FakeSSH("unknown"))  # a new root for the GHSA: unknown
+    env.collector([finding(aliases=("CVE-2026-1111",))])  # the GHSA is the CVE's thread after all
+    env.run(now=T0 + 7200)
+    with Ledger(env.config.ledger) as led:
+        (p,) = led._state()["pending"]
+        led.expire_pending(p["key"], "checked the channel: not delivered", now=T0 + 90000)
+    _, _, ssh = env.run(now=T0 + 90000)
+    assert all(c[1] is not None for c in ssh.calls)  # replies only, never a new root
+    assert len(env.ledger()[0]) == 1
+
+
+def test_unsendable_channel_never_marks_pending(env):
+    env.collector([finding()])
+    bad = dict(CHANNELS, feed="NOT-A-UUID")
+    code, summary = main.run(T0, env.config, ssh=FakeSSH(), kev_fetch=env.kev,
+                             http_status=lambda url, timeout: 200, channels=bad)
+    assert code == 1 and "withheld=1" in summary and env.ledger()[1] == []
