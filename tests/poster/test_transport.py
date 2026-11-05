@@ -179,9 +179,12 @@ def test_ssh_message_with_remote_output_is_unknown():
 
 
 def test_classification_reads_the_whole_stderr():
-    stderr = cli_error("delivery_unknown", "delivery unknown: " + "x" * 2100 + " network error: reset")
+    # The whole line is a network_error (failed); its last 2000 characters alone are not
+    # JSON (unknown), so a classifier that saw only the stored copy would say unknown.
+    stderr = cli_error("network_error", "network error: connection refused " + "x" * 2100)
     r = transport.send(FEED, "x", ssh=FakeSSH(rc=2, stderr=stderr))
-    assert r.outcome == "unknown" and len(r.stderr) == transport.MAX_STDERR
+    assert r.outcome == "failed" and len(r.stderr) == transport.MAX_STDERR
+    assert transport._classify(2, b"", r.stderr)[0] == "unknown"
 
 
 def test_host_option_injection_refused():
