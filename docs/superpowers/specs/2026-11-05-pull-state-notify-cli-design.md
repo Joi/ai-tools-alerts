@@ -168,12 +168,15 @@ events under the EFFECTIVE manifest: the stored one, or the bundled
 bundle is newer, so a revocation shipped in the package governs the cache
 even while the mirror replays an old manifest (`Thread(root_id, adv, retracted, updated_at)`):
 
-- A root is an event with no `e` tag marked `reply` or `root`, and whose last
+- Thread rules match C1's exporter (directive c:87syjz). A root is an event
+  with no `e` tag at all (an event whose only e tags are unmarked mentions is
+  neither root nor reply), and whose last
   `aitools-alert` block parses (`schema.parse_post`); the advisory's
   `posted_by` is replaced by the manifest role of the event's pubkey.
 - A reply is an event with an `e` tag marked `root` (its target), or else
   `reply`. Replies to a known root are applied in `(created_at, id)` order:
-  - first line (stripped) exactly `retract`, from a curator key: the thread is
+  - first line (split on CommonMark line endings, then stripped) exactly
+    `retract`, from a curator key: the thread is
     retracted (hidden from `check`, `notify`, `plan`); later replies change
     nothing;
   - first line `level: high` or `level: notice`, from a curator key, lowers
@@ -190,8 +193,9 @@ even while the mirror replays an old manifest (`Thread(root_id, adv, retracted, 
   is unchanged; a field present with a value replaces it whole (lists are
   replaced, not merged); an explicit `null` clears a nullable field
   (`advisory_severity`, `expires_at`; also `products[].affected` and `fixed`
-  through the whole-list replace). `id` must equal the root's id or be
-  omitted; `posted_by` in a patch is ignored, and the thread's `posted_by` is
+  through the whole-list replace). Matching B3's writer (c:ejcesh), `id`
+  and `posted_by` may not appear (a patch carrying either is invalid) and
+  `{}` changes nothing; the thread's `posted_by` is
   always its ROOT's manifest role (a curator patch on a relay-bot thread does
   not make it curator; a curator re-posts as a new root for that). Each field is validated with
   schema's validators by validating the merged object with `schema.validate`,

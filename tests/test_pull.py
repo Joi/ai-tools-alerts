@@ -215,7 +215,7 @@ def test_relay_bot_patch_on_own_thread(mirror):
     root = mirror.root_post(mirror.bot_sec, advisory(posted_by="relay-bot"))
     mirror.reply(mirror.bot_sec, root, mirror.patch_text(level="notice", title="T1"), created_at=T0 + 150)
     mirror.reply(mirror.bot_sec, root, mirror.patch_text(expires_at=T0 + 1), created_at=T0 + 160)
-    mirror.reply(mirror.bot_sec, root, mirror.patch_text(title="T2", posted_by="curator"), created_at=T0 + 170)
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(title="T2"), created_at=T0 + 170)
     do_pull(mirror)
     [t] = threads()
     assert t.adv.level == "critical" and t.adv.expires_at is None
@@ -224,7 +224,7 @@ def test_relay_bot_patch_on_own_thread(mirror):
 
 def test_curator_patch_keeps_relay_bot_role(mirror):
     root = mirror.root_post(mirror.bot_sec)
-    mirror.reply(mirror.cur_sec, root, mirror.patch_text(title="Curated", posted_by="curator"))
+    mirror.reply(mirror.cur_sec, root, mirror.patch_text(title="Curated"))
     do_pull(mirror)
     [t] = threads()
     assert t.adv.title == "Curated" and t.adv.posted_by == "relay-bot"
@@ -249,6 +249,8 @@ def test_unknown_key_reply_ignored(mirror):
 @pytest.mark.parametrize("fields", [
     {"title": None},                       # null on a required field
     {"id": "AITA-OTHER"},                  # another advisory's id
+    {"id": "AITA-TEST-0001"},              # id may not appear at all (B3)
+    {"posted_by": "curator"},              # posted_by may not appear (B3)
     {"verb": "upgrade"},                   # unknown key
     {"actions": [{"verb": "run_shell", "target": "x", "value": None}]},
 ])
@@ -484,3 +486,40 @@ def test_size_bound_counts_serialized_bytes(monkeypatch, mirror):
     res, _ = do_pull(mirror)
     assert res.error == "state limit reached: new events not stored"
     assert list(State.load().events) == [first["id"]]
+
+
+# ------------------------------------------- directive c:87syjz (C1 and B3 rules)
+
+def test_reply_target_rules_match_the_exporter(mirror):
+    root = mirror.root_post(mirror.cur_sec)
+    # NIP-10 direct reply: only a root-marked e tag
+    mirror.post(mirror.cur_sec, "retract", created_at=T0 + 300, tags=[["e", root["id"], "", "root"]])
+    do_pull(mirror)
+    assert threads()[0].retracted
+
+
+def test_reply_marked_tag_is_a_target_and_mentions_are_not(mirror):
+    a = mirror.root_post(mirror.cur_sec, advisory(id="AITA-A"))
+    b = mirror.root_post(mirror.cur_sec, advisory(id="AITA-B"))
+    mirror.post(mirror.cur_sec, "retract", created_at=T0 + 300, tags=[["e", a["id"], "", "reply"]])
+    mirror.post(mirror.cur_sec, "retract", created_at=T0 + 301, tags=[["e", b["id"]]])
+    mirror.post(mirror.cur_sec, mirror_post_text(), created_at=T0 + 302,
+                tags=[["e", b["id"]]])
+    do_pull(mirror)
+    by = {t.adv.id: t for t in threads()}
+    assert by["AITA-A"].retracted and not by["AITA-B"].retracted
+    assert set(by) == {"AITA-A", "AITA-B"}  # a mention with a block is not a root
+
+
+def mirror_post_text():
+    from aitools_alerts import schema
+    return schema.render_post(advisory(id="AITA-MENTION"), "Mentions another post.")
+
+
+def test_retract_is_the_first_raw_line(mirror):
+    root = mirror.root_post(mirror.cur_sec)
+    mirror.reply(mirror.cur_sec, root, "\r\nretract")  # first line is empty
+    mirror.reply(mirror.cur_sec, root, mirror.patch_text(), created_at=T0 + 210)  # {} changes nothing
+    res, _ = do_pull(mirror)
+    [t] = threads()
+    assert not t.retracted and t.adv == advisory()

@@ -271,14 +271,12 @@ def _patch(content: str) -> dict | None:
 def _apply_patch(adv: Advisory, patch: dict, role: str) -> Advisory | None:
     """The advisory with ``patch`` applied, or None if the patch is invalid.
     Omitted field: unchanged. Present: replaced whole. null: cleared (only
-    nullable fields validate as null). ``posted_by`` is ignored (the thread
-    keeps its root's role); ``id`` must match. A relay-bot patch may not
+    nullable fields validate as null); {} changes nothing. ``id`` and
+    ``posted_by`` may not appear (B3 compose's contract): the thread keeps
+    its root's id and role. A relay-bot patch may not
     lower ``level`` or set ``expires_at`` (both would hide an alert)."""
-    if not patch or set(patch) - _PATCH_KEYS:
-        return None
-    if "id" in patch and patch["id"] != adv.id:
-        return None
-    patch = {k: v for k, v in patch.items() if k != "posted_by"}
+    if set(patch) - (_PATCH_KEYS - {"id", "posted_by"}):
+        return None  # B3's contract: id and posted_by may not appear
     if role != "curator":
         if "expires_at" in patch:
             return None
@@ -292,7 +290,15 @@ def _apply_patch(adv: Advisory, patch: dict, role: str) -> Advisory | None:
 
 
 def _first_line(content: str) -> str:
-    return content.strip().split("\n", 1)[0].strip()
+    """The first line, split on CommonMark line endings, stripped (as C1's
+    exporter reads a retraction)."""
+    return schema._LINES.split(content)[0].strip()
+
+
+def _is_root(ev: dict) -> bool:
+    """A root carries no e tag at all (as C1's exporter): an event whose only
+    e tags are unmarked mentions is neither a root nor a reply."""
+    return not any(t and t[0] == "e" for t in ev["tags"])
 
 
 def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
@@ -319,6 +325,8 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
         if ref is not None:
             replies.append((ev, role, ref))
             continue
+        if not _is_root(ev):
+            continue  # unmarked e tags only: a mention, not part of a thread
         adv = schema.parse_post(ev["content"])
         if adv is None:
             dropped["no-block"] += 1
