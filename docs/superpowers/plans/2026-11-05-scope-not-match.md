@@ -31,7 +31,8 @@ One chunk; one commit plus the run artifacts.
   - the live KEV text is None and logged; runtime forms (`Node.js Node.js`,
     `nodejs/node`, `Node.js`, `NodeJS`) still hit Node.js;
   - the other lists: `Jenkins Git client Plugin`,
-    `Example library for Golang`, `Example Chrome extension` are None;
+    `Example library for Golang`, `Example extension for Chrome` are None
+    (code review pass 1: `Google Chrome Extensions API` must still match);
     `Git Git`, `Docker Desktop`, `Docker Engine docker plugin install`, `golang/go`, `Google Chromium V8` still hit;
   - an excluded tier-1 entry does not stop a later entry from matching
     (constructed entries);
