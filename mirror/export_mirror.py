@@ -9,8 +9,9 @@ timer in this directory, every 5 minutes):
 
 For each channel in spec/channels.json it reads the channel's events from the
 relay's PostgreSQL with one psql query, re-verifies every event's id and
-BIP-340 signature and drops (and counts) the failures, then writes
-feed.json, critical.json, feed.atom and manifest.json into --out, each to a
+BIP-340 signature and drops (and counts) the failures, keeps only kind 9
+(NIP-29 group chat message) events, then writes feed.json, critical.json,
+feed.atom, index.html and manifest.json into --out, each to a
 temp file in that directory and then os.replace. Nothing is written unless
 every channel read and the manifest check succeed, so a failed run leaves the
 previous files served.
@@ -20,6 +21,7 @@ Standard library plus this repo's aitools_alerts package only.
 """
 
 import argparse
+import html
 import json
 import os
 import re
@@ -32,12 +34,14 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from aitools_alerts import TRUST_ROOT_PUBKEY, nostr, schema  # noqa: E402
+from aitools_alerts import TRUST_ROOT_PUBKEY, nostr, pull, schema  # noqa: E402
 from aitools_alerts import manifest as mf  # noqa: E402
+from aitools_alerts.state import State  # noqa: E402
 
 QUERY = (
     "SELECT json_build_object('id',encode(id,'hex'),'pubkey',encode(pubkey,'hex'),"
@@ -53,6 +57,11 @@ CHANNELS = ("feed", "critical")  # exactly these: the file names A5 reads
 _XML_ILLEGAL = re.compile(r"[^\t\n\r\u0020-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
 ATOM_NS = "http://www.w3.org/2005/Atom"
 MALFORMED = None  # a psql line that is not JSON
+CHAT_KIND = 9  # NIP-29 group chat message: the only kind posters and curators send
+PIPX_LINE = "pipx install git+https://github.com/Joi/ai-tools-alerts"  # README's, verbatim
+REPO_URL = "https://github.com/Joi/ai-tools-alerts"
+RELAY_HOST = "buzz.ai-tools.md"
+INDEX_LIMIT = 20
 
 
 class ExportError(Exception):
@@ -126,7 +135,11 @@ def file_reader(path):
 
 
 def clean(rows) -> tuple[list[dict], Counter]:
-    """Keep rows that are NIP-01 events whose id and signature verify."""
+    """Keep rows that are NIP-01 events whose id and signature verify and
+    whose kind is 9. The relay also stores NIP-29 admin events in a channel
+    (kinds 9000-9020, 39000-39003, 40099...), signed by the relay-bot key with
+    no e tag: they are not posts, and every reader would otherwise take them
+    for roots. They are counted as other_kind."""
     kept, counts = [], Counter()
     for row in rows:
         if not isinstance(row, dict):
@@ -135,6 +148,9 @@ def clean(rows) -> tuple[list[dict], Counter]:
         ev = {k: row[k] for k in NIP01_KEYS if k in row}
         if len(ev) != len(NIP01_KEYS) or not nostr.verify_event(ev):
             counts["bad_sig"] += 1
+            continue
+        if ev["kind"] != CHAT_KIND:
+            counts["other_kind"] += 1
             continue
         kept.append(ev)
     counts["kept"] = len(kept)
@@ -172,11 +188,12 @@ def _lines(content: str) -> list[str]:
     return schema._LINES.split(content)  # CommonMark line endings, as parse_post
 
 
-def _first_line(content: str) -> str:
+def _first_line(content: str) -> str | None:
+    """The first non-blank line, or None when there is none."""
     for line in _lines(content):
         if line.strip():
             return line.strip()[:200]
-    return "(untitled)"
+    return None
 
 
 def _body_before_block(content: str) -> str:
@@ -236,8 +253,10 @@ def atom_doc(events: list[dict], m, generated_at: str, mirror_url: str) -> bytes
             target = _reply_target(ev)
             if target:
                 retraction[target] = ev
+    # A root with no text has no title: never an "(untitled)" entry.
     roots = [ev for ev in dated
-             if _is_root(ev) and mf.role_of(m, ev["pubkey"]) is not None]
+             if _is_root(ev) and mf.role_of(m, ev["pubkey"]) is not None
+             and _first_line(ev["content"]) is not None]
 
     def updated(ev):
         # A withdrawal must move updated strictly past the published root's,
@@ -282,6 +301,107 @@ def atom_doc(events: list[dict], m, generated_at: str, mirror_url: str) -> bytes
     return ('<?xml version="1.0" encoding="utf-8"?>\n' + xml + "\n").encode("utf-8"), len(roots)
 
 
+def _esc(s: str) -> str:
+    return html.escape(_xml_safe(s), quote=True)
+
+
+def _threads(events: dict[str, dict], m, now: int) -> list:
+    """The threads the CLI would build from these events under manifest m:
+    the reader's whole-thread retention, then pull.advisories, over an
+    in-memory state (never loaded or saved)."""
+    kept = pull._retain(events, now, pull.PullResult())
+    st = State(dir=Path("/nonexistent"), roots={TRUST_ROOT_PUBKEY: [m, kept]},
+               manifest_root=TRUST_ROOT_PUBKEY)
+    return pull.advisories(st)
+
+
+def _source(adv) -> tuple[str, bool]:
+    """The first primary source, else the first source (as the CLI picks)."""
+    url = next((s.url for s in adv.sources if schema.is_primary(s.url)), None)
+    return (url, True) if url is not None else (adv.sources[0].url, False)
+
+
+INDEX_STYLE = (
+    "body{font:16px/1.5 system-ui,-apple-system,sans-serif;max-width:46rem;margin:2rem auto;"
+    "padding:0 1rem;color:#1a1a1a;background:#fff}"
+    "h1{font-size:1.6rem}h2{font-size:1.2rem;margin-top:2rem}"
+    "ol{padding-left:1.2rem}li{margin:.6rem 0}"
+    ".level{font-weight:700;text-transform:uppercase;font-size:.85rem}"
+    ".level-critical{color:#b00020}.level-high{color:#8a4b00}.level-notice{color:#444}"
+    "time,.meta{color:#555;font-size:.9rem}code{background:#f3f3f3;padding:.1rem .3rem}"
+)
+
+
+def index_doc(events: dict[str, list[dict]], m, channels: dict, now: int,
+              mirror_url: str) -> tuple[bytes, int]:
+    """The static page at the mirror's root: what this is, the latest
+    advisories as the CLI reads them (synthetic tests left off), and how to
+    subscribe. No scripts; every posted string is escaped. One <section> per
+    block, so another language lands as one more section.
+
+    Threads are built from both channels together, as the CLI pulls them: a
+    curator reply in one channel amends or retracts a root in the other.
+    Events dated past 9999-12-31 have no date to print and are left out."""
+    generated_at = _iso(now)
+    union = {e["id"]: e for name in sorted(events) for e in events[name]
+             if e["created_at"] <= schema.MAX_TIMESTAMP}
+    created = {eid: e["created_at"] for eid, e in union.items()}
+    threads = [t for t in _threads(union, m, now) if not schema.is_synthetic(t.adv.id)]
+    threads.sort(key=lambda t: (created[t.root_id], t.root_id), reverse=True)
+    threads = threads[:INDEX_LIMIT]
+
+    rows = []
+    for t in threads:
+        adv = t.adv
+        title = ("Retracted: " if t.retracted else "") + adv.title
+        url, primary = _source(adv)
+        date = _iso(created[t.root_id])[:10]
+        note = "" if primary else " (not a primary source)"
+        rows.append(
+            f'<li><span class="level level-{_esc(adv.level)}">{_esc(adv.level)}</span> '
+            f"{_esc(title)}<br>"
+            f'<span class="meta"><time datetime="{date}">{date}</time> · '
+            f'<a href="{_esc(url)}">{_esc(url)}</a>{note}</span></li>')
+    listing = "<ol>\n" + "\n".join(rows) + "\n</ol>" if rows else "<p>No advisories yet.</p>"
+    atom = mirror_url + "feed.atom"
+    names = " and ".join(f"<code>#security-{_esc(n)}</code>" for n in sorted(channels, key=lambda n: n != "feed"))
+    doc = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ai-tools security alerts</title>
+<link rel="alternate" type="application/atom+xml" title="ai-tools security alerts" href="{_esc(atom)}">
+<style>{INDEX_STYLE}</style>
+</head>
+<body>
+<main>
+<h1>ai-tools security alerts</h1>
+<section id="about">
+<h2>What this is</h2>
+<p>Security alerts for people who run AI agents on their own machines: Claude Code, Codex, Cursor, Hermes, MCP servers and agent skills. Every alert is signed by a key in a trust manifest, and a small command-line tool checks the signature, compares the alert with what is installed and prepares the fix.</p>
+</section>
+<section id="advisories">
+<h2>Latest advisories</h2>
+{listing}
+<p class="meta">Updated <time datetime="{generated_at}">{generated_at}</time>.</p>
+</section>
+<section id="subscribe">
+<h2>Subscribe</h2>
+<ul>
+<li>Atom feed: <a href="{_esc(atom)}">{_esc(atom)}</a></li>
+<li>Command-line tool: <code>{_esc(PIPX_LINE)}</code>, then <code>aitools-alerts init</code></li>
+<li>Channels {names} on {_esc(RELAY_HOST)}</li>
+<li>Source and instructions: <a href="{_esc(REPO_URL)}">{_esc(REPO_URL)}</a></li>
+</ul>
+</section>
+</main>
+</body>
+</html>
+"""
+    return doc.encode("utf-8"), len(threads)
+
+
 # ---------------------------------------------------------------- writing
 
 def write_atomic(out: Path, name: str, data: bytes) -> None:
@@ -307,30 +427,38 @@ def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_
         raise ExportError(f"output directory {out} does not exist")
     channels = load_channels(channels_path)
     raw_manifest, m = check_manifest(manifest_path)
+    parts = urlsplit(mirror_url)
+    if parts.scheme != "https" or not parts.hostname or any(c in mirror_url for c in "\"'<> "):
+        raise ExportError("--mirror-url must be an https URL with a host")
     if not mirror_url.endswith("/"):
         mirror_url += "/"
-    generated_at = _iso(int(now if now is not None else datetime.now(timezone.utc).timestamp()))
+    now = int(now if now is not None else datetime.now(timezone.utc).timestamp())
+    generated_at = _iso(now)
 
     events, counts = {}, {}
     for name, cid in channels.items():
         events[name], counts[name] = clean(reader(name, cid))
     atom, entries = atom_doc(events["feed"], m, generated_at, mirror_url)
+    index, listed = index_doc(events, m, channels, now, mirror_url)
 
     # Manifest first: a reader never sees a new poster's event before the
-    # manifest naming them. The feed's Atom goes last.
+    # manifest naming them. The page, then the feed's Atom, go last.
     files = [("manifest.json", raw_manifest)]
     for name in sorted(channels, key=lambda n: n == "feed"):
         files.append((f"{name}.json", channel_doc(name, events[name], generated_at)))
+    files.append(("index.html", index))
     files.append(("feed.atom", atom))
     for fname, data in files:
         write_atomic(out, fname, data)
-    return {"channels": counts, "atom_entries": entries}
+    return {"channels": counts, "atom_entries": entries, "index_advisories": listed}
 
 
 def summary_line(result: dict) -> str:
     parts = [f"{name} kept={c['kept']} malformed={c['malformed']} bad_sig={c['bad_sig']}"
+             f" other_kind={c['other_kind']}"
              for name, c in result["channels"].items()]
-    return "export_mirror: " + "; ".join(parts) + f"; atom entries={result['atom_entries']}"
+    return ("export_mirror: " + "; ".join(parts) + f"; atom entries={result['atom_entries']}"
+            f"; index advisories={result['index_advisories']}")
 
 
 def main(argv=None) -> int:

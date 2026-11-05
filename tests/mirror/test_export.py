@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -17,7 +18,7 @@ REAL_MANIFEST = ROOT / "trust" / "manifest.json"
 ATOM = "{http://www.w3.org/2005/Atom}"
 FEED_ID = "11111111-2222-4333-8444-555555555555"
 CRIT_ID = "66666666-7777-4888-9999-aaaaaaaaaaaa"
-NAMES = {"manifest.json", "feed.json", "critical.json", "feed.atom"}
+NAMES = {"manifest.json", "feed.json", "critical.json", "index.html", "feed.atom"}
 
 spec = importlib.util.spec_from_file_location("export_mirror", SCRIPT)
 em = importlib.util.module_from_spec(spec)
@@ -41,8 +42,8 @@ def advisory_post(title: str, body: str) -> str:
     return schema.render_post(adv, body)
 
 
-def ev(sec, content, created_at=1793865600, tags=()):
-    return nostr.sign_event(sec, {"created_at": created_at, "kind": 1,
+def ev(sec, content, created_at=1793865600, tags=(), kind=9):
+    return nostr.sign_event(sec, {"created_at": created_at, "kind": kind,
                                   "tags": [list(t) for t in tags], "content": content})
 
 
@@ -99,7 +100,7 @@ def test_export_writes_atomically(env, monkeypatch):
     monkeypatch.setattr(em.os, "replace", spy)
     run_export(env, rows_reader([ev(CUR_SEC, "hello")]))
     assert {d.name for _, d in seen} == NAMES
-    assert [d.name for _, d in seen] == ["manifest.json", "critical.json", "feed.json", "feed.atom"]
+    assert [d.name for _, d in seen] == ["manifest.json", "critical.json", "feed.json", "index.html", "feed.atom"]
     for src, dst in seen:
         assert src.parent == dst.parent == out
         assert src.name.startswith(".") and not src.exists()
@@ -435,3 +436,204 @@ def test_atom_marks_a_synthetic_root(env, title):
     run_export(env, rows_reader([ev(CUR_SEC, content)]))
     entry = ET.parse(env[2] / "feed.atom").getroot().find(f"{ATOM}entry")
     assert entry.findtext(f"{ATOM}title").startswith("SYNTHETIC TEST: ")
+
+
+# ---------------------------------------------------------------- launch readiness (hgs0)
+
+# NIP-29 admin and group-metadata kinds the relay stores in a channel, signed
+# by the relay-bot key with no e tag, content empty or JSON as the relay writes it.
+ADMIN_KINDS = (9000, 9001, 9005, 9007, 39000, 39001, 39002, 40099)
+
+
+def admin_rows(created_at=1793865000):
+    return [ev(BOT_SEC, "" if k < 39000 else json.dumps({"name": "security-feed"}),
+               created_at + i, tags=[("h", FEED_ID)], kind=k)
+            for i, k in enumerate(ADMIN_KINDS)]
+
+
+def test_admin_kinds_dropped_from_every_output(env):
+    root = ev(CUR_SEC, advisory_post("Alpha", "Upgrade now."), 1793865600)
+    result = run_export(env, rows_reader(admin_rows() + [root], admin_rows() + [root]))
+    out = env[2]
+    for name in ("feed.json", "critical.json"):
+        evs = json.loads((out / name).read_text())["events"]
+        assert [e["id"] for e in evs] == [root["id"]] and {e["kind"] for e in evs} == {9}
+    entries = ET.parse(out / "feed.atom").getroot().findall(f"{ATOM}entry")
+    assert [x.findtext(f"{ATOM}title") for x in entries] == ["Alpha"]
+    assert "(untitled)" not in (out / "feed.atom").read_text()
+    assert result["channels"]["feed"]["other_kind"] == len(ADMIN_KINDS)
+    line = em.summary_line(result)
+    assert "feed kept=1 malformed=0 bad_sig=0 other_kind=8" in line
+    assert "index advisories=1" in line
+
+
+def test_blank_root_is_not_an_atom_entry(env):
+    run_export(env, rows_reader([ev(BOT_SEC, "  \n\t\n"), ev(BOT_SEC, "")]))
+    assert ET.parse(env[2] / "feed.atom").getroot().findall(f"{ATOM}entry") == []
+
+
+def _pull(out, tmp_path, monkeypatch):
+    from aitools_alerts import pull
+    from aitools_alerts.state import State
+    home = tmp_path / ("home-" + out.name)
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_STATE_HOME", str(home / "state"))
+    st = State.load()
+    res = pull.fetch(out.as_uri() + "/", st, root_pubkey=ROOT_PUB, now=1793866000)
+    assert res.error is None, res.error
+    return [(t.root_id, t.adv.title, t.adv.level, t.retracted) for t in pull.advisories(State.load())]
+
+
+def test_filtered_mirror_is_accepted_by_the_cli_reader(env, tmp_path, monkeypatch):
+    channels, manifest, out = env
+    root = ev(CUR_SEC, advisory_post("Alpha", "Upgrade now."), 1793865600)
+    lower = ev(CUR_SEC, "level: notice", 1793865700, tags=[("e", root["id"], "", "root")])
+    chat = [root, lower]
+    run_export(env, rows_reader(admin_rows() + chat, admin_rows() + [root]))
+    with_admin = _pull(out, tmp_path, monkeypatch)
+    clean_out = tmp_path / "clean"
+    clean_out.mkdir()
+    em.export(channels, manifest, clean_out, rows_reader(chat, [root]), now=1793865900)
+    assert with_admin == _pull(clean_out, tmp_path, monkeypatch)
+    assert with_admin == [(root["id"], "Alpha", "notice", False)]
+
+
+def _adv_post(title, adv_id="AITA-TEST-0101", level="high", url="https://example.com/advisory"):
+    adv = schema.asdict(schema.parse_post(advisory_post(title, "x")))
+    adv.update(id=adv_id, title=title, level=level,
+               sources=[{"url": url, "published_at": None}])
+    return f"{title}\n\n```{schema.INFO_STRING}\n{json.dumps(adv)}\n```\n"
+
+
+def page(env):
+    return (env[2] / "index.html").read_bytes().decode("utf-8")
+
+
+def test_index_page_lists_advisories(env):
+    a = ev(CUR_SEC, _adv_post("Alpha", "AITA-TEST-0001", "critical",
+                               "https://github.com/anthropics/claude-code/security/advisories/GHSA-xxxx"), 1793865600)
+    b = ev(BOT_SEC, _adv_post("Beta", "AITA-TEST-0002"), 1793952000)
+    gone = ev(CUR_SEC, "retract\nwrong product", 1793952100, tags=[("e", b["id"], "", "root")])
+    run_export(env, rows_reader(admin_rows() + [a, b, gone]))
+    text = page(env)
+    assert text.startswith("<!DOCTYPE html>") and '<meta charset="utf-8">' in text
+    assert "<script" not in text.lower() and not re.search(r"\son[a-z]+\s*=", text, re.I)
+    assert text.count("<section") == 3
+    assert [m for m in re.findall(r'<section id="([a-z]+)"', text)] == ["about", "advisories", "subscribe"]
+    about = text.split('<section id="about">')[1].split("</section>")[0]
+    assert about.count(". ") + about.count(".</p>") == 2  # two sentences
+    items = re.findall(r"<li><span class=\"level level-([a-z]+)\">[a-z]+</span> ([^<]*)<br>", text)
+    assert items == [("high", "Retracted: Beta"), ("critical", "Alpha")]
+    assert '<time datetime="2026-11-06">' in text and '<time datetime="2026-11-05">' in text
+    assert 'href="https://example.com/advisory">' in text and "(not a primary source)" in text
+    assert 'href="https://github.com/anthropics/claude-code/security/advisories/GHSA-xxxx"' in text
+    assert text.count("(not a primary source)") == 1
+    assert (env[2] / "index.html").stat().st_mode & 0o777 == 0o644
+
+
+def test_index_subscribe_block(env):
+    channels, manifest, out = env
+    em.export(channels, manifest, out, rows_reader([]), now=1793865900,
+              mirror_url="https://mirror.example.invalid/alerts")
+    sub = page(env).split('<section id="subscribe">')[1].split("</section>")[0]
+    assert 'href="https://mirror.example.invalid/alerts/feed.atom"' in sub
+    assert em.PIPX_LINE in sub and em.PIPX_LINE in (ROOT / "README.md").read_text()
+    assert "#security-feed" in sub and "#security-critical" in sub and "buzz.ai-tools.md" in sub
+    assert f'href="{em.REPO_URL}"' in sub
+    assert "No advisories yet." in page(env)
+
+
+def test_index_escapes_post_text(env):
+    hostile = '<script>alert(1)</script> & "q" <img src=x onerror=alert(2)>'
+    run_export(env, rows_reader([ev(CUR_SEC, _adv_post(hostile))]))
+    text = page(env)
+    assert "<script" not in text and "<img" not in text
+    assert "&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;q&quot;" in text
+
+
+def test_index_skips_synthetic_and_untrusted(env):
+    synth = ev(BOT_SEC, _adv_post("Probe", "CVE-2099-0001"), 1793865600)
+    stranger = ev(STRANGER_SEC, _adv_post("Spoofed"), 1793865610)
+    real = ev(BOT_SEC, _adv_post("Real one", "AITA-TEST-0003"), 1793865620)
+    result = run_export(env, rows_reader([synth, stranger, real]))
+    text = page(env)
+    assert "Real one" in text and "Probe" not in text and "Spoofed" not in text
+    assert result["index_advisories"] == 1
+
+
+def test_index_caps_the_list(env):
+    roots = [ev(BOT_SEC, _adv_post(f"Item {i:02d}", f"AITA-TEST-{1000 + i}"), 1793865600 + i)
+             for i in range(em.INDEX_LIMIT + 5)]
+    run_export(env, rows_reader(roots))
+    titles = re.findall(r"</span> (Item \d\d)<br>", page(env))
+    assert len(titles) == em.INDEX_LIMIT and titles[0] == f"Item {em.INDEX_LIMIT + 4:02d}"
+
+
+def test_index_reads_both_channels_as_the_cli_does(env):
+    root = ev(BOT_SEC, _adv_post("Cross", "AITA-TEST-0004", "critical"), 1793865600)
+    gone = ev(CUR_SEC, "retract", 1793865700, tags=[("e", root["id"], "", "root")])
+    run_export(env, rows_reader([root], [gone]))  # the retraction is only in critical.json
+    assert "Retracted: Cross" in page(env)
+
+
+def test_index_honours_manifest_retracted_and_curator_level(env, monkeypatch):
+    channels, manifest, out = env
+    doc = json.loads(manifest.read_text())
+    content = json.loads(doc["content"])
+    content["retracted"] = ["AITA-TEST-0005"]
+    man = nostr.sign_event(ROOT_SEC, {"created_at": doc["created_at"], "kind": doc["kind"],
+                                      "tags": doc["tags"], "content": json.dumps(content)})
+    manifest.write_text(json.dumps(man))
+    listed = ev(BOT_SEC, _adv_post("Listed", "AITA-TEST-0005"), 1793865600)
+    lowered = ev(BOT_SEC, _adv_post("Lowered", "AITA-TEST-0006", "critical"), 1793865610)
+    lower = ev(CUR_SEC, "level: notice", 1793865620, tags=[("e", lowered["id"], "", "root")])
+    run_export(env, rows_reader([listed, lowered, lower]))
+    text = page(env)
+    assert "Retracted: Listed" in text
+    assert '<span class="level level-notice">notice</span> Lowered' in text
+
+
+def test_index_drops_threads_the_cli_ages_out(env):
+    old = ev(BOT_SEC, _adv_post("Ancient", "AITA-TEST-0007"), 1793865900 - pull_retention() - 1)
+    fresh = ev(BOT_SEC, _adv_post("Fresh", "AITA-TEST-0008"), 1793865800)
+    result = run_export(env, rows_reader([old, fresh]))
+    assert "Ancient" not in page(env) and "Fresh" in page(env)
+    assert result["index_advisories"] == 1
+
+
+def pull_retention():
+    from aitools_alerts import pull
+    return pull.RETENTION_S
+
+
+def test_index_skips_far_future_advisory(env):
+    future = ev(BOT_SEC, _adv_post("Future", "AITA-TEST-0009"), schema.MAX_TIMESTAMP + 1)
+    now_one = ev(BOT_SEC, _adv_post("Now", "AITA-TEST-0010"), 1793865600)
+    run_export(env, rows_reader([future, now_one]))
+    assert "Future" not in page(env) and "Now" in page(env)
+
+
+@pytest.mark.parametrize("url", ["javascript:alert(1)//", "http://example.com/alerts/",
+                                 "https:///alerts/", 'https://example.com/"onmouseover=x'])
+def test_mirror_url_must_be_https(env, url):
+    channels, manifest, out = env
+    with pytest.raises(em.ExportError):
+        em.export(channels, manifest, out, rows_reader([]), now=1793865900, mirror_url=url)
+    assert list(out.iterdir()) == []
+
+
+def test_index_source_href_attribute_is_escaped(env):
+    from html.parser import HTMLParser
+    url = "https://example.com/a?b=\"x'&c=<d>"  # the schema accepts this as an https URL
+    run_export(env, rows_reader([ev(BOT_SEC, _adv_post("Quoted", url=url))]))
+    hrefs, attrs = [], []
+
+    class P(HTMLParser):
+        def handle_starttag(self, tag, a):
+            attrs.extend(k for k, _ in a)
+            if tag == "a":
+                hrefs.extend(v for k, v in a if k == "href")
+    P().feed(page(env))
+    assert url in hrefs
+    assert not any(k.startswith("on") for k in attrs)

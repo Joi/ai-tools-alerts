@@ -6,9 +6,11 @@ Two channels on the henkaku ai-tools Buzz relay (`#security-feed` to browse, `#s
 
 ## Status
 
-The member CLI, the skills, the session-start hook and the schedule templates are in place; the fleet poster and the live mirror are still being built, so until the mirror at `https://buzz.ai-tools.md/alerts/` is up a pull reports "manifest unreadable". The design is `docs/design.md` and the implementation plan `docs/plan.md`. Work is tracked in the kata project `ai-tools-alerts`, one issue per plan task, under the epic jibot-code#gr5b.
+Live. The poster runs every hour on the fleet: it posts a critical advisory to `#security-critical` and `#security-feed` within the hour it appears, and a digest of the day's advisories to `#security-feed` daily at 09:00 Tokyo time. The signed mirror at `https://buzz.ai-tools.md/alerts/` is rewritten every 5 minutes: a page listing the latest advisories, `feed.atom` for feed readers, and the `feed.json`, `critical.json` and `manifest.json` files the CLI reads. The member CLI, the skills, the session-start hook and the schedule templates below work against it today.
 
-Done: the pure-Python Nostr primitives (`aitools_alerts/nostr.py`: BIP-340 signatures, NIP-01 event ids, NIP-19 keys) and the trust root. The trust root's public key is `trust/root.pub`; it signs only the manifest that lists who may post alerts, and the CLI pins it as `TRUST_ROOT_PUBKEY`.
+The design is `docs/design.md` and the implementation plan `docs/plan.md`. Work is tracked in the kata project `ai-tools-alerts` under the epic jibot-code#gr5b.
+
+The trust root's public key is `trust/root.pub`; it signs only the manifest that lists who may post alerts, and the CLI pins it as `TRUST_ROOT_PUBKEY`. The Nostr primitives are pure Python (`aitools_alerts/nostr.py`: BIP-340 signatures, NIP-01 event ids, NIP-19 keys).
 
 The two channels exist on `buzz.ai-tools.md`; their UUIDs are in `spec/channels.json`, and `ops/vm/README.md` says what this service keeps on the relay VM, including the `buzz-send` wrapper. Buzz cannot restrict who posts in an open channel, so `#security-critical` is open: only keys in the trust manifest are trusted by the CLI, and anyone may reply.
 
