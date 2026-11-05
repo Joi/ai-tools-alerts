@@ -1,6 +1,6 @@
 # Run: launch-readiness
 Instruction: Read TASK-ai-tools-alerts#hgs0.md in this worktree root, then run `kata show ai-tools-alerts#hgs0` and follow the brief and the dispatch rules (do-it, rung floored at medium; non-repoman ending: fetch, rebase, gate, push branch, ff-merge main from the primary checkout, close with evidence).
-Stage: committing
+Stage: done
 Rung: medium (start-floor medium: evaluator BR1 REV1 NOV1 INT1 FC1 = 5, prod-shaped public output, no hard trigger; Lens: none; dispatch floor medium). Review model gpt-6-astra (brief: security-shaped).
 Spec: docs/superpowers/specs/2026-11-06-launch-readiness-design.md   Plan: docs/superpowers/plans/2026-11-06-launch-readiness.md
 Agency project: 01a1adfb-fb0a-718a-b056-da10c6126de8 (task 01a1adfc-0a5e-72f4-8ffd-0e59e077d8ce)
@@ -29,3 +29,7 @@ Pass 2 [code:cap-delta]: 1B/0S/0C/0R · fixed 2/2 prior · velocity ↓ (2→1, 
 - Mutation checks: indexing feed.json alone fails test_index_reads_both_channels_as_the_cli_does; disabling the kind filter fails test_admin_kinds_dropped_from_every_output (the CLI-reader test still passes by design: the CLI ignores those kinds).
 - Checkpoint after the delta: directive c:bv22zx (cap each channel file at the newest 2000 events and under 4 MiB, counted) arrived after both passes. decided: implement it and give that commit one fresheyes pass of its own (--since b75b669), since it is new behaviour no reviewer saw; not shipping it unreviewed, and not re-reviewing the whole branch.
 - Size: about 700 changed lines across code, tests and docs, over the 600-line guideline. decided: one landing; most of the growth is tests the reviews and two directives asked for, and the podcast deadline is today.
+- Landing: origin/main moved during the run (ef5438e, CLI hardening, another worker); the first push of main was refused, local main reset to origin/main, branch rebased cleanly, gate 887 passed on the rebased head, main fast-forwarded to e1f6678 and pushed. The remote feature branch still holds the pre-rebase commits (never force-pushed).
+- Landed: 3784067, f3d85d8, 0725a76, 92e1edc, f49ea84, e1f6678. e1f6678 (the cap-delta BLOCKER fix) had no further independent pass, per ruling jibot-code#41e2.
+- roborev: ai-tools-alerts is not enrolled; post-push check skipped. Every behaviour-changing BLOCKER fix but the last had a fresheyes delta; the last was raised by the one delta and is fixed under the no-further-pass rule.
+- Live shipping to the VM (checkout update) is the coordinator's, not this run's.
