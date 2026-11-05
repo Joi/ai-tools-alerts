@@ -26,6 +26,7 @@ import http.client
 import json
 import re
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 from collections import Counter
@@ -38,7 +39,8 @@ from .schema import Advisory
 from .state import EVENT_KEYS, State
 
 __all__ = ["FILES", "FetchError", "PULL_ERRORS", "MAX_FETCH_BYTES", "MAX_EVENTS", "PullResult", "Thread",
-           "fetch", "default_fetch", "advisories", "active", "bundled_manifest"]
+           "fetch", "default_fetch", "advisories", "active", "bundled_manifest",
+           "parse_translation", "translation_title", "threads_from"]
 
 FILES = ("feed.json", "critical.json")
 MAX_FETCH_BYTES = 8 << 20
@@ -50,6 +52,9 @@ TIMEOUT = 20
 _RANK = {"notice": 1, "high": 2, "critical": 3}
 _PATCH_KEYS = frozenset(f for f in Advisory.__dataclass_fields__)
 _DELETION_KINDS = frozenset({5, 9005})  # NIP-09 deletion, NIP-29 relay delete-event
+MAX_TRANSLATION_CHARS = 8000
+_LANG = re.compile(r"lang:\s*([a-z]{2,8})")
+_OF = re.compile(r"of:\s*([0-9a-f]{64})")
 
 
 @dataclass
@@ -66,6 +71,8 @@ class Thread:
     adv: Advisory
     retracted: bool
     updated_at: int
+    translations: dict = field(default_factory=dict)  # lang -> text of the current advisory
+    translated_at: dict = field(default_factory=dict)  # lang -> created_at of that reply
 
 
 # ------------------------------------------------------------------ fetching
@@ -323,6 +330,47 @@ def _first_line(content: str) -> str:
     return schema._LINES.split(content)[0].strip()
 
 
+def _clean(line: str) -> str:
+    """The line without the characters schema rejects in a title (bidi
+    controls; Cc, Cf, Cs, Zl, Zp), so no escape reaches a terminal."""
+    return "".join(ch for ch in line if ch not in schema._BIDI and unicodedata.category(ch)
+                   not in ("Cc", "Cf", "Cs", "Zl", "Zp")).rstrip()
+
+
+def parse_translation(content) -> tuple[str, str | None, str] | None:
+    """(lang, of, text) of a translation reply: first line ``lang: <code>``,
+    an optional ``of: <event id>`` line (None: the root), a blank line, the
+    text. None when malformed, empty, or carrying an aitools-alert fence: a
+    lang reply is never a patch, and one with a block is ignored entirely."""
+    if not isinstance(content, str) or len(content) > schema.MAX_POST_CHARS:
+        return None
+    if schema._last_block(content) is not schema._NONE:
+        return None
+    lines = schema._LINES.split(content)
+    m = _LANG.fullmatch(lines[0].strip())
+    if m is None or len(lines) < 3:
+        return None
+    of, rest = None, lines[1:]
+    if rest[0].strip():
+        o = _OF.fullmatch(rest[0].strip())
+        if o is None:
+            return None
+        of, rest = o.group(1), rest[1:]
+    if not rest or rest[0].strip():
+        return None
+    text = "\n".join(_clean(x) for x in rest).strip("\n")[:MAX_TRANSLATION_CHARS].strip()
+    return (m.group(1), of, text) if text else None
+
+
+def translation_title(text: str, adv_id: str | None = None) -> str:
+    """A translation's title: its first non-blank line, at most 200
+    characters, marked as schema marks the title of a synthetic id."""
+    title = next((x.strip()[:200] for x in text.split("\n") if x.strip()), "")
+    if schema.is_synthetic(adv_id) and not title.startswith(schema.SYNTHETIC + ": "):
+        title = f"{schema.SYNTHETIC}: {title}"
+    return title
+
+
 def _is_root(ev: dict) -> bool:
     """A root carries no e tag at all (as C1's exporter): an event whose only
     e tags are unmarked mentions is neither a root nor a reply."""
@@ -339,6 +387,12 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
     Once a curator has posted or amended a thread, a relay-bot reply to it is
     discussion, so the bot can neither suppress, alter nor undo a curator's
     word. A patch that fails validation, or raises, is counted and skipped.
+    A reply whose first line starts with ``lang:`` is a translation and
+    nothing else (see parse_translation), under the same discussion rule. It
+    is kept, the latest per language, when it names the current version: the
+    root (``of`` absent or the root id) until a reply changes the advisory,
+    then that reply. A change drops the translations before it, so a
+    translation never describes a superseded advisory.
     Last, a thread is retracted if any id it has carried (the root's id and
     aliases, and aliases a curator patch itself supplied) is in the manifest's
     ``retracted``, whoever posted or retracted it, compared case-folded as
@@ -346,11 +400,14 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
     never read.
     """
     m = effective_manifest(state)
-    if m is None:
-        return []
+    return [] if m is None else threads_from(state.events.values(), m, dropped)
+
+
+def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Thread]:
+    """advisories() over any verified events (the exporter's too)."""
     dropped = dropped if dropped is not None else Counter()
     roots, replies = {}, []
-    for ev in state.events.values():
+    for ev in events:
         role = manifest.role_of(m, ev.get("pubkey"))
         if role is None or ev.get("kind") in _DELETION_KINDS:
             continue  # a deletion request is never read, even from a trusted key
@@ -365,7 +422,7 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
             dropped["no-block"] += 1
             continue
         roots[ev["id"]] = [replace(adv, posted_by=role), False, ev["created_at"], role == "curator",
-                           {i.casefold() for i in (adv.id, *adv.aliases)}]
+                           {i.casefold() for i in (adv.id, *adv.aliases)}, {}, ev["id"]]
     for ev, role, ref in sorted(replies, key=lambda r: (r[0]["created_at"], r[0]["id"])):
         t = roots.get(ref)
         if t is None or t[1]:
@@ -373,6 +430,11 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
         if role != "curator" and t[3]:
             continue  # discussion: a curator posted or amended this thread
         first = _first_line(ev["content"])
+        if first.startswith("lang:"):  # a translation, never a patch or a retraction
+            tr = parse_translation(ev["content"])
+            if tr is not None and (tr[1] or ref) == t[6]:  # the current version
+                t[5][tr[0]] = (tr[2], ev["created_at"])
+            continue
         if first == "retract":
             if role == "curator":
                 t[1], t[2] = True, ev["created_at"]
@@ -381,6 +443,8 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
             want = first[len("level:"):].strip()
             if want in ("high", "notice") and _RANK[want] < _RANK[t[0].level]:
                 t[0], t[2], t[3] = replace(t[0], level=want), ev["created_at"], True
+                t[5].clear()
+                t[6] = ev["id"]
         p = _patch(ev["content"])
         if p is None:
             continue  # convention text only, or discussion
@@ -392,11 +456,15 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
             dropped["bad-patch"] += 1
         else:
             t[0], t[2], t[3] = new, ev["created_at"], t[3] or role == "curator"
+            t[5].clear()
+            t[6] = ev["id"]
             if role == "curator" and "aliases" in p:  # only aliases a curator wrote:
                 t[4].update(i.casefold() for i in new.aliases)  # a bot's never list a thread
     listed = {i.casefold() for i in m.retracted}
-    return [Thread(root_id=rid, adv=a, retracted=r or not ids.isdisjoint(listed), updated_at=u)
-            for rid, (a, r, u, _, ids) in sorted(roots.items(), key=lambda kv: (kv[1][2], kv[0]))]
+    return [Thread(root_id=rid, adv=a, retracted=r or not ids.isdisjoint(listed), updated_at=u,
+                   translations={k: v[0] for k, v in tr.items()},
+                   translated_at={k: v[1] for k, v in tr.items()})
+            for rid, (a, r, u, _, ids, tr, _c) in sorted(roots.items(), key=lambda kv: (kv[1][2], kv[0]))]
 
 
 def active(threads: list[Thread], now: float | None = None) -> list[Thread]:

@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from . import check
+from . import check, pull
 from .check import Match
 from .config import Settings
 
@@ -38,9 +38,12 @@ class SendResult:
     detail: str
 
 
-def format_text(adv, m: Match | None = None) -> str:
-    """Level and title, what is affected, the action, the primary source."""
-    lines = [f"{adv.level.upper()}: {adv.title}"]
+def format_text(adv, m: Match | None = None, translation: str | None = None) -> str:
+    """Level and title, what is affected, the action, the primary source.
+    With a translation, its title and text replace the English title; only
+    the text is shortened, so Affected, Action and Source always fit."""
+    title = pull.translation_title(translation, adv.id) if translation else adv.title
+    lines = [f"{adv.level.upper()}: {title}"]
     p = m.product if m is not None and m.product is not None else (adv.products[0] if adv.products else None)
     if p is not None:
         have = f" {m.installed.version}" if m is not None and m.installed.version else ""
@@ -50,6 +53,11 @@ def format_text(adv, m: Match | None = None) -> str:
     lines += [f"Action: {check.describe(a)}" for a in actions] or ["Action: see the advisory"]
     if adv.sources:
         lines.append(f"Source: {adv.sources[0].url}")
+    if translation:
+        body = "\n".join(translation.split("\n")[1:]).strip("\n")
+        room = MAX_TEXT - len("\n".join(lines)) - 1
+        if body and room > 1:
+            lines.insert(1, body if len(body) <= room else body[:room - 1] + "…")
     text = "\n".join(lines)
     return text if len(text) <= MAX_TEXT else text[:MAX_TEXT - 1] + "…"
 

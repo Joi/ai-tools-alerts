@@ -138,6 +138,7 @@ class Entry:
     root_id: str
     root_ids: tuple[str, ...]
     adv: schema.Advisory
+    translations: dict  # lang -> text, of the first root
 
 
 def _entries(threads: list, warned: set) -> list[Entry]:
@@ -158,12 +159,23 @@ def _entries(threads: list, warned: set) -> list[Entry]:
         if len(copies) > 1 and key not in warned:
             warned.add(key)
             _err(f"copies of {copies[0][0].adv.id} differ; listing each")
-        out += [Entry(c[0].root_id, tuple(t.root_id for t in c), c[0].adv) for c in copies]
+        out += [Entry(c[0].root_id, tuple(t.root_id for t in c), c[0].adv, c[0].translations)
+                for c in copies]
     return out
 
 
 def _seen(t: Entry, st: State) -> bool:
     return not st.seen.isdisjoint(t.root_ids)
+
+
+def _tr(t: Entry, s: config.Settings) -> str | None:
+    """The translation to show for ``t``, or None: English."""
+    return t.translations.get(s.lang) if s.lang != "en" else None
+
+
+def _title(t: Entry, s: config.Settings) -> str:
+    tr = _tr(t, s)
+    return pull.translation_title(tr, t.adv.id) if tr else t.adv.title
 
 
 def _thread_ref(t: Entry) -> str:
@@ -206,7 +218,8 @@ def _match_json(t, m) -> dict:
             "posted_by": t.adv.posted_by, "reason": m.reason, "source": source,
             "source_primary": primary, "sources": [asdict(x) for x in t.adv.sources],
             "installed": asdict(m.installed), "product": asdict(m.product) if m.product else None,
-            "actions": [asdict(x) for x in m.actions_allowed]}
+            "actions": [asdict(x) for x in m.actions_allowed],
+            "translations": dict(t.translations)}
 
 
 def cmd_check(a, st: State, s: config.Settings) -> int:
@@ -218,14 +231,14 @@ def cmd_check(a, st: State, s: config.Settings) -> int:
         print("no successful pull yet; run: aitools-alerts pull")
     for t, m in pairs:
         ver = m.installed.version or "unknown version"
-        print(f"{t.adv.level.upper()}: {t.adv.title} [{m.installed.name} {ver}: {m.reason}] "
+        print(f"{t.adv.level.upper()}: {_title(t, s)} [{m.installed.name} {ver}: {m.reason}] "
               f"(id {t.adv.id}, {_thread_ref(t)})")
     matched = {t.root_id for t, _ in pairs}
     other = [t for t in threads if t.adv.level == "critical" and t.root_id not in matched]
     if other:
         print("Critical advisories not installed here:")
         for t in other:
-            print(f"  CRITICAL: {t.adv.title} (id {t.adv.id}, {_thread_ref(t)})")
+            print(f"  CRITICAL: {_title(t, s)} (id {t.adv.id}, {_thread_ref(t)})")
     print(f"{len(threads)} advisories, {len(pairs)} matches on this machine")
     return 0
 
@@ -249,7 +262,7 @@ def _notify(st: State, s: config.Settings, pending) -> int:
         for t, m in pending:
             if _seen(t, st):
                 continue  # sent already (by this run, or a concurrent one)
-            text = notify.format_text(t.adv, m)
+            text = notify.format_text(t.adv, m, _tr(t, s))
             accepted = False
             for ch in s.notify:
                 r = notify.send(ch, text, s)
@@ -275,13 +288,16 @@ def cmd_plan(a, st: State, s: config.Settings) -> int:
         return 1
     hits = [(t, m) for t, m in pairs if t in wanted]
     if not hits:
-        print(f"{wanted[0].adv.title}: nothing installed here is affected")
+        print(f"{_title(wanted[0], s)}: nothing installed here is affected")
         return 0
     cfg = s.check_config()
     for t, m in hits:
         p = check.plan(m, cfg)
-        print(f"{t.adv.level.upper()}: {t.adv.title} [{m.installed.name} "
+        print(f"{t.adv.level.upper()}: {_title(t, s)} [{m.installed.name} "
               f"{m.installed.version or 'unknown version'}] posted by {t.adv.posted_by}")
+        tr = _tr(t, s)  # quoted with "> ": translated text, never a section or a command
+        for line in (tr.split("\n")[1:] if tr else []):
+            print(f"    > {line}".rstrip())
         print(_source_line(t.adv))
         for title, actions in (("auto-apply (opted in)", p.auto_apply),
                                ("prepare (ask first)", p.prepare)):

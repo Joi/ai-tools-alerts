@@ -355,11 +355,14 @@ def test_config_defaults_and_filters(home):
     s = config.load()
     assert s.auto_apply == frozenset({"upgrade"}) and s.notify == ("desktop",)
     assert s.telegram_chat_id == "42" and s.check_config().auto_apply == frozenset({"upgrade"})
+    assert s.lang == "en"
+    config.config_path().write_text('lang = "ja"\n')
+    assert config.load().lang == "ja"
 
 
 @pytest.mark.parametrize("text", [
     'auto_apply = "upgrade"', 'mirror_url = "http://x.invalid/"', 'imessage_to = "-oProxy"',
-    'webhook_url = "http://x.invalid"', "notify = [", ])
+    'webhook_url = "http://x.invalid"', "notify = [", 'lang = "fr"', "lang = 1", ])
 def test_config_rejects(home, text):
     p = config.config_path()
     p.parent.mkdir(parents=True)
@@ -680,3 +683,71 @@ def test_unlisting_an_id_makes_the_thread_active_again(mirror):
     mirror.publish_manifest()
     do_pull(mirror)
     assert [t.retracted for t in threads()] == [False]
+
+
+# ------------------------------------------------------------ translations
+
+JA = "lang: ja\n\n日本語のタイトル\n本文です。"
+
+
+def test_translation_of_the_root_is_kept_latest_wins(mirror):
+    root = mirror.root_post(mirror.bot_sec)
+    mirror.reply(mirror.bot_sec, root, JA)
+    mirror.reply(mirror.bot_sec, root, f"lang: ja\nof: {root['id']}\n\n新しいタイトル", created_at=T0 + 300)
+    mirror.reply(mirror.bot_sec, root, f"lang: ja\nof: {'ab' * 32}\n\n別の投稿の訳", created_at=T0 + 400)
+    do_pull(mirror)
+    [t] = threads()
+    assert t.translations == {"ja": "新しいタイトル"}
+    assert t.adv.title == "Invented critical for tests" and t.updated_at == T0 + 100
+
+
+def test_lang_reply_with_a_block_is_ignored_entirely(mirror):
+    root = mirror.root_post(mirror.cur_sec)
+    mirror.reply(mirror.cur_sec, root, "lang: ja\n\n訳\n\n" + mirror.patch_text(title="Patched")[len("Update.\n\n"):])
+    mirror.reply(mirror.cur_sec, root, "lang: ja\n" + mirror.patch_text(level="notice"), created_at=T0 + 300)
+    do_pull(mirror)
+    [t] = threads()
+    assert t.translations == {} and t.adv.title == "Invented critical for tests"
+    assert t.adv.level == "critical" and t.updated_at == T0 + 100
+
+
+def test_relay_bot_cannot_translate_a_curator_thread(mirror):
+    root = mirror.root_post(mirror.cur_sec)
+    mirror.reply(mirror.bot_sec, root, "lang: ja\n\nボットの訳")
+    do_pull(mirror)
+    assert threads()[0].translations == {}  # discussion: the curator's word stands
+    mirror.reply(mirror.cur_sec, root, "lang: ja\n\nキュレーターの訳", created_at=T0 + 300)
+    do_pull(mirror)
+    assert threads()[0].translations == {"ja": "キュレーターの訳"}
+
+
+def test_a_change_drops_earlier_translations(mirror):
+    root = mirror.root_post(mirror.bot_sec)
+    mirror.reply(mirror.bot_sec, root, JA)
+    patch = mirror.reply(mirror.bot_sec, root, mirror.patch_text(title="Corrected"), created_at=T0 + 300)
+    do_pull(mirror)
+    [t] = threads()
+    assert t.adv.title == "Corrected" and t.translations == {}
+    mirror.reply(mirror.bot_sec, root, "lang: ja\n\n古い版の訳", created_at=T0 + 400)  # names the root
+    do_pull(mirror)
+    assert threads()[0].translations == {}
+    mirror.reply(mirror.bot_sec, root, f"lang: ja\nof: {patch['id']}\n\n訂正版", created_at=T0 + 500)
+    do_pull(mirror)
+    [t] = threads()
+    assert t.translations == {"ja": "訂正版"} and t.translated_at == {"ja": T0 + 500}
+
+
+def test_stranger_and_malformed_translations_ignored(mirror):
+    stranger, _ = nostr.keygen()
+    root = mirror.root_post(mirror.bot_sec)
+    mirror.reply(stranger, root, JA)
+    mirror.reply(mirror.bot_sec, root, "lang: ja\n日本語 (no blank line)")
+    mirror.reply(mirror.bot_sec, root, "lang: JA\n\n大文字")
+    do_pull(mirror)
+    assert threads()[0].translations == {}
+
+
+def test_translation_text_loses_control_and_bidi_characters():
+    lang, of, text = pull.parse_translation("lang: ja\n\n\x1b[31m赤‮字​\r\n二行目\x07  \n")
+    assert (lang, of, text) == ("ja", None, "[31m赤字\n二行目")
+    assert pull.translation_title("\n  題  \n本文", "CVE-2099-0001") == "SYNTHETIC TEST: 題"

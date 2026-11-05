@@ -23,6 +23,7 @@ __all__ = ["DEFAULT_MIRROR_URL", "CHANNELS", "ConfigError", "Settings", "config_
 
 DEFAULT_MIRROR_URL = "https://buzz.ai-tools.md/alerts/"
 CHANNELS = ("desktop", "imessage", "signal", "telegram", "webhook")
+LANGS = ("en", "ja")
 _RECIPIENT = re.compile(r"[A-Za-z0-9+@._:][A-Za-z0-9+@._:-]{0,127}")
 _RECIPIENT_KEYS = ("imessage_to", "signal_to", "signal_account")
 # Telegram ids go into JSON, never argv: negative group/channel ids or @name.
@@ -66,6 +67,7 @@ class Settings:
     webhook_url: str | None = None
     telegram_token_file: str | None = None
     trust_root_override: bool = False  # a test setting: honour AITOOLS_ALERTS_TRUST_ROOT
+    lang: str = "en"
 
     def check_config(self) -> Config:
         return Config(auto_apply=self.auto_apply)
@@ -104,6 +106,10 @@ def load(path: Path | None = None) -> Settings:
     if "notify" in raw:
         out["notify"] = tuple(dict.fromkeys(c for c in _strings(raw["notify"], "notify")
                                             if c in CHANNELS))
+    if "lang" in raw:
+        if raw["lang"] not in LANGS:
+            raise ConfigError(f"lang must be one of {', '.join(LANGS)}")
+        out["lang"] = raw["lang"]
     if "auto_apply" in raw:
         out["auto_apply"] = frozenset(_strings(raw["auto_apply"], "auto_apply")) & schema.VERBS
     if "trust_root_override" in raw:
@@ -151,6 +157,10 @@ notify = ["desktop"]
 # Verbs your agent may apply by itself, and only from a curator post.
 # "upgrade" is the only verb expected here. Empty: everything asks first.
 auto_apply = []
+
+# Show advisory text in Japanese where a translation exists ("en" or "ja").
+# Commands and versions are never translated.
+# lang = "ja"
 
 # imessage_to = "+15555550100"        # needs the imsg CLI
 # signal_to = "+15555550100"          # needs signal-cli
