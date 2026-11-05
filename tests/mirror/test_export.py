@@ -736,7 +736,9 @@ def test_cap_keeps_threads_whole_across_channels(env, monkeypatch):
     run_export(env, rows_reader([root, gone] + later, [root]))
     feed = [e["id"] for e in json.loads((env[2] / "feed.json").read_text())["events"]]
     crit = [e["id"] for e in json.loads((env[2] / "critical.json").read_text())["events"]]
-    assert feed == [e["id"] for e in later] and crit == []  # the whole thread went, not half of it
+    # The thread does not fit: its root goes from both files, its curator
+    # retraction stays (cached roots must still be withdrawn).
+    assert root["id"] not in feed and crit == []
     assert "Withdrawn" not in page(env)
 
     monkeypatch.setattr(em, "MAX_CHANNEL_EVENTS", 5)
@@ -755,3 +757,35 @@ def test_cap_skips_an_oversized_event_and_keeps_older_ones(env, monkeypatch):
     assert [e["id"] for e in json.loads((env[2] / "feed.json").read_text())["events"]] == [small["id"]]
     assert result["channels"]["feed"]["capped"] == 1
     assert "Small" in page(env)
+
+
+
+def test_retraction_reaches_a_cli_that_cached_an_outgrown_thread(env, tmp_path, monkeypatch):
+    """Delta review of the cap: two exports, two pulls into one client state.
+    The thread outgrows the cap only when the retraction arrives; the cached
+    root must still end retracted."""
+    from aitools_alerts import pull
+    from aitools_alerts.state import State
+    home = tmp_path / "client"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    root = ev(BOT_SEC, _adv_post("Outgrown", "AITA-TEST-0016", "critical"), 1793865000)
+    talk = [ev(BOT_SEC, f"note {i}", 1793865010 + i, tags=[("e", root["id"], "", "root")]) for i in range(2)]
+    monkeypatch.setattr(em, "MAX_CHANNEL_EVENTS", 3)
+    run_export(env, rows_reader([root] + talk, [root]))
+    assert pull.fetch(env[2].as_uri() + "/", State.load(), root_pubkey=ROOT_PUB, now=1793866000).error is None
+    gone = ev(CUR_SEC, "retract", 1793865100, tags=[("e", root["id"], "", "root")])
+    result = run_export(env, rows_reader([root] + talk + [gone], [root]))
+    feed = [e["id"] for e in json.loads((env[2] / "feed.json").read_text())["events"]]
+    assert feed == [gone["id"]] and result["channels"]["feed"]["capped"] == 3
+    assert pull.fetch(env[2].as_uri() + "/", State.load(), root_pubkey=ROOT_PUB, now=1793866000).error is None
+    [t] = pull.advisories(State.load())
+    assert t.root_id == root["id"] and t.retracted
+
+    # The same under the byte cap.
+    big = ev(CUR_SEC, "retract\n" + "y" * 50, 1793865200, tags=[("e", root["id"], "", "root")])
+    monkeypatch.setattr(em, "MAX_CHANNEL_EVENTS", 2000)
+    limit = len(em.channel_doc("feed", [], "2026-11-05T08:05:00Z")) + em._event_size(big) + 10
+    monkeypatch.setattr(em, "MAX_CHANNEL_BYTES", limit)
+    run_export(env, rows_reader([root] + talk + [big], [root]))
+    assert [e["id"] for e in json.loads((env[2] / "feed.json").read_text())["events"]] == [big["id"]]

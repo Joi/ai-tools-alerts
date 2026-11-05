@@ -125,3 +125,5 @@ one tried, so one oversized event costs only its own thread (fresheyes on the
 first cap commit); the dropped count is `capped=` in the
 summary line. The Atom and the page are built from the capped events, so they
 show what the CLI can read. No single poster can make the mirror unreadable.
+
+A thread too large to keep whole still sends its curator replies (retractions, level changes, patches), newest first, as far as each fits, without its root: a CLI that cached the root earlier keeps it, so the correction must still reach it (delta review of the cap). The page does not show a thread whose root was dropped.

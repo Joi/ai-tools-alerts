@@ -179,7 +179,7 @@ def _event_size(ev: dict) -> int:
     return len(json.dumps(ev, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) + 1
 
 
-def cap(events: dict[str, list[dict]], generated_at: str) -> tuple[dict[str, list[dict]], dict[str, int]]:
+def cap(events: dict[str, list[dict]], m, generated_at: str) -> tuple[dict[str, list[dict]], dict[str, int]]:
     """Each channel's events within MAX_CHANNEL_EVENTS and, as the written
     file, MAX_CHANNEL_BYTES, in their original (query) order, with the count
     dropped per channel.
@@ -188,7 +188,13 @@ def cap(events: dict[str, list[dict]], generated_at: str) -> tuple[dict[str, lis
     or dropped whole, newest thread first, across both channels together, so a
     kept root never loses the retraction, level change or patch that amends it,
     wherever that was posted. A thread that does not fit is skipped and the
-    next older one is tried, so one oversized event costs only its thread."""
+    next older one is tried, so one oversized event costs only its thread.
+
+    A skipped thread still sends its curator replies (retractions, level
+    changes, patches), newest first, each as far as it fits: a CLI that cached
+    the root in an earlier pull keeps every event it stored, so a correction
+    must still reach it when its thread has outgrown the cap. Without the root
+    the page does not show the thread."""
     def key(ev):
         return _reply_target(ev) or ev["id"]
 
@@ -208,6 +214,16 @@ def cap(events: dict[str, list[dict]], generated_at: str) -> tuple[dict[str, lis
         parts = members[k]
         need = {name: (len(ix), sum(_event_size(events[name][i]) for i in ix)) for name, ix in parts.items()}
         if any(count[n] + c > MAX_CHANNEL_EVENTS or b > budget[n] for n, (c, b) in need.items()):
+            salvage = [(events[n][i]["created_at"], events[n][i]["id"], n, i)
+                       for n, ix in parts.items() for i in ix
+                       if events[n][i]["id"] != k and _reply_target(events[n][i]) == k
+                       and mf.role_of(m, events[n][i]["pubkey"]) == "curator"]
+            for _, _, n, i in sorted(salvage, reverse=True):
+                size = _event_size(events[n][i])
+                if count[n] + 1 <= MAX_CHANNEL_EVENTS and size <= budget[n]:
+                    count[n] += 1
+                    budget[n] -= size
+                    keep[n].add(i)
             continue
         for n, (c, b) in need.items():
             count[n] += c
@@ -507,7 +523,7 @@ def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_
     events, counts = {}, {}
     for name, cid in channels.items():
         events[name], counts[name] = clean(reader(name, cid), m)
-    events, capped = cap(events, generated_at)
+    events, capped = cap(events, m, generated_at)
     for name in channels:
         counts[name]["capped"] = capped[name]
     atom, entries = atom_doc(events["feed"], m, generated_at, mirror_url)
