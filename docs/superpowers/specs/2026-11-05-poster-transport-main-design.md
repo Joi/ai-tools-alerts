@@ -195,9 +195,12 @@ support`, `containers`, and the like), an `.app` bundle under `/applications/`
 in any case, a drive letter followed by either slash (`C:/`, `C:\`, but not
 `x://`), and a UNC prefix (`\\server`). A second, case-sensitive pattern
 catches `/Library/`, `/Applications/`, `/System/Volumes/`, `/Volumes/` and
-`/Network/` with their capitals, so Apple's `/library/archive/...`
-documentation and the `/volumes/` pages of Docker and Kubernetes stay. Tests
-cover each root in source URLs and the kept public URLs.
+`/Network/` with their capitals, and `/volumes/` at a path root (after `=`,
+`?`, `&`, a quote, a space and the like) in any case, since APFS is
+case-insensitive; Apple's `/library/archive/...` documentation and the
+`/storage/volumes/` pages of Docker and Kubernetes stay. Tests cover each root
+in source URLs and the kept public URLs. Path collisions in the config are
+compared case-folded for the same reason.
 `compose._guard` lowercases text for the host-name check, so it also runs
 `_private` on the case-preserved text and its decoded form; a cased path in an
 alias handed to `reply_post` is refused there too.

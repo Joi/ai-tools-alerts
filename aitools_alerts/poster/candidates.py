@@ -54,6 +54,9 @@ _PRIVATE = re.compile(
     r"|/library/(?:logs|caches|preferences|containers|group containers|application support"
     r"|keychains|mobile documents|cloudstorage|launchagents|daemoncontainers)/"
     r"|/applications/[^/\s]+\.app\b"
+    # /volumes/ at a path root in any case (a query value, a quoted path): APFS is
+    # case-insensitive. Inside a URL path ("/storage/volumes/") it is a doc page.
+    r"|(?:^|[=\s\"'(<,;&?:])/volumes/"
     r"|(?<![A-Za-z0-9])[A-Za-z]:[\\/](?!/)|\\\\[A-Za-z0-9]"
     r"|\b[a-z][a-z0-9-]*#[0-9a-z]{4}\b",
     re.I,

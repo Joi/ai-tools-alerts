@@ -67,7 +67,8 @@ class Config:
     def check_paths(self) -> None:
         """The ledger, its lock, the journal and the KEV cache are four distinct files."""
         files = [self.ledger, self.ledger.with_name(self.ledger.name + ".lock"), self.state, self.kev_cache]
-        real = [os.path.realpath(p) for p in files]
+        # Case-folded: APFS is case-insensitive, so ledger.json and LEDGER.json are one file.
+        real = [os.path.realpath(p).casefold() for p in files]
         if len(set(real)) != len(real):
             raise ConfigError("ledger, ledger lock, state and kev_cache must be different files")
 

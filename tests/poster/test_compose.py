@@ -210,7 +210,7 @@ def test_review_fixes_publication():
 
 
 @pytest.mark.parametrize("alias", ["evidence/Library/Logs/build.log", "x%2FLibrary%2FLogs%2Fy",
-                                   "evidence/library/logs/build.log"])
+                                   "evidence/library/logs/build.log", "x=/volumes/Work/y"])
 def test_guard_refuses_cased_macos_paths(alias):
     with pytest.raises(ValueError, match="local path"):
         compose._guard(f"HIGH: Claude Code: security advisory (CVE-2026-1)\nAlso known as: {alias}.")

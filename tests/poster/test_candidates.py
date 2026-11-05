@@ -349,6 +349,8 @@ def test_private_detail_in_product_or_id_drops_the_item(field, value):
     "https://example.org/advisory?file=/library/Logs/private.log",
     "https://example.org/advisory?app=/applications/Secret.app/Contents",
     "https://example.org/advisory?d=/Volumes/Work/x",
+    "https://example.org/advisory?evidence=/volumes/Work/confidential-report.json",
+    "https://example.org/advisory?evidence=%2FvOlUmEs%2FWork%2Fx.json",
     "https://example.org/advisory?d=/srv/data/x", "https://example.org/advisory?d=/mnt/x/y",
     "https://example.org/advisory?d=/root/notes", "https://example.org/advisory?d=/usr/local/etc/x",
     "https://example.org/advisory?d=/media/joi/usb", "https://example.org/advisory?d=/run/user/501/x",

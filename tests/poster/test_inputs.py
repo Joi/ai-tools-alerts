@@ -275,6 +275,8 @@ def test_duplicate_json_keys_in_state_are_refused(tmp_path):
     'ledger = "/s/l.json"\nkev_cache = "/s/l.json.lock"\n',
     'ledger = "/s/l.json"\nkev_cache = "/s/l.json.poster-state.json"\n',
     'ledger = "relative/l.json"\n',
+    'ledger = "/s/ledger.json"\nkev_cache = "/s/LEDGER.json"\n',
+    'ledger = "/s/ledger.json"\nkev_cache = "/s/LEDGER.json.lock"\n',
 ])
 def test_overlapping_or_relative_paths_are_refused(tmp_path, text):
     cfg = tmp_path / "config.toml"
