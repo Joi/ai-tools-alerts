@@ -102,10 +102,12 @@ def _str(v, limit: int = MAX_TEXT) -> str | None:
     if not isinstance(v, str):
         return None
     v = v.strip()[:limit]
-    # Control, format (bidi overrides) and lone surrogate characters never reach a post.
-    if not v or any(unicodedata.category(ch) in ("Cc", "Cf", "Cs") for ch in v):
-        return None
-    return v
+    return v if v and _safe(v) else None
+
+
+def _safe(s: str) -> bool:
+    """No control, format (bidi override) or lone surrogate character."""
+    return not any(unicodedata.category(ch) in ("Cc", "Cf", "Cs") for ch in s)
 
 
 def _flag(v) -> bool:
@@ -134,8 +136,8 @@ def _timestamp(v) -> str | None:
 
 
 def _fixed(v) -> str | None:
-    s = _str(v, 65)
-    if not s or not _VERSION.fullmatch(s) or _WILDCARD.search(s):
+    s = _str(v, MAX_TEXT)  # validate the whole value; never truncate into a new version
+    if not s or len(s) > 64 or not _VERSION.fullmatch(s) or _WILDCARD.search(s):
         return None
     return s
 
@@ -161,7 +163,7 @@ def _decoded(s: str) -> str:
 
 
 def _url(v) -> str | None:
-    if not isinstance(v, str) or len(v) > 2000 or _BAD_URL_CHARS.search(v):
+    if not isinstance(v, str) or len(v) > 2000 or _BAD_URL_CHARS.search(v) or not _safe(v):
         return None
     try:
         parts = urlsplit(v)
@@ -172,7 +174,8 @@ def _url(v) -> str | None:
         return None
     if parts.username is not None or parts.password is not None:
         return None
-    if _internal_host(parts.hostname):
+    # An encoded hostname would hide an internal suffix or address from the check.
+    if "%" in parts.netloc or not _safe(_decoded(v)) or _internal_host(parts.hostname):
         return None
     parts = parts._replace(fragment="")
     if _url_private(parts.geturl()):
@@ -362,7 +365,7 @@ def from_heartbeat(run_dir: Path) -> CandidateList:
             out.skipped["finding not an object"] += 1
             return
         parts = key.split("|") if isinstance(key, str) else []
-        ids = [i.strip() for i in f.get("ids", []) if isinstance(i, str) and i.strip()] \
+        ids = [i for i in (_str(x, MAX_ID + 1) for x in f["ids"]) if i] \
             if isinstance(f.get("ids"), list) else []
         cid = _str(f.get("id"), MAX_ID + 1) or (ids[0] if ids else None) \
             or (_str(parts[0], MAX_ID + 1) if parts else None)

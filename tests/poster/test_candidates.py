@@ -422,3 +422,36 @@ def test_hosts_named_in_other_shapes_are_scrubbed(tmp_path):
     by = _by_id(from_heartbeat(_write_run(tmp_path, record)))
     assert by["CVE-2026-77"].advisory_severity is None
     assert by["CVE-2026-78"].advisory_severity is None
+
+
+@pytest.mark.parametrize("url", [
+    "https://printer.%6cocal/advisory",
+    "https://%31%30.0.0.5/x",
+    "https://example.com/\ud800",
+    "https://example.com/%E2%80%AEx",
+])
+def test_encoded_or_unsafe_source_urls_are_dropped(url):
+    record = {"schema_version": 1, "findings": [
+        {"id": "CVE-2026-79", "product": "P",
+         "sources": [{"url": url}, {"url": "https://example.com/clean"}]},
+    ]}
+    assert [s.url for s in from_collector(record)[0].sources] == ["https://example.com/clean"]
+
+
+def test_heartbeat_unsafe_id_from_ids_is_not_used(tmp_path):
+    record = {"findings": {"CVE-2026-80": {"ids": ["CVE-\u202e2026-1", "CVE-2026-81"],
+                                           "source": "https://example.com/a"}}}
+    by = _by_id(from_heartbeat(_write_run(tmp_path, record)))
+    assert set(by) == {"CVE-2026-81"}
+
+
+@pytest.mark.parametrize("fixed, kept", [
+    ("1" * 64, True), ("v" + "1" * 63, True), ("1" * 65, False),
+    ("v1.2.3+" + "a" * 64, False),
+])
+def test_fixed_length_boundary_never_truncates(fixed, kept):
+    record = {"schema_version": 1, "findings": [
+        {"id": "CVE-2026-82", "product": "P", "sources": [{"url": "https://example.com/a"}],
+         "fixed": fixed},
+    ]}
+    assert from_collector(record)[0].fixed == (fixed if kept else None)
