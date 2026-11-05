@@ -97,10 +97,11 @@ def vendor_words(entries) -> set[str]:
     words = set(EXTRA_VENDOR_WORDS)
     for e in entries:
         if _tier(e) == 1:
-            for name in [e.name, *(c.name for c in getattr(e, "components", ()))]:
-                first = _norm(name).split()
-                if first and first[0].strip("."):
-                    words.add(first[0].strip("."))
+            first = _norm(e.name).split()
+            if first and first[0].strip("."):
+                words.add(first[0].strip("."))
+            words |= {w.strip(".") for c in getattr(e, "components", ())
+                      for w in _norm(c.name).split()[:1] if w.strip(".")}
     return words
 
 

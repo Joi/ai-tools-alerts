@@ -48,7 +48,7 @@ Run `python3 -m pytest -q tests/poster/test_rules.py tests/poster/test_compose.p
 
 - `python3 -m pytest -q` (the repo gate, scripts/test-gate.sh): all pass.
 - `git diff --stat origin/main -- aitools_alerts spec tests` ≤ 400 changed lines; `git diff origin/main -- trust/` empty.
-- Leak grep over added lines: `git diff origin/main | grep '^+' | grep -Ei 'host-a|host-b|host-d|host-e|host-f|host-c'` → none.
+- Leak grep over added lines of code, data and tests (this plan names the pattern, so docs are left out): `git diff origin/main -- aitools_alerts spec tests | grep '^+' | grep -Ei 'host-a|host-b|host-d|host-e|host-f|host-c'` → none.
 - Smoke: `python3 -c` resolving the KEV containerd text through `rules.scope_of` and `compose.root_post` prints the containerd title.
 
 ### Acceptance

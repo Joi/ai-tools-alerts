@@ -8,7 +8,7 @@
     {"name": "Cursor", "ecosystem": "cursor", "tier": 1, "match": ["cursor ide", "cursor editor", "cursor cli", "cursor-agent", "cursor/cursor", "getcursor/cursor", "anysphere", "cursor.com"]},
     {"name": "Gemini CLI", "ecosystem": "gemini-cli", "tier": 1, "match": ["gemini cli", "gemini-cli", "@google/gemini-cli"]},
     {"name": "Hermes", "ecosystem": "hermes", "tier": 1, "match": ["hermes agent", "hermes-agent", "nousresearch/hermes"]},
-    {"name": "OpenClaw", "ecosystem": "openclaw", "tier": 1, "match": ["openclaw"]},
+    {"name": "OpenClaw", "ecosystem": "openclaw", "tier": 1, "match": ["openclaw"], "not_match": ["clawhub"]},
     {"name": "MCP servers and clients", "ecosystem": "mcp", "tier": 1, "match": ["model context protocol", "mcp server", "mcp client", "mcp-server", "modelcontextprotocol/"], "components": [
       {"name": "MCP Inspector", "match": ["mcp inspector", "@modelcontextprotocol/inspector", "modelcontextprotocol/inspector"]},
       {"name": "mcp-remote", "match": ["mcp-remote"]},
@@ -22,17 +22,17 @@
     {"name": "Rust", "ecosystem": "rust", "tier": 1, "match": ["rust toolchain", "rust-lang", "rust programming language", "rust cargo", "rust rustc", "rust compiler", "cargo package manager"], "components": [{"name": "rustup", "match": ["rustup"]}]},
     {"name": "Docker", "ecosystem": "docker", "tier": 1, "components": [
       {"name": "containerd", "match": ["containerd"]},
-      {"name": "runc", "match": ["opencontainers runc", "runc container runtime", "opencontainers/runc"]},
+      {"name": "runc", "match": ["opencontainers runc", "runc container runtime", "opencontainers/runc", "docker runc"]},
       {"name": "Docker", "match": ["docker", "moby", "dockerd"]}]},
     {"name": "Tailscale", "ecosystem": "tailscale", "tier": 1, "match": ["tailscale", "tailscaled"]},
     {"name": "OpenSSH", "ecosystem": "openssh", "tier": 1, "match": ["openssh"]},
     {"name": "git", "ecosystem": "git", "tier": 1, "match": ["git scm", "git-scm", "git for windows", "git client", "git git", "git/git"], "not_match": ["git client plugin"]},
     {"name": "macOS", "ecosystem": "macos", "tier": 2, "match": ["macos", "mac os x", "apple webkit"]},
     {"name": "Linux distributions", "ecosystem": "linux", "tier": 2, "components": [
-      {"name": "Linux kernel", "match": ["linux kernel"]},
+      {"name": "Linux kernel", "match": ["linux kernel", "linux-kernel"]},
       {"name": "Ubuntu", "match": ["ubuntu"]}, {"name": "Debian", "match": ["debian"]}, {"name": "Fedora", "match": ["fedora"]}]},
     {"name": "Browsers", "ecosystem": "browser", "tier": 2, "not_match": ["extension for chrome", "extension for firefox", "add-on for firefox", "extension for safari"], "components": [
-      {"name": "Chrome", "match": ["chrome"]}, {"name": "Chromium", "match": ["chromium"]},
+      {"name": "Chrome", "match": ["chrome"]}, {"name": "Chromium", "match": ["chromium"], "not_match": ["chromium-based"]},
       {"name": "Safari", "match": ["safari"]}, {"name": "Firefox", "match": ["firefox"]}]}
   ]
 }

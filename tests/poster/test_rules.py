@@ -510,7 +510,7 @@ def test_every_not_match_pattern_excludes_its_own_entry():
     for e in entries:
         for m in e.not_match:
             hit = rules.scope_of(m)
-            assert hit is None or hit.name != e.name, (m, e.name)
+            assert hit is None or hit.name not in {e.name, *(c.name for c in e.components)}, (m, e.name)
 
 
 def test_an_excluded_entry_does_not_stop_the_search():
@@ -590,18 +590,18 @@ def test_scope_file_components(tmp_path):
 
 def test_scope_of_resolves_components():
     for text, name, eco in (
-            ("containerd containerd", "containerd", "docker"), ("Opencontainers runc", "runc", "docker"),
+            ("containerd containerd", "containerd", "docker"), ("Docker runc", "runc", "docker"),
             ("Docker Desktop", "Docker", "docker"), ("containerd shim in Docker Engine", "containerd", "docker"),
             ("@modelcontextprotocol/inspector", "MCP Inspector", "mcp"), ("mcp-remote", "mcp-remote", "mcp"),
-            ("Example MCP server", "MCP servers and clients", "mcp"), ("ClawHub", "ClawHub", "skill"),
+            ("Example MCP server", "MCP servers and clients", "mcp"), ("openclaw/clawhub", "ClawHub", "skill"),
             ("skills.sh registry", "skills.sh", "skill"), ("Claude skill", "ClawHub and skills.sh", "skill"),
-            ("Ubuntu", "Ubuntu", "linux"), ("Google Chrome", "Chrome", "browser"),
+            ("Ubuntu linux-kernel", "Linux kernel", "linux"), ("Google Chrome", "Chrome", "browser"),
             ("rustup", "rustup", "rust"), ("Rust toolchain", "Rust", "rust")):
         hit = rules.scope_of(text)
         assert hit is not None and (hit.name, hit.ecosystem, hit.components) == (name, eco, ()), text
     assert rules.scope_of("containerd").tier == 1 and rules.scope_of("Ubuntu").tier == 2
     # The entry's not_match still vetoes every component: a third-party product.
-    assert rules.scope_of("Example extension for Chrome") is None
+    assert rules.scope_of("Example extension for Chrome") is rules.scope_of("Microsoft Edge (Chromium-based)") is None
 
 
 def test_component_not_match_and_entry_not_match():

@@ -39,16 +39,16 @@ Within a tier, for each entry in file order:
 ### Member side (`check.match`, `inventory.collect`)
 
 - `inventory`: two probes report Docker's components where they are on the host: `containerd --version` and `runc --version`, named `containerd` and `runc` under ecosystem `docker`. They are fixed argv like every probe. On macOS they are inside Docker Desktop's VM and yield nothing; on a Linux member they report.
-- `check._aliases`: an installation gets the ecosystem's IDENTITY names and the ecosystem name only when it IS the ecosystem's tool (its name is one of those). A component installation (containerd) is known by its own name only. Without this, adding the containerd probe would match a Docker-named advisory against containerd's version. Component names first (an installation named by a component matches only that component's posts), then the entry's identity names (the ecosystem's own tool).
+- `check._aliases`: an installation gets the ecosystem's IDENTITY names and the ecosystem name only when it IS the ecosystem's tool (its name is one of those). A component installation (containerd) is known by its own name only. Without this, adding the containerd probe would match a Docker-named advisory against containerd's version. check reads no scope.json components: names still match by equality, and only the identity names of the ecosystem's own tool widen.
 - Auto-apply stays impossible for a component installation: `_owns` already requires an IDENTITY name, and the CLI builds an upgrade command from the ecosystem, which for containerd would be Docker's. A test pins that a curator containerd post plans `prepare`, never `auto_apply`.
 
 ### Fixture changes in spec/scope.json
 
 - Docker: components `containerd` [containerd], `runc` [opencontainers runc, runc container runtime, opencontainers/runc], `Docker` [docker, moby, dockerd]; no entry `match`. containerd and runc come first so text naming both a component and Docker is the component's.
 - MCP servers and clients: components `MCP Inspector` [mcp inspector, @modelcontextprotocol/inspector, modelcontextprotocol/inspector], `mcp-remote` [mcp-remote], `MCP TypeScript SDK` [@modelcontextprotocol/sdk, modelcontextprotocol/typescript-sdk, mcp typescript sdk], `MCP Python SDK` [modelcontextprotocol/python-sdk, mcp python sdk]; the entry `match` stays as the fallback for an advisory about an MCP server not listed.
-- ClawHub and skills.sh: components `ClawHub` [clawhub], `skills.sh` [skills.sh]; entry `match` keeps [agent skill, claude skill] as the fallback.
+- ClawHub and skills.sh: components `ClawHub` [clawhub], `skills.sh` [skills.sh] (OpenClaw, earlier in the file, gains not_match [clawhub] so "openclaw/clawhub" is ClawHub); entry `match` keeps [agent skill, claude skill] as the fallback.
 - Linux distributions: components `Linux kernel`, `Ubuntu`, `Debian`, `Fedora`, the kernel first, so "Ubuntu linux kernel" (a USN for the kernel package) names the kernel and its version, not "upgrade Ubuntu to 6.8.0"; no entry `match`.
-- Browsers: components `Chrome`, `Chromium`, `Safari`, `Firefox`; the `not_match` list stays on the entry so "extension for chrome" still vetoes every browser, as today.
+- Browsers: components `Chrome`, `Chromium` (not_match "chromium-based", so Microsoft Edge is not posted as Chromium), `Safari`, `Firefox`; the `not_match` list stays on the entry so "extension for chrome" still vetoes every browser, as today.
 - Rust: component `rustup` [rustup] (its versions are not rustc's); the entry keeps the rest.
 - Reviewed and left as one product: Claude Code, Codex, Cursor, Gemini CLI, Hermes, OpenClaw, Node.js, Python, Go, Tailscale, OpenSSH, git. macOS stays one entry: "apple webkit" advisories are fixed by a macOS update, the member's macOS probe is the only one that can match them, and splitting WebKit out would stop that notification; noted as a follow-up candidate, not filed.
 
