@@ -207,3 +207,14 @@ def test_review_fixes_publication():
         m.setattr(socket, "gethostname", lambda: "host-alpha")
         out = compose.digest([prev, dock, bad], "2026-11-05")
     assert out.count("CVE-2026-0001") == 2 and "1 item withheld" in out and "host-alpha" not in out
+
+
+@pytest.mark.parametrize("alias", ["evidence/Library/Logs/build.log", "x%2FLibrary%2FLogs%2Fy"])
+def test_guard_refuses_cased_macos_paths(alias):
+    with pytest.raises(ValueError, match="local path"):
+        compose._guard(f"HIGH: Claude Code: security advisory (CVE-2026-1)\nAlso known as: {alias}.")
+
+
+def test_guard_keeps_apple_developer_library_urls():
+    text = "Source: https://developer.apple.com/library/archive/releasenotes/x.html"
+    assert compose._guard(text) == text

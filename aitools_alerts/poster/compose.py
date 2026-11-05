@@ -88,7 +88,8 @@ def _guard(text: str) -> str:
     for name in (n for n in names if len(n) >= 3):
         if re.search(rf"(?<![a-z0-9]){re.escape(name)}(?![a-z0-9])", low):
             raise ValueError("composed post names a host; refusing to publish it")
-    if candidates._private(low):
+    # Lowercased for the host names; case-preserved too, for the cased macOS roots.
+    if any(candidates._private(t) for t in (low, text, candidates._decoded(text))):
         raise ValueError("composed post holds a local path or kata ref; refusing to publish it")
     return text
 
