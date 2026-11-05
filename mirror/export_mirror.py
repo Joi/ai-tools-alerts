@@ -63,6 +63,11 @@ PIPX_LINE = "pipx install git+https://github.com/Joi/ai-tools-alerts"  # README'
 REPO_URL = "https://github.com/Joi/ai-tools-alerts"
 RELAY_HOST = "buzz.ai-tools.md"
 INDEX_LIMIT = 20
+# The CLI refuses a channel file over 8 MiB or 10,000 events (pull.MAX_FETCH_BYTES,
+# pull.MAX_EVENTS). Each file keeps its newest events within half of both, so no
+# poster, however many or large its posts, can make the mirror unreadable.
+MAX_CHANNEL_EVENTS = 2000
+MAX_CHANNEL_BYTES = 4 << 20
 URL_REFUSED = frozenset("\"'<>\\ \t\r\n")  # browsers read a backslash as a slash
 ATOM_SUBTITLE = ("Security alerts for people who run AI agents on their own machines. This feed is "
                  "for humans and feed readers; agents use the aitools-alerts CLI, which verifies "
@@ -168,6 +173,22 @@ def clean(rows, m) -> tuple[list[dict], Counter]:
         kept.append(ev)
     counts["kept"] = len(kept)
     return kept, counts
+
+
+def cap(events: list[dict], name: str, generated_at: str) -> tuple[list[dict], int]:
+    """The newest events of a channel that fit MAX_CHANNEL_EVENTS and, as the
+    written file, MAX_CHANNEL_BYTES, in their original (query) order, with the
+    count dropped. The oldest go first, so the newest advice always stays."""
+    order = sorted(range(len(events)), key=lambda i: (events[i]["created_at"], events[i]["id"]))
+    budget = MAX_CHANNEL_BYTES - len(channel_doc(name, [], generated_at))
+    keep = set()
+    for i in reversed(order[-MAX_CHANNEL_EVENTS:]):
+        size = len(json.dumps(events[i], ensure_ascii=False, separators=(",", ":")).encode("utf-8")) + 1
+        if size > budget:
+            break
+        budget -= size
+        keep.add(i)
+    return [ev for i, ev in enumerate(events) if i in keep], len(events) - len(keep)
 
 
 def check_manifest(path):
@@ -460,6 +481,7 @@ def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_
     events, counts = {}, {}
     for name, cid in channels.items():
         events[name], counts[name] = clean(reader(name, cid), m)
+        events[name], counts[name]["capped"] = cap(events[name], name, generated_at)
     atom, entries = atom_doc(events["feed"], m, generated_at, mirror_url)
     index, listed = index_doc(events, m, channels, now, mirror_url)
 
@@ -477,7 +499,7 @@ def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_
 
 def summary_line(result: dict) -> str:
     parts = [f"{name} kept={c['kept']} malformed={c['malformed']} bad_sig={c['bad_sig']}"
-             f" other_kind={c['other_kind']} not_poster={c['not_poster']}"
+             f" other_kind={c['other_kind']} not_poster={c['not_poster']} capped={c['capped']}"
              for name, c in result["channels"].items()]
     return ("export_mirror: " + "; ".join(parts) + f"; atom entries={result['atom_entries']}"
             f"; index advisories={result['index_advisories']}")

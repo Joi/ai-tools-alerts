@@ -112,3 +112,12 @@ The relay is members-only and the mirror is its only public surface.
   CLI, which verifies signatures.
 
 An advisory whose `expires_at` has passed (the CLI's `pull.active` hides it from `check`) is listed with "Expired: ".
+
+## Directive c:bv22zx (2026-11-06), after the code review
+
+Each channel file keeps its newest events within half of the CLI's limits:
+`cap()` keeps the newest `MAX_CHANNEL_EVENTS = 2000` (by created_at, then id),
+then, newest first, as many as fit `MAX_CHANNEL_BYTES = 4 MiB` as the written
+file, in their original query order; the dropped count is `capped=` in the
+summary line. The Atom and the page are built from the capped events, so they
+show what the CLI can read. No single poster can make the mirror unreadable.

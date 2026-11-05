@@ -115,3 +115,13 @@ in the same step. Both are live-state steps outside this repo.
   Tests: `test_atom_subtitle_points_agents_at_the_cli`,
   `test_index_says_channels_are_for_members`.
 - README Status: members-only channels, public mirror.
+
+## Directive c:bv22zx amendment
+
+- `cap(events, name, generated_at)` after `clean` in `export`; constants
+  `MAX_CHANNEL_EVENTS`, `MAX_CHANNEL_BYTES`; `capped=` in `summary_line`.
+- Tests: `test_channel_files_keep_the_newest_events_under_the_caps` (count cap
+  with rows out of order; byte cap at exactly ten events),
+  `test_caps_sit_inside_the_cli_limits`.
+- One fresheyes pass over the commit (`--since b75b669`): new scope after the
+  whole-branch review gets its own independent look.

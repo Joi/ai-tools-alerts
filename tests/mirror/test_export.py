@@ -147,7 +147,7 @@ def test_exported_events_verify(env, capsys):
         assert nostr.verify_event(e)
     assert json.loads((out / "critical.json").read_text())["events"] == []
     err = capsys.readouterr().err
-    assert "feed kept=2 malformed=1 bad_sig=3 other_kind=0 not_poster=1" in err
+    assert "feed kept=2 malformed=1 bad_sig=3 other_kind=0 not_poster=1 capped=0" in err
     assert "skewed" not in err and "flipped" not in err
 
 
@@ -292,7 +292,7 @@ def test_cli_rows_from_end_to_end(tmp_path):
     assert json.load(open(out / "feed.json"))["events"] == []  # a non-poster never reaches the mirror
     root = ET.parse(out / "feed.atom").getroot()
     assert root.findall(f"{ATOM}entry") == []
-    assert "feed kept=0 malformed=0 bad_sig=0 other_kind=0 not_poster=1" in proc.stderr
+    assert "feed kept=0 malformed=0 bad_sig=0 other_kind=0 not_poster=1 capped=0" in proc.stderr
 
 
 def test_missing_out_dir_refused(env):
@@ -383,7 +383,7 @@ def test_psql_rows_keep_unicode_line_separators(env, monkeypatch):
         stdout = "\n".join(json.dumps(e, ensure_ascii=False) for e in (odd, plain)) + "\n"
     monkeypatch.setattr(em.subprocess, "run", lambda argv, **kw: Done())
     result = run_export(env, em.psql_reader(["fake-psql"]))
-    assert result["channels"]["feed"] == {"kept": 2}
+    assert result["channels"]["feed"] == {"kept": 2, "capped": 0}
     assert [e["id"] for e in json.loads((env[2] / "feed.json").read_text())["events"]] == [odd["id"], plain["id"]]
 
 
@@ -463,7 +463,7 @@ def test_admin_kinds_dropped_from_every_output(env):
     assert "(untitled)" not in (out / "feed.atom").read_text()
     assert result["channels"]["feed"]["other_kind"] == len(ADMIN_KINDS)
     line = em.summary_line(result)
-    assert "feed kept=1 malformed=0 bad_sig=0 other_kind=8 not_poster=0" in line
+    assert "feed kept=1 malformed=0 bad_sig=0 other_kind=8 not_poster=0 capped=0" in line
     assert "index advisories=1" in line
 
 
@@ -690,3 +690,35 @@ def test_index_applies_a_far_future_retraction_as_the_cli_does(env, tmp_path, mo
     run_export(env, rows_reader([root, gone]))
     assert "Retracted: Withdrawn" in page(env)
     assert _pull(env[2], tmp_path, monkeypatch) == [(root["id"], "Withdrawn", "high", True)]
+
+
+
+def test_channel_files_keep_the_newest_events_under_the_caps(env, monkeypatch):
+    """Directive c:bv22zx: newest N events, then newest-first under a byte cap,
+    counted; the CLI limits are never reached."""
+    monkeypatch.setattr(em, "MAX_CHANNEL_EVENTS", 5)
+    rows = [ev(BOT_SEC, f"post {i:02d}", 1793865000 + i) for i in range(8)]
+    result = run_export(env, rows_reader(list(reversed(rows)), rows[:2]))
+    feed = json.loads((env[2] / "feed.json").read_text())["events"]
+    # The newest five by created_at, whatever the row order; the row order is kept.
+    assert [e["content"] for e in feed] == [f"post {i:02d}" for i in range(7, 2, -1)]
+    assert result["channels"]["feed"]["capped"] == 3 and result["channels"]["critical"]["capped"] == 0
+    assert "capped=3" in em.summary_line(result)
+
+    monkeypatch.setattr(em, "MAX_CHANNEL_EVENTS", 2000)
+    big = [ev(BOT_SEC, "x" * 3000 + f" {i:03d}", 1793865000 + i) for i in range(40)]
+    one = len(json.dumps(big[0], separators=(",", ":"))) + 1
+    limit = len(em.channel_doc("feed", [], "2026-11-05T08:05:00Z")) + 10 * one
+    monkeypatch.setattr(em, "MAX_CHANNEL_BYTES", limit)
+    result = run_export(env, rows_reader(big))
+    data = (env[2] / "feed.json").read_bytes()
+    assert len(data) <= limit
+    kept = json.loads(data)["events"]
+    assert [e["id"] for e in kept] == [e["id"] for e in big[-10:]]
+    assert result["channels"]["feed"]["capped"] == 30
+
+
+def test_caps_sit_inside_the_cli_limits():
+    from aitools_alerts import pull
+    assert em.MAX_CHANNEL_EVENTS <= pull.MAX_EVENTS // 2
+    assert em.MAX_CHANNEL_BYTES <= pull.MAX_FETCH_BYTES // 2
