@@ -882,13 +882,21 @@ def test_rejected_first_heartbeat_dir_sets_no_mark(env):
     assert code == 0 and "heartbeat:0/1" in summary and env.state()["heartbeat"] is None
 
 
-def test_synthetic_thread_takes_no_update_through_a_real_alias(env):
-    env.collector([finding(fid="CVE-2099-0005", aliases=("GHSA-abcd-efgh-ijkl",))])
-    code, _, ssh = env.run()
-    assert code == 0 and ssh.calls[0][2].startswith("HIGH (SYNTHETIC TEST)")
-    env.collector([finding(fixed="2.2.0", sources=(GHSA, GHSA2))])  # names only the GHSA
-    code, summary, ssh = env.run(now=T0 + 3600)
-    assert code == 0 and ssh.calls == [] and "withheld=1" in summary
+@pytest.mark.parametrize("order", [0, 1])
+def test_synthetic_never_merges_with_a_real_advisory(env, order, capsys):
+    real = finding()
+    fake = finding(fid="CVE-2099-0001", aliases=("GHSA-abcd-efgh-ijkl",), fixed=None)
+    env.collector([real, fake] if order == 0 else [fake, real])
+    code, summary, ssh = env.run(kev_catalog=inputs.read_kev_file(SYNTHETIC))
+    assert code == 0, summary
+    assert "reserved synthetic id=1" in capsys.readouterr().err
+    texts = [c[2] for c in ssh.calls]
+    assert any(t.startswith("HIGH: Claude Code") and "GHSA-abcd-efgh-ijkl" in t and "CVE-2099" not in t
+               for t in texts)  # the real advisory: unmerged, unmarked, not promoted
+    assert all(t.startswith("CRITICAL (SYNTHETIC TEST)") for t in texts if "CVE-2099" in t)
+    entries, _ = env.ledger()
+    real_e = next(e for e in entries if "GHSA-abcd-efgh-ijkl" in [e["advisory"]["id"], *e["aliases"]])
+    assert real_e["level"] == "high" and not any("2099" in a for a in real_e["aliases"])
 
 
 def test_kev_added_on_the_floor_day_is_not_old(env):

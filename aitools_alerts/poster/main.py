@@ -393,11 +393,18 @@ def _utc_date(t: int) -> str:
     return _dt.datetime.fromtimestamp(t, _dt.timezone.utc).date().isoformat()
 
 
-def _real(got):
-    """Heartbeat and collector candidates never carry a reserved synthetic alias, so a
-    synthetic entry cannot merge into a real thread (or a real one into a synthetic)."""
-    return [replace(c, aliases=tuple(a for a in c.aliases if not compose.SYNTHETIC_ID.fullmatch(a)))
-            for c in got]
+def _real(got, counts: Counter):
+    """Heartbeat and collector candidates never carry a reserved synthetic id: one whose
+    primary id is reserved is dropped, a reserved alias is removed. Only KEV entries
+    (which have no aliases) can be synthetic, so ledger.merge can never join a
+    synthetic entry and a real one, in either order."""
+    out = []
+    for c in got:
+        if compose.is_synthetic(c.id):
+            counts["reserved synthetic id"] += 1
+            continue
+        out.append(replace(c, aliases=tuple(a for a in c.aliases if not compose.SYNTHETIC_ID.fullmatch(a))))
+    return out
 
 
 def _say(msg: str) -> None:
@@ -423,7 +430,7 @@ def gather(config: Config, state: dict, now: int, kev_fetch, counts: Counter, ke
                 held = True  # the mark stops before the first rejected dir
                 continue
             ok += 1
-            out += _real(got)
+            out += _real(got, counts)
             if not held:
                 marks["heartbeat"] = d.name
         status["heartbeat"] = f"{ok}/{len(dirs)}"
@@ -442,7 +449,7 @@ def gather(config: Config, state: dict, now: int, kev_fetch, counts: Counter, ke
                 _say(f"collector {rec[0]} rejected: {got.rejected}")
             else:
                 status["collector"] = "ok"
-                out += _real(got)
+                out += _real(got, counts)
                 marks["collector"] = rec[0]
     # B1 c:6mnrdz: from_kev marks every entry exploited, so only the catalog this
     # run fetched from CISA (or the operator's --kev-file) reaches it, never the
