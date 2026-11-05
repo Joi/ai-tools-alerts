@@ -411,3 +411,17 @@ def test_retraction_is_published_as_a_withdrawal(env):
     assert top.findtext(f"{ATOM}id") == f"urn:nostr:event:{root['id']}"
     assert top.findtext(f"{ATOM}title") == "Retracted: Upgrade now"
     assert "Upgrade now" not in top.findtext(f"{ATOM}content")
+
+
+@pytest.mark.parametrize("delta", [0, -300])
+def test_withdrawal_updated_advances_past_root(env, delta):
+    """A retraction stamped at or before its root (a fast poster clock) still
+    moves the entry's updated past the time readers already have."""
+    root = ev(BOT_SEC, "Upgrade now", 1793865600)
+    run_export(env, rows_reader([root]))
+    before = ET.parse(env[2] / "feed.atom").getroot().find(f"{ATOM}entry").findtext(f"{ATOM}updated")
+    retract = ev(CUR_SEC, "retract", 1793865600 + delta, tags=[("e", root["id"], "", "root")])
+    run_export(env, rows_reader([root, retract]))
+    entry = ET.parse(env[2] / "feed.atom").getroot().find(f"{ATOM}entry")
+    assert entry.findtext(f"{ATOM}title") == "Retracted: Upgrade now"
+    assert entry.findtext(f"{ATOM}updated") > before

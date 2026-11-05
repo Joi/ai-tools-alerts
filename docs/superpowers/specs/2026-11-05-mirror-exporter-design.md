@@ -120,7 +120,9 @@ signatures, so it shows only what the CLI would trust:
   that disappears is never withdrawn (RFC 6721's problem). The entry keeps
   its id, its title becomes `Retracted: <title>`, its content becomes the
   retraction's text, and its `updated` (and so the feed's) moves to the
-  retraction's time. A5 hides the root from `check`; the Atom shows the
+  retraction's time, or one second past the root's when the retraction's
+  clock reads earlier, so a withdrawal always looks newer than the entry
+  readers already have. A5 hides the root from `check`; the Atom shows the
   withdrawal. The retracting event is from a curator key,
   its content's first line (split on CommonMark line endings, as
   `parse_post` does) stripped is `retract`, and its target is the one root it

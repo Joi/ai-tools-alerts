@@ -240,7 +240,11 @@ def atom_doc(events: list[dict], m, generated_at: str, mirror_url: str) -> bytes
              if _is_root(ev) and mf.role_of(m, ev["pubkey"]) is not None]
 
     def updated(ev):
-        return max(ev["created_at"], retraction[ev["id"]]["created_at"]) if ev["id"] in retraction else ev["created_at"]
+        # A withdrawal must move updated strictly past the published root's,
+        # even when the retraction's own clock says earlier.
+        if ev["id"] in retraction:
+            return max(ev["created_at"] + 1, retraction[ev["id"]]["created_at"])
+        return ev["created_at"]
     roots.sort(key=lambda ev: (updated(ev), ev["id"]), reverse=True)
 
     ET.register_namespace("", ATOM_NS)

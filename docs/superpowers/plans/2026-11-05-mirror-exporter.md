@@ -49,10 +49,15 @@ Tests:
    block, title "Alpha"), reply to A (`e` tag), root B (relay-bot, plain text
    "First line\nmore"), root C from a stranger key, root D retracted by a
    curator reply `retract`, root E retracted by a stranger reply `retract`
-   (stays). Atom parses; entries are exactly A, B, E (newest first); A's title
-   is "Alpha" and its content is the body without the fence; B's title is
-   "First line"; ids are `urn:nostr:event:<id>`; link href
-   `https://buzz.ai-tools.md/alerts/feed.json`.
+   (stays), and a relay-bot `retract` reply to B (B stays). Atom parses;
+   entries are E, D, B, A by `updated`, newest first (C, the stranger's, is
+   absent); D is a withdrawal: title "Retracted: to be retracted", content the
+   retraction's text, `updated` the retraction's time, `published` D's own;
+   A's title is "Alpha" and its content is the body without the fence; B's
+   title is "First line"; ids are `urn:nostr:event:<id>`; link href
+   `https://buzz.ai-tools.md/alerts/feed.json`. (Changed after the code
+   review: a retracted root is published as a withdrawal, not omitted, and a
+   withdrawal's `updated` is always later than its root's.)
 
 Edge tests:
 4. `test_psql_path_parses_lines` — `--psql-cmd` pointing at a fake runner:
