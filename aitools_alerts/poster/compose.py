@@ -11,7 +11,8 @@ path or a kata ref.
 Reply patch contract (shared with A5's reader, ``parse_reply``): a reply's last
 fenced ``aitools-alert`` block is a JSON object of changed fields only, decoded
 as strictly as ``schema.decode_block`` (duplicate keys, NaN and oversized or
-unfinished blocks are invalid). A key omitted is unchanged; a key set to null
+unfinished blocks are invalid). A list field is replaced whole, so a writer
+sends the full new list; ``{}`` is valid and changes nothing. A key omitted is unchanged; a key set to null
 clears a nullable field (``advisory_severity``, ``expires_at``). ``id`` and
 ``posted_by`` may not appear; an unknown key is invalid. The merged advisory
 must pass ``schema.validate``, else the patch is invalid and changes nothing.
@@ -83,11 +84,11 @@ def _guard(text: str) -> str:
     except OSError:
         host = ""
     names.update({host, host.split(".")[0]} if host else set())
-    low = text.lower()
+    low = text.lower() + "\n" + candidates._decoded(text).lower()
     for name in (n for n in names if len(n) >= 3):
         if re.search(rf"(?<![a-z0-9]){re.escape(name)}(?![a-z0-9])", low):
             raise ValueError("composed post names a host; refusing to publish it")
-    if candidates._private(text):
+    if candidates._private(low):
         raise ValueError("composed post holds a local path or kata ref; refusing to publish it")
     return text
 
@@ -99,10 +100,14 @@ def _primary(sources) -> str:
 def _sources(raw) -> list[schema.Source]:
     out, seen = [], set()
     for s in raw:
-        url, pub = getattr(s, "url", None), getattr(s, "published_at", None)
+        s = s if isinstance(s, dict) else {"url": getattr(s, "url", None),
+                                           "published_at": getattr(s, "published_at", None)}
+        url, pub = s.get("url"), s.get("published_at")
         try:
             url = schema._https_url(url, "source")
         except ValueError:
+            continue
+        if candidates._url(url) != url:  # B1's checks: credentials, internal hosts, private paths
             continue
         if url not in seen:
             seen.add(url)
@@ -112,9 +117,22 @@ def _sources(raw) -> list[schema.Source]:
     return out[:20]
 
 
-def _kind(c) -> str:
+def _kind(c, reason) -> str:
     flags = (c.exploited, c.trojanized, c.injection_exec, True)
-    return next(k for k, f in zip(_KINDS, flags) if f is True)
+    kind = next(k for k, f in zip(_KINDS, flags) if f is True)
+    return "unverified " + kind if reason == "unverified" else kind
+
+
+def _titles(name: str, adv_id: str) -> set[str]:
+    return {f"{name}: {pre}{k} ({adv_id})" for k in _KINDS for pre in ("", "unverified ")}
+
+
+def _ids(raw, exclude: str) -> list[str]:
+    out = []
+    for a in raw:
+        if isinstance(a, str) and a != exclude and a not in out and schema._IDENT.fullmatch(a):
+            out.append(a)
+    return out
 
 
 def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, schema.Advisory]:
@@ -125,23 +143,23 @@ def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, sc
     sources = _sources(c.sources)
     if not sources:
         raise ValueError("no https source the schema accepts: the advisory does not post")
-    aliases = []
-    for a in c.aliases:
-        if isinstance(a, str) and a != c.id and a not in aliases and schema._IDENT.fullmatch(a):
-            aliases.append(a)
     adv = schema.validate(asdict(schema.Advisory(
-        id=c.id, aliases=aliases[:50], level=level, advisory_severity=None,
-        title=f"{scope.name}: {_kind(c)} ({c.id})",
+        id=c.id, aliases=_ids(c.aliases, c.id)[:50], level=level, advisory_severity=None,
+        title=f"{scope.name}: {_kind(c, reason)} ({c.id})",
         products=[schema.Product(scope.name, scope.ecosystem, schema_affected(c.affected), fixed)],
         actions=[schema.Action("upgrade", scope.name, fixed)] if fixed else [],
         sources=sources, posted_by=POSTED_BY,
         posted_at=int(time.time()) if posted_at is None else posted_at, expires_at=None)))
     p = adv.products[0]
     head = adv.level.upper() + (f" ({UNVERIFIED})" if reason == "unverified" else "")
+    # A fix the schema cannot express is still a fix: say so, and name no version.
+    unexpressed = fixed is None and isinstance(c.fixed, str) and c.fixed.strip() != ""
     body = [f"{head}: {adv.title}",
             f"Affected: {p.name}{_words(p.affected)}."
-            + (f" Fixed in {fixed}." if fixed else " No fixed version is known yet."),
+            + (f" Fixed in {fixed}." if fixed else " A fix is listed upstream; see the source."
+               if unexpressed else " No fixed version is known yet."),
             f"Action: upgrade {p.name} to {fixed} or later." if fixed
+            else "Action: upgrade as the source describes." if unexpressed
             else "Action: no fix is published yet; watch this thread.",
             f"Source: {_primary(adv.sources)}"]
     return _guard(schema.render_post(adv, "\n".join(body))), adv
@@ -183,10 +201,12 @@ def _publishable(prev: schema.Advisory, merged: schema.Advisory, patch: dict) ->
     p, was = merged.products, prev.products[0]
     if len(p) != 1 or (p[0].name, p[0].ecosystem) != (was.name, was.ecosystem):
         raise ValueError("reply: the product is the scope entry's, one product")
-    if merged.title not in {f"{was.name}: {k} ({prev.id})" for k in _KINDS}:
+    if merged.title not in _titles(was.name, prev.id):
         raise ValueError("reply: the title is a template title")
     if any((a.verb, a.target, a.value) != ("upgrade", was.name, p[0].fixed) for a in merged.actions):
         raise ValueError("reply: the only action is upgrade to products[0].fixed")
+    if {s.url for s in _sources(asdict(s) for s in merged.sources)} != {s.url for s in merged.sources}:
+        raise ValueError("reply: a source fails the publication checks")
 
 
 def _change_line(k: str, adv: schema.Advisory) -> str:
@@ -213,9 +233,12 @@ def reply_post(prev: schema.Advisory, c, changes: dict, *, reason: str | None = 
     old = asdict(prev)
     patch = {}
     for k, v in changes.items():
-        if isinstance(v, list):
+        if isinstance(v, (list, tuple)):
             v = [asdict(x) if hasattr(x, "__dataclass_fields__") else x for x in v]
-            v = v[:50] if k == "aliases" else v[:20] if k == "sources" else v
+        if k == "aliases" and isinstance(v, list):  # a union with prev, filtered as root_post does
+            v = _ids(old["aliases"] + v, prev.id)[:50]
+        elif k == "sources" and isinstance(v, list):
+            v = [asdict(s) for s in _sources(old["sources"] + v)]
         if k not in old or k in ("id", "posted_by") or old[k] != v:
             patch[k] = v
     prods = patch.get("products")
@@ -239,21 +262,32 @@ def reply_post(prev: schema.Advisory, c, changes: dict, *, reason: str | None = 
 
 
 def digest(advs_today, date) -> str:
-    """The daily digest: every advisory once (latest posted_at wins), critical first."""
-    latest: dict[str, schema.Advisory] = {}
+    """The daily digest: every advisory once per id and product (latest posted_at
+    wins), critical first. An item that fails the publication guard is withheld
+    and counted, never the whole digest."""
+    latest: dict[tuple, schema.Advisory] = {}
     for adv in advs_today:
-        if adv.id not in latest or adv.posted_at >= latest[adv.id].posted_at:
-            latest[adv.id] = adv
+        if not (adv.products and adv.sources):
+            continue
+        key = (adv.id, adv.products[0].name)
+        if key not in latest or adv.posted_at >= latest[key].posted_at:
+            latest[key] = adv
     day = date.isoformat() if hasattr(date, "isoformat") else str(date)
     if not latest:
         return f"Daily digest for {day}: no advisories."
     n = len(latest)
-    lines = [f"Daily digest for {day}: {n} advisor{'y' if n == 1 else 'ies'}."]
+    lines, withheld = [f"Daily digest for {day}: {n} advisor{'y' if n == 1 else 'ies'}."], 0
     for level in ("critical", "high", "notice"):
         group = sorted((a for a in latest.values() if a.level == level), key=lambda a: (a.posted_at, a.id))
         if group:
             lines += ["", f"{level.capitalize()} ({len(group)})"]
             for a in group:
                 fixed = f"fixed in {a.products[0].fixed}" if a.products[0].fixed else "no fix yet"
-                lines.append(f"- {a.title}; {fixed}. {_primary(a.sources)}")
+                line = f"- {a.title}; {fixed}. {_primary(a.sources)}"
+                try:
+                    lines.append(_guard(line))
+                except ValueError:
+                    withheld += 1
+    if withheld:
+        lines += ["", f"{withheld} item{'s' if withheld > 1 else ''} withheld by the publication check."]
     return _guard("\n".join(lines))

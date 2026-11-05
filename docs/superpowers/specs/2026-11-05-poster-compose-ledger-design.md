@@ -197,6 +197,30 @@ when it names the KEV CVE as an alias.
 - `changes()` dropped: its id and union semantics were the source of two
   findings; `reply_post` already drops unchanged keys, and B4 owns the diff.
 
+## Code review changes (whole-branch pass on cf395da)
+
+- Every source, root or reply, passes B1's URL checks (`candidates._url`:
+  credentials, internal hosts, private paths after percent-decoding); the
+  guard also checks the percent-decoded text.
+- An unverified root's title reads `<scope>: unverified <kind> (<id>)`, so the
+  word travels with the advisory into the block, replies and the digest; a
+  reply may change the title only between the template forms.
+- A fixed value the schema cannot express says "A fix is listed upstream; see
+  the source" and lists no action, never "no fix".
+- `reply_post` takes tuples, unions aliases and sources with `prev` (filtered
+  as `root_post` does). A list field in a patch replaces the whole list, and
+  `{}` is a valid patch that changes nothing.
+- The digest keys items on (id, product), skips an item without products or
+  sources, and withholds and counts an item that fails the guard.
+- Ledger: `lookup_all`; `add_channel` for a root sent to one channel at a
+  time; `ids=` on `record_root`/`record_reply` keeps every id beyond the
+  published 50; a refused `pending` stores the ids it learned before refusing;
+  every stored field is type-checked and the file is decoded with duplicate
+  keys refused; a failed save restores the last saved state in memory.
+- `merge` takes `exploited` from any stored entry of the scope, `fixed` and
+  `affected` from one member (preferring a publishable fix), and joins every
+  member's severity text for B2's rule (still never published).
+
 ## Blast radius and rollback
 
 New files only; nothing calls them until B4. Rollback is a revert of the

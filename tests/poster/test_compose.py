@@ -182,3 +182,28 @@ def test_digest_lists_every_item_once():
     assert out.index("Critical") < out.index("CVE-2026-0002") < out.index("Notice")
     assert "High" not in out  # 0002's later version is critical; empty sections are omitted
     assert compose.digest([], "2026-11-05") == "Daily digest for 2026-11-05: no advisories."
+
+
+def test_review_fixes_publication():
+    c = cand()
+    _, prev = root(c)
+    for url in ("https://user:pw@example.org/a", "https://10.0.0.5/advisory",
+                "https://example.org/%68ome/alice/evidence.json"):
+        with pytest.raises(ValueError):  # dropped by B1's URL checks, leaving nothing changed
+            compose.reply_post(prev, c, {"sources": [{"url": url, "published_at": None}]})
+    tup = compose.reply_post(prev, c, {"aliases": ("OSV-2026-9", "bad alias!")})
+    assert _block(tup)["aliases"] == ["GHSA-abcd-efgh-ijkl", "OSV-2026-9"]  # union, filtered
+    # A fix the schema cannot express is not "no fix".
+    text, adv = root(cand(fixed="2.0.0-rc.1"))
+    assert "A fix is listed upstream" in text and "no fix" not in text and adv.actions == []
+    # Unverified survives into the title, so the digest and replies keep it.
+    _, unv = root(cand(injection_exec=False, trojanized=True), ("high", "unverified"))
+    assert "unverified" in compose.digest([unv], "2026-11-05")
+    # One CVE under two scopes is two digest items; a guarded item is withheld, not fatal.
+    c2 = cand(product_text="docker engine")
+    _, dock = compose.root_post(c2, "high", scope(c2), posted_at=NOW)
+    bad = dataclasses.replace(dock, id="CVE-2026-0009", title="Docker: host-alpha (CVE-2026-0009)")
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(socket, "gethostname", lambda: "host-alpha")
+        out = compose.digest([prev, dock, bad], "2026-11-05")
+    assert out.count("CVE-2026-0001") == 2 and "1 item withheld" in out and "host-alpha" not in out

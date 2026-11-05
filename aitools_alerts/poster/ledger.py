@@ -51,14 +51,35 @@ def _keys(ids) -> set[str]:
     return {i.casefold() for i in ids if isinstance(i, str) and i}
 
 
+def _strs(v) -> bool:
+    return isinstance(v, list) and all(isinstance(i, str) and i for i in v)
+
+
+def _ids_map(v) -> bool:
+    return isinstance(v, dict) and all(isinstance(k, str) and isinstance(i, str) for k, i in v.items())
+
+
 def _entry_ok(e) -> bool:
     try:
         Entry(**e)
     except TypeError:
         return False
-    return (isinstance(e["root_event_id"], str) and isinstance(e["channel_ids"], dict)
-            and isinstance(e["aliases"], list) and isinstance(e["scope"], str)
-            and isinstance(e["advisory"], dict) and isinstance(e["replies"], list))
+    return (isinstance(e["root_event_id"], str) and _ids_map(e["channel_ids"])
+            and e["level"] in schema.LEVELS and _strs(e["aliases"]) and e["aliases"]
+            and type(e["posted_at"]) is int and type(e["last_change"]) is int
+            and isinstance(e["scope"], str) and type(e["exploited"]) is bool
+            and isinstance(e["advisory"], dict)
+            and isinstance(e["replies"], list) and all(_ids_map(r) for r in e["replies"]))
+
+
+def _pending_ok(p) -> bool:
+    return (isinstance(p, dict) and isinstance(p.get("key"), str) and _strs(p.get("aliases"))
+            and type(p.get("at")) is int)
+
+
+def _review_ok(r) -> bool:
+    return (isinstance(r, dict) and isinstance(r.get("text"), str)
+            and all(type(r.get(k)) is int for k in ("first_seen", "last_seen", "count")))
 
 
 class Ledger:
@@ -80,7 +101,8 @@ class Ledger:
             raise LedgerError(f"another poster run holds {lock}") from None
         try:
             self._data = self._load()
-        except LedgerError:
+            self._good = json.dumps(self._data)
+        except Exception:
             fh.close()
             raise
         self._lock = fh
@@ -94,17 +116,18 @@ class Ledger:
 
     def _load(self) -> dict:
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            data = json.loads(self.path.read_text(encoding="utf-8"),
+                              object_pairs_hook=schema._no_duplicates,
+                              parse_constant=schema._reject_constant)
         except FileNotFoundError:
             return {"schema_version": 1, **{k: [] for k in _LISTS}}
-        except (OSError, ValueError) as e:
+        except (OSError, ValueError, RecursionError) as e:
             raise LedgerError(f"ledger {self.path} unreadable: {e}") from None
         if (not isinstance(data, dict) or data.get("schema_version") != 1
                 or not all(isinstance(data.get(k), list) for k in _LISTS)
                 or not all(_entry_ok(e) for e in data["entries"])
-                or not all(isinstance(p, dict) and isinstance(p.get("key"), str)
-                           and isinstance(p.get("aliases"), list) and type(p.get("at")) is int
-                           for p in data["pending"])):
+                or not all(_pending_ok(p) for p in data["pending"] + data["expired"])
+                or not all(_review_ok(r) for r in data["review"])):
             raise LedgerError(f"ledger {self.path} malformed; refusing to send without dedup")
         return data
 
@@ -127,25 +150,43 @@ class Ledger:
                 os.fsync(dfd)
             finally:
                 os.close(dfd)
-        except OSError as e:
+        except Exception as e:  # the unsaved change is undone, so no later save writes it
             try:
                 os.unlink(tmp)
             except OSError:
                 pass
+            self._data = json.loads(self._good)
             raise LedgerError(f"cannot write ledger {self.path}: {e}") from None
+        self._good = json.dumps(data)
 
     # ------------------------------------------------------------ advisories
 
-    def lookup(self, aliases, scope: str | None = None) -> Entry | None:
-        """The oldest entry sharing any id (case-insensitive), optionally for one scope."""
+    def lookup_all(self, aliases, scope: str | None = None) -> list[Entry]:
+        """Every entry sharing any id (case-insensitive), oldest first; pass ``scope``
+        to stay within one scope entry (a CVE can span several)."""
         want = _keys(aliases)
         hits = [e for e in self._state()["entries"]
                 if _keys(e["aliases"]) & want and (scope is None or e["scope"] == scope)]
-        return Entry(**min(hits, key=lambda e: e["posted_at"])) if hits else None
+        return [Entry(**e) for e in sorted(hits, key=lambda e: e["posted_at"])]
+
+    def lookup(self, aliases, scope: str | None = None) -> Entry | None:
+        """The oldest entry sharing any id, optionally for one scope."""
+        hits = self.lookup_all(aliases, scope)
+        return hits[0] if hits else None
+
+    def _entry(self, root_event_id: str) -> dict:
+        for e in self._state()["entries"]:
+            if e["root_event_id"] == root_event_id:
+                return e
+        raise LedgerError(f"no thread {root_event_id}")
 
     def record_root(self, adv: schema.Advisory, root_event_id: str, channel_ids: dict, *,
-                    scope: str, exploited: bool, now: int) -> Entry:
-        ids = [adv.id, *adv.aliases]
+                    scope: str, exploited: bool, now: int, ids=()) -> Entry:
+        """A new thread. ``ids`` is the full identity set (the advisory's aliases are
+        capped at 50 for publication; the ledger keeps every id)."""
+        if not isinstance(root_event_id, str) or not _ids_map(channel_ids):
+            raise LedgerError("root_event_id and channel_ids must be strings")
+        ids = _union([adv.id, *adv.aliases], ids)
         if self.lookup(ids, scope) is not None:
             raise LedgerError(f"{adv.id} already has a thread; post a reply instead")
         e = dict(root_event_id=root_event_id, channel_ids=dict(channel_ids), level=adv.level,
@@ -155,14 +196,21 @@ class Ledger:
         self._save()
         return Entry(**e)
 
+    def add_channel(self, root_event_id: str, channel: str, event_id: str) -> Entry:
+        """Record the root in one more channel (a critical posts to two, one at a time)."""
+        if not (isinstance(channel, str) and isinstance(event_id, str)):
+            raise LedgerError("channel and event_id must be strings")
+        e = self._entry(root_event_id)
+        e["channel_ids"][channel] = event_id
+        self._save()
+        return Entry(**e)
+
     def record_reply(self, root_event_id: str, adv: schema.Advisory, reply_ids: dict, *,
-                     now: int, exploited: bool = False) -> Entry:
-        for e in self._state()["entries"]:
-            if e["root_event_id"] == root_event_id:
-                break
-        else:
-            raise LedgerError(f"no thread {root_event_id}")
-        e["aliases"] += [a for a in [adv.id, *adv.aliases] if a.casefold() not in _keys(e["aliases"])]
+                     now: int, exploited: bool = False, ids=()) -> Entry:
+        if not _ids_map(reply_ids):
+            raise LedgerError("reply_ids must map channel to event id")
+        e = self._entry(root_event_id)
+        e["aliases"] = _union(e["aliases"], [adv.id, *adv.aliases, *ids])
         e.update(level=adv.level, advisory=asdict(adv), last_change=now,
                  exploited=e["exploited"] or exploited is True)
         e["replies"].append(dict(reply_ids))
@@ -179,7 +227,12 @@ class Ledger:
         """Record a send as in flight, on disk, before it happens. Refuses when the
         same key or any of the advisory's ids is already in flight."""
         st = self._state()
-        if any(p["key"] == key for p in st["pending"]) or self.pending_for(aliases):
+        aliases = [a for a in aliases if isinstance(a, str) and a]
+        blocking = [p for p in st["pending"] if p["key"] == key] + self.pending_for(aliases)
+        if blocking:
+            for p in blocking:  # keep the ids learned now, so a later candidate under any of them is held too
+                p["aliases"] = sorted(set(_union(p["aliases"], aliases)))
+            self._save()
             raise LedgerError(f"{key}: a send is already in flight; never resent until cleared or expired")
         st["pending"].append({"key": key, "aliases": sorted(set(aliases)), "at": now})
         self._save()
@@ -235,6 +288,16 @@ class Ledger:
 # ---------------------------------------------------------------- alias merge
 
 
+def _union(a, b) -> list[str]:
+    out = list(a)
+    seen = _keys(out)
+    for i in b:
+        if isinstance(i, str) and i and i.casefold() not in seen:
+            seen.add(i.casefold())
+            out.append(i)
+    return out
+
+
 def merge(pairs, ledger: Ledger | None = None) -> list:
     """Merge (Candidate, ScopeEntry) pairs that share an id or alias under the same
     scope entry. ``exploited`` crosses only within one scope: a candidate under
@@ -269,11 +332,7 @@ def merge(pairs, ledger: Ledger | None = None) -> list:
 
 def _merged(members, scope_name, ledger):
     first = members[0]
-    ids = []
-    for c in members:
-        for a in (c.id, *c.aliases):
-            if a.casefold() not in _keys(ids):
-                ids.append(a)
+    ids = _union([], (a for c in members for a in (c.id, *c.aliases)))
     sources, urls = [], set()
     for c in members:
         for s in c.sources:
@@ -281,14 +340,18 @@ def _merged(members, scope_name, ledger):
                 urls.add(s.url)
                 sources.append(s)
     exploited = any(c.exploited is True for c in members)
-    if ledger is not None and not exploited:
-        e = ledger.lookup(ids, scope_name)
-        exploited = e is not None and e.exploited is True
+    if ledger is not None and not exploited:  # any stored entry of this scope, not only the oldest
+        exploited = any(e.exploited is True for e in ledger.lookup_all(ids, scope_name))
+    # fixed and affected come from one member, preferring a fix the schema can publish.
+    fix = next((c for c in members if schema._FIXED.fullmatch((c.fixed or "").lstrip("vV"))),
+               next((c for c in members if c.fixed or c.affected), first))
+    severities = [c.advisory_severity for c in members if isinstance(c.advisory_severity, str)]
     return replace(
         first, aliases=tuple(a for a in ids if a != first.id),
         exploited=exploited,
         trojanized=any(c.trojanized is True for c in members),
         injection_exec=any(c.injection_exec is True for c in members),
-        fixed=next((c.fixed for c in members if c.fixed), None),
-        affected=next((c.affected for c in members if c.affected), None),
+        fixed=fix.fixed, affected=fix.affected,
+        # every member's severity text, so B2's rule sees it whichever order (never published)
+        advisory_severity="; ".join(dict.fromkeys(severities))[:500] or None,
         sources=tuple(sources))

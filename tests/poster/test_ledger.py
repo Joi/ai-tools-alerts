@@ -142,3 +142,48 @@ def test_roots_replies_and_review(tmp_path):
     review = json.loads(p.read_text())["review"]
     assert [r["text"] for r in review] == ["Anthropic Widget", "x" * 300]
     assert review[0]["count"] == 3 and review[0]["last_seen"] == T0 + 9
+
+
+def test_review_fixes_ledger(tmp_path, monkeypatch):
+    p = tmp_path / "l.json"
+    with Ledger(p) as led:
+        led.pending("A:critical", ["A"], now=T0)
+        with pytest.raises(LedgerError):  # refused, but the A~B link is kept
+            led.pending("A:feed", ["A", "B"], now=T0)
+    with Ledger(p) as led:
+        with pytest.raises(LedgerError):
+            led.pending("B:feed", ["B"], now=T0)
+        many = [f"OSV-{i}" for i in range(70)]
+        e = led.record_root(adv_for(cand()), "e1", {"critical": "e1"}, scope="Claude Code",
+                            exploited=False, now=T0, ids=many)
+        led.add_channel("e1", "feed", "f1")
+        led.record_root(adv_for(cand(id="CVE-2026-0002", exploited=True)), "e2", {"feed": "e2"},
+                        scope="Claude Code", exploited=True, now=T0 + 1)
+        # A save that fails leaves memory as it was on disk.
+        monkeypatch.setattr(ledger.os, "replace", lambda *a: (_ for _ in ()).throw(OSError("disk")))
+        with pytest.raises(LedgerError):
+            led.add_channel("e1", "x", "y")
+        assert "x" not in led.lookup(["e1", "CVE-2026-0001"]).channel_ids
+        monkeypatch.undo()
+    with Ledger(p) as led:
+        assert led.lookup(["OSV-69"]).channel_ids == {"critical": "e1", "feed": "f1"}
+        # A candidate bridging an unexploited older entry and an exploited newer one.
+        (got, _), = ledger.merge([pair(cand(id="X-1", aliases=("OSV-3", "CVE-2026-0002")))], led)
+        assert got.exploited is True
+    for text in ('{"schema_version": 1, "entries": [], "pending": [{"key": "k", "aliases": [7], "at": 1}],'
+                 ' "expired": [], "review": []}',
+                 '{"schema_version": 1, "entries": [], "pending": [{"key": "k", "aliases": ["a"], "at": 1}],'
+                 ' "pending": [], "expired": [], "review": []}'):
+        p.write_text(text)
+        with pytest.raises(LedgerError):
+            Ledger(p).__enter__()
+
+
+def test_merge_keeps_severity_and_one_fix_in_either_order():
+    a = cand(advisory_severity=None, fixed=None)
+    b = cand(id="GHSA-q", aliases=("CVE-2026-0001",), fixed="2.1.0", affected="<2.1.0",
+             advisory_severity="remote code execution")
+    for order in ([a, b], [b, a]):
+        (m, s), = ledger.merge([pair(x) for x in order])
+        assert rules.level_for(m, s, False) == ("high", "fix-rce-tier1")
+        assert (m.fixed, m.affected) == ("2.1.0", "<2.1.0")
