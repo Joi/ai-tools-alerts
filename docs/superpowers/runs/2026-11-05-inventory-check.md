@@ -1,6 +1,6 @@
 # Run: inventory-check
 Instruction: start at medium. Task: ai-tools-alerts#0xrc (A4) per TASK-ai-tools-alerts#0xrc.md — inventory.py, check.py, versions.py with tests and fixtures, per docs/plan.md Task A4. Not repoman-managed; non-repoman ending (ff-merge to main, close issue). Security-shaped: FRESHEYES_GPT_MODEL=gpt-6-astra.
-Stage: committing
+Stage: done
 Rung: heavy (start-floor heavy: hard-trigger credential handling — the mcp collector parses credential-bearing configs, keeping key names only; BR1 REV0 NOV1 INT1 FC2 = 5; Lens: "No command execution anywhere in this task beyond fixed-argv version probes."; "Plan Task A4 exactly")
 Spec: docs/superpowers/specs/2026-11-05-inventory-check-design.md   Plan: docs/superpowers/plans/2026-11-05-inventory-check.md
 Agency project: — (mcp__agency__* tools not loaded in this session; executed inline, as A1/A2 did)
@@ -16,7 +16,10 @@ Escalation: none (every B/S fixed). BLOCKER fixes changed behaviour → one delt
 Pass 2 [code:chunk1 delta]: 0B/3S/0C/0R · fixed 6/6 prior · velocity ↓ (12→3, escalation no)   # fresheyes gpt-6-astra --since 51b6bce8 (REASON=-). Reported as 3 major; all three concern the defence-in-depth re-check of a hand-built Match or the cosmetic dedupe, none reachable through match() → SUBSTANTIVE. All fixed: dedupe key now includes affected/fixed (different constraints each match); plan requires the product in adv.products and each action in adv.actions; plan requires a range and that a tool installation is its ecosystem's tool (_owns). Last pass (Review Cycle: no further pass).
 
 ## Chunks
-- [x] chunk 1 — versions, inventory, check, tests, fixtures (committed; review pending)
+- [x] chunk 1 — versions, inventory, check, tests, fixtures (022ba42 + review fixes b08dd84, b039ae5 after rebase on 85d954e)
 
 ## Notes
 - kata search "inventory matching": only 0xrc itself. capability-search inventory/version: no overlapping tool. Prior runs (spec-files, alerts-bootstrap) set conventions: stdlib only, scripts/test-gate.sh, Agency MCP absent, spec+plan reviewed in one fresheyes pass.
+- Rebased on origin/main 85d954e (A3 landed). Pre-rebase shas: 51b6bce→022ba42 (whole-branch review), 3fdc379→b08dd84 (delta reviewed --since 51b6bce), 0a07637→b039ae5 (delta's fixes; no further pass per Review Cycle). Gate on rebased head: 318 passed.
+- Acceptance on this Mac: inventory.collect() printed all 19 scope ecosystem keys in 0.2 s. Leak grep over the diff for fleet host names: no hit. Fixture skill/MCP names overlap the real ones: 0.
+- Start floor heavy (evaluator) above the instruction's "start at medium"; heavy added only the delta pass, which the Review Cycle also requires.
