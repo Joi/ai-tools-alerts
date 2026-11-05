@@ -1,6 +1,6 @@
 # Run: poster-candidate-adapters
 Instruction: start at medium. Task: ai-tools-alerts#6j8x, plan docs/plan.md Task B1 (Candidate adapters), brief TASK-ai-tools-alerts#6j8x.md in the worktree. Security-shaped: FRESHEYES_GPT_MODEL=gpt-6-astra. Not repoman-managed: non-repoman ending (ff-merge to main from primary checkout).
-Stage: committing
+Stage: done
 Rung: medium (start-floor medium: evaluator BR1 REV0 NOV1 INT1 FC1 = 4, PII-shaped medium floor; no hard trigger; Lens: none)
 Spec: docs/superpowers/specs/2026-11-05-poster-candidate-adapters-design.md   Plan: docs/superpowers/plans/2026-11-05-poster-candidate-adapters.md
 Agency project: —
@@ -21,5 +21,7 @@ passes: code 2 (one whole-branch, one delta)
 ## Notes
 - TDD order: the implementation was written while the spec review ran, before the tests; tests were then written against the spec and run red→green for the review fixes (2 failures found, fixed). Recorded, not hidden.
 - Size: 907 added lines before review fixes; 323 are fixture JSON the plan requires. decided on the kata issue: count code+tests against the 600-line rule.
+- Landed: rebased onto origin/main 62f0b95 (A2 schema.py landed meanwhile; its Source has the same fields, B2 swaps the import), gate 155 passed, ff-merged to main at 9ed88fafce7e12d19105a8593ea236dc8e9a632f (pre-rebase heads 1e1cf71, 661303c, 4778ceb are c157b23, d03c573, 9ed88fa). The last fix commit (9ed88fa) disposes of the delta's three SUBSTANTIVE findings and had no further pass, per ruling jibot-code#41e2.
+- roborev: ai-tools-alerts is not enrolled; post-push check skipped. The behaviour-changing BLOCKER fixes had their fresheyes delta before the push.
 - Agency MCP tools (mcp__agency__*) are not loaded in this session; execution is inline by the executor per the plan. Recorded, not skipped silently.
 - aitools_alerts/schema.py (A2, j153) is absent at start: Source is defined in candidates.py; B2 (31x7) reconciles.
