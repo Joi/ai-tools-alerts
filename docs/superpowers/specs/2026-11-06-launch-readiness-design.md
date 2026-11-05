@@ -32,7 +32,7 @@ listener meets today are broken:
   channels' events together (as the CLI pulls them), after the reader's
   400-day whole-thread retention, so the page shows what the CLI would trust
   (curator level changes, patches, retractions, the manifest's retracted
-  list). Events dated past `schema.MAX_TIMESTAMP` are left off. The CLI's
+  list). Every accepted event takes part in the threads; only a root dated past `schema.MAX_TIMESTAMP` is left off (code review pass 1: filtering replies first missed a retraction the CLI applies). The CLI's
   size limits (8 MiB per file, 10,000 events) are not mirrored: past them the
   CLI refuses the whole mirror, which the page cannot express.
 - `--mirror-url` must be https with a host and no quote, angle bracket,
@@ -59,7 +59,7 @@ listener meets today are broken:
 - `atom_doc`: skip a root whose content has no non-blank line (the only way
   `_first_line` returns "(untitled)"); `_first_line` no longer returns that
   string.
-- `index_doc(events, m, channels, generated_at, mirror_url) -> bytes`: builds
+- `index_doc(events_by_channel, m, channels, now, mirror_url) -> (bytes, count)`: builds
   an in-memory `state.State` with the export's manifest and events under the
   exporter's trust root and calls `pull.advisories`. Write order becomes
   manifest.json, critical.json, feed.json, index.html, feed.atom.
@@ -110,3 +110,5 @@ The relay is members-only and the mirror is its only public surface.
   no intake instructions.
 - The Atom feed has a `<subtitle>`: for humans and feed readers; agents use the
   CLI, which verifies signatures.
+
+An advisory whose `expires_at` has passed (the CLI's `pull.active` hides it from `check`) is listed with "Expired: ".

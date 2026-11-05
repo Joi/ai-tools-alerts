@@ -615,7 +615,9 @@ def test_index_skips_far_future_advisory(env):
 
 
 @pytest.mark.parametrize("url", ["javascript:alert(1)//", "http://example.com/alerts/",
-                                 "https:///alerts/", 'https://example.com/"onmouseover=x'])
+                                 "https:///alerts/", 'https://example.com/"onmouseover=x',
+                                 "https://evil.example\\@buzz.ai-tools.md/alerts/",
+                                 "https://buzz.ai-tools.md/al\nerts/"])
 def test_mirror_url_must_be_https(env, url):
     channels, manifest, out = env
     with pytest.raises(em.ExportError):
@@ -670,3 +672,21 @@ def test_index_says_channels_are_for_members(env):
     assert "for ai-tools community members" in sub and "auth token" in sub
     assert "No account is needed" in sub and "feed.json" in sub
     assert "join" not in sub.lower()
+    assert sub.count("<ul>") == sub.count("</ul>") == 1
+
+
+def test_index_marks_expired(env):
+    post = _adv_post("Old news", "AITA-TEST-0012")
+    adv = json.loads(post.split("```" + schema.INFO_STRING + "\n")[1].split("\n```")[0])
+    adv["expires_at"] = 1793865700  # before the export's now (1793865900)
+    content = f"Old news\n\n```{schema.INFO_STRING}\n{json.dumps(adv)}\n```\n"
+    run_export(env, rows_reader([ev(BOT_SEC, content, 1793865600)]))
+    assert "Expired: Old news" in page(env)
+
+
+def test_index_applies_a_far_future_retraction_as_the_cli_does(env, tmp_path, monkeypatch):
+    root = ev(BOT_SEC, _adv_post("Withdrawn", "AITA-TEST-0013"), 1793865600)
+    gone = ev(CUR_SEC, "retract", schema.MAX_TIMESTAMP + 1, tags=[("e", root["id"], "", "root")])
+    run_export(env, rows_reader([root, gone]))
+    assert "Retracted: Withdrawn" in page(env)
+    assert _pull(env[2], tmp_path, monkeypatch) == [(root["id"], "Withdrawn", "high", True)]

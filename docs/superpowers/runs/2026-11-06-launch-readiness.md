@@ -5,12 +5,13 @@ Rung: medium (start-floor medium: evaluator BR1 REV1 NOV1 INT1 FC1 = 5, prod-sha
 Spec: docs/superpowers/specs/2026-11-06-launch-readiness-design.md   Plan: docs/superpowers/plans/2026-11-06-launch-readiness.md
 Agency project: 01a1adfb-fb0a-718a-b056-da10c6126de8 (task 01a1adfc-0a5e-72f4-8ffd-0e59e077d8ce)
 Kata: ai-tools-alerts#hgs0
-Last reviewed: spec+plan 2db17eb48e24ad22b78188f544be9e881776f26d
+Last reviewed: spec+plan 2db17eb48e24ad22b78188f544be9e881776f26d; code:branch e6594cf8c9b4dadc6f7918c08a5b60be29ce4fd4 (whole branch origin/main...HEAD)
 Pre-handoff review: — (not repoman-managed)
 
 ## Scorecards
 Pass 1 [spec+plan]: 0B/7S/0C/0R · fixed -/- · velocity = (—→7, escalation no)   # fresheyes gpt-6-astra (watchdog REASON=-) on snapshot 2db17eb4. Seven "major", graded SUBSTANTIVE. Fixed: page threads from both channels (a curator reply in critical.json retracts a feed root); reader's 400-day retention applied; events past MAX_TIMESTAMP left off (was a crash in _iso); --mirror-url must be https with a host and no quote/bracket/backslash/space; adversarial tests (manifest retracted, curator level, quoted href parsed back, forged author, cap, primary fallback); rollback names the VM checkout update and index.html removal. Rebutted: the review snapshot's commit message (a dangling commit-tree object, never on the branch). Not mirrored, stated in spec: the CLI's 8 MiB / 10,000-event refusal.
 passes: spec+plan 1
+Pass 1 [code:branch]: 1B/3S/4C/0R · fixed 6/7 prior (spec+plan; 1 rebutted) · velocity ↑ (7→8, escalation yes)   # Stage 1 (same-model subagent) ∥ Stage 2 fresheyes gpt-6-astra (REASON=-) on origin/main...e6594cf. BLOCKER (fresheyes, graded so because it changes what the public page shows and the reviewer called it blocking): the page dropped events past MAX_TIMESTAMP before building threads, so a far-future curator retraction the CLI applies was missed → threads from every accepted event, only undatable roots left off; regression test compares page and CLI. SUBSTANTIVE fixed: --mirror-url backslash not refused (both reviewers; the committed check lost the backslash to string escaping) → URL_REFUSED set incl. backslash, tab, CR, LF, tests; README lines "anyone may reply" and keygen "post or discuss" contradicted the members-only directive (Stage 1) → reworded. Cosmetic fixed: stray <ul> in the subscribe section (both), expired advisories now marked "Expired:" (pull.active's rule), comment on effective_manifest's bundled-manifest preference, spec index_doc signature. BLOCKER fix changed behaviour → one delta pass (fresheyes --since e6594cf --rebuttals).
 
 ## Chunks
 - [x] chunk 1 — kind-9 filter + no "(untitled)" Atom entries (mirror/export_mirror.py, tests/mirror/test_export.py)

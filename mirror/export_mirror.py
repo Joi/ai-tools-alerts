@@ -63,6 +63,7 @@ PIPX_LINE = "pipx install git+https://github.com/Joi/ai-tools-alerts"  # README'
 REPO_URL = "https://github.com/Joi/ai-tools-alerts"
 RELAY_HOST = "buzz.ai-tools.md"
 INDEX_LIMIT = 20
+URL_REFUSED = frozenset("\"'<>\\ \t\r\n")  # browsers read a backslash as a slash
 ATOM_SUBTITLE = ("Security alerts for people who run AI agents on their own machines. This feed is "
                  "for humans and feed readers; agents use the aitools-alerts CLI, which verifies "
                  "each alert's signature (" + REPO_URL + ").")
@@ -322,6 +323,9 @@ def _threads(events: dict[str, dict], m, now: int) -> list:
     """The threads the CLI would build from these events under manifest m:
     the reader's whole-thread retention, then pull.advisories, over an
     in-memory state (never loaded or saved)."""
+    # pull.advisories reads pull.effective_manifest, which prefers the
+    # checkout's bundled trust/manifest.json when it is newer than m; the unit
+    # passes that same file as --manifest, so both are one manifest.
     kept = pull._retain(events, now, pull.PullResult())
     st = State(dir=Path("/nonexistent"), roots={TRUST_ROOT_PUBKEY: [m, kept]},
                manifest_root=TRUST_ROOT_PUBKEY)
@@ -354,19 +358,21 @@ def index_doc(events: dict[str, list[dict]], m, channels: dict, now: int,
 
     Threads are built from both channels together, as the CLI pulls them: a
     curator reply in one channel amends or retracts a root in the other.
-    Events dated past 9999-12-31 have no date to print and are left out."""
+    Every accepted event takes part in the threads, as in the CLI; only a
+    root dated past 9999-12-31, which has no date to print, is left off."""
     generated_at = _iso(now)
-    union = {e["id"]: e for name in sorted(events) for e in events[name]
-             if e["created_at"] <= schema.MAX_TIMESTAMP}
+    union = {e["id"]: e for name in sorted(events) for e in events[name]}
     created = {eid: e["created_at"] for eid, e in union.items()}
-    threads = [t for t in _threads(union, m, now) if not schema.is_synthetic(t.adv.id)]
+    threads = [t for t in _threads(union, m, now) if not schema.is_synthetic(t.adv.id)
+               and created[t.root_id] <= schema.MAX_TIMESTAMP]
     threads.sort(key=lambda t: (created[t.root_id], t.root_id), reverse=True)
     threads = threads[:INDEX_LIMIT]
 
     rows = []
     for t in threads:
         adv = t.adv
-        title = ("Retracted: " if t.retracted else "") + adv.title
+        expired = adv.expires_at is not None and adv.expires_at < now  # pull.active's rule
+        title = ("Retracted: " if t.retracted else "Expired: " if expired else "") + adv.title
         url, primary = _source(adv)
         date = _iso(created[t.root_id])[:10]
         note = "" if primary else " (not a primary source)"
@@ -402,7 +408,6 @@ def index_doc(events: dict[str, list[dict]], m, channels: dict, now: int,
 </section>
 <section id="subscribe">
 <h2>Subscribe</h2>
-<ul>
 <p>No account is needed for any of these:</p>
 <ul>
 <li>Atom feed, for you and your feed reader: <a href="{_esc(atom)}">{_esc(atom)}</a></li>
@@ -445,7 +450,7 @@ def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_
     channels = load_channels(channels_path)
     raw_manifest, m = check_manifest(manifest_path)
     parts = urlsplit(mirror_url)
-    if parts.scheme != "https" or not parts.hostname or any(c in mirror_url for c in "\"'<> "):
+    if parts.scheme != "https" or not parts.hostname or any(c in URL_REFUSED for c in mirror_url):
         raise ExportError("--mirror-url must be an https URL with a host")
     if not mirror_url.endswith("/"):
         mirror_url += "/"
