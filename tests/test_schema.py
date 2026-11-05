@@ -448,7 +448,7 @@ def test_reserved_id_title_is_marked_by_the_reader():
     assert schema.validate(blk).title == "SYNTHETIC TEST: Claude Code: looks real"
     assert schema.validate({**blk, "title": "SYNTHETIC TEST: x"}).title == "SYNTHETIC TEST: x"
     assert schema.parse_post(post_with(blk)).title == "SYNTHETIC TEST: Claude Code: looks real"
-    with pytest.raises(ValueError):
-        schema.validate({**blk, "title": "x" * 290})  # the mark pushes it over 300
+    long = schema.validate({**blk, "title": "x" * 300}).title  # cut to fit, never refused
+    assert len(long) == 300 and long.startswith("SYNTHETIC TEST: x")
     real = {**valid_block(), "id": "CVE-2026-0010", "aliases": ["CVE-2099-0010"], "title": "Real"}
     assert schema.validate(real).title == "Real"

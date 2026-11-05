@@ -425,3 +425,13 @@ def test_withdrawal_updated_advances_past_root(env, delta):
     entry = ET.parse(env[2] / "feed.atom").getroot().find(f"{ATOM}entry")
     assert entry.findtext(f"{ATOM}title") == "Retracted: Upgrade now"
     assert entry.findtext(f"{ATOM}updated") > before
+
+
+@pytest.mark.parametrize("title", ["Example Tool: looks real", "y" * 300])
+def test_atom_marks_a_synthetic_root(env, title):
+    adv = schema.asdict(schema.parse_post(advisory_post("t", "CRITICAL: Example Tool: looks real")))
+    adv.update(id="CVE-2099-0010", title=title)  # a root posted before readers marked it
+    content = f"CRITICAL: Example Tool: looks real\n\n```{schema.INFO_STRING}\n{json.dumps(adv)}\n```\n"
+    run_export(env, rows_reader([ev(CUR_SEC, content)]))
+    entry = ET.parse(env[2] / "feed.atom").getroot().find(f"{ATOM}entry")
+    assert entry.findtext(f"{ATOM}title").startswith("SYNTHETIC TEST: ")

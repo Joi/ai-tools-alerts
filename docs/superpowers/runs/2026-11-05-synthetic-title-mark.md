@@ -17,6 +17,16 @@ Pass 1 [spec+plan]: 5B/0S/0C/0R · fixed -/- · velocity = (—→5, escalation 
 - Rebutted 5 (snapshot commit message): ee1c94c is a dangling review snapshot built by commit-tree; it never lands on a branch.
 - Medium rung: no delta on the documents; the BLOCKER fixes are code-reviewed in the code pass.
 
+Pass 1 [code:compose-title, whole branch ef5b6a7]: Stage 1 0B/3S/2C · fresheyes (gpt-6-astra, run 20261105-153959-df6789) 3B/0S/0C · fixed -/- · velocity = (—→8, escalation no)
+- fresheyes B2 + Stage 1 S1 (one cause: a synthetic title over 300 after the prefix was refused, so the root vanished from check/notify and the Atom exporter fell back to the unmarked first line): fixed, `validate` cuts the marked title to 300, never refuses; schema and Atom tests (a 300-char legacy title).
+- fresheyes B3 (the writer sent an unmarked title patch because `_publishable` checked the re-marked merge): fixed, the template check reads the title as sent; test.
+- Stage 1 S2 (no Atom test): fixed, `test_atom_marks_a_synthetic_root`.
+- Stage 1 C4 (digest checked `SYNTHETIC`, validate `SYNTHETIC: `): fixed.
+- Rebutted fresheyes B1 (a non-reserved id whose title a poster wrote as "SYNTHETIC TEST: ..." keeps it): compose never marks a non-reserved id (tested). A title a trusted poster wrote is that poster's label, and curator test threads use non-reserved ids (E3's SYNTHETIC-E3-CURATOR-1): stripping the words would present a curator's test as real, which breaks the stronger rule, a synthetic test is never labelled real.
+- Rebutted Stage 1 S3 (no curator-path test): the curator's root and amend reach readers through the same `schema.validate` as the relay bot's, which test_schema and test_cli cover; the curator module builds no Advisory of its own.
+- Rebutted Stage 1 C5 (`curator amend --title X` on a synthetic thread posts a no-op amend): a curator amending a synthetic thread is a by-hand test step; the reply still reads marked. Not worth code here.
+- BLOCKER fixes changed behaviour: one delta pass `--since ef5b6a7`.
+
 ## Chunks
 - [ ] compose-title — title mark, _titles, digest, tests
 

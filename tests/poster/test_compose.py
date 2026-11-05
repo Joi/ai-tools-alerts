@@ -244,3 +244,5 @@ def test_synthetic_digest_and_reply_keep_one_mark():
     assert adv.title in compose._titles("Claude Code", adv.id)
     assert legacy.title not in compose._titles("Claude Code", adv.id)
     assert compose.reply_post(adv, c, {"level": "high"}).count("SYNTHETIC") == 0  # block: changed fields
+    with pytest.raises(ValueError, match="template title"):  # the writer never sends an unmarked title
+        compose.reply_post(adv, c, {"title": legacy.title})

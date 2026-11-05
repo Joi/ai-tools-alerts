@@ -224,7 +224,9 @@ def validate(obj) -> Advisory:
     adv_id = _pattern(o["id"], "$.id", _IDENT)
     title = _text(o["title"], "$.title", 1, 300)
     if is_synthetic(adv_id) and not title.startswith(SYNTHETIC + ": "):
-        title = _text(f"{SYNTHETIC}: {title}", "$.title", 1, 300)
+        # Cut to fit, never refuse: a refused block would vanish from check and
+        # notify, and the Atom exporter would fall back to the unmarked first line.
+        title = f"{SYNTHETIC}: {title}"[:300]
     return Advisory(
         id=adv_id,
         aliases=[_pattern(a, f"$.aliases[{i}]", _IDENT)

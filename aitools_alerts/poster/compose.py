@@ -209,7 +209,7 @@ def _publishable(prev: schema.Advisory, merged: schema.Advisory, patch: dict) ->
     p, was = merged.products, prev.products[0]
     if len(p) != 1 or (p[0].name, p[0].ecosystem) != (was.name, was.ecosystem):
         raise ValueError("reply: the product is the scope entry's, one product")
-    if merged.title not in _titles(was.name, prev.id):
+    if patch.get("title", merged.title) not in _titles(was.name, prev.id):  # as sent, not as read
         raise ValueError("reply: the title is a template title")
     if any((a.verb, a.target, a.value) != ("upgrade", was.name, p[0].fixed) for a in merged.actions):
         raise ValueError("reply: the only action is upgrade to products[0].fixed")
@@ -291,7 +291,7 @@ def digest(advs_today, date) -> str:
             lines += ["", f"{level.capitalize()} ({len(group)})"]
             for a in group:
                 fixed = f"fixed in {a.products[0].fixed}" if a.products[0].fixed else "no fix yet"
-                mark = f"({SYNTHETIC}) " if is_synthetic(a.id) and not a.title.startswith(SYNTHETIC) else ""
+                mark = f"({SYNTHETIC}) " if is_synthetic(a.id) and not a.title.startswith(SYNTHETIC + ": ") else ""
                 line = f"- {mark}{a.title}; {fixed}. {_primary(a.sources)}"
                 try:
                     lines.append(_guard(line))
