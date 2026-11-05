@@ -70,6 +70,7 @@ Do not use `--template`: it resolves desktop-app templates. The wrapper was then
    ```bash
    list="$(/home/relay/bin/buzz-send channels list --limit 500)" || { echo "listing failed; stop"; exit 1; }
    echo "$list" | jq -e 'type == "array"' >/dev/null || { echo "listing not a JSON array; stop"; exit 1; }
+   echo "$list" | jq -e 'length < 500' >/dev/null || { echo "listing hit the 500 cap and may be truncated; stop"; exit 1; }
    echo "$list" | jq -e 'map(.name) | (index("security-feed") or index("security-critical")) | not' >/dev/null \
      || { echo "a security channel already exists; stop"; exit 1; }
    ```

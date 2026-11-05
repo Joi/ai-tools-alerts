@@ -306,3 +306,14 @@ def test_xtrace_never_prints_key(env, mode, valid):
     assert r.returncode == (0 if valid else 1), r.stderr
     # the first 20 characters are shared by the valid and the corrupted key
     assert env.key[:20].encode() not in r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("name", ["new\nline", "tab\there", "quote\"back\\slash"])
+def test_error_line_stays_one_json_line_for_odd_paths(env, tmp_path, name):
+    missing = tmp_path / name
+    r = run(env, SEND, {"BUZZ_SEND_KEY_FILE": str(missing)})
+    assert r.returncode == 1
+    assert not (env.dir / "argv").exists()
+    lines = r.stderr.decode().strip().splitlines()
+    assert len(lines) == 1, lines
+    assert json.loads(lines[0])["error"] == "user_error"
