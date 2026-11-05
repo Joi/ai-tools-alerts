@@ -49,11 +49,15 @@ calls too), a reply whose first line starts with `lang:` is handled after the
 discussion rule and before the retract, level and patch rules, and never
 reaches them (so a lang reply with a block is never a patch, malformed or
 not). It is kept, the latest per language in (created_at, id) order, when it
-names the thread's current version: the root (`of` absent or the root id)
-until a reply changes the advisory (a patch or a level change applied), then
-that reply. Each change drops the translations before it, so a Japanese
-reader never sees a superseded advisory beside current actions; English
-shows until the poster translates the change (`of: <that reply's id>`).
+names the root (`of` absent or the root id) or a reply that changed the
+advisory (a patch or a level change applied), per target. The thread's text
+is the root's translation followed by each change's translation, in order,
+because the poster (rd8t, `compose.reply_post_ja`) translates a change as its
+change lines only. When any change has no translation yet, that language is
+left out and English shows, so a Japanese reader never sees a superseded
+advisory beside current actions. After a title or level change the first
+line (the title) is the English title, because the root's Japanese first line
+carries the old title and level word (`重大: ...`).
 `Thread.translated_at` keeps each kept translation's created_at. A relay-bot
 translation never replaces a curator's (code review). The CLI merges the
 copies of one advisory (a critical has a root per channel): the latest

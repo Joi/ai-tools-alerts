@@ -721,20 +721,27 @@ def test_relay_bot_cannot_translate_a_curator_thread(mirror):
     assert threads()[0].translations == {"ja": "キュレーターの訳"}
 
 
-def test_a_change_drops_earlier_translations(mirror):
+def test_change_translations_append_and_an_untranslated_change_falls_back(mirror):
+    from aitools_alerts.poster import compose
     root = mirror.root_post(mirror.bot_sec)
-    mirror.reply(mirror.bot_sec, root, JA)
-    patch = mirror.reply(mirror.bot_sec, root, mirror.patch_text(title="Corrected"), created_at=T0 + 300)
+    mirror.reply(mirror.bot_sec, root, compose.lang_reply("重大: 日本語の件名\n影響: 本文"))
+    fix = mirror.reply(mirror.bot_sec, root, mirror.patch_text(products=[{
+        "name": "Claude Code", "ecosystem": "claude-code", "affected": "<98.0.0", "fixed": "98.0.0"}]),
+        created_at=T0 + 300)
+    do_pull(mirror)
+    assert threads()[0].translations == {}  # the change has no Japanese yet: English
+    mirror.reply(mirror.bot_sec, root, compose.lang_reply("影響: 98.0.0 未満", fix["id"]), created_at=T0 + 400)
     do_pull(mirror)
     [t] = threads()
-    assert t.adv.title == "Corrected" and t.translations == {}
-    mirror.reply(mirror.bot_sec, root, "lang: ja\n\n古い版の訳", created_at=T0 + 400)  # names the root
+    assert t.translations == {"ja": "重大: 日本語の件名\n影響: 本文\n\n影響: 98.0.0 未満"}
+    assert t.translated_at == {"ja": T0 + 400}
+    lower = mirror.reply(mirror.cur_sec, root, "level: high", created_at=T0 + 500)
+    mirror.reply(mirror.cur_sec, root, compose.lang_reply("レベルは高になりました。", lower["id"]),
+                 created_at=T0 + 600)
     do_pull(mirror)
-    assert threads()[0].translations == {}
-    mirror.reply(mirror.bot_sec, root, f"lang: ja\nof: {patch['id']}\n\n訂正版", created_at=T0 + 500)
-    do_pull(mirror)
-    [t] = threads()
-    assert t.translations == {"ja": "訂正版"} and t.translated_at == {"ja": T0 + 500}
+    [t] = threads()  # after a level change the stale Japanese level word is not the title
+    assert t.translations["ja"].split("\n")[0] == "Invented critical for tests"
+    assert t.translations["ja"].endswith("影響: 98.0.0 未満\n\nレベルは高になりました。")
 
 
 def test_stranger_and_malformed_translations_ignored(mirror):

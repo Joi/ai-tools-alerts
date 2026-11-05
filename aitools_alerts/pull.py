@@ -389,11 +389,10 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
     word. A patch that fails validation, or raises, is counted and skipped.
     A reply whose first line starts with ``lang:`` is a translation and
     nothing else (see parse_translation), under the same discussion rule. It
-    is kept, the latest per language, when it names the current version: the
-    root (``of`` absent or the root id) until a reply changes the advisory,
-    then that reply. A change drops the translations before it, so a
-    translation never describes a superseded advisory. A relay-bot
-    translation never replaces a curator's.
+    is kept, the latest per language and target, when it names the root
+    (``of`` absent or the root id) or a reply that changed the advisory; a
+    relay-bot translation never replaces a curator's. The thread's text is
+    the root's translation with each change's appended (see _composed).
     Last, a thread is retracted if any id it has carried (the root's id and
     aliases, and aliases a curator patch itself supplied) is in the manifest's
     ``retracted``, whoever posted or retracted it, compared case-folded as
@@ -423,7 +422,7 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
             dropped["no-block"] += 1
             continue
         roots[ev["id"]] = [replace(adv, posted_by=role), False, ev["created_at"], role == "curator",
-                           {i.casefold() for i in (adv.id, *adv.aliases)}, {}, ev["id"]]
+                           {i.casefold() for i in (adv.id, *adv.aliases)}, {}, [ev["id"]], False]
     for ev, role, ref in sorted(replies, key=lambda r: (r[0]["created_at"], r[0]["id"])):
         t = roots.get(ref)
         if t is None or t[1]:
@@ -433,10 +432,10 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
         first = _first_line(ev["content"])
         if first.startswith("lang:"):  # a translation, never a patch or a retraction
             tr = parse_translation(ev["content"])
-            if tr is not None and (tr[1] or ref) == t[6]:  # the current version
-                prev = t[5].get(tr[0])
+            if tr is not None and (tr[1] or ref) in t[6]:  # the root or a change to it
+                prev = t[5].setdefault(tr[1] or ref, {}).get(tr[0])
                 if role == "curator" or prev is None or not prev[2]:  # a curator's stands
-                    t[5][tr[0]] = (tr[2], ev["created_at"], role == "curator")
+                    t[5][tr[1] or ref][tr[0]] = (tr[2], ev["created_at"], role == "curator")
             continue
         if first == "retract":
             if role == "curator":
@@ -446,8 +445,8 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
             want = first[len("level:"):].strip()
             if want in ("high", "notice") and _RANK[want] < _RANK[t[0].level]:
                 t[0], t[2], t[3] = replace(t[0], level=want), ev["created_at"], True
-                t[5].clear()
-                t[6] = ev["id"]
+                t[6].append(ev["id"])
+                t[7] = True
         p = _patch(ev["content"])
         if p is None:
             continue  # convention text only, or discussion
@@ -459,15 +458,35 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
             dropped["bad-patch"] += 1
         else:
             t[0], t[2], t[3] = new, ev["created_at"], t[3] or role == "curator"
-            t[5].clear()
-            t[6] = ev["id"]
+            if t[6][-1] != ev["id"]:
+                t[6].append(ev["id"])
+            t[7] = t[7] or "title" in p or "level" in p
             if role == "curator" and "aliases" in p:  # only aliases a curator wrote:
                 t[4].update(i.casefold() for i in new.aliases)  # a bot's never list a thread
     listed = {i.casefold() for i in m.retracted}
-    return [Thread(root_id=rid, adv=a, retracted=r or not ids.isdisjoint(listed), updated_at=u,
-                   translations={k: v[0] for k, v in tr.items()},
-                   translated_at={k: v[1] for k, v in tr.items()})
-            for rid, (a, r, u, _, ids, tr, _c) in sorted(roots.items(), key=lambda kv: (kv[1][2], kv[0]))]
+    out = []
+    for rid, (a, r, u, _, ids, tr, changes, retitled) in sorted(roots.items(), key=lambda kv: (kv[1][2], kv[0])):
+        text, at = _composed(a, tr, changes, retitled)
+        out.append(Thread(root_id=rid, adv=a, retracted=r or not ids.isdisjoint(listed), updated_at=u,
+                          translations=text, translated_at=at))
+    return out
+
+
+def _composed(adv: Advisory, tr: dict, changes: list, retitled: bool) -> tuple[dict, dict]:
+    """Per language, the root's translation followed by each change's, when
+    the root and every change since have one (else that language is left
+    out: a translation never describes a superseded advisory). After a title
+    or level change the first line is the English title."""
+    text, at = {}, {}
+    for lang in tr.get(changes[0], {}):
+        parts = [tr.get(c, {}).get(lang) for c in changes]
+        if None in parts:
+            continue
+        lines = "\n\n".join(p[0] for p in parts).split("\n")
+        if retitled:
+            lines[0] = adv.title
+        text[lang], at[lang] = "\n".join(lines), max(p[1] for p in parts)
+    return text, at
 
 
 def active(threads: list[Thread], now: float | None = None) -> list[Thread]:
