@@ -4,7 +4,7 @@ Spec: `docs/superpowers/specs/2026-11-05-poster-transport-main-design.md`.
 Three chunks, three landings on `main` (decided: split by the 600-line rule).
 Gate for each: `scripts/test-gate.sh` (the whole suite; the repo has no
 repoman row). Every chunk: grep the chunk's new and changed lines for
-`<the pattern in scripts/public-scan.sh>` (only `candidates.FLEET_HOSTS`
+the fleet-name pattern, now in `scripts/public-scan.sh` (only `candidates.FLEET_HOSTS`
 and test denylists may hold them) and for `nsec|PRIVATE_KEY|\.buzz-keys|--private-key|--relay`
 (only a test's denylist may). The repo-wide key path in `ops/vm/buzz-send`,
 `ops/vm/README.md` and `docs/plan.md` is E1's wrapper and its docs, kept by

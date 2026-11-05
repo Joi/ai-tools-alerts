@@ -48,6 +48,7 @@ _CANDIDATE_FIELDS = frozenset(Candidate.__dataclass_fields__)
 _KINDS = {"root", "copy", "reply", "digest", "ja"}
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,252}")  # three or more: compose skips shorter names
+_SUFFIX = re.compile(r"\.[A-Za-z0-9][A-Za-z0-9.-]{0,252}")
 _SSH_HOST = re.compile(r"(?:[A-Za-z0-9][A-Za-z0-9._-]{0,63}@)?[A-Za-z0-9][A-Za-z0-9._-]{0,252}")
 _WRAPPER = re.compile(r"/[A-Za-z0-9._/-]{1,255}")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -124,9 +125,9 @@ def load_config(path) -> Config:
     for k in ("strip_hosts", "internal_host_suffixes"):
         if k in raw:
             v = raw[k]
-            dot = k == "internal_host_suffixes"  # ".example.net": a dot, then a name
-            if not isinstance(v, list) or not all(
-                    isinstance(h, str) and h.startswith(".") == dot and _NAME.fullmatch(h[dot:]) for h in v):
+            ok = _SUFFIX if k == "internal_host_suffixes" else _NAME  # ".io" is a suffix; "io" is no host
+            dot = ok is _SUFFIX
+            if not isinstance(v, list) or not all(isinstance(h, str) and ok.fullmatch(h) for h in v):
                 raise ConfigError(f"{k} must be a list of host names" + (" each starting with '.'" if dot else ""))
             out[k] = tuple(h.lower() for h in v)
     for k, pattern, what in (("relay_ssh_host", _SSH_HOST, "an ssh host ([user@]host)"),

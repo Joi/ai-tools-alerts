@@ -87,7 +87,7 @@ def test_deployment_keys_default_empty_and_load(tmp_path):
                                   'relay_ssh_host = ""\n', 'relay_send_wrapper = "bin/buzz-send"\n',
                                   'relay_send_wrapper = "~/bin/buzz-send"\n', 'relay_send_wrapper = "/a;b"\n',
                                   'strip_hosts = ["a"]\n', 'strip_hosts = [".."]\n', 'strip_hosts = [".corp"]\n',
-                                  'internal_host_suffixes = ["."]\n'])
+                                  'internal_host_suffixes = ["."]\n', 'internal_host_suffixes = ["..io"]\n'])
 def test_deployment_keys_bad_values_are_errors(tmp_path, text):
     cfg = tmp_path / "config.toml"
     cfg.write_text(text)
@@ -361,3 +361,9 @@ def test_ssh_alias_with_underscore_loads(tmp_path):
 def test_check_relay_validates_a_config_built_in_code(host, wrapper):
     with pytest.raises(inputs.ConfigError):
         inputs.Config(relay_ssh_host=host, relay_send_wrapper=wrapper).check_relay()
+
+
+def test_two_letter_suffix_loads(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('internal_host_suffixes = [".io"]\n')
+    assert inputs.load_config(cfg).internal_host_suffixes == (".io",)
