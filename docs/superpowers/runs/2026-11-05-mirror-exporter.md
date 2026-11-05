@@ -1,11 +1,11 @@
 # Run: mirror-exporter
 Instruction: Task ai-tools-alerts#xksk (C1 mirror exporter + systemd timer) per TASK-ai-tools-alerts#xksk.md in worktree root. Start at medium. Non-repoman repo: ending is the brief's ff-merge ending.
-Stage: plan-review
+Stage: done
 Rung: medium (start-floor medium: evaluator BR1 REV0 NOV1 INT2 FC1 = 5, contract consumed outside the repo + prod-shaped, no hard trigger; Lens: A5's JSON layout exactly, manifest.json verbatim, C2's three paths, live VM untouched, no host names or real events in fixtures)
 Spec: docs/superpowers/specs/2026-11-05-mirror-exporter-design.md   Plan: docs/superpowers/plans/2026-11-05-mirror-exporter.md
 Agency project: 01a1a97a-dad3-743e-a968-47975f929f47 (task 01a1a97a-e7be-7ede-b111-f950c5cf98b0)
 Kata: ai-tools-alerts#xksk
-Last reviewed: spec+plan d4f1b8befb32a30893ea4f1e78a74a0b1a357032
+Last reviewed: spec+plan d4f1b8befb32a30893ea4f1e78a74a0b1a357032; code:branch 957d2e84855073791fdecb02ee1623995ede35ed (whole branch origin/main...HEAD); delta 38ad99916e015932c7615fcc31bb84cfaac99c43 (--since 957d2e8); unreviewed fix 8c1cf48 (delta's two SUBSTANTIVE findings)
 Pre-handoff review: — (not repoman-managed)
 
 ## Scorecards
@@ -16,7 +16,7 @@ Pass 2 [code:delta]: 0B/2S/0C/0R · fixed 4/4 prior (3 fixed, 1 rebutted) · vel
 passes: code 2 (one whole-branch, one delta)
 
 ## Chunks
-- [ ] chunk 1 — mirror/export_mirror.py, the two units, tests/mirror/test_export.py
+- [x] chunk 1 — mirror/export_mirror.py, the two units, tests/mirror/test_export.py (957d2e8, 38ad999, 8c1cf48)
 
 ## Notes
 - Read-only relay probe (allowed by the brief): the plan's query with LIMIT 1 on the feed channel exits 0 and returns one JSON object per line with id/pubkey/sig str, created_at/kind int, tags list, content str. VM: /usr/bin/python3 3.12.3, systemd 255, relayuser in the docker group. No row content recorded.
@@ -26,3 +26,7 @@ passes: code 2 (one whole-branch, one delta)
 - Acceptance one-liner with a synthetic --rows-from fixture: exit 0, four files, feed.json loads.
 - systemd-analyze absent on macOS; units reviewed against the man pages in the landing comment.
 - C2 mismatch: install-mirror.sh (cell-fleet branch 8k6g-c2-...) copies only export_mirror.py to ~/bin; the exporter imports aitools_alerts and reads spec/ and trust/, so it must run from a checkout. See spec "Install layout".
+- Size: code + tests 817 lines (exporter, tests, two units), over the 600-line guideline. decided: kept as one landing; the growth is regression tests the reviews asked for, and code without tests (or the reverse) does not land on its own. Recorded on the issue.
+- Follow-ups: ai-tools-alerts#7mmv (bound per-run verification). Cross-issue comments: jibot-code#8k6g (install layout: checkout at ~/ai-tools-alerts, not ~/bin), ai-tools-alerts#z4hs (retraction target rule).
+- roborev: ai-tools-alerts is not enrolled; post-push check skipped. The behaviour-changing BLOCKER fix had its fresheyes delta before the push.
+- Agency evaluation submitted (score 88, completed).
