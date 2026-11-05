@@ -1,0 +1,275 @@
+"""aitools-alerts: the member CLI.
+
+    aitools-alerts init [--make-key] [--force]
+    aitools-alerts keygen
+    aitools-alerts pull [--mirror-url URL]
+    aitools-alerts check [--json]
+    aitools-alerts notify
+    aitools-alerts plan <advisory-id>
+    aitools-alerts run
+
+Nothing here executes a string from a post. ``plan`` prints commands built
+from fixed templates keyed by the product's ecosystem; it runs none of them.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import sys
+from dataclasses import asdict
+
+from . import TRUST_ROOT_PUBKEY, __version__, check, config, inventory, nostr, notify, pull
+from .state import State, StateError
+
+TRUST_ROOT_ENV = "AITOOLS_ALERTS_TRUST_ROOT"
+EXIT_UNSEEN_CRITICAL = 2
+
+# ecosystem -> argv template for an upgrade; "{fixed}" is products[].fixed,
+# which the schema restricts to digits, dots and a lowercase suffix.
+UPGRADE_TEMPLATES = {
+    "claude-code": ("npm", "install", "-g", "@anthropic-ai/claude-code@{fixed}"),
+    "codex": ("npm", "install", "-g", "@openai/codex@{fixed}"),
+    "gemini-cli": ("npm", "install", "-g", "@google/gemini-cli@{fixed}"),
+}
+
+PAIRING_STEPS = """\
+To post or discuss on the ai-tools Buzz relay (reading alerts needs no account):
+  1. Send the npub above to the ai-tools relay admin and ask to be added.
+  2. In the Buzz app, sign in with the key in {path} (keep that file private;
+     it is your secret key and is never printed).
+  3. Open #security-feed and #security-critical once you are added."""
+
+
+def _err(msg: str) -> None:
+    print(f"aitools-alerts: {msg}", file=sys.stderr)
+
+
+def _root() -> str:
+    env = os.environ.get(TRUST_ROOT_ENV)
+    if env is None:
+        return TRUST_ROOT_PUBKEY
+    if not nostr._is_hex(env, 32):
+        raise SystemExit(f"aitools-alerts: {TRUST_ROOT_ENV} must be 64 lowercase hex characters")
+    _err(f"warning: trust root overridden by {TRUST_ROOT_ENV} (for tests only)")
+    return env
+
+
+def upgrade_command(ecosystem: str, fixed: str | None) -> list[str] | None:
+    t = UPGRADE_TEMPLATES.get(ecosystem)
+    if t is None or not fixed:
+        return None
+    return [a.format(fixed=fixed) for a in t]
+
+
+# ------------------------------------------------------------------ commands
+
+def _make_key() -> int:
+    path = config.key_path()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    sec, pub = nostr.keygen()
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        _err(f"{path} exists; not replacing a key")
+        return 1
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(nostr.nsec(sec) + "\n")
+    print(f"wrote {path} (mode 600)")
+    print(f"npub: {nostr.npub(pub)}")
+    print(PAIRING_STEPS.format(path=path))
+    return 0
+
+
+def cmd_init(a) -> int:
+    path = config.config_path()
+    if path.exists() and not a.force:
+        if not a.make_key:
+            _err(f"{path} exists; use --force to overwrite it")
+            return 1
+        print(f"kept {path}")
+    else:
+        config.write_default(force=a.force)
+        print(f"wrote {path}")
+    return _make_key() if a.make_key else 0
+
+
+def cmd_keygen(a) -> int:
+    a.force = False
+    a.make_key = True
+    return cmd_init(a)
+
+
+def _pull(a, st: State, url: str) -> pull.PullResult:
+    return pull.fetch(url, st, root_pubkey=a.root)
+
+
+def cmd_pull(a, st: State, s: config.Settings) -> int:
+    url = config.check_mirror_url(a.mirror_url) if a.mirror_url else s.mirror_url
+    res = _pull(a, st, url)
+    if res.error:
+        _err(res.error)
+        return 1
+    dropped = ", ".join(f"{k} {v}" for k, v in sorted(res.dropped.items())) or "none"
+    print(f"pulled manifest v{res.manifest.version}: {len(res.new_events)} new events, "
+          f"{len(st.events)} stored, dropped: {dropped}")
+    return 0
+
+
+def _matches(a, st: State) -> tuple[list, list]:
+    """Current threads, and (thread, Match) pairs for this machine. State
+    pulled under another trust root is not used."""
+    if st.manifest is not None and st.manifest_root != a.root:
+        _err("the stored state was pulled under another trust root; run: aitools-alerts pull")
+        return [], []
+    threads = pull.active(pull.advisories(st))
+    ms = check.match([t.adv for t in threads], inventory.collect())
+    by_adv = {id(t.adv): t for t in threads}
+    return threads, [(by_adv[id(m.adv)], m) for m in ms]
+
+
+def _match_json(t, m) -> dict:
+    return {"thread": t.root_id, "id": t.adv.id, "level": t.adv.level, "title": t.adv.title,
+            "posted_by": t.adv.posted_by, "reason": m.reason,
+            "installed": asdict(m.installed), "product": asdict(m.product) if m.product else None,
+            "actions": [asdict(x) for x in m.actions_allowed]}
+
+
+def cmd_check(a, st: State, s: config.Settings) -> int:
+    threads, pairs = _matches(a, st)
+    if a.json:
+        print(json.dumps([_match_json(t, m) for t, m in pairs], indent=2))
+        return 0
+    if not st.last_pull.get("last_ok_at"):
+        print("no successful pull yet; run: aitools-alerts pull")
+    for t, m in pairs:
+        ver = m.installed.version or "unknown version"
+        print(f"{t.adv.level.upper()}: {t.adv.title} [{m.installed.name} {ver}: {m.reason}] "
+              f"(id {t.adv.id}, thread {t.root_id[:12]})")
+    matched = {t.root_id for t, _ in pairs}
+    other = [t for t in threads if t.adv.level == "critical" and t.root_id not in matched]
+    if other:
+        print("Critical advisories not installed here:")
+        for t in other:
+            print(f"  CRITICAL: {t.adv.title} (id {t.adv.id}, thread {t.root_id[:12]})")
+    print(f"{len(threads)} advisories, {len(pairs)} matches on this machine")
+    return 0
+
+
+def _unseen_critical(a, st: State) -> list:
+    _, pairs = _matches(a, st)
+    return [(t, m) for t, m in pairs if t.adv.level == "critical" and t.root_id not in st.seen]
+
+
+def _notify(st: State, s: config.Settings, pending) -> int:
+    if not s.notify:
+        if pending:
+            _err("no notify channel configured")
+        return 1 if pending else 0
+    status = 0
+    done: set[str] = set()
+    for t, m in pending:
+        if t.root_id in done:
+            continue
+        text = notify.format_text(t.adv, m)
+        accepted = False
+        for ch in s.notify:
+            r = notify.send(ch, text, s)
+            print(f"{ch}: {r.detail}")
+            accepted = accepted or r.accepted
+        if accepted:
+            done.add(t.root_id)
+            st.seen.add(t.root_id)
+            st.save_seen()
+        else:
+            status = 1
+    return status
+
+
+def cmd_notify(a, st: State, s: config.Settings) -> int:
+    return _notify(st, s, _unseen_critical(a, st))
+
+
+def cmd_plan(a, st: State, s: config.Settings) -> int:
+    threads, pairs = _matches(a, st)
+    wanted = [t for t in threads if a.advisory_id in (t.root_id, t.adv.id)]
+    if not wanted:
+        _err(f"no current advisory {a.advisory_id!r}")
+        return 1
+    hits = [(t, m) for t, m in pairs if t in wanted]
+    if not hits:
+        print(f"{wanted[0].adv.title}: nothing installed here is affected")
+        return 0
+    cfg = s.check_config()
+    for t, m in hits:
+        p = check.plan(m, cfg)
+        print(f"{t.adv.level.upper()}: {t.adv.title} [{m.installed.name} "
+              f"{m.installed.version or 'unknown version'}] posted by {t.adv.posted_by}")
+        for title, actions in (("auto-apply (opted in)", p.auto_apply),
+                               ("prepare (ask first)", p.prepare)):
+            if not actions:
+                continue
+            print(f"  {title}:")
+            for x in actions:
+                print(f"    {check.describe(x)}")
+                if x.verb == "upgrade" and m.product is not None:
+                    argv = upgrade_command(m.product.ecosystem, x.value)
+                    print(f"      command: {shlex.join(argv)}" if argv else
+                          "      no command template; upgrade with your package manager")
+    print("nothing was executed")
+    return 0
+
+
+def cmd_run(a, st: State, s: config.Settings) -> int:
+    res = _pull(a, st, s.mirror_url)
+    if res.error:
+        _err(f"{res.error} (using the last good state)")
+    a.json = False
+    cmd_check(a, st, s)
+    pending = _unseen_critical(a, st)
+    status = _notify(st, s, pending)
+    return EXIT_UNSEEN_CRITICAL if pending else status
+
+
+# ---------------------------------------------------------------------- main
+
+def _parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="aitools-alerts", description="ai-tools security alerts")
+    ap.add_argument("--version", action="version", version=__version__)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("init", help="write the config; --make-key also makes a Buzz key")
+    p.add_argument("--make-key", action="store_true")
+    p.add_argument("--force", action="store_true", help="overwrite an existing config")
+    sub.add_parser("keygen", help="same as init --make-key")
+    p = sub.add_parser("pull", help="fetch and verify the signed mirror")
+    p.add_argument("--mirror-url")
+    p = sub.add_parser("check", help="match advisories against this machine")
+    p.add_argument("--json", action="store_true")
+    sub.add_parser("notify", help="send unseen critical matches")
+    p = sub.add_parser("plan", help="print the actions and commands for one advisory")
+    p.add_argument("advisory_id")
+    sub.add_parser("run", help="pull, check and notify; exit 2 on an unseen critical")
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    a = _parser().parse_args(argv)
+    try:
+        if a.cmd == "init":
+            return cmd_init(a)
+        if a.cmd == "keygen":
+            return cmd_keygen(a)
+        a.root = _root()
+        s = config.load()
+        st = State.load()
+        return {"pull": cmd_pull, "check": cmd_check, "notify": cmd_notify,
+                "plan": cmd_plan, "run": cmd_run}[a.cmd](a, st, s)
+    except (config.ConfigError, StateError) as e:
+        _err(str(e))
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

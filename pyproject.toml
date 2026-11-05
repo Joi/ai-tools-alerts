@@ -14,11 +14,24 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest"]
 
+[project.scripts]
+aitools-alerts = "aitools_alerts.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/Joi/ai-tools-alerts"
 
 [tool.setuptools]
-packages = ["aitools_alerts", "aitools_alerts.poster"]
+# spec/ and trust/ stay at the repo root and ship inside the package as data,
+# so an installed copy finds them beside the modules (aitools_alerts._data_dir).
+packages = ["aitools_alerts", "aitools_alerts.poster", "aitools_alerts.spec", "aitools_alerts.trust"]
+
+[tool.setuptools.package-dir]
+"aitools_alerts.spec" = "spec"
+"aitools_alerts.trust" = "trust"
+
+[tool.setuptools.package-data]
+"aitools_alerts.spec" = ["*.json"]
+"aitools_alerts.trust" = ["*.json", "*.pub"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
