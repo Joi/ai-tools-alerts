@@ -1,6 +1,6 @@
 # Run: japanese-feed
 Instruction: Task ai-tools-alerts#yxd6 (reader side of the Japanese feed: CLI lang, feed.ja.atom, index 日本語 section, skill lines) per TASK-ai-tools-alerts#yxd6.md in the worktree root. /do-it with the rung floored at medium; security-shaped review on gpt-6-astra. Non-repoman repo: ending is the brief's ff-merge ending.
-Stage: committing
+Stage: done
 Rung: medium (start-floor medium: evaluator BR2 REV1 NOV1 INT1 FC1 = 6, prod-shaped exporter + byte-identical constraint, no hard trigger; Lens: feed.atom byte-identical with default lang; commands and version strings never translated; a lang reply carrying a block is ignored entirely; skill/snippet word-for-word test green; under 400 changed lines)
 Spec: docs/superpowers/specs/2026-11-06-japanese-feed-design.md   Plan: docs/superpowers/plans/2026-11-06-japanese-feed.md
 Agency project: —
@@ -26,3 +26,5 @@ Pass 2 [code:delta]: 1B/2S/0C/0R · fixed 1/1 prior · velocity ↓ (1→3, esca
 - Execution inline (no Agency project); chunk 1 and the skill lines were written while the spec+plan review ran, as earlier runs did.
 - hgs0 not yet on origin/main at build time: chunks rebased onto its local branch head e6594cf; rebase again onto whatever lands.
 - Prior work: docs/superpowers/specs/2026-11-05-mirror-exporter-design.md (atom_doc, retraction rule), 2026-11-05-pull-state-notify-cli-design.md (thread rules).
+- Landed: fast-forward of main to 5eb433e (pushed). roborev: repo not enrolled, post-push check skipped; the behaviour-changing fixes had their fresheyes delta before the push.
+- Tests on the landed head: 919 passed.
