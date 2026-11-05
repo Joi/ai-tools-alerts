@@ -20,6 +20,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+from aitools_alerts.schema import Source  # re-exported: candidates.Source is schema.Source
+
 KEV_CATALOG_URL = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
 
 # Generic fleet names, already public in the fleet's open repos. Each adapter adds
@@ -56,12 +58,6 @@ _PRIVATE = re.compile(
 _INTERNAL_SUFFIXES = (".local", ".internal", ".lan", ".home.arpa", ".ts.net", ".vm.example", ".localhost")
 _PRIVATE_URL_PATH = re.compile(r"/(?:Users|home)/|~/")
 HINTS = frozenset({"critical", "high", "medium", "low", "none", "not_affected", "out_of_scope"})
-
-
-@dataclass(frozen=True)
-class Source:
-    url: str
-    published_at: str | None = None
 
 
 @dataclass(frozen=True)
