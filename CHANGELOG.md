@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2 — 2026-11-06
+
+README: a "Who this is for" section separates the ai-tools community (the Buzz channels) from everyone else (the public mirror, the feeds and the CLI, no account). No code change. Tagged `v0.1.2`, signed.
+
 ## 0.1.1 — 2026-11-06
 
 First signed release, tagged `v0.1.1`. Install it with

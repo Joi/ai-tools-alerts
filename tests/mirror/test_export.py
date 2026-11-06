@@ -582,8 +582,9 @@ def test_release_signer_file_matches_mirror_and_readme():
     assert em.RELEASE_SIGNER_FP == "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
     readme = (ROOT / "README.md").read_text()
     assert "### Verify the release" in readme and em.RELEASE_SIGNER_FP in readme
-    assert "git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.1" in readme
-    assert "git checkout --detach 'refs/tags/v0.1.1^{commit}' && pipx install --force ." in readme
+    tag = "v" + aitools_alerts.__version__  # the README verifies and installs the current release
+    assert f"git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v {tag}" in readme
+    assert f"git checkout --detach 'refs/tags/{tag}^{{commit}}' && pipx install --force ." in readme
 
 
 def test_index_escapes_post_text(env):
