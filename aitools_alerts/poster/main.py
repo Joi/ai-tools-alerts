@@ -242,7 +242,7 @@ class Run:
 
     # ------------------------------------------------------------ curator translation
 
-    def curator_events(self, fetch=None, root=TRUST_ROOT_PUBKEY, done=()):
+    def curator_events(self, fetch=None, root=TRUST_ROOT_PUBKEY, done=(), start=None):
         """(event, root id, of, channel) for each curator root or amendment in the mirror,
         oldest first, from after the backfill floor. None when the mirror cannot be read."""
         try:
@@ -256,10 +256,13 @@ class Run:
         names = {self.channels[c]: c for c in ("feed", "critical")}  # the journal takes no other channel
         self.mirror_ids, out = set(evs), []
         # What the bot has already translated, (thread root, of), so a lost translate file never reposts.
-        posted = {(pull._thread_ref(e), (pull.parse_translation(e["content"]) or ("", None))[1])
-                  for e in evs.values() if manifest.role_of(m, e["pubkey"]) == "relay-bot"
-                  and pull._first_line(e["content"]).startswith("lang:")}
+        posted = {(pull._thread_ref(e), tr[1]) for e in evs.values()
+                  if manifest.role_of(m, e["pubkey"]) == "relay-bot"
+                  and (tr := pull.parse_translation(e["content"])) is not None and tr[0] == "ja"}
+        replays, start = 0, time.monotonic() if start is None else start
         for ev in sorted(evs.values(), key=lambda e: (e["created_at"], e["id"])):
+            if replays >= 2 * translate.DAILY_CALLS or time.monotonic() - start > PASS_DEADLINE:
+                break  # more cannot be translated today anyway; the lock is never held long
             h = [t[1] for t in ev["tags"] if len(t) >= 2 and t[0] == "h"]
             if (manifest.role_of(m, ev["pubkey"]) != "curator" or ev["created_at"] < self.state["since"]
                     or len(h) != 1 or h[0] not in names):
@@ -272,13 +275,13 @@ class Run:
             elif ref in evs and (pull._first_line(ev["content"]) in _LEVEL_LINE or pull._patch(ev["content"]) is not None):
                 # An amendment's text says what changed, then the whole advisory as amended
                 # (readers show the root's translation and every change's, in order).
-                upto = (ev["created_at"], ev["id"])
+                upto, replays = (ev["created_at"], ev["id"]), replays + 1
                 t = next((t for t in pull.threads_from([e for e in evs.values()
                                                         if (e["created_at"], e["id"]) <= upto], m)
                           if t.root_id == ref and not t.retracted), None)
                 if t is not None:
                     out.append((ev, ref, ev["id"], names[h[0]], t.adv))
-            if len(out) >= 2 * translate.DAILY_CALLS:  # more cannot be translated today anyway
+            if len(out) >= 2 * translate.DAILY_CALLS:
                 break
         return out
 
@@ -303,11 +306,18 @@ class Run:
         if tr["hold"] is not None:
             return "held"
         start = time.monotonic()  # the pass deadline covers the mirror and the replay too
-        evs = self.curator_events(fetch, root, {k for k, v in tr["done"].items() if v in ("ok", "untranslated")})
+        evs = self.curator_events(fetch, root, {k for k, v in tr["done"].items() if v in ("ok", "untranslated")}, start)
         if evs is None:
             return "mirror-error"
         today, memo = _utc_date(self.now), {}
         tr["done"] = {k: v for k, v in tr["done"].items() if k in self.mirror_ids}  # bounded by the mirror
+        journaled = {o["key"] for o in self.state["outbox"]}
+        recovered = [e for e in evs if f"curator:{e[0]['id']}:{e[3]}:ja" in journaled]
+        for e in recovered:  # journaled by a run that stopped before recording it: record it
+            tr["done"][e[0]["id"]] = "ok"  # now, before any early return lets drain_ja drop the item
+        if recovered:
+            inputs.write_json(path, tr)
+        evs = [e for e in evs if e not in recovered]
         if call is None:  # the key is read once, only when there is something to translate
             if not evs or (tr["day"] == _utc_date(self.now) and tr["calls"] >= translate.DAILY_CALLS):
                 return "ok"
@@ -318,18 +328,15 @@ class Run:
                 return "key-error"
         if tr["day"] != today:
             tr.update(day=today, calls=0)
-        journaled = {o["key"] for o in self.state["outbox"]}
         for ev, target, of, channel, adv in evs:
             key = f"curator:{ev['id']}:{channel}:ja"
             if tr["done"].get(ev["id"]) in ("ok", "untranslated"):
                 continue
-            if key in journaled:  # journaled by a run that stopped before recording it
-                tr["done"][ev["id"]] = "ok"
-                inputs.write_json(path, tr)  # before drain_ja can send it and drop the journal item
-                continue
             text = ev["content"].split("\n```" + schema.INFO_STRING)[0].strip()
             if adv is not None:
                 text += "\n\n" + _advisory_text(adv)
+            if len(text) > translate.MAX_SOURCE:
+                memo[text] = None  # untranslated without a call, never charged to the budget
             if text not in memo:
                 if tr["calls"] >= translate.DAILY_CALLS or time.monotonic() - start > PASS_DEADLINE:
                     break

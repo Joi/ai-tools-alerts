@@ -47,6 +47,12 @@ def test_translate_keeps_tokens_or_returns_none():
     for src, out in (("Fixed in 2.1.", "2.10 で修正"), ("CRITICAL: 3 packages", "重大: 13 パッケージ")):
         assert translate.translate(src, call=Call(lambda t: out)) is None
     assert translate.translate("x" * 6001, call=Call(lambda t: pytest.fail("called"))) is None
+    ja = "重大: 試験\n影響: Claude Code <99.0.0。99.0.0で修正。\n出典: https://example.invalid/advisory"
+    assert translate.translate(SRC, call=Call(lambda t: ja)) == ja  # Japanese next to a token is a boundary
+    import time
+    t0 = time.monotonic()
+    translate.tokens("1" + "a" * 5000 + "_")  # no exponential backtracking
+    assert time.monotonic() - t0 < 1
 
 
 class Resp(io.BytesIO):
@@ -281,3 +287,25 @@ def test_a_translation_already_in_the_mirror_is_not_posted_again(cur):
     cur.mirror.post(cur.mirror.cur_sec, schema.render_post(advisory(), SRC), tags=[("h", "f" * 36)])  # no channel
     code, summary, ssh = cur.trun(Call(lambda t: pytest.fail("translated again")))
     assert code == 0 and ssh.ja == []
+
+
+def test_recovery_needs_no_key_and_other_languages_do_not_count(cur):
+    r = root(cur.mirror)
+    cur.trun(Call(), ssh=FakeSSH(ja=["fail"]))  # journaled, its send failed: waits in the journal
+    tr = json.loads(cur.config.translate_state.read_text())
+    tr["done"].pop(r["id"])
+    cur.config.translate_state.write_text(json.dumps(tr))
+
+    def no_key(helper):
+        raise translate.CallError("api key unavailable")
+    code, _, ssh = cur.run(mirror_fetch=cur.mirror.fetch, root=cur.mirror.root, read_key=no_key)
+    assert code == 0 and len(ssh.ja) == 1  # sent, and recorded before it was sent
+    assert json.loads(cur.config.translate_state.read_text())["done"][r["id"]] == "ok"
+    r2 = root(cur.mirror, title="Second", at=T0 + 500)
+    cur.mirror.post(cur.mirror.bot_sec, "lang: fr\n\nTraduit", created_at=T0 + 600, tags=[h(), ("e", r2["id"], "", "root")])
+    big = cur.mirror.post(cur.mirror.cur_sec, schema.render_post(advisory(title="Big"), SRC + "\n" + "x" * 7000),
+                          created_at=T0 + 700, tags=[h()])
+    call = Call()
+    code, summary, _ = cur.trun(call)
+    assert len(call.texts) == 1 and " untranslated=1 " in summary  # French is not Japanese; big: no call
+    assert json.loads(cur.config.translate_state.read_text())["calls"] == 2 and big

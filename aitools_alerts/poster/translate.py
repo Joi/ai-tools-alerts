@@ -44,10 +44,13 @@ Rules:
 - Never add, drop, explain, summarize or soften anything. Never add advice that is not in the text.
 - Translate the level words: CRITICAL as 重大, HIGH as 高, NOTICE as 注意."""
 
-_URL = re.compile(r"https?://[^\s<>\"'`]+")
-_ID = re.compile(r"\b(?:CVE-\d{4}-\d{4,}|GHSA(?:-[0-9a-z]{4}){3}|[0-9a-f]{64}|[A-Z][A-Z0-9]+-\d[\w.-]*)\b")
-# Whole versions as schema accepts them (2.1.0, 9.9p1, 1.0rc1, 22, v2.0.1-rc1), never a prefix.
-_VERSION = re.compile(r"(?<![\w.-])v?\d+(?:\.\d+)*(?:[a-z]+\d*)*(?:[-+][0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?(?![\w]|\.\d)")
+# ASCII only: a Japanese character next to a token ("2.1で修正") is a boundary, never part of it.
+_URL = re.compile(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&()*+,;=%]+")
+_ID = re.compile(r"\b(?:CVE-\d{4}-\d{4,}|GHSA(?:-[0-9a-z]{4}){3}|[0-9a-f]{64}|[A-Z][A-Z0-9]+-\d[\w.-]*)\b", re.ASCII)
+# Whole versions as schema accepts them (2.1.0, 9.9p1, 1.0rc1a, 22, v2.0.1-rc1), never a prefix.
+# One unambiguous suffix run, so no input backtracks exponentially.
+_VERSION = re.compile(r"(?<![\w.-])v?\d+(?:\.\d+)*(?:[a-z][a-z0-9]*)?(?:[-+][0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?(?!\w|\.\d)",
+                      re.ASCII)
 
 # Removed from the helper's environment: a stale copy of the key (get_secret falls back
 # to it) and bash startup/trace hooks that would run code or trace inside the process.
