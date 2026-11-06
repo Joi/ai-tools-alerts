@@ -380,46 +380,45 @@ _DIGEST = {
 
 def _single(a: schema.Advisory, t=_DIGEST["en"]) -> str:
     fixed = t["fixed"](a.products[0].fixed) if a.products[0].fixed else t["nofix"]
-    mark = f"({SYNTHETIC}) " if is_synthetic(a.id) and not a.title.startswith(SYNTHETIC + ": ") else ""
-    return f"- {mark}{t['title'](a)}; {fixed}{t['end']} {_primary(a.sources)}"
+    return f"- {t['title'](a)}; {fixed}{t['end']} {_primary(a.sources)}"
 
 
 def _group_key(a: schema.Advisory):
     """Advisories that share one digest line, or None for a line of its own. A
     critical is always its own line; so is any title but the plain kind, so a shared
     catalog URL (every KEV entry) never reads as one release and "unverified" stays."""
-    name, syn = a.products[0].name, is_synthetic(a.id)
-    plain = f"{name}: security advisory ({a.id})"  # schema.validate marks a reserved id's title
-    if a.level == "critical" or a.title not in (plain, f"{SYNTHETIC}: {plain}"):
+    name = a.products[0].name
+    if a.level == "critical" or a.title != f"{name}: security advisory ({a.id})":
         return None
     if a.id.startswith("LEAD-"):  # "unrated": a lead rated above notice keeps its own line
-        return ("lead", name, syn) if a.level == "notice" else None
+        return ("lead", name) if a.level == "notice" else None
     if a.id.startswith("CVE-"):
-        return ("release", name, syn, _primary(a.sources))
+        return ("release", name, _primary(a.sources))
     return None
 
 
 def _group_line(key, members, t=_DIGEST["en"]) -> str:
-    mark = f"{SYNTHETIC}: " if key[2] else ""
     if key[0] == "lead":
-        return f"- {mark}{key[1]}: {t['leads'](len(members))}"
-    url = key[3]
+        return f"- {key[1]}: {t['leads'](len(members))}"
+    url = key[2]
     seg = next((p for p in reversed(urlsplit(url).path.split("/")) if p), "")
     label = t["release"](seg) if _LABEL.fullmatch(seg) else t["one"]
     fixes = {a.products[0].fixed for a in members}
     fix = t["fixed"](fixes.pop()) if len(fixes) == 1 and None not in fixes \
         else t["update"] if schema.is_primary(url) else t["see"]
-    return f"- {mark}{key[1]}: {label}, {t['cves'](len(members))}; {fix}{t['end']} {url}"
+    return f"- {key[1]}: {label}, {t['cves'](len(members))}; {fix}{t['end']} {url}"
 
 
-def digest(advs_today, date, lang: str = "en") -> str:
+def digest(advs_today, date, lang: str = "en", *, retracted=(), now: int | None = None) -> str:
     """The daily digest: every advisory once per id and product (latest posted_at
     wins), critical first. Within high and notice, plain CVE advisories sharing a
     primary source URL and product are one line (a vendor release), and leads are one
     line per scope; N counts lines. An item that fails the publication guard is
     withheld and counted, never the whole digest. The ledger and --json keep every
     advisory: this grouping is presentation only. ``lang="ja"``: the same digest from
-    the Japanese templates."""
+    the Japanese templates. Left out, and not counted: a synthetic id, an advisory
+    whose id or alias is in ``retracted`` (case-folded) and, given ``now``, one whose
+    latest version expired before it (``pull.active``'s rule)."""
     t = _DIGEST[lang]
     latest: dict[tuple, schema.Advisory] = {}
     for adv in advs_today:
@@ -428,6 +427,10 @@ def digest(advs_today, date, lang: str = "en") -> str:
         key = (adv.id, adv.products[0].name)
         if key not in latest or adv.posted_at >= latest[key].posted_at:
             latest[key] = adv
+    gone = {i.casefold() for i in retracted}
+    latest = {k: a for k, a in latest.items() if not (
+        is_synthetic(a.id) or not gone.isdisjoint(i.casefold() for i in (a.id, *a.aliases))
+        or (now is not None and a.expires_at is not None and a.expires_at < now))}
     day = date.isoformat() if hasattr(date, "isoformat") else str(date)
     if not latest:
         return t["empty"](day)

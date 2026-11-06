@@ -553,7 +553,24 @@ class Run:
                       for ch in entry.channel_ids]
         return items
 
-    def digest(self):
+    def _withdrawn(self, root, fetch=None) -> tuple[set, set]:
+        """(case-folded advisory ids, root event ids) withdrawn under ``root`` as of a
+        mirror pull made now: the manifest's retracted list, and every thread that is
+        retracted or (as amended) expired. Raises when the pull fails."""
+        st = State.load(self.config.mirror_dir)
+        res = translate.bounded(lambda: pull.fetch(self.config.translate_mirror_url, st, fetch=fetch,
+                                                   root_pubkey=root, now=self.now), 120)
+        if res.error is not None:
+            raise ValueError(f"mirror pull: {res.error}")
+        m = st.accepted(root)
+        ids, roots = {i.casefold() for i in m.retracted}, set()
+        for t in pull.threads_from(list(st.events_for(root).values()), m):
+            if t.retracted or (t.adv.expires_at is not None and t.adv.expires_at < self.now):
+                roots.add(t.root_id)
+                ids |= {i.casefold() for i in (t.adv.id, *t.adv.aliases)}
+        return ids, roots
+
+    def digest(self, root=TRUST_ROOT_PUBKEY, fetch=None):
         local = _dt.datetime.fromtimestamp(self.now, TOKYO)
         today = local.date().isoformat()
         if self.state["digest_date"] == today:
@@ -566,6 +583,11 @@ class Run:
             if self.digest_now:
                 _say("a digest is journaled and waits to send; --digest-now does nothing")
             return  # today's (or an earlier) digest is journaled and drains first
+        try:  # a withdrawn advisory is never announced again: no pull, no digest this run
+            gone, gone_roots = self._withdrawn(root, fetch)
+        except (translate.CallError, OSError, ValueError) as e:  # StateError is a ValueError
+            _say(f"digest held: {e}")
+            return
         # Ledger posts oldest change first (so a backlog larger than one post moves forward
         # day by day), then held notices loudest first: (advisory, held entry, last_change).
         posted = [h for h in self.state["held"]  # a notice that has since posted is listed once, as posted
@@ -576,9 +598,13 @@ class Run:
             if e.last_change == at and e.root_event_id in done:
                 continue  # listed by the last digest
             try:
-                led_items.append((schema.validate(e.advisory), None, (e.last_change, e.root_event_id)))
+                adv = schema.validate(e.advisory)
             except ValueError:
                 self.n["withheld"] += 1
+                continue
+            if not gone_roots.isdisjoint({e.root_event_id, *e.channel_ids.values()}):
+                gone |= {i.casefold() for i in (adv.id, *adv.aliases, *e.aliases)}  # its thread, retracted
+            led_items.append((adv, None, (e.last_change, e.root_event_id)))
         for h in self.state["held"]:
             if h not in posted:
                 try:
@@ -591,7 +617,7 @@ class Run:
         keep = len(items)
         while True:  # the largest prefix that fits one post; the rest waits for tomorrow
             try:
-                text = compose.digest([x[0] for x in items[:keep]], local.date())
+                text = compose.digest([x[0] for x in items[:keep]], local.date(), retracted=gone, now=self.now)
             except ValueError:
                 self.n["withheld"] += 1
                 return
@@ -610,7 +636,7 @@ class Run:
         snap = {"held": sorted({k for _, h, _ in taken if h is not None
                                 for k in self._notice_keys(h["scope"], h["adv"])}),
                 "cutoff": cutoff, "roots": roots}
-        ja = self._ja(compose.digest, [x[0] for x in taken], local.date(), lang="ja")
+        ja = self._ja(compose.digest, [x[0] for x in taken], local.date(), lang="ja", retracted=gone, now=self.now)
         self.enqueue([self._item("digest", None, [f"digest:{today}"], "feed", text,
                                  key_id=today, adv=snap, date=today, ja=ja)])
 
@@ -783,7 +809,7 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
                 for i, (c, scope) in enumerate(merged):
                     r.one(c, scope)
                     merged[i] = None  # planned (or deferred by one() itself)
-                r.digest()
+                r.digest(root=translate_kw.get("root", TRUST_ROOT_PUBKEY), fetch=mirror_fetch)
                 state.update(marks)  # every send of this run succeeded; busy work is deferred
                 english_ok = True
             except (_Stop, LedgerError) as e:

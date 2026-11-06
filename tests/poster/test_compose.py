@@ -236,11 +236,9 @@ def test_synthetic_root_marks_the_block_title():
 def test_synthetic_digest_and_reply_keep_one_mark():
     c = cand(id="CVE-2099-0010", aliases=())
     _, adv = root(c)
-    (line,) = [ln for ln in compose.digest([adv], "2026-11-05").split("\n") if "2099" in ln]
-    assert line.startswith("- SYNTHETIC TEST: Claude Code") and line.count("SYNTHETIC") == 1
     legacy = dataclasses.replace(adv, title="Claude Code: injection to code execution (CVE-2099-0010)")
-    (line,) = [ln for ln in compose.digest([legacy], "2026-11-05").split("\n") if "2099" in ln]
-    assert line.startswith("- (SYNTHETIC TEST) Claude Code")
+    for a in (adv, legacy):  # a synthetic test never reaches a digest, marked or not
+        assert compose.digest([a], "2026-11-05") == "Daily digest for 2026-11-05: no advisories."
     assert adv.title in compose._titles("Claude Code", adv.id)
     assert legacy.title not in compose._titles("Claude Code", adv.id)
     assert compose.reply_post(adv, c, {"level": "high"}).count("SYNTHETIC") == 0  # block: changed fields
@@ -253,7 +251,7 @@ USN = "https://distro.example.com/security/notices/USN-8928-1"
 KEV = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
 
 
-def _plain(i, product, url, level="notice", fixed=None, prefix="CVE-2099-", **kw):
+def _plain(i, product, url, level="notice", fixed=None, prefix="CVE-2098-", **kw):
     c = cand(id=f"{prefix}{i:04d}", aliases=(), product_text=product, injection_exec=False,
              fixed=fixed, affected=None, sources=(Source(url, None),), **kw)
     return compose.root_post(c, (level, level), scope(c), posted_at=NOW + i)[1]
@@ -269,10 +267,10 @@ def test_digest_groups_releases_and_leads():
     lines = out.split("\n")
     assert lines[0] == "Daily digest for 2026-11-06: 4 advisories."
     assert "Critical (1)" in lines and "Notice (3)" in lines
-    assert f"- SYNTHETIC TEST: macOS: release 149521, 44 CVEs; see the release. {REL}" in lines
-    assert f"- SYNTHETIC TEST: Linux kernel: release USN-8928-1, 9 CVEs; see the release. {USN}" in lines
+    assert f"- macOS: release 149521, 44 CVEs; see the release. {REL}" in lines
+    assert f"- Linux kernel: release USN-8928-1, 9 CVEs; see the release. {USN}" in lines
     assert "- Chrome: 12 unrated leads." in lines  # a LEAD id is never a reserved one
-    assert out.count("CVE-2099-0300") == 1 and "CVE-2099-0001" not in out
+    assert out.count("CVE-2098-0300") == 1 and "CVE-2098-0001" not in out
     # An allowlisted vendor URL says an update exists; one fixed version is named.
     with pytest.MonkeyPatch.context() as m:
         m.setattr(schema, "is_primary", lambda url, domains=None: url == REL)
@@ -283,10 +281,10 @@ def test_digest_groups_releases_and_leads():
 
 def test_digest_groups_keep_marks_and_kinds_apart():
     real = [_plain(i, "macOS", REL, prefix="CVE-2026-") for i in (1, 2)]
-    syn = [_plain(i, "macOS", REL) for i in (3, 4)]
+    syn = [_plain(i, "macOS", REL, prefix="CVE-2099-") for i in (3, 4)]
     out = compose.digest(real + syn, "2026-11-06")
     assert f"- macOS: release 149521, 2 CVEs; see the release. {REL}" in out.split("\n")
-    assert "SYNTHETIC TEST: macOS: release 149521, 2 CVEs" in out and "2 advisories" in out
+    assert "SYNTHETIC" not in out and "1 advisory." in out
     # A shared catalog URL is not a release, and unverified titles keep their mark.
     kev = [_plain(i, "macOS", KEV, level="high", exploited=True, prefix="CVE-2026-") for i in (5, 6)]
     c = cand(id="CVE-2026-0007", aliases=(), product_text="macOS", injection_exec=False,
@@ -311,7 +309,7 @@ def test_digest_groups_keep_marks_and_kinds_apart():
                                title=f"host-alpha: security advisory ({a.id})") for a in real]
     with pytest.MonkeyPatch.context() as m:
         m.setattr(socket, "gethostname", lambda: "host-alpha")
-        out = compose.digest(bad + syn, "2026-11-06")
+        out = compose.digest(bad + [_plain(i, "Ubuntu linux kernel", USN) for i in (3, 4)], "2026-11-06")
     assert "1 item withheld" in out and "host-alpha" not in out and "2 CVEs" in out
 
 
@@ -387,9 +385,28 @@ def test_digest_ja_scaffold_and_groups():
     assert len(en.split("\n")) == len(ja.split("\n"))
     lines = ja.split("\n")
     assert lines[0] == "2026-11-06 のデイリーダイジェスト: 2 件。" and "注意 (2)" in lines
-    assert f"- SYNTHETIC TEST: macOS: リリース 149521, CVE 3 件; リリースを参照。 {REL}" in lines
-    assert (f"- SYNTHETIC TEST: Chrome: セキュリティアドバイザリ (CVE-2099-0009); 修正版はまだありません。 {BLOG}"
-            in lines)
+    assert f"- macOS: リリース 149521, CVE 3 件; リリースを参照。 {REL}" in lines
+    assert f"- Chrome: セキュリティアドバイザリ (CVE-2098-0009); 修正版はまだありません。 {BLOG}" in lines
+
+
+def test_digest_leaves_out_retracted_expired_and_synthetic():
+    """ai-tools-alerts#d3f6: a retracted, expired or synthetic root is never announced again."""
+    _, crit = root(cand(id="CVE-2026-0001", aliases=()))
+    def adv(n, **kw):
+        return dataclasses.replace(crit, id=f"CVE-2026-{n}", title=f"Claude Code: x (CVE-2026-{n})", **kw)
+    retr = adv("0002", aliases=["GHSA-aaaa-bbbb-cccc"])
+    gone, edge = adv("0003", expires_at=NOW + 9), adv("0004", expires_at=NOW + 10)  # expiring now is active
+    _, syn = root(cand(id="CVE-2099-0010", aliases=()))
+    cleared = dataclasses.replace(gone, posted_at=NOW + 1, expires_at=None)  # the latest version wins
+    advs, kw = [crit, retr, gone, edge, syn], dict(retracted=["ghsa-AAAA-bbbb-cccc"], now=NOW + 10)
+    for lang, head, empty in (("en", "Daily digest for 2026-11-05: 2 advisories.", "no advisories"),
+                              ("ja", "2026-11-05 のデイリーダイジェスト: 2 件。", "アドバイザリはありません")):
+        out = compose.digest(advs, "2026-11-05", lang=lang, **kw)
+        assert out.split("\n")[0] == head and "(2)" in out
+        assert "0001" in out and "0004" in out and not any(i in out for i in ("0002", "0003", "2099"))
+        assert "0003" in compose.digest(advs + [cleared], "2026-11-05", lang=lang, **kw)
+        assert "0003" in compose.digest(advs, "2026-11-05", lang=lang)  # no now: expiry not judged
+        assert empty in compose.digest([retr, gone, syn], "2026-11-05", lang=lang, **kw)
 
 
 def test_lang_reply_header_and_refusals():

@@ -11,6 +11,7 @@ import pytest
 from pathlib import Path
 
 from aitools_alerts.poster import inputs, main
+from mirror_helpers import Mirror, advisory
 from aitools_alerts.poster.ledger import Ledger, LedgerError
 
 CHANNELS = {"feed": "599adb9f-4f9f-4b19-aee3-66667c3293e8",
@@ -95,7 +96,7 @@ def env(tmp_path):
         config = inputs.Config(heartbeat_runs=tmp_path / "heartbeat", collector_runs=tmp_path / "collector",
                                ledger=tmp_path / "state" / "ledger.json",
                                kev_cache=tmp_path / "state" / "kev.json", **RELAY)
-        kev = FakeKEV()
+        kev, mirror = FakeKEV(), Mirror()  # the digest pulls the mirror first (ai-tools-alerts#d3f6)
         _n = itertools.count()
 
         def collector(self, findings, validate="ok", name=None):
@@ -113,6 +114,7 @@ def env(tmp_path):
 
         def run(self, now=T0, ssh=None, kev=None, **kw):
             ssh = ssh if ssh is not None else FakeSSH()
+            kw = {"mirror_fetch": self.mirror.fetch, "root": self.mirror.root, **kw}
             code, summary = main.run(now, self.config, ssh=ssh, kev_fetch=kev or self.kev,
                                      http_status=lambda url, timeout: 200, channels=CHANNELS, **kw)
             return code, summary, ssh
@@ -949,13 +951,12 @@ def test_synthetic_fixture_says_so():
     assert [v["cveID"] for v in c["vulnerabilities"]] == ["CVE-2099-0010"]
 
 
-def test_synthetic_advisory_is_marked_in_the_digest(env):
+def test_synthetic_advisory_is_left_out_of_the_digest(env):
     catalog = inputs.read_kev_file(SYNTHETIC)
     code, summary, ssh = env.run(kev_catalog=catalog, digest_now=True)  # the same run digests it
     assert code == 0 and "digest=1" in summary
     (body,) = [c[2] for c in ssh.calls if c[2].startswith("Daily digest")]
-    (line,) = [ln for ln in body.splitlines() if "CVE-2099-0010" in ln]
-    assert line.startswith("- SYNTHETIC TEST: Claude Code") and line.count("SYNTHETIC") == 1
+    assert body == "Daily digest for 2026-11-05: no advisories."  # ai-tools-alerts#d3f6
     env.kev.catalog = {"vulnerabilities": [kev_item(cve="CVE-2099-0003")]}  # any input: the id decides
     _, _, ssh = env.run(now=at(6, 6))
     assert ssh.calls and all(c[2].startswith("CRITICAL (SYNTHETIC TEST)") for c in ssh.calls)
@@ -1223,3 +1224,41 @@ def test_empty_strip_hosts_warns(env, capsys):
     env.config = replace(env.config, strip_hosts=("hostalpha",))
     env.run(now=T0 + 3600)
     assert "strip_hosts" not in capsys.readouterr().err
+
+
+# ------------------------------------------- digest exclusions (ai-tools-alerts#d3f6)
+
+def test_digest_leaves_out_withdrawn_ledger_posts(env, monkeypatch):
+    env.collector([finding()])
+    env.run()  # a high root, digested at 09:00
+    env.mirror.publish_manifest(retracted=["ghsa-ABCD-efgh-ijkl"])
+    _, _, ssh = env.run(now=at(5, 9))
+    assert [c[2] for c in ssh.calls] == ["Daily digest for 2026-11-05: no advisories."]
+    m = env.mirror  # a curator thread, retracted by a reply or expired by its amendment
+    r = m.root_post(m.cur_sec, advisory(aliases=["CVE-2026-7777"]))
+    m.reply(m.cur_sec, r, "retract\nwrong")
+    old = m.root_post(m.cur_sec, advisory(id="AITA-TEST-0002", posted_at=T0 - 9, expires_at=T0 - 1))
+    with main.Ledger(env.config.ledger) as led:
+        ids, roots = main.Run(T0, env.config, led, inputs.load_state(env.config.state, T0, 3),
+                              CHANNELS, FakeSSH(), None)._withdrawn(m.root, m.fetch)
+    assert roots == {r["id"], old["id"]}
+    assert ids == {"ghsa-abcd-efgh-ijkl", "aita-test-0001", "aita-test-0002", "cve-2026-7777"}
+    env.collector([finding(fid="GHSA-mnop-qrst-uvwx", sources=(GHSA2,))])
+    env.run(now=at(6, 6))
+    e = next(e for e in env.ledger()[0] if e["aliases"][0] == "GHSA-mnop-qrst-uvwx")
+    monkeypatch.setattr(main.Run, "_withdrawn", lambda self, root, fetch: (set(), {e["channel_ids"]["feed"]}))
+    _, _, ssh = env.run(now=at(6, 9))  # the poster's own root, by its thread
+    assert [c[2] for c in ssh.calls] == ["Daily digest for 2026-11-06: no advisories."]
+
+
+def test_failed_mirror_pull_holds_the_digest(env, capsys):
+    env.collector([finding()])
+    env.run()
+
+    def down(url):
+        raise OSError("down")
+    code, _, ssh = env.run(now=at(5, 9), mirror_fetch=down)
+    assert code == 0 and ssh.calls == [] and env.state()["digest_date"] != "2026-11-05"
+    assert "digest held: mirror pull: unreachable" in capsys.readouterr().err
+    _, _, ssh = env.run(now=at(5, 10))
+    assert "GHSA-abcd-efgh-ijkl" in ssh.calls[0][2]
