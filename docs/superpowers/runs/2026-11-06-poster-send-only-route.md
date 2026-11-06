@@ -1,6 +1,6 @@
 # Run: poster-send-only-route
 Instruction: Dispatch of ai-tools-alerts#w75s in mode do-it, starting rung floored at medium; brief TASK-ai-tools-alerts#w75s.md in the worktree root: repo side only, nothing live — ops/vm/aitools-poster-shell (the login-shell guard exactly as installed, from c:pj71er), ops/vm/sudoers-aitools-poster and ops/vm/sshd-match-aitools-poster.conf as reference files with generic user names, an ops/vm/README.md section (install steps, poster-side ssh alias, test list including the `ssh -F /dev/null` lesson), a note in ops/vm/buzz-send that under sudo HOME is the target user's, tests/test_poster_shell.py against a fake wrapper; no fleet names, no addresses; under 300 changed lines.
-Stage: committing
+Stage: done
 Rung: medium (start-floor medium: prod-shaped, BR1 REV0 NOV1 INT1 FC1 = 4; no hard trigger)
 Lens: the login-shell guard exactly as installed (byte for byte the c:pj71er text); repo side only, nothing live; no fleet names, no addresses; under 300 changed lines
 Spec: docs/superpowers/specs/2026-11-06-poster-send-only-route-design.md   Plan: docs/superpowers/plans/2026-11-06-poster-send-only-route.md
@@ -37,3 +37,5 @@ Pass 2 [code:delta, --since a8dd8a32d46f547496ad1dcdb950337996e8f191 at c768d20d
 ## Notes
 - Agency: not used, as on the earlier runs of this build (a5hk, h6bx manifests: Agency project —); one chunk of six files, built directly.
 - The superseded `ops/vm/buzz-send-guard` exists only on origin branch `w75s-guard` (commit 4cc38da), never on main; this branch does not carry it.
+- Rebased onto origin/main 02a84f0 (fzr2) after the reviews: the reviewed shas a8dd8a3 and c768d20 became e8ef0a7 and 18d28e2; one README conflict (fzr2's "The exporter copy" section and this run's section, both kept in that order). Gate on the rebased head: public scan clean, 1012 passed, 1 failed (rvw5, pre-existing).
+- Tests need bash 4+; Homebrew bash 5.3 installed on this host (decided comment on w75s).
