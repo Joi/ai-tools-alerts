@@ -69,7 +69,7 @@ def _make_guard(tmp_path, bash):
 
     def run(*args, stdin=b"hello"):
         return subprocess.run([bash, str(copy), *args], input=stdin, env=env,
-                              capture_output=True, timeout=30)
+                              cwd=tmp_path, capture_output=True, timeout=30)
 
     run.fake = fake
     run.wrapper = wrapper

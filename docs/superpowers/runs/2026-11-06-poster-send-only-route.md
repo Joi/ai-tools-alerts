@@ -1,12 +1,12 @@
 # Run: poster-send-only-route
 Instruction: Dispatch of ai-tools-alerts#w75s in mode do-it, starting rung floored at medium; brief TASK-ai-tools-alerts#w75s.md in the worktree root: repo side only, nothing live — ops/vm/aitools-poster-shell (the login-shell guard exactly as installed, from c:pj71er), ops/vm/sudoers-aitools-poster and ops/vm/sshd-match-aitools-poster.conf as reference files with generic user names, an ops/vm/README.md section (install steps, poster-side ssh alias, test list including the `ssh -F /dev/null` lesson), a note in ops/vm/buzz-send that under sudo HOME is the target user's, tests/test_poster_shell.py against a fake wrapper; no fleet names, no addresses; under 300 changed lines.
-Stage: spec
+Stage: committing
 Rung: medium (start-floor medium: prod-shaped, BR1 REV0 NOV1 INT1 FC1 = 4; no hard trigger)
 Lens: the login-shell guard exactly as installed (byte for byte the c:pj71er text); repo side only, nothing live; no fleet names, no addresses; under 300 changed lines
 Spec: docs/superpowers/specs/2026-11-06-poster-send-only-route-design.md   Plan: docs/superpowers/plans/2026-11-06-poster-send-only-route.md
 Agency project: —
 Kata: ai-tools-alerts#w75s
-Last reviewed: —
+Last reviewed: spec+plan d333b0cbd5907fadfb8b8a192dabf32d08281756 (pass 1); branch a8dd8a32d46f547496ad1dcdb950337996e8f191 (code pass 1); delta --since a8dd8a3 at c768d20de96852e7179bce6eb7622509865b61d7 (pass 2)
 Pre-handoff review: — (not repoman-managed)
 
 ## Scorecards
@@ -28,9 +28,11 @@ Pass 1 [code:branch, origin/main...a8dd8a32d46f547496ad1dcdb950337996e8f191; Sta
 - S2 a global RELAY_USER replace breaks the guard: fixed (anchored sed in step 2).
 - S3 Match block leaves stream-local forwarding at its default: fixed in the README (restrict is required, and why); the Match-block change is live, in zeqm.
 - C4 metacharacter test's cwd check meaningless: fixed (removed). C5 skip on no bash 4: fixed by FB5. C6 root-owned authorized_keys, C7 locale ranges: in zeqm.
+Pass 2 [code:delta, --since a8dd8a32d46f547496ad1dcdb950337996e8f191 at c768d20de96852e7179bce6eb7622509865b61d7, rebuttals file (3), fresheyes gpt-6-astra high, REASON=-]: 1B/0S/0C/0R · fixed 8/8 prior · velocity ↓ (12→1, escalation no)
+- DB1 with the cwd check removed, an executed `touch PWNED` would land in pytest's directory, unseen: fixed (the guard runs with `cwd=tmp_path`, where the rglob looks). No standing rebuttal overturned. No further pass (ruling jibot-code#41e2).
 
 ## Chunks
-- [ ] guard + reference files + README + buzz-send note + tests
+- [x] guard + reference files + README + buzz-send note + tests
 
 ## Notes
 - Agency: not used, as on the earlier runs of this build (a5hk, h6bx manifests: Agency project —); one chunk of six files, built directly.
