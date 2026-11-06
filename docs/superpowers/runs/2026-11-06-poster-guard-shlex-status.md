@@ -17,6 +17,11 @@ Pass 1 [spec+plan, snapshot 6a441c70bae1ef428eb67455ca209d0805b22b6e, fresheyes 
 - S2 the plan's hostname grep carried the host names: fixed (the public scan's untracked terms file does it).
 - S3 the real-python test may pass before the fix where python falls back to UTF-8 mode: fixed (spec says it is end-to-end coverage; the fake-python test is the deterministic regression; baseline verified on this Mac).
 - C1 snapshot commit message: rebutted (a dangling review snapshot, never on any branch).
+Pass 1 [code:branch, origin/main...4fd1965fb81f8031d46fc8fc8219054a3f8e5797; Stage 1 same-model subagent ∥ Stage 2 fresheyes gpt-6-astra high, REASON=-]: 1B/0S/2C/0R · fixed -/- · velocity = (—→3, escalation no)
+- FB1 the plan said the `'messages<LF>send'` case is refused as `subcommand`; it is refused at `argument count 6` (the test already says so): fixed in the plan. Doc-only, so no delta pass (ruling jibot-code#41e2).
+- Stage 1: no B/S. Mutation checks: dropping python's status fails 3 tests, going back to newline delimiting fails 2; adversarial locales (C, UTF-8, SJIS, GB18030, Big5, ISO8859-1) all refused, allowed shape passes in each.
+- C1 on bash 4.2/4.3 `mapfile -d` prints usage text before the JSON refusal: rebutted (still refused, exit 1; the VM runs bash 5; the README says 4.4).
+- C2 the real-python test does not pin which check refuses: fixed (docstring says it is end-to-end and names the deterministic test).
 - Spec/plan delta: not run as a separate pass; the whole-branch code pass reads the amended spec and plan with the code, as on w75s, a5hk and h6bx. That code pass is this run's heavy first pass for code, with a delta if a BLOCKER fix there changes behaviour.
 
 ## Chunks

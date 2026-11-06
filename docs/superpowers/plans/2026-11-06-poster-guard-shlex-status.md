@@ -23,8 +23,9 @@ Tests first (they must fail against the current guard where noted):
       UTF-8 mode). Fails against the current guard on this Mac (verified in
       the manifest repro); elsewhere it is end-to-end coverage.
 - [ ] New refusal case in `test_other_shapes_refused`: tail
-      `"'messages\nsend' --channel <uuid> --content -"` → `subcommand`
-      (fails against the current guard, which rebuilds seven arguments).
+      `"'messages\nsend' --channel <uuid> --content -"` → `argument count 6`
+      (the token stays one argument; the current guard rebuilds seven and
+      accepts).
 - [ ] Existing cases whose reason changes (spec criterion 5):
       unbalanced quote → `unparsable command`; reply id with an embedded
       newline → `reply-to id`. Nothing else in the file changes.

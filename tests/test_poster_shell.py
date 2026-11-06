@@ -169,7 +169,11 @@ def test_python_failure_after_partial_output_refused(guard):
 
 
 def test_non_utf8_argument_refused_under_utf8_locale(guard):
-    """A non-UTF-8 byte in argument 8 under a client-sent UTF-8 LANG (ai-tools-alerts#zeqm)."""
+    """A non-UTF-8 byte in argument 8 under a client-sent UTF-8 LANG (ai-tools-alerts#zeqm).
+
+    End-to-end only: which check refuses depends on the platform python's
+    locale handling. The fake-python test above is the deterministic one.
+    """
     cmd = _cmd(guard, SEND).encode() + b" \xff " + REPLY.encode()
     r = guard("-c", cmd, lang="en_US.UTF-8")
     why = "unparsable command" if b"unparsable" in r.stderr else "argument 8"
