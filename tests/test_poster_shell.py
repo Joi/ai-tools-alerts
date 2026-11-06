@@ -67,8 +67,9 @@ def _make_guard(tmp_path, bash):
     copy.write_text(src.replace(WRAPPER_LINE, f"WRAPPER={shlex.quote(wrapper)}\n"))
     env = {"PATH": f"{fake}:{os.environ['PATH']}", "HOME": str(tmp_path)}
 
-    def run(*args, stdin=b"hello"):
-        return subprocess.run([bash, str(copy), *args], input=stdin, env=env,
+    def run(*args, stdin=b"hello", lang=None):
+        return subprocess.run([bash, str(copy), *args], input=stdin,
+                              env=env if lang is None else {**env, "LANG": lang},
                               cwd=tmp_path, capture_output=True, timeout=30)
 
     run.fake = fake
@@ -139,7 +140,8 @@ SEND = f"messages send --channel {CHANNEL} --content -"
 
 
 @pytest.mark.parametrize("tail, why", [
-    ("messages send --channel 'unbalanced", "argument count 0"),
+    ("messages send --channel 'unbalanced", "unparsable command"),
+    (f"'messages\nsend' --channel {CHANNEL} --content -", "argument count 6"),
     (SEND + " --reply-to", "argument count 8"),
     (SEND + f" --reply-to {REPLY} extra", "argument count 10"),
     ("channels delete --channel " + CHANNEL + " --content -", "subcommand"),
@@ -151,10 +153,27 @@ SEND = f"messages send --channel {CHANNEL} --content -"
     (SEND + f" --relay {REPLY}", "argument 8"),
     (SEND + " --reply-to " + REPLY[:-1], "reply-to id"),
     (SEND + " --reply-to " + REPLY.upper(), "reply-to id"),
-    (SEND + " --reply-to " + shlex.quote(REPLY + "\n" + REPLY), "argument count 10"),
+    (SEND + " --reply-to " + shlex.quote(REPLY + "\n" + REPLY), "reply-to id"),
 ])
 def test_other_shapes_refused(guard, tail, why):
     _refused(guard("-c", _cmd(guard, tail)), guard.fake, why)
+
+
+def test_python_failure_after_partial_output_refused(guard):
+    """python3 printing a valid prefix and then failing is a refusal, not a 7-argument send."""
+    argv = remote_argv(CHANNEL, wrapper=guard.wrapper)
+    fake = guard.fake / "python3"
+    fake.write_text("#!/bin/sh\nprintf '%s\\0' " + shlex.join(argv) + "\nexit 1\n")
+    fake.chmod(0o755)
+    _refused(guard("-c", shlex.join(argv)), guard.fake, "unparsable command")
+
+
+def test_non_utf8_argument_refused_under_utf8_locale(guard):
+    """A non-UTF-8 byte in argument 8 under a client-sent UTF-8 LANG (ai-tools-alerts#zeqm)."""
+    cmd = _cmd(guard, SEND).encode() + b" \xff " + REPLY.encode()
+    r = guard("-c", cmd, lang="en_US.UTF-8")
+    why = "unparsable command" if b"unparsable" in r.stderr else "argument 8"
+    _refused(r, guard.fake, why)
 
 
 @pytest.mark.parametrize("program", ["/bin/sh", "buzz-send", "~/bin/buzz-send", "ls"])
@@ -183,4 +202,6 @@ def test_sshd_match_reference():
     assert lines == ["Match User aitools-poster",
                      "AuthorizedKeysFile /home/aitools-poster/.ssh/authorized_keys",
                      *(f"{k} no" for k in ("AllowTcpForwarding", "AllowAgentForwarding",
-                                           "X11Forwarding", "PermitTTY", "PermitTunnel"))]
+                                           "X11Forwarding", "PermitTTY", "PermitTunnel",
+                                           "AllowStreamLocalForwarding")),
+                     "DisableForwarding yes", "PermitUserRC no"]

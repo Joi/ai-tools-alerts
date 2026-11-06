@@ -6,7 +6,9 @@
 #   /home/<relay user>/bin/buzz-send messages send --channel <uuid> --content - [--reply-to <64 hex>]
 # (aitools_alerts.poster.transport.remote_argv). The wrapper runs as the relay
 # user through one sudoers rule, so the key file stays that user's alone.
-# Source of truth: ops/vm/aitools-poster-shell in the alerts repo.
+# Source of truth: ops/vm/aitools-poster-shell in the alerts repo. The hex
+# checks list their characters: a range's meaning follows the locale's
+# collation, and the client sends the locale.
 set +x
 set -euo pipefail
 umask 077
@@ -20,16 +22,20 @@ fail() {
 [ "$#" -eq 2 ] && [ "$1" = "-c" ] || fail "refused: interactive login (this user runs one command shape only)"
 cmd="$2"
 [ -n "$cmd" ] || fail "refused: empty command"
-mapfile -t argv < <(python3 -I -c 'import shlex,sys; [print(a) for a in shlex.split(sys.argv[1])]' "$cmd" 2>/dev/null) || fail "refused: unparsable command"
+# python3 splits; a pipeline (pipefail, lastpipe) so its exit status decides, and
+# a NUL after each argument so a quoted newline cannot rebuild an allowed shape.
+shopt -s lastpipe 2>/dev/null || fail "refused: unparsable command (needs bash 4.4 or later)"
+python3 -I -c 'import shlex,sys; [print(a, end="\0") for a in shlex.split(sys.argv[1])]' "$cmd" 2>/dev/null \
+  | mapfile -d '' -t argv || fail "refused: unparsable command"
 n=${#argv[@]}
 [ "$n" -eq 7 ] || [ "$n" -eq 9 ] || fail "refused: argument count $n"
 [ "${argv[0]}" = "$WRAPPER" ] || fail "refused: program ${argv[0]}"
 [ "${argv[1]}" = "messages" ] && [ "${argv[2]}" = "send" ] || fail "refused: subcommand"
 [ "${argv[3]}" = "--channel" ] || fail "refused: argument 4"
-[[ "${argv[4]}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || fail "refused: channel id"
+[[ "${argv[4]}" =~ ^[0123456789abcdef]{8}-[0123456789abcdef]{4}-[0123456789abcdef]{4}-[0123456789abcdef]{4}-[0123456789abcdef]{12}$ ]] || fail "refused: channel id"
 [ "${argv[5]}" = "--content" ] && [ "${argv[6]}" = "-" ] || fail "refused: content must come from stdin"
 if [ "$n" -eq 9 ]; then
   [ "${argv[7]}" = "--reply-to" ] || fail "refused: argument 8"
-  [[ "${argv[8]}" =~ ^[0-9a-f]{64}$ ]] || fail "refused: reply-to id"
+  [[ "${argv[8]}" =~ ^[0123456789abcdef]{64}$ ]] || fail "refused: reply-to id"
 fi
 exec sudo -n -u "$RELAY_USER" -- "$WRAPPER" "${argv[@]:1}"
