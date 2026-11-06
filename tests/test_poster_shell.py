@@ -1,8 +1,8 @@
 """ops/vm/aitools-poster-shell: the poster user's login shell allows one command shape.
 
 The tracked guard runs under bash against a fake sudo and a fake buzz-send in
-a temporary directory. The test copy changes only the WRAPPER= line, so the
-checks it exercises are the installed ones.
+a temporary directory. The test copy changes only the RELAY_USER_FILE= and
+WRAPPER= lines, so the checks it exercises are the installed ones.
 """
 
 import json
@@ -20,6 +20,8 @@ ROOT = Path(__file__).resolve().parent.parent
 VM = ROOT / "ops" / "vm"
 GUARD = VM / "aitools-poster-shell"
 WRAPPER_LINE = 'WRAPPER="/home/$RELAY_USER/bin/buzz-send"\n'
+USER_FILE_LINE = "RELAY_USER_FILE=/etc/aitools-poster/relay-user\n"
+DIR = object()  # relay_user=DIR puts a directory where the file goes
 CHANNEL = "599adb9f-4f9f-4b19-aee3-66667c3293e8"
 REPLY = "ab" * 32
 
@@ -41,7 +43,7 @@ BASH = next((b for b in (os.environ.get("POSTER_SHELL_BASH"), shutil.which("bash
 FAKE_SUDO = r"""#!/usr/bin/env bash
 d="$(dirname "$0")"
 printf '%s\0' "$@" > "$d/sudo-argv"
-[ "$1" = "-n" ] && [ "$2" = "-u" ] && [ "$3" = "RELAY_USER" ] && [ "$4" = "--" ] || exit 99
+[ "$1" = "-n" ] && [ "$2" = "-u" ] && [ "$3" = "$(cat "$d/expect-user")" ] && [ "$4" = "--" ] || exit 99
 shift 4
 exec "$@"
 """
@@ -54,17 +56,24 @@ echo '{"accepted":true,"event_id":"00"}'
 """
 
 
-def _make_guard(tmp_path, bash):
+def _make_guard(tmp_path, bash, relay_user="relayuser\n"):
     fake = tmp_path / "bin"
     fake.mkdir()
+    (fake / "expect-user").write_text(relay_user.strip() if isinstance(relay_user, str) else "")
+    user_file = tmp_path / "relay-user"
+    if relay_user is DIR:
+        user_file.mkdir()
+    elif relay_user is not None:
+        user_file.write_text(relay_user)
     for name, body in (("sudo", FAKE_SUDO), ("buzz-send", FAKE_WRAPPER)):
         (fake / name).write_text(body)
         (fake / name).chmod(0o755)
     wrapper = str(fake / "buzz-send")
     src = GUARD.read_text()
-    assert src.count(WRAPPER_LINE) == 1
+    assert src.count(WRAPPER_LINE) == 1 and src.count(USER_FILE_LINE) == 1
     copy = tmp_path / "aitools-poster-shell"
-    copy.write_text(src.replace(WRAPPER_LINE, f"WRAPPER={shlex.quote(wrapper)}\n"))
+    copy.write_text(src.replace(WRAPPER_LINE, f"WRAPPER={shlex.quote(wrapper)}\n")
+                    .replace(USER_FILE_LINE, f"RELAY_USER_FILE={shlex.quote(str(user_file))}\n"))
     env = {"PATH": f"{fake}:{os.environ['PATH']}", "HOME": str(tmp_path)}
 
     def run(*args, stdin=b"hello", lang=None):
@@ -77,11 +86,15 @@ def _make_guard(tmp_path, bash):
     return run
 
 
-@pytest.fixture
-def guard(tmp_path):
+def _bash_guard(tmp_path, relay_user="relayuser\n"):
     if BASH is None:  # a skip would let the gate pass without testing the guard
         pytest.fail("no bash 4+ (the relay VM runs bash 5): brew install bash, or set POSTER_SHELL_BASH")
-    return _make_guard(tmp_path, BASH)
+    return _make_guard(tmp_path, BASH, relay_user)
+
+
+@pytest.fixture
+def guard(tmp_path):
+    return _bash_guard(tmp_path)
 
 
 def _argv(path: Path) -> list[str]:
@@ -111,7 +124,33 @@ def test_bash3_fails_closed(tmp_path):
 
 def test_tracked_guard_is_executable_and_names_no_relay_user():
     assert os.access(GUARD, os.X_OK)
-    assert 'RELAY_USER="RELAY_USER"' in GUARD.read_text()
+    src = GUARD.read_text()
+    assert "RELAY_USER=\"RELAY_USER\"" not in src and src.count(USER_FILE_LINE) == 1
+    assert "AITOOLS_" not in src  # the installed guard takes no path from its environment
+
+
+@pytest.mark.parametrize("content, why", [
+    (None, "relay user file missing"), (DIR, "relay user file missing"),
+    ("", "not one user name"), ("\n", "not one user name"), ("a\nb\n", "not one user name"),
+    ("relayuser\n\n", "not one user name"), ("relayuser\r\n", "not one user name"),
+    ("Relay\n", "not one user name"), ("1relay\n", "not one user name"),
+    ("relay user\n", "not one user name"), ("../x\n", "not one user name"),
+    ("a" * 33 + "\n", "not one user name"), ("relay\0user\n", "not one user name"),
+    ("relayuser\n\0", "not one user name"), ("\0relayuser", "not one user name"),
+])
+def test_relay_user_file_refused(tmp_path, content, why):
+    g = _bash_guard(tmp_path, content)
+    for args in (("-c", shlex.join(remote_argv(CHANNEL, wrapper=g.wrapper))), ()):
+        _refused(g(*args), g.fake, why)
+
+
+@pytest.mark.parametrize("content", ["relayuser", "_r-1\n", "a" * 32 + "\n"])
+def test_relay_user_file_good_names(tmp_path, content):
+    g = _bash_guard(tmp_path, content)
+    argv = remote_argv(CHANNEL, wrapper=g.wrapper)
+    r = g("-c", shlex.join(argv))
+    assert r.returncode == 0, r.stderr
+    assert _argv(g.fake / "sudo-argv")[:3] == ["-n", "-u", content.strip()]
 
 
 @pytest.mark.parametrize("reply_to", [None, REPLY])
@@ -120,7 +159,7 @@ def test_allowed_shape_reaches_the_wrapper(guard, reply_to):
     r = guard("-c", shlex.join(argv), stdin="日本語\n--relay x".encode())
     assert r.returncode == 0, r.stderr
     assert json.loads(r.stdout)["accepted"] is True
-    assert _argv(guard.fake / "sudo-argv") == ["-n", "-u", "RELAY_USER", "--", *argv]
+    assert _argv(guard.fake / "sudo-argv") == ["-n", "-u", "relayuser", "--", *argv]
     assert _argv(guard.fake / "wrapper-argv") == argv[1:]
     assert (guard.fake / "wrapper-stdin").read_bytes() == "日本語\n--relay x".encode()
 

@@ -5,20 +5,30 @@
 # get no -c and are refused. Only one command shape is allowed:
 #   /home/<relay user>/bin/buzz-send messages send --channel <uuid> --content - [--reply-to <64 hex>]
 # (aitools_alerts.poster.transport.remote_argv). The wrapper runs as the relay
-# user through one sudoers rule, so the key file stays that user's alone.
+# user through one sudoers rule, so the key file stays that user's alone. The
+# relay user's name is the one line of /etc/aitools-poster/relay-user, written
+# on the VM and not tracked (the public repo does not name it).
 # Source of truth: ops/vm/aitools-poster-shell in the alerts repo. The hex
 # checks list their characters: a range's meaning follows the locale's
 # collation, and the client sends the locale.
 set +x
 set -euo pipefail
 umask 077
-RELAY_USER="RELAY_USER"
-WRAPPER="/home/$RELAY_USER/bin/buzz-send"
+RELAY_USER_FILE=/etc/aitools-poster/relay-user
 fail() {
   local msg="${1//[[:cntrl:]]/?}"; msg="${msg//\\/\\\\}"; msg="${msg//\"/\\\"}"
   printf '{"error":"user_error","message":"aitools-poster-shell: %s"}\n' "$msg" >&2
   exit 1
 }
+[ -f "$RELAY_USER_FILE" ] || fail "refused: relay user file missing ($RELAY_USER_FILE)"
+RELAY_USER=""
+# The whole file: read -d '' stops early (status 0) only at a NUL, which bash would otherwise drop.
+# One trailing newline is allowed; 2>/dev/null precedes < so an unreadable file is refused quietly.
+{ ! IFS= read -r -d '' RELAY_USER; } 2>/dev/null < "$RELAY_USER_FILE" \
+  && RELAY_USER="${RELAY_USER%$'\n'}" \
+  && [[ "$RELAY_USER" =~ ^[abcdefghijklmnopqrstuvwxyz_][abcdefghijklmnopqrstuvwxyz0123456789_-]{0,31}$ ]] \
+  || fail "refused: relay user file is not one user name ($RELAY_USER_FILE)"
+WRAPPER="/home/$RELAY_USER/bin/buzz-send"
 [ "$#" -eq 2 ] && [ "$1" = "-c" ] || fail "refused: interactive login (this user runs one command shape only)"
 cmd="$2"
 [ -n "$cmd" ] || fail "refused: empty command"
