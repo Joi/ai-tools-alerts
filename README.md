@@ -4,11 +4,18 @@ Security alerts for people who run AI agents on their own machines: Claude Code,
 
 Two channels on the henkaku ai-tools Buzz relay (`#security-feed` to browse, `#security-critical` to be interrupted), a signed public mirror, and a small CLI your agent can read so it verifies who posted an alert, checks what is installed, and prepares the fix.
 
+## Who this is for
+
+Two audiences get the same alerts.
+
+- **Members of the henkaku ai-tools community** read and discuss them on the Buzz relay at `buzz.ai-tools.md`: `#security-feed` carries every advisory and the daily digest, with discussion under each thread, and `#security-critical` carries critical advisories only, for interruption. The relay is members-only: reading it needs a member's auth token, and membership is handled in the community, not in this repository.
+- **Everyone else** gets the same posts from the public mirror at `https://buzz.ai-tools.md/alerts/`, with no account: `feed.atom` (Japanese: `feed.ja.atom`) for a feed reader, `feed.json` for anything that reads signed events, and the CLI below, which verifies every post and checks it against what is installed on your machine. The mirror carries only the posts signed by keys in the trust manifest; members' discussion stays on the relay.
+
+The CLI is the product for your agent and needs nothing else. The Buzz channels are where people talk about an alert, and where a member hears about a critical one at once instead of at the next hourly run.
+
 ## Status
 
 Live. The poster runs every hour on the fleet: it posts a critical advisory to `#security-critical` and `#security-feed` within the hour it appears, and a digest of the day's advisories to `#security-feed` daily at 09:00 Tokyo time. The signed mirror at `https://buzz.ai-tools.md/alerts/` is rewritten every 5 minutes: a page listing the latest advisories, `feed.atom` for feed readers, and the `feed.json`, `critical.json` and `manifest.json` files the CLI reads. The mirror carries only posts signed by a key in the trust manifest. The CLI, the skills, the session-start hook and the schedule templates below work against it today.
-
-The two Buzz channels are for ai-tools community members: reading the relay needs a member's auth token. Everyone else gets the same alerts from the mirror, through the Atom feed, `feed.json` or the CLI, none of which needs an account.
 
 The design is `docs/design.md` and the implementation plan `docs/plan.md`. Work is tracked in the kata project `ai-tools-alerts` under the epic jibot-code#gr5b.
 
@@ -25,7 +32,7 @@ afb55ca02209ca12e980bba67262f478b7977b6fdc6bbaf8c3b9fb96983c78a4
 Check it on two different hosts: `trust/root.pub` at the release tag on GitHub (`https://github.com/Joi/ai-tools-alerts/blob/v0.1.1/trust/root.pub`) and the copy the mirror on the relay VM publishes, `https://buzz.ai-tools.md/alerts/root.pub`. The VM's copy comes from a release deployed earlier, so agreement shows the root was not changed on GitHub alone since then. All three must show the same 64 characters. If they differ, do not install, and tell the ai-tools community; if the mirror's copy is missing, that is not a pass: wait for it.
 
 
-## For members: install
+## Install
 
 You need Python 3.11 or later and nothing else; the CLI uses the standard library only.
 
