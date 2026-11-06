@@ -17,15 +17,20 @@ def fail(why):
     sys.exit(2)
 try:
     with open(TERMS, "rb") as fh:
-        terms = [t for t in (l.strip() for l in fh.read().split(b"\n")) if t and not t.startswith(b"#")]
+        lines = fh.read().removeprefix(b"\xef\xbb\xbf").split(b"\n")
+    terms = [(n, t) for n, t in enumerate((l.strip() for l in lines), 1) if t and not t.startswith(b"#")]
 except OSError as e:
     fail(f"cannot read terms file ({e.strerror})")
 if not terms:
     fail("no term in terms file")
 try:
-    PATTERN = re.compile(b"|".join(b"(?:" + t + b")" for t in terms), re.I)
+    for n, t in terms:  # each alone first: two bad fragments can join into a valid pattern
+        line = n
+        re.compile(t, re.I)
+    line = None
+    PATTERN = re.compile(b"|".join(b"(?:" + t + b")" for _, t in terms), re.I)
 except (re.error, OverflowError, RecursionError, ValueError) as e:
-    fail(f"bad term in terms file ({e})")
+    fail(f"bad term in terms file{f' at line {line}' if line else ''} ({e})")
 try:
     listed = subprocess.run(["git", "ls-files", "-z"], capture_output=True, check=True).stdout
 except (OSError, subprocess.CalledProcessError) as e:

@@ -80,7 +80,7 @@ def test_gate_fails_on_a_hit(repo):
     assert r.returncode == 1 and "notes.md" in r.stdout
 
 
-@pytest.mark.parametrize("content", [None, "", "# only a comment\n\n   \n", "(unclosed\n", "a{99999999999999999999}\n"])
+@pytest.mark.parametrize("content", [None, "", "# only a comment\n\n   \n", "(unclosed\n", "a{99999999999999999999}\n", "(\n)\n", "x(?i)y\n"])
 def test_missing_empty_or_bad_terms_file_cannot_run(repo, content):
     terms = repo.parent / "bad-terms"
     if content is not None:
@@ -94,6 +94,13 @@ def test_a_term_that_matches_nothing_lets_a_contributor_run_the_gate(repo):
     terms.write_text("(?!)\n")  # the README's example: it matches no text, this file included
     (repo / "notes.md").write_text(f"{TERM}\n")
     assert run(repo, "notes.md", terms=terms).returncode == 0
+
+
+def test_bom_and_crlf_terms_file_keeps_its_first_term(repo):
+    terms = repo.parent / "bom"
+    terms.write_bytes(b"\xef\xbb\xbf" + TERM.encode() + b"\r\n# note\r\n")
+    (repo / "notes.md").write_text(f"{TERM}\n")
+    assert run(repo, "notes.md", terms=terms).returncode == 1
 
 
 def test_default_terms_path_is_under_home(repo, tmp_path):
