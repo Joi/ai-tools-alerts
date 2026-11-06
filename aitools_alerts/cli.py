@@ -264,8 +264,9 @@ def cmd_check(a, st: State, s: config.Settings) -> int:
     return 0
 
 
-def _unseen_critical(a, st: State) -> list:
-    _, pairs = _matches(a, st)
+def _unseen_critical(a, st: State, pairs: list | None = None) -> list:
+    if pairs is None:
+        _, pairs = _matches(a, st)
     return [(t, m) for t, m in pairs if t.adv.level == "critical" and not _seen(t, st)]
 
 
@@ -345,9 +346,9 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
     res = _pull(a, st, s.mirror_url)
     if res.error:
         _err(f"{res.error} (using the last good state)")
-    pending = _unseen_critical(a, st)
+    _, pairs = _matches(a, st)  # one inventory collection per run (the hook's time budget)
+    pending = _unseen_critical(a, st, pairs)
     if a.json:
-        _, pairs = _matches(a, st)
         out = {"pull_error": res.error, "ignored_env": a.ignored_env,
                "stale_since": _stale_since(a, st), "matches": [_match_json(t, m) for t, m in pairs],
                "unseen_critical": sorted({r for t, _ in pending for r in t.root_ids})}

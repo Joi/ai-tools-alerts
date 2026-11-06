@@ -222,7 +222,9 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float) -> PullRes
                 "last_ok_at": int(now) if ok else state.last_pull.get("last_ok_at")}
         if ok:
             last.update(new=len(res.new_events), dropped=dict(res.dropped))
-        last.update(zip(("newest_event_at", "manifest_issued_at"), freshness(state)))
+        same_root = state.manifest_root == root_pubkey  # else the times are another root's
+        last.update(zip(("newest_event_at", "manifest_issued_at"),
+                        freshness(state) if same_root else (None, None)))
         state.last_pull = last
 
     def fail(msg: str) -> PullResult:

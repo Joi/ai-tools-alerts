@@ -9,7 +9,7 @@ Budget: under 200 changed lines excluding run artifacts
 - [ ] `pull.py` near the constants (~line 50): `STALE_EVENT_S = 3 * 86400`,
       `STALE_MANIFEST_S = 90 * 86400`; add `stale_since`, `freshness` and the
       two constants to `__all__`.
-- [ ] After `effective_manifest` (~line 280): 
+- [ ] After `effective_manifest` (~line 280):
       `freshness(state) -> tuple[int | None, int | None]`: `m =
       effective_manifest(state)`; None, None without one; else
       `(max((ev["created_at"] for ev in state.events.values() if

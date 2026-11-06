@@ -677,7 +677,12 @@ def test_check_and_run_json_warn_when_the_mirror_is_stale(monkeypatch, sent, cap
     line = cli.STALE_LINE.format(since="2099-01-01T00:02:00Z")
     assert capsys.readouterr().out.splitlines()[0] == line
     assert cli.main(["run", "--json"]) == 2  # stale never changes the exit status
-    assert json.loads(capsys.readouterr().out)["stale_since"] == "2099-01-01T00:02:00Z"
+    raw = capsys.readouterr().out
+    assert json.loads(raw)["stale_since"] == "2099-01-01T00:02:00Z"
+    assert '"stale_since": "' in raw  # the hook's match, on the real output
     monkeypatch.setattr(pull.time, "time", lambda: newest + 3600)
     assert cli.main(["run", "--json"]) == 0
-    assert json.loads(capsys.readouterr().out)["stale_since"] is None
+    raw = capsys.readouterr().out
+    assert json.loads(raw)["stale_since"] is None and '"stale_since": "' not in raw
+    hostile = json.dumps({"stale_since": None, "title": '"stale_since": "x'}, indent=2)
+    assert '"stale_since": "' not in hostile  # a quote in a value is escaped
