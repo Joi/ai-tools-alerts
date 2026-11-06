@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3 — 2026-11-06
+
+README: a "Whom you are trusting" section states that the project's authority rests on Joi Ito and what bounds the trust a member extends. No code change. Tagged `v0.1.3`, signed.
+
 ## 0.1.2 — 2026-11-06
 
 README: a "Who this is for" section separates the ai-tools community (the Buzz channels) from everyone else (the public mirror, the feeds and the CLI, no account). No code change. Tagged `v0.1.2`, signed.

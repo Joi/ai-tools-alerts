@@ -40,7 +40,7 @@ Trust root public key (x-only hex), the same value as `trust/root.pub`:
 afb55ca02209ca12e980bba67262f478b7977b6fdc6bbaf8c3b9fb96983c78a4
 ```
 
-Check it on two different hosts: `trust/root.pub` at the release tag on GitHub (`https://github.com/Joi/ai-tools-alerts/blob/v0.1.2/trust/root.pub`) and the copy the mirror on the relay VM publishes, `https://buzz.ai-tools.md/alerts/root.pub`. The VM's copy comes from a release deployed earlier, so agreement shows the root was not changed on GitHub alone since then. All three must show the same 64 characters. If they differ, do not install, and tell the ai-tools community; if the mirror's copy is missing, that is not a pass: wait for it.
+Check it on two different hosts: `trust/root.pub` at the release tag on GitHub (`https://github.com/Joi/ai-tools-alerts/blob/v0.1.3/trust/root.pub`) and the copy the mirror on the relay VM publishes, `https://buzz.ai-tools.md/alerts/root.pub`. The VM's copy comes from a release deployed earlier, so agreement shows the root was not changed on GitHub alone since then. All three must show the same 64 characters. If they differ, do not install, and tell the ai-tools community; if the mirror's copy is missing, that is not a pass: wait for it.
 
 
 ## Install
@@ -52,7 +52,7 @@ You need Python 3.11 or later and nothing else; the CLI uses the standard librar
 From v0.1.1 on, release tags are signed with an SSH key on Joi's GitHub account; v0.1.0 is unsigned. Check the tag before you install anything:
 
 ```
-git clone https://github.com/Joi/ai-tools-alerts && cd ai-tools-alerts && git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.2
+git clone https://github.com/Joi/ai-tools-alerts && cd ai-tools-alerts && git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.3
 ```
 
 It passes only if it exits 0 and prints `Good "git" signature for 19930+Joi@users.noreply.github.com with ED25519 key SHA256:DS1FNZqf0HglC1QEQ50LS4AJny8P8MxvrHRj4vPEqaA`. `No principal matched` or `no signature found` is a failure: do not install.
@@ -62,22 +62,22 @@ It passes only if it exits 0 and prints `Good "git" signature for 19930+Joi@user
 Only after both checks pass, install the commit the tag names from this checkout (`--force` replaces an earlier install such as 0.1.0; `init` is for a first install):
 
 ```
-git checkout --detach 'refs/tags/v0.1.2^{commit}' && pipx install --force .
+git checkout --detach 'refs/tags/v0.1.3^{commit}' && pipx install --force .
 aitools-alerts init
 aitools-alerts run
 ```
 
 Run the hook, template and skill commands below from this checkout.
 
-The current release is v0.1.2, a signed tag; verify it as above, then install from the verified checkout or pin the tag:
+The current release is v0.1.3, a signed tag; verify it as above, then install from the verified checkout or pin the tag:
 
 ```
-pipx install git+https://github.com/Joi/ai-tools-alerts@v0.1.2
+pipx install git+https://github.com/Joi/ai-tools-alerts@v0.1.3
 aitools-alerts init
 aitools-alerts run
 ```
 
-Without pipx: `python3 -m venv ~/.local/share/aitools-alerts && ~/.local/share/aitools-alerts/bin/pip install .` from the verified checkout (for v0.1.0, `git+https://github.com/Joi/ai-tools-alerts@v0.1.2` in place of `.`), then link the command where the schedules and the hook look for it: `mkdir -p ~/.local/bin && ln -s ~/.local/share/aitools-alerts/bin/aitools-alerts ~/.local/bin/`. The launchd and cron templates search `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and `/bin`; the hook searches the same directories and nothing else.
+Without pipx: `python3 -m venv ~/.local/share/aitools-alerts && ~/.local/share/aitools-alerts/bin/pip install .` from the verified checkout (for v0.1.0, `git+https://github.com/Joi/ai-tools-alerts@v0.1.3` in place of `.`), then link the command where the schedules and the hook look for it: `mkdir -p ~/.local/bin && ln -s ~/.local/share/aitools-alerts/bin/aitools-alerts ~/.local/bin/`. The launchd and cron templates search `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and `/bin`; the hook searches the same directories and nothing else.
 
 Install from a release tag, as above, not from the default branch: the trust root is pinned in the code you install, so the tag is what fixes it. `CHANGELOG.md` lists each release. A PyPI package (`aitools-alerts`) is coming; until it ships, install from the tag.
 
