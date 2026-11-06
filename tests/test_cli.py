@@ -660,3 +660,24 @@ def test_translation_merged_across_copies_and_long_title_falls_back(monkeypatch,
     english = notify.format_text(big)
     assert notify.MAX_TEXT - 60 < len(english) <= notify.MAX_TEXT
     assert notify.format_text(big, None, "長" * 200 + "\n本文" * 600) == english
+
+
+def test_check_and_run_json_warn_when_the_mirror_is_stale(monkeypatch, sent, capsys):
+    """A frozen mirror: pulls succeed, nothing new is signed (544a)."""
+    from aitools_alerts import pull
+    newest = T0 + 120  # the fixture's newest event
+    write_config(f'mirror_url = "{MIRROR}"\n')
+    monkeypatch.setattr(pull.time, "time", lambda: newest + 3600)
+    cli.main(["pull"])
+    capsys.readouterr()
+    assert cli.main(["check"]) == 0 and "warning:" not in capsys.readouterr().out
+    monkeypatch.setattr(pull.time, "time", lambda: newest + 4 * 86400)
+    assert cli.main(["check"]) == 0
+    assert cli._stale_since(type("A", (), {"root": "0" * 64})(), State.load()) is None  # other root
+    line = cli.STALE_LINE.format(since="2099-01-01T00:02:00Z")
+    assert capsys.readouterr().out.splitlines()[0] == line
+    assert cli.main(["run", "--json"]) == 2  # stale never changes the exit status
+    assert json.loads(capsys.readouterr().out)["stale_since"] == "2099-01-01T00:02:00Z"
+    monkeypatch.setattr(pull.time, "time", lambda: newest + 3600)
+    assert cli.main(["run", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["stale_since"] is None

@@ -40,7 +40,8 @@ from .state import EVENT_KEYS, State
 
 __all__ = ["FILES", "FetchError", "PULL_ERRORS", "MAX_FETCH_BYTES", "MAX_EVENTS", "PullResult", "Thread",
            "fetch", "default_fetch", "advisories", "active", "bundled_manifest",
-           "parse_translation", "translation_title", "threads_from"]
+           "parse_translation", "translation_title", "threads_from",
+           "STALE_EVENT_S", "STALE_MANIFEST_S", "freshness", "stale_since"]
 
 FILES = ("feed.json", "critical.json")
 MAX_FETCH_BYTES = 8 << 20
@@ -48,6 +49,8 @@ MAX_EVENTS = 10000
 MAX_STORED_EVENTS = 20000
 MAX_STORED_BYTES = 32 << 20  # serialized, all roots; half state.MAX_STATE_BYTES
 RETENTION_S = 400 * 86400
+STALE_EVENT_S = 3 * 86400  # the poster's daily digest is the signed heartbeat
+STALE_MANIFEST_S = 90 * 86400
 TIMEOUT = 20
 _RANK = {"notice": 1, "high": 2, "critical": 3}
 _PATCH_KEYS = frozenset(f for f in Advisory.__dataclass_fields__)
@@ -219,6 +222,7 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float) -> PullRes
                 "last_ok_at": int(now) if ok else state.last_pull.get("last_ok_at")}
         if ok:
             last.update(new=len(res.new_events), dropped=dict(res.dropped))
+        last.update(zip(("newest_event_at", "manifest_issued_at"), freshness(state)))
         state.last_pull = last
 
     def fail(msg: str) -> PullResult:
@@ -280,6 +284,34 @@ def effective_manifest(state: State) -> Manifest | None:
         if b is not None and b.version > m.version:
             return b
     return m
+
+
+def freshness(state: State) -> tuple[int | None, int | None]:
+    """(newest created_at among the stored events a current key signed,
+    the manifest's issued time), from the effective manifest; None, None
+    before any pull. Signed times only: a mirror's generated_at is not."""
+    m = effective_manifest(state)
+    if m is None:
+        return None, None
+    newest = max((ev["created_at"] for ev in state.events.values()
+                  if manifest.role_of(m, ev["pubkey"]) is not None), default=None)
+    return newest, m.event["created_at"]  # created_at equals issued_at (manifest.load)
+
+
+def stale_since(state: State, now: float | None = None) -> int | None:
+    """None while the mirror is fresh or was never pulled; else the signed
+    time since which nothing new arrived: the newest trusted event (the
+    manifest when there is none) when older than STALE_EVENT_S, else the
+    manifest when older than STALE_MANIFEST_S. A frozen or replayed mirror
+    verifies on every pull, and this is how a reader notices it."""
+    now = time.time() if now is None else now
+    newest, issued = freshness(state)
+    if issued is None:
+        return None
+    ref = issued if newest is None else newest
+    if ref < now - STALE_EVENT_S:
+        return ref
+    return issued if issued < now - STALE_MANIFEST_S else None
 
 
 # ---------------------------------------------------------------- advisories

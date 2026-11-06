@@ -22,6 +22,7 @@ SKILLS = {
     "hermes": ROOT / "skills" / "hermes" / "aitools-alerts" / "SKILL.md",
 }
 HOOK_LINE = "AITOOLS-ALERT: critical advisory matches this machine; run the aitools-alerts skill"
+STALE_HOOK_LINE = "AITOOLS-ALERT: alerts may be stale (no new signed post for over 3 days, or a trust manifest over 90 days old); run aitools-alerts check"
 
 
 # ------------------------------------------------------------------ schedules
@@ -188,7 +189,7 @@ def test_two_skills_share_one_procedure():
 
 # ----------------------------------------------------------------------- hook
 
-def _run_hook(tmp_path: Path, exit_code: int | None) -> subprocess.CompletedProcess:
+def _run_hook(tmp_path: Path, exit_code: int | None, stdout: str = "echo noise on stdout") -> subprocess.CompletedProcess:
     bindir = tmp_path / "bin"
     bindir.mkdir()
     if exit_code is not None:
@@ -198,7 +199,7 @@ def _run_hook(tmp_path: Path, exit_code: int | None) -> subprocess.CompletedProc
         stub.write_text("#!/bin/sh\n"
                         f'echo "args: $*" > "{tmp_path}/args"\n'
                         f'cat > "{tmp_path}/stdin"\n'
-                        "echo noise on stdout\necho noise on stderr >&2\n"
+                        f"{stdout}\necho noise on stderr >&2\n"
                         f"exit {exit_code}\n")
         stub.chmod(0o755)
     env = {"PATH": f"{bindir}:/usr/bin:/bin", "HOME": str(tmp_path)}
@@ -222,7 +223,7 @@ def test_session_start_hook(tmp_path, exit_code, expected):
     assert r.stdout == expected
     assert r.stderr == ""
     if exit_code is not None:
-        assert (tmp_path / "args").read_text() == "args: run --quiet\n"
+        assert (tmp_path / "args").read_text() == "args: run --json\n"
         assert (tmp_path / "stdin").read_text() == ""
 
 
@@ -271,3 +272,19 @@ def test_cron_command_runs_on_an_empty_home(tmp_path):
 
 def test_hook_is_executable():
     assert os.access(HOOK, os.X_OK)
+
+
+STALE_JSON = """printf '%s\\n' '{' '  "stale_since": "2099-01-01T00:00:00Z",' '  "matches": []' '}'"""
+
+
+@pytest.mark.parametrize("exit_code,out,expected", [
+    (0, STALE_JSON, STALE_HOOK_LINE + "\n"),
+    (2, STALE_JSON, HOOK_LINE + "\n" + STALE_HOOK_LINE + "\n"),
+    (1, STALE_JSON, STALE_HOOK_LINE + "\n"),
+    (0, """printf '%s\\n' '{"stale_since": null}'""", ""),
+    # post text cannot forge it: a quote inside a JSON string is escaped
+    (0, r"""printf '%s\n' '{"stale_since": null, "title": "\"stale_since\": \"x"}'""", ""),
+], ids=["stale", "stale-and-critical", "stale-pull-error", "fresh", "forged-title"])
+def test_session_start_hook_stale_line(tmp_path, exit_code, out, expected):
+    r = _run_hook(tmp_path, exit_code, out)
+    assert (r.returncode, r.stdout, r.stderr) == (0, expected, "")

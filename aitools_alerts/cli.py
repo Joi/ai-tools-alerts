@@ -22,6 +22,7 @@ import json
 import os
 import shlex
 import sys
+import time
 from dataclasses import asdict, dataclass
 from urllib.parse import quote
 
@@ -30,6 +31,8 @@ from .state import State, StateError
 
 TRUST_ROOT_ENV = "AITOOLS_ALERTS_TRUST_ROOT"
 EXIT_UNSEEN_CRITICAL = 2
+STALE_LINE = ("warning: alerts may be stale since {since}: no new signed post for over 3 days, "
+              "or a trust manifest over 90 days old; the mirror may be frozen or replayed")
 
 # ecosystem -> argv template for an upgrade; "{fixed}" is products[].fixed,
 # which the schema restricts to digits, dots and a lowercase suffix.
@@ -232,6 +235,12 @@ def _match_json(t, m) -> dict:
             "translations": dict(t.translations)}
 
 
+def _stale_since(a, st: State) -> str | None:
+    """pull.stale_since as an ISO time, for state pulled under this root."""
+    since = pull.stale_since(st) if st.manifest_root == a.root else None
+    return None if since is None else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since))
+
+
 def cmd_check(a, st: State, s: config.Settings) -> int:
     threads, pairs = _matches(a, st)
     if a.json:
@@ -239,6 +248,8 @@ def cmd_check(a, st: State, s: config.Settings) -> int:
         return 0
     if not st.last_pull.get("last_ok_at"):
         print("no successful pull yet; run: aitools-alerts pull")
+    if since := _stale_since(a, st):
+        print(STALE_LINE.format(since=since))
     for t, m in pairs:
         ver = m.installed.version or "unknown version"
         print(f"{t.adv.level.upper()}: {_title(t, s)} [{m.installed.name} {ver}: {m.reason}] "
@@ -337,7 +348,8 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
     pending = _unseen_critical(a, st)
     if a.json:
         _, pairs = _matches(a, st)
-        out = {"pull_error": res.error, "ignored_env": a.ignored_env, "matches": [_match_json(t, m) for t, m in pairs],
+        out = {"pull_error": res.error, "ignored_env": a.ignored_env,
+               "stale_since": _stale_since(a, st), "matches": [_match_json(t, m) for t, m in pairs],
                "unseen_critical": sorted({r for t, _ in pending for r in t.root_ids})}
     elif not a.quiet:
         a.json = False

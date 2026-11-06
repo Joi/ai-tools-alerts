@@ -768,3 +768,47 @@ def test_relay_bot_translation_never_replaces_a_curators_on_a_bot_thread(mirror)
     mirror.reply(mirror.bot_sec, root, "lang: ja\n\nボット", created_at=T0 + 300)
     do_pull(mirror)
     assert threads()[0].translations == {"ja": "キュレーター"}
+
+
+# ------------------------------------------------------- freshness (544a)
+
+DAY = 86400
+
+
+def test_pull_records_newest_trusted_event_and_manifest_time(mirror):
+    mirror.root_post(mirror.cur_sec, created_at=T0 + 100)
+    mirror.post(mirror.bot_sec, "digest", created_at=T0 + 500)
+    _, st = do_pull(mirror)
+    assert State.load().last_pull["newest_event_at"] == T0 + 500
+    assert State.load().last_pull["manifest_issued_at"] == T0 + 1
+    assert pull.stale_since(st, T0 + 1000) is None
+    assert pull.stale_since(st, T0 + 500 + 3 * DAY) is None
+    assert pull.stale_since(st, T0 + 500 + 3 * DAY + 1) == T0 + 500
+    mirror.raw["manifest.json"] = b"{"  # a failed pull still records the stored state
+    res, st = do_pull(mirror)
+    assert res.error == "bad manifest"
+    assert State.load().last_pull["newest_event_at"] == T0 + 500
+
+
+def test_old_manifest_is_stale_even_with_fresh_events(mirror):
+    mirror.post(mirror.cur_sec, "digest", created_at=T0 + 90 * DAY)
+    _, st = do_pull(mirror)
+    assert pull.stale_since(st, T0 + 90 * DAY + 1) is None
+    assert pull.stale_since(st, T0 + 1 + 90 * DAY + 1) == T0 + 1  # the manifest's issued time
+
+
+def test_events_of_keys_the_manifest_does_not_trust_do_not_count(mirror):
+    mirror.post(mirror.cur_sec, "old", created_at=T0 + 100)
+    _, st = do_pull(mirror)
+    sec, pub = nostr.keygen()  # cached under no current key, as after a bundled revocation
+    ev = nostr.sign_event(sec, {"created_at": T0 + 900, "kind": 9, "tags": [], "content": "x"})
+    st.events[ev["id"]] = ev
+    assert pull.freshness(st) == (T0 + 100, T0 + 1)
+    assert pull.stale_since(st, T0 + 900 + 3 * DAY) == T0 + 100
+
+
+def test_no_events_measures_from_the_manifest_and_never_pulled_is_not_stale(mirror):
+    assert pull.stale_since(State.load(), T0 + 100 * DAY) is None
+    _, st = do_pull(mirror)
+    assert pull.freshness(st) == (None, T0 + 1)
+    assert pull.stale_since(st, T0 + 1 + 3 * DAY + 1) == T0 + 1

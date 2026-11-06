@@ -88,10 +88,16 @@ Copy `hooks/claude-code/session-start.sh` to `~/.claude/hooks/aitools-alerts-ses
 }
 ```
 
-The hook runs `aitools-alerts run --quiet`. When a critical advisory that matches your machine has not been shown before, it puts one line in the session's context:
+The hook runs `aitools-alerts run --json`. When a critical advisory that matches your machine has not been shown before, it puts one line in the session's context:
 
 ```
 AITOOLS-ALERT: critical advisory matches this machine; run the aitools-alerts skill
+```
+
+When no new signed post has arrived for over 3 days (the poster's daily digest is the heartbeat), or the trust manifest is over 90 days old, a frozen or replayed mirror is the likely cause, and the hook adds a second line; `aitools-alerts check` prints a warning line with the time:
+
+```
+AITOOLS-ALERT: alerts may be stale (no new signed post for over 3 days, or a trust manifest over 90 days old); run aitools-alerts check
 ```
 
 Otherwise it prints nothing, and it never fails a session: a missing CLI or an unreadable mirror is silent. It usually takes a few seconds. On a slow network it takes longer: each of the three mirror files has a 20-second timeout and each notification a 30-second one, so there is no fixed bound. When Claude Code stops the hook at its timeout (90 seconds here), the line does not appear; an alert the CLI had already marked seen was marked so only after a notification channel accepted it, so you still got that notification.
