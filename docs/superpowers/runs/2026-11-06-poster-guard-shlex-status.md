@@ -1,12 +1,12 @@
 # Run: poster-guard-shlex-status
 Instruction: Dispatch of ai-tools-alerts#zeqm in mode do-it, starting rung floored at medium; brief TASK-ai-tools-alerts#zeqm.md in the worktree root: repo side only (the live Match block and root-owned authorized_keys are already applied by the coordinator). Item 1: ops/vm/aitools-poster-shell checks python3's exit status and refuses on any failure, with a test that feeds a non-UTF-8 byte under LANG=en_US.UTF-8 and expects a refusal. Item 2: ops/vm/sshd-match-aitools-poster.conf gains AllowStreamLocalForwarding no, DisableForwarding yes, PermitUserRC no; update ops/vm/README.md's sshd -T expectations and test_sshd_match_reference. Item 3: README documents the root-owned authorized_keys (mode 644, directory 755 root-owned) and why. Under 150 changed lines. Security-shaped: review on gpt-6-astra.
-Stage: spec-review
+Stage: done
 Rung: heavy (start-floor heavy: hard-trigger — SSH auth surface and a live-installed guard; BR=1 REV=1 NOV=1 INT=1 FC=2 total=6; dispatch floor was medium; kata notice posted)
 Lens: "refuses on any failure"; "refuse anything else"; "The guard does not change the locale it passes to python, sudo or the wrapper"; "Every existing test in tests/test_poster_shell.py passes unchanged except test_sshd_match_reference"; "test_bash3_fails_closed unchanged"; "Under 150 changed lines"; "no fleet host names"
 Spec: docs/superpowers/specs/2026-11-06-poster-guard-shlex-status-design.md   Plan: docs/superpowers/plans/2026-11-06-poster-guard-shlex-status.md
 Agency project: —
 Kata: ai-tools-alerts#zeqm
-Last reviewed: spec+plan 6a441c70bae1ef428eb67455ca209d0805b22b6e (pass 1)
+Last reviewed: spec+plan 6a441c70bae1ef428eb67455ca209d0805b22b6e (pass 1); branch 4fd1965fb81f8031d46fc8fc8219054a3f8e5797 (code pass 1; rebased as e2cc689)
 Pre-handoff review: — (not repoman-managed)
 
 ## Scorecards
@@ -25,8 +25,11 @@ Pass 1 [code:branch, origin/main...4fd1965fb81f8031d46fc8fc8219054a3f8e5797; Sta
 - Spec/plan delta: not run as a separate pass; the whole-branch code pass reads the amended spec and plan with the code, as on w75s, a5hk and h6bx. That code pass is this run's heavy first pass for code, with a delta if a BLOCKER fix there changes behaviour.
 
 ## Chunks
-- [ ] guard exit status + Match block + README + tests
+- [x] guard exit status + Match block + README + tests — Stage 1 clean, fresheyes 1B (plan text) fixed; 1 code pass
 
 ## Notes
 - Repro before any change: the installed guard, given `.../buzz-send messages send --channel <uuid> --content - \xff <64 hex>` under LANG=en_US.UTF-8, reached `sudo` (python printed 7 arguments, then raised UnicodeEncodeError; the guard accepted n=7).
 - Agency: not used, as on the earlier runs of this build (w75s, a5hk, h6bx); one chunk of four files.
+- Rebased onto origin/main 6133cea (544a) after the reviews, no conflicts: 4fd1965 → e2cc689, review fixes f3bb2ce → 47227ef. Gate on the rebased head: public scan clean, 1042 passed.
+- Notice for the coordinator (kata): the README now asks for a root-owned home directory on the VM, applied with the guard reinstall.
+- Heavy rung, no delta pass: no BLOCKER fix changed behaviour (spec+plan B2 changed the design before any code existed; the code pass reviewed the result).
