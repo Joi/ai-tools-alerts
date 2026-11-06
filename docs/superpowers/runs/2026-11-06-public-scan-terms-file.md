@@ -1,12 +1,12 @@
 # Run: public-scan-terms-file
 Instruction: Dispatch of ai-tools-alerts#a5hk in mode do-it, starting rung floored at medium; brief TASK-ai-tools-alerts#a5hk.md in the worktree root: public-scan reads its terms from an untracked file ($PUBLIC_SCAN_TERMS or ~/.config/aitools-alerts/public-scan.terms); missing or empty file is exit 2 naming the path; the tracked tree spells no term (fixture terms only); scripts/test-gate.sh unchanged; one README contributor paragraph; under 150 changed lines.
-Stage: code-review:branch
+Stage: done
 Rung: medium (start-floor medium: constraint-lens, BR1 REV1 NOV1 INT1 FC1 = 5)
 Lens: keep the scanner's behaviour (bytes, file names, exit 1 on a hit, exit 2 when it cannot run); scripts/test-gate.sh unchanged; the tracked tree spells no term; under 150 changed lines
 Spec: docs/superpowers/specs/2026-11-06-public-scan-terms-file-design.md   Plan: docs/superpowers/plans/2026-11-06-public-scan-terms-file.md
 Agency project: —
 Kata: ai-tools-alerts#a5hk
-Last reviewed: spec+plan 6571fee3464f3013b5a468e5ae36cf788247601b (pass 1); branch 629e57582e31c16289d513cd2fe94e63f00c85f4 (code pass 1)
+Last reviewed: spec+plan 6571fee3464f3013b5a468e5ae36cf788247601b (pass 1); branch 629e57582e31c16289d513cd2fe94e63f00c85f4 (code pass 1); delta --since 629e575 at 8aaefa021dcd180a69a5db48d0182b33d7d05792 (pass 2)
 Pre-handoff review: — (not repoman-managed)
 
 ## Scorecards
@@ -23,9 +23,11 @@ Pass 1 [code:branch, origin/main...629e57582e31c16289d513cd2fe94e63f00c85f4; Sta
 - C1 relative PUBLIC_SCAN_TERMS resolves against the repo root: rebutted — it fails closed (exit 2 naming the path); the fix plus its test took the deliverable to 154 lines, over the 150 budget.
 - C2 bad-term message gave a position in the joined pattern: fixed by FB1 (line number).
 - C3 no CRLF or mid-pattern inline-flag cases: fixed (both added).
+Pass 2 [code:delta, --since 629e57582e31c16289d513cd2fe94e63f00c85f4 at 8aaefa021dcd180a69a5db48d0182b33d7d05792, rebuttals file (2), fresheyes gpt-6-astra high, REASON=-]: 0B/0S/0C/0R · fixed 2/2 prior · velocity ↓ (5→0, escalation no)
+- No standing rebuttal overturned. No further pass (ruling jibot-code#41e2).
 
 ## Chunks
-- [x] scanner + tests + README — 629e575, review fixes in the next commit
+- [x] scanner + tests + README — 629e575, review fixes 8aaefa0
 
 ## Notes
 - Gate: tests/poster/test_main.py::test_digest_id_recorded_and_printed fails on unmodified origin/main when run in its file (passes alone); pre-existing, filed ai-tools-alerts#rvw5 (priority 1). Every other test passes.
