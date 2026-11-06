@@ -77,3 +77,7 @@ Do not use `--template`: it resolves desktop-app templates. The wrapper was then
 3. Run the create and add-member commands above (through `buzz-send`, or with the remote-side key export).
 4. New channels get new UUIDs: update `spec/channels.json`, this table, and tell the readers of `spec/channels.json` (the poster, the mirror exporter, the member CLI). Members must re-join.
 5. To remove: `buzz-send channels delete --channel <uuid>` for each, and delete `~/bin/buzz-send`.
+
+## The exporter copy
+
+The mirror exporter on the VM runs from a pinned commit of this repo, never a clone the VM pulls. cell-fleet's `ops/buzz/compose-overlays/buzz-aitools/install-mirror.sh <checkout>` ships `aitools_alerts/`, `mirror/`, `spec/` and `trust/` from a local checkout at the commit you choose, unpacks them into a new `~/.ai-tools-alerts.d/<id>`, and points the `~/ai-tools-alerts` symlink at it. To deploy a release, check out its tag (`git checkout v0.1.0`) and run the installer against that checkout. The exporter publishes `trust/root.pub` from the deployed copy as `https://buzz.ai-tools.md/alerts/root.pub`, beside `manifest.json`, so a reader can compare the root with GitHub's.

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import aitools_alerts
 from aitools_alerts import TRUST_ROOT_PUBKEY, nostr, schema
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,7 +19,7 @@ REAL_MANIFEST = ROOT / "trust" / "manifest.json"
 ATOM = "{http://www.w3.org/2005/Atom}"
 FEED_ID = "11111111-2222-4333-8444-555555555555"
 CRIT_ID = "66666666-7777-4888-9999-aaaaaaaaaaaa"
-NAMES = {"manifest.json", "feed.json", "critical.json", "index.html", "feed.atom", "feed.ja.atom"}
+NAMES = {"manifest.json", "root.pub", "feed.json", "critical.json", "index.html", "feed.atom", "feed.ja.atom"}
 
 spec = importlib.util.spec_from_file_location("export_mirror", SCRIPT)
 em = importlib.util.module_from_spec(spec)
@@ -51,6 +52,9 @@ def ev(sec, content, created_at=1793865600, tags=(), kind=9):
 def env(tmp_path, monkeypatch):
     """Channels file, a manifest signed by a throwaway root, an output dir."""
     monkeypatch.setattr(em, "TRUST_ROOT_PUBKEY", ROOT_PUB)
+    root_pub = tmp_path / "root.pub"
+    root_pub.write_text(ROOT_PUB + "\n")
+    monkeypatch.setattr(em, "ROOT_PUB", root_pub)
     channels = tmp_path / "channels.json"
     channels.write_text(json.dumps({"feed": FEED_ID, "critical": CRIT_ID}))
     man = nostr.sign_event(ROOT_SEC, {
@@ -100,8 +104,8 @@ def test_export_writes_atomically(env, monkeypatch):
     monkeypatch.setattr(em.os, "replace", spy)
     run_export(env, rows_reader([ev(CUR_SEC, "hello")]))
     assert {d.name for _, d in seen} == NAMES
-    assert [d.name for _, d in seen] == ["manifest.json", "critical.json", "feed.json", "index.html", "feed.atom",
-                                       "feed.ja.atom"]
+    assert [d.name for _, d in seen] == ["manifest.json", "root.pub", "critical.json", "feed.json", "index.html",
+                                       "feed.atom", "feed.ja.atom"]
     for src, dst in seen:
         assert src.parent == dst.parent == out
         assert src.name.startswith(".") and not src.exists()
@@ -115,7 +119,7 @@ def test_export_writes_atomically(env, monkeypatch):
 
     def flaky(src, dst):
         n["calls"] += 1
-        if n["calls"] == 3:
+        if n["calls"] == 4:
             raise OSError("disk full")
         real_replace(src, dst)
     monkeypatch.setattr(em.os, "replace", flaky)
@@ -272,9 +276,29 @@ def test_bad_manifest_refused(env, monkeypatch, capsys):
 
 def test_manifest_copied_verbatim(env, monkeypatch):
     monkeypatch.setattr(em, "TRUST_ROOT_PUBKEY", TRUST_ROOT_PUBKEY)  # the real root
+    monkeypatch.setattr(em, "ROOT_PUB", ROOT / "trust" / "root.pub")
     channels, _, out = env
     em.export(channels, REAL_MANIFEST, out, rows_reader([]))
     assert (out / "manifest.json").read_bytes() == REAL_MANIFEST.read_bytes()
+    assert (out / "root.pub").read_bytes() == (ROOT / "trust" / "root.pub").read_bytes()
+    assert (out / "root.pub").stat().st_mode & 0o777 == 0o644
+
+
+@pytest.mark.parametrize("content", [nostr.keygen()[1] + "\n", None, ROOT_PUB.encode() + b"\xff"])
+def test_wrong_root_pub_refused(env, monkeypatch, capsys, content):
+    """Another key, no file, or a non-ASCII byte: exit 1 and nothing written."""
+    channels, manifest, out = env
+    if content is None:
+        em.ROOT_PUB.unlink()
+    elif isinstance(content, bytes):
+        em.ROOT_PUB.write_bytes(content)
+    else:
+        em.ROOT_PUB.write_text(content)
+    assert em.main(["--channels", str(channels), "--manifest", str(manifest), "--out", str(out),
+                    "--rows-from", _write(out.parent / "rows.json", {"feed": [], "critical": []})]) == 1
+    assert list(out.iterdir()) == []
+    err = capsys.readouterr().err
+    assert "trust/root.pub" in err and "nothing written" in err
 
 
 def test_cli_rows_from_end_to_end(tmp_path):
@@ -540,6 +564,7 @@ def test_index_subscribe_block(env):
     sub = page(env).split('<section id="subscribe">')[1].split("</section>")[0]
     assert 'href="https://mirror.example.invalid/alerts/feed.atom"' in sub
     assert em.PIPX_LINE in sub and em.PIPX_LINE in (ROOT / "README.md").read_text()
+    assert em.PIPX_LINE.endswith("@v" + aitools_alerts.__version__)
     assert "#security-feed" in sub and "#security-critical" in sub and "buzz.ai-tools.md" in sub
     assert f'href="{em.REPO_URL}"' in sub
     assert "No advisories yet." in page(env)

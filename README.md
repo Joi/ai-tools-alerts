@@ -22,18 +22,22 @@ Trust root public key (x-only hex), the same value as `trust/root.pub`:
 afb55ca02209ca12e980bba67262f478b7977b6fdc6bbaf8c3b9fb96983c78a4
 ```
 
+Check it in two places that do not share an owner: `trust/root.pub` at the release tag on GitHub (`https://github.com/Joi/ai-tools-alerts/blob/v0.1.0/trust/root.pub`) and the copy the mirror publishes from the relay VM, `https://buzz.ai-tools.md/alerts/root.pub`. All three must show the same 64 characters; if they differ, do not install, and tell the ai-tools community.
+
 
 ## For members: install
 
 You need Python 3.11 or later and nothing else; the CLI uses the standard library only.
 
 ```
-pipx install git+https://github.com/Joi/ai-tools-alerts
+pipx install git+https://github.com/Joi/ai-tools-alerts@v0.1.0
 aitools-alerts init
 aitools-alerts run
 ```
 
-Without pipx: `python3 -m venv ~/.local/share/aitools-alerts && ~/.local/share/aitools-alerts/bin/pip install git+https://github.com/Joi/ai-tools-alerts`, then link the command where the schedules and the hook look for it: `mkdir -p ~/.local/bin && ln -s ~/.local/share/aitools-alerts/bin/aitools-alerts ~/.local/bin/`. The launchd and cron templates search `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and `/bin`; the hook searches `~/.local/bin`, then the session's PATH, then Homebrew.
+Without pipx: `python3 -m venv ~/.local/share/aitools-alerts && ~/.local/share/aitools-alerts/bin/pip install git+https://github.com/Joi/ai-tools-alerts@v0.1.0`, then link the command where the schedules and the hook look for it: `mkdir -p ~/.local/bin && ln -s ~/.local/share/aitools-alerts/bin/aitools-alerts ~/.local/bin/`. The launchd and cron templates search `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and `/bin`; the hook searches `~/.local/bin`, then the session's PATH, then Homebrew.
+
+Install from a release tag, as above, not from the default branch: the trust root is pinned in the code you install, so the tag is what fixes it. `CHANGELOG.md` lists each release. A PyPI package (`aitools-alerts`) is coming; until it ships, install from the tag.
 
 `init` writes `~/.config/aitools-alerts/config.toml` (mode 600). Reading alerts needs no Buzz account; `aitools-alerts keygen` makes a key only for ai-tools community members who want to post or discuss on the relay. The settings:
 

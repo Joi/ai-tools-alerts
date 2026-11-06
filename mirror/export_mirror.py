@@ -12,7 +12,8 @@ relay's PostgreSQL with one psql query, re-verifies every event's id and
 BIP-340 signature and drops (and counts) the failures, keeps only kind 9
 (NIP-29 group chat message) events signed by a poster in the current
 manifest, then writes feed.json, critical.json,
-feed.atom, index.html and manifest.json into --out, each to a
+feed.atom, index.html, manifest.json and root.pub (the checkout's
+trust/root.pub, refused unless it is the pinned root) into --out, each to a
 temp file in that directory and then os.replace. Nothing is written unless
 every channel read and the manifest check succeed, so a failed run leaves the
 previous files served.
@@ -53,13 +54,14 @@ QUERY = (
 DEFAULT_PSQL = ["docker", "exec", "buzz-prod-postgres-1", "psql", "-U", "buzz", "-d", "buzz", "-At", "-c"]
 PSQL_TIMEOUT = 120
 DEFAULT_MIRROR_URL = "https://buzz.ai-tools.md/alerts/"
+ROOT_PUB = REPO / "trust" / "root.pub"  # published beside manifest.json: a second origin for the root
 NIP01_KEYS = ("id", "pubkey", "created_at", "kind", "tags", "content", "sig")
 CHANNELS = ("feed", "critical")  # exactly these: the file names A5 reads
 _XML_ILLEGAL = re.compile(r"[^\t\n\r\u0020-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
 ATOM_NS = "http://www.w3.org/2005/Atom"
 MALFORMED = None  # a psql line that is not JSON
 CHAT_KIND = 9  # NIP-29 group chat message: the only kind posters and curators send
-PIPX_LINE = "pipx install git+https://github.com/Joi/ai-tools-alerts"  # README's, verbatim
+PIPX_LINE = "pipx install git+https://github.com/Joi/ai-tools-alerts@v0.1.0"  # README's, verbatim
 REPO_URL = "https://github.com/Joi/ai-tools-alerts"
 RELAY_HOST = "buzz.ai-tools.md"
 INDEX_LIMIT = 20
@@ -248,6 +250,17 @@ def check_manifest(path):
     if not mf.verify(m, TRUST_ROOT_PUBKEY):
         raise ExportError("manifest is not signed by the trust root")
     return raw, m
+
+
+def check_root_pub(path) -> bytes:
+    """trust/root.pub's bytes, if they hold the root the manifest was checked with."""
+    try:
+        raw = Path(path).read_bytes()
+    except OSError as e:
+        raise ExportError(f"trust/root.pub unusable: {e}") from None
+    if raw.strip() != TRUST_ROOT_PUBKEY.encode("ascii"):
+        raise ExportError("trust/root.pub is not the pinned trust root")
+    return raw
 
 
 # ---------------------------------------------------------------- rendering
@@ -559,12 +572,14 @@ def write_atomic(out: Path, name: str, data: bytes) -> None:
         raise
 
 
-def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_URL, now=None) -> dict:
+def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_URL, now=None,
+           root_pub=None) -> dict:
     out = Path(out)
     if not out.is_dir():
         raise ExportError(f"output directory {out} does not exist")
     channels = load_channels(channels_path)
     raw_manifest, m = check_manifest(manifest_path)
+    raw_root = check_root_pub(root_pub if root_pub is not None else ROOT_PUB)
     parts = urlsplit(mirror_url)
     if parts.scheme != "https" or not parts.hostname or any(c in URL_REFUSED for c in mirror_url):
         raise ExportError("--mirror-url must be an https URL with a host")
@@ -585,7 +600,7 @@ def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_
 
     # Manifest first: a reader never sees a new poster's event before the
     # manifest naming them. The page, then the feed's Atom, go last.
-    files = [("manifest.json", raw_manifest)]
+    files = [("manifest.json", raw_manifest), ("root.pub", raw_root)]
     for name in sorted(channels, key=lambda n: n == "feed"):
         files.append((f"{name}.json", channel_doc(name, events[name], generated_at)))
     files.append(("index.html", index))
