@@ -80,4 +80,12 @@ Do not use `--template`: it resolves desktop-app templates. The wrapper was then
 
 ## The exporter copy
 
-The mirror exporter on the VM runs from a pinned commit of this repo, never a clone the VM pulls. cell-fleet's `ops/buzz/compose-overlays/buzz-aitools/install-mirror.sh <checkout>` ships `aitools_alerts/`, `mirror/`, `spec/` and `trust/` from a local checkout at the commit you choose, unpacks them into a new `~/.ai-tools-alerts.d/<id>`, and points the `~/ai-tools-alerts` symlink at it. To deploy a release, check out its tag (`git checkout v0.1.0`) and run the installer against that checkout. The exporter publishes `trust/root.pub` from the deployed copy as `https://buzz.ai-tools.md/alerts/root.pub`, beside `manifest.json`, so a reader can compare the root with GitHub's.
+The mirror exporter on the VM runs from a pinned commit of this repo, never a clone the VM pulls. cell-fleet's `ops/buzz/compose-overlays/buzz-aitools/install-mirror.sh <dir>` ships `aitools_alerts/`, `mirror/`, `spec/` and `trust/` from a local directory as they are on disk, unpacks them into a new `~/.ai-tools-alerts.d/<id>`, and points the `~/ai-tools-alerts` symlink at it. It does not check git state, so give it a fresh export of the release, not a working checkout that may hold local edits:
+
+```bash
+d="$(mktemp -d)" && git -C <ai-tools-alerts checkout> archive v0.1.0 | tar -x -C "$d"
+git -C <ai-tools-alerts checkout> rev-parse 'v0.1.0^{commit}'   # record this sha on the kata issue
+./install-mirror.sh "$d"
+```
+
+The installer's `<id>` is a timestamp, so the recorded sha is the only note of what is deployed. The exporter publishes `trust/root.pub` from the deployed copy as `https://buzz.ai-tools.md/alerts/root.pub`, beside `manifest.json`, so a reader can compare the root with GitHub's.
