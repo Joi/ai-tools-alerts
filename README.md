@@ -29,6 +29,28 @@ Check it on two different hosts: `trust/root.pub` at the release tag on GitHub (
 
 You need Python 3.11 or later and nothing else; the CLI uses the standard library only.
 
+### Verify the release
+
+From v0.1.1 on, release tags are signed with an SSH key on Joi's GitHub account; v0.1.0 is unsigned. Check the tag before you install anything:
+
+```
+git clone https://github.com/Joi/ai-tools-alerts && cd ai-tools-alerts && git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.1
+```
+
+It passes only if it exits 0 and prints `Good "git" signature for 19930+Joi@users.noreply.github.com with ED25519 key SHA256:DS1FNZqf0HglC1QEQ50LS4AJny8P8MxvrHRj4vPEqaA`. `No principal matched` or `no signature found` is a failure: do not install.
+
+`trust/allowed_signers` comes from the same repository as the tag, so the check alone shows only that the two agree. Compare the full fingerprint with the copy on the mirror page, `https://buzz.ai-tools.md/alerts/`, which the relay VM serves, not GitHub; a missing copy is not a pass: wait for it. GitHub's tags page shows the tag as Verified, and `https://github.com/Joi.keys` lists the key; both depend on the GitHub account alone.
+
+Only after both checks pass, install the commit the tag names from this checkout (`--force` replaces an earlier install such as 0.1.0; `init` is for a first install):
+
+```
+git checkout --detach 'refs/tags/v0.1.1^{commit}' && pipx install --force .
+aitools-alerts init
+aitools-alerts run
+```
+
+Run the hook, template and skill commands below from this checkout. Until v0.1.1 is tagged, the release is the unsigned v0.1.0, which has no check:
+
 ```
 pipx install git+https://github.com/Joi/ai-tools-alerts@v0.1.0
 aitools-alerts init

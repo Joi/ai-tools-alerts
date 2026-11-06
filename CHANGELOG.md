@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Release tags are signed from v0.1.1 with an SSH key on the GitHub account; v0.1.0 stays unsigned. `trust/allowed_signers` and the README's "Verify the release" show how to check a tag and install from the verified checkout; the mirror page carries the key's fingerprint.
+
 - The CLI takes its home from the password database, not `HOME`, and the session-start hook runs it with a fixed PATH and environment. If you installed the hook from 0.1.0, copy it again and change its `command` in `~/.claude/settings.json` to the absolute path (README).
 
 ## 0.1.0 — 2026-11-06

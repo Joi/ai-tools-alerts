@@ -1,0 +1,38 @@
+# Run: release-tag-verification
+Instruction: Dispatch of ai-tools-alerts#b9mz in mode do-it, starting rung floored at medium; brief TASK-ai-tools-alerts#b9mz.md: add trust/allowed_signers with exactly the public-key line from the decided comment (principal 19930+Joi@users.noreply.github.com); README install section gets a short "Verify the release" block (clone, `git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.1`; v0.1.0 is unsigned, v0.1.1 the first signed tag; GitHub shows the tag as Verified); the mirror index subscribe block gets one line pointing at the verification section; CHANGELOG.md. No tag is cut. Under 80 changed lines.
+Stage: spec-review
+Rung: heavy (start-floor heavy: hard-trigger credential handling — the diff adds the key file members' `git tag -v` trusts; BR1 REV0 NOV1 INT2 FC1 = 5; dispatch floor was medium)
+Lens: "containing exactly the public-key line from the decided comment (principal 19930+Joi@users.noreply.github.com)"; "No tag is cut by this task"; "Under 80 changed lines"
+Spec: docs/superpowers/specs/2026-11-06-release-tag-verification-design.md   Plan: docs/superpowers/plans/2026-11-06-release-tag-verification.md
+Agency project: —
+Kata: ai-tools-alerts#b9mz
+Last reviewed: spec+plan 1eb44e7d00d6b893a814e1f023a0b1707269fcbe (pass 1); delta 1f37af88e12c3e88ac06eb0261f7bcaac0e5150a (pass 2)
+Pre-handoff review: — (not repoman-managed)
+
+## Scorecards
+Pass 1 [spec+plan, snapshot 1eb44e7, fresheyes gpt-6-astra high, REASON=-]: 4B/2S/0C/0R · fixed -/- · velocity = (—→6, escalation no)
+- B1 verification did not bind what is installed (install by URL refetches; hooks copied from default branch): fixed (verify section before init; `git checkout v0.1.1 && pipx install .`; later commands run from that checkout).
+- B2 Joi.keys and the Verified badge are the same GitHub account, not a second origin; abbreviated key: fixed (trust assumption stated; full fingerprint published on the mirror page, served from the relay VM; GitHub checks named as account-only).
+- B3 signer-file test passes a different ed25519 key: fixed (exact bytes; fingerprint computed from the file must equal the mirror constant).
+- B4 manual proof accepts `Good "git" signature` without principal/exit: fixed (exit 0 + principal; unknown-key and unsigned cases fail; explicit key path) — already run that way, Notes.
+- S1 line budget excludes docs/superpowers, untracked files missed: count moved to the committed diff (fixed); the exclusion rebutted (build precedent, fzr2 FS1).
+- S2 snapshot commit message vague: rebutted (dangling review snapshot, never lands).
+Pass 2 [spec+plan delta, git diff 1eb44e7 1f37af8, fresheyes gpt-6-astra high, --rebuttals, REASON=-]: 3B/0S/0C/0R · fixed 4/4 prior · velocity ↓ (6→3, escalation no) — both rebuttals accepted by the reviewer
+- DB1 one block ran checkout+install after a failed verify (newline ends the && chain): fixed (verify block alone; install block after the checks, "only after both checks pass").
+- DB2 verify placed after the v0.1.0 install; `pipx install .` skips an existing install: fixed (Verify section first; `pipx install --force .`; init marked first-install; v0.1.0 block labelled unsigned, below).
+- DB3 `git checkout v0.1.1` picks a same-named branch: fixed (`git checkout --detach 'refs/tags/v0.1.1^{commit}'`; proven in scratchpad, plain checkout landed on the branch).
+- No third spec/plan pass (heavy = one pass + one delta); the fixes are covered by the code round, whose diff contains the README.
+
+## Build
+- Agency: not used, as on the earlier runs of this build; one 37-line chunk built directly while the plan delta ran (files disjoint from the reviewed artifacts).
+- `pip install .` from the worktree into a scratch venv installs `aitools-alerts` and `aitools-alerts-poster` (the README's `pipx install .` path); venv deleted.
+- tests/mirror/test_export.py: 68 passed.
+
+## Chunks
+- [ ] trust file + README + mirror line + CHANGELOG + test
+
+## Notes
+- An accidental `fresheyes.sh --help` (no help flag; it took `--help` as scope) launched a detached review 20261106-080924-835d75; its process group was killed within a minute, no verdict used. Not counted as a pass.
+- Proof (git 2.55.0, throwaway ed25519 key in the scratchpad, deleted): a tag signed by a key in allowed_signers -> `Good "git" signature for <principal> with ED25519 key SHA256:…`, exit 0; signed by a key not in the file -> `Good "git" signature with ED25519 key …` + `No principal matched.`, exit 1; unsigned annotated tag -> `error: no signature found`, exit 1. README must say: success is the line naming 19930+Joi@users.noreply.github.com and exit 0.
+- kata search "signed tag allowed_signers": only b9mz itself.
+- Prior run: docs/superpowers/runs/2026-11-06-release-v0-1-0.md (fzr2) tagged v0.1.0 unsigned and filed b9mz.

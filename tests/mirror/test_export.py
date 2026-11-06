@@ -1,4 +1,6 @@
 """Mirror exporter (Task C1). Throwaway keys only; no relay data."""
+import base64
+import hashlib
 import importlib.util
 import json
 import os
@@ -567,7 +569,21 @@ def test_index_subscribe_block(env):
     assert em.PIPX_LINE.endswith("@v" + aitools_alerts.__version__)
     assert "#security-feed" in sub and "#security-critical" in sub and "buzz.ai-tools.md" in sub
     assert f'href="{em.REPO_URL}"' in sub
+    assert f'href="{em.VERIFY_URL}"' in sub and em.RELEASE_SIGNER_FP in sub
+    assert em.VERIFY_URL == em.REPO_URL + "#verify-the-release"
     assert "No advisories yet." in page(env)
+
+
+def test_release_signer_file_matches_mirror_and_readme():
+    line = (ROOT / "trust" / "allowed_signers").read_bytes()
+    assert line == (b"19930+Joi@users.noreply.github.com ssh-ed25519 "
+                    b"AAAAC3NzaC1lZDI1NTE5AAAAIL3Wufipxot75mXmXHbCsK0PYDG9McQzlxx0NKSq2fZ5\n")
+    digest = hashlib.sha256(base64.b64decode(line.split()[2])).digest()
+    assert em.RELEASE_SIGNER_FP == "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
+    readme = (ROOT / "README.md").read_text()
+    assert "### Verify the release" in readme and em.RELEASE_SIGNER_FP in readme
+    assert "git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.1" in readme
+    assert "git checkout --detach 'refs/tags/v0.1.1^{commit}' && pipx install --force ." in readme
 
 
 def test_index_escapes_post_text(env):
@@ -884,6 +900,7 @@ def test_index_has_a_japanese_section(env):
     ja = page(env).split('<section id="ja" lang="ja">')[1].split("</section>")[0]
     assert "<h2>日本語</h2>" in ja and 'href="https://mirror.example.invalid/alerts/feed.ja.atom"' in ja
     assert em.PIPX_LINE in ja and 'lang = "ja"' in ja and "#security-feed" in ja
+    assert f'href="{em.VERIFY_URL}"' in ja and em.RELEASE_SIGNER_FP in ja
 
 
 def test_ja_atom_updated_moves_forward_when_a_change_drops_a_translation(env):
