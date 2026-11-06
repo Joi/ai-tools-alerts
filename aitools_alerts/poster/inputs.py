@@ -24,7 +24,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from aitools_alerts import schema
+from aitools_alerts import config as _member_config, schema
 from aitools_alerts.poster import rules
 from aitools_alerts.poster.compose import SYNTHETIC, SYNTHETIC_ID
 from aitools_alerts.poster.candidates import Candidate
@@ -73,6 +73,10 @@ class Config:
     internal_host_suffixes: tuple[str, ...] = ()
     relay_ssh_host: str | None = None
     relay_send_wrapper: str | None = None
+    # Curator translation (ai-tools-alerts#bq8v): off by default; the helper is get_secret's.
+    translate_curator: bool = False
+    translate_mirror_url: str = _member_config.DEFAULT_MIRROR_URL
+    secrets_helper: Path | None = None
 
     def check_relay(self) -> None:
         """A run sends, so it needs the relay route; pending and resolve do not."""
@@ -91,13 +95,24 @@ class Config:
         in one directory never share a journal."""
         return self.ledger.with_name(self.ledger.name + ".poster-state.json")
 
+    @property
+    def translate_state(self) -> Path:
+        """Hold, daily call count and translated event ids (never the journal: rollback-safe)."""
+        return self.ledger.with_name(self.ledger.name + ".translate.json")
+
+    @property
+    def mirror_dir(self) -> Path:
+        """The verified mirror events the curator pass reads (a member-style state dir)."""
+        return self.ledger.with_name(self.ledger.name + ".mirror")
+
     def check_paths(self) -> None:
         """The ledger, its lock, the journal and the KEV cache are four distinct files."""
-        files = [self.ledger, self.ledger.with_name(self.ledger.name + ".lock"), self.state, self.kev_cache]
+        files = [self.ledger, self.ledger.with_name(self.ledger.name + ".lock"), self.state, self.kev_cache,
+                 self.translate_state, self.mirror_dir]
         # Case-folded: APFS is case-insensitive, so ledger.json and LEDGER.json are one file.
         real = [os.path.realpath(p).casefold() for p in files]
         if len(set(real)) != len(real):
-            raise ConfigError("ledger, ledger lock, state and kev_cache must be different files")
+            raise ConfigError("ledger, ledger lock, state, kev_cache and the translation files must differ")
 
 
 def load_config(path) -> Config:
@@ -136,6 +151,21 @@ def load_config(path) -> Config:
             if not isinstance(raw[k], str) or not pattern.fullmatch(raw[k]):
                 raise ConfigError(f"{k} must be {what}")
             out[k] = raw[k]
+    if "translate_curator" in raw:
+        if type(raw["translate_curator"]) is not bool:
+            raise ConfigError("translate_curator must be true or false")
+        out["translate_curator"] = raw["translate_curator"]
+    if "translate_mirror_url" in raw:
+        try:
+            out["translate_mirror_url"] = _member_config.check_mirror_url(raw["translate_mirror_url"])
+        except _member_config.ConfigError:
+            raise ConfigError("translate_mirror_url must be an https:// or file:// URL") from None
+    if "secrets_helper" in raw:
+        if not isinstance(raw["secrets_helper"], str) or not os.path.isabs(raw["secrets_helper"]):
+            raise ConfigError("secrets_helper must be an absolute path")
+        out["secrets_helper"] = Path(raw["secrets_helper"])
+    if out.get("translate_curator") and "secrets_helper" not in out:
+        raise ConfigError("translate_curator needs secrets_helper")
     cfg = Config(**out)
     cfg.check_paths()
     return cfg

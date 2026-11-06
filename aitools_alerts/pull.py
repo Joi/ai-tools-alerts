@@ -386,7 +386,7 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
     reply's ``aitools-alert`` block, if any, is a patch (see _apply_patch).
     Once a curator has posted or amended a thread, a relay-bot reply to it is
     discussion, so the bot can neither suppress, alter nor undo a curator's
-    word. A patch that fails validation, or raises, is counted and skipped.
+    word; only its ``lang:`` translations still count (ai-tools-alerts#bq8v). A patch that fails validation, or raises, is counted and skipped.
     A reply whose first line starts with ``lang:`` is a translation and
     nothing else (see parse_translation), under the same discussion rule. It
     is kept, the latest per language and target, when it names the root
@@ -427,9 +427,9 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
         t = roots.get(ref)
         if t is None or t[1]:
             continue
-        if role != "curator" and t[3]:
-            continue  # discussion: a curator posted or amended this thread
         first = _first_line(ev["content"])
+        if role != "curator" and t[3] and not first.startswith("lang:"):
+            continue  # discussion: a curator posted or amended this thread (a translation is not)
         if first.startswith("lang:"):  # a translation, never a patch or a retraction
             tr = parse_translation(ev["content"])
             if tr is not None and (tr[1] or ref) in t[6]:  # the root or a change to it

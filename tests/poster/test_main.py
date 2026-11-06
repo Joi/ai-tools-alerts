@@ -836,12 +836,13 @@ def test_digest_id_recorded_and_printed(env, capsys):
     env.collector([MAC])
     env.run()
     st = env.state()
-    st["digest_ids"] = [f"{i:064x}" for i in range(0xa0, 0xaa)]  # ten already
+    base = 1 << 252  # far from FakeSSH's counter, whatever ran before
+    st["digest_ids"] = [f"{i:064x}" for i in range(base, base + 10)]  # ten already
     env.config.state.write_text(json.dumps(st))
     code, _, ssh = env.run(now=at(5, 9))
     st = env.state()
     assert code == 0 and len(ssh.calls) == 1 and len(st["digest_ids"]) == 10
-    assert st["digest_ids"][0] == f"{0xa1:064x}"  # the oldest dropped
+    assert st["digest_ids"][0] == f"{base + 1:064x}"  # the oldest dropped
     sent = st["digest_ids"][-1]
     assert f"digest 2026-11-05 sent: {sent}" in capsys.readouterr().err
 

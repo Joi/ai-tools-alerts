@@ -34,6 +34,11 @@ expires the pending entry (24 h after the attempt) so the next run sends again.
 Every sent post also gets a Japanese ``lang: ja`` reply (docs/design.md "Post format"),
 journaled as its own item ``<key>:ja`` once the original is recorded and sent after
 every English send; its failure waits for the next run and never holds English work.
+
+With ``translate_curator`` on, a curator's post or amendment read from the mirror gets
+a machine translation (``translate``), journaled as ``curator:<event id>:<channel>:ja``
+after the English work of the run is saved. A 401/403 holds it until
+``translate-clear-hold``; nothing in that pass reaches the exit code.
 """
 
 from __future__ import annotations
@@ -48,10 +53,11 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from aitools_alerts import schema
-from aitools_alerts.poster import candidates, compose, inputs, ledger, rules, transport
+from aitools_alerts import TRUST_ROOT_PUBKEY, check, manifest, pull, schema
+from aitools_alerts.poster import candidates, compose, inputs, ledger, rules, translate, transport
 from aitools_alerts.poster.inputs import Config, ConfigError
 from aitools_alerts.poster.ledger import Ledger, LedgerError
+from aitools_alerts.state import State
 
 TOKYO = ZoneInfo("Asia/Tokyo")
 RANK = {"notice": 0, "high": 1, "critical": 2}
@@ -60,7 +66,10 @@ MAX_DIGESTED = 5000
 MAX_JA = 200  # Japanese replies waiting in the journal; past it the oldest unsent one is dropped
 MAX_JA_BYTES = 4 * 1024 * 1024  # and their text as JSON-escaped: well inside load_state's 16 MiB
 SUMMARY = ("candidates", "in_scope", "old", "roots", "copies", "replies", "held", "withheld",
-           "busy", "digest", "failed", "unknown", "ja", "ja_failed")
+           "busy", "digest", "failed", "unknown", "ja", "ja_failed", "untranslated", "translate_failed")
+MAX_TRIES = 3  # failed calls (network, 5xx) before an event counts as untranslated
+PASS_DEADLINE = 300  # seconds of curator translation per run (the ledger lock is held)
+_LEVEL_LINE = ("level: high", "level: notice")
 
 
 class _Stop(Exception):
@@ -189,11 +198,16 @@ class Run:
             return
         try:
             text = compose.lang_reply(it["ja"], of)
-            if len(text) > transport.MAX_CONTENT or "\x00" in text or not transport._HEX64.fullmatch(target or ""):
-                raise ValueError("message too large or not sendable")
         except ValueError:
             self.n["ja_failed"] += 1
             return
+        self._journal_ja(key, it["scope"], it["channel"], text, target)
+
+    def _journal_ja(self, key, scope, channel, text, target) -> bool:
+        """Append one Japanese reply to the journal, inside the backlog bound (not saved here)."""
+        if len(text) > transport.MAX_CONTENT or "\x00" in text or not transport._HEX64.fullmatch(target or ""):
+            self.n["ja_failed"] += 1
+            return False
         def size(o):  # an upper bound on its JSON size (every character escaped)
             return len(json.dumps(o["text"], ensure_ascii=True))
         waiting = [o for o in self.state["outbox"] if o["kind"] == "ja"]
@@ -205,12 +219,13 @@ class Run:
             self.n["ja_failed"] += 1
             _say(f"ja backlog full: dropped {(drop or {'key': key})['key']}")
             if drop is None:
-                return
+                return False
             self.state["outbox"].remove(drop)
             waiting.remove(drop)
-        self.state["outbox"].append({"key": key, "kind": "ja", "scope": it["scope"], "ids": [f"ja {key}"],
-                                     "channel": it["channel"], "text": text, "adv": None,
+        self.state["outbox"].append({"key": key, "kind": "ja", "scope": scope, "ids": [f"ja {key}"],
+                                     "channel": channel, "text": text, "adv": None,
                                      "exploited": False, "date": None, "sent": None, "root": target})
+        return True
 
     def drain_ja(self):
         """Send the Japanese replies, oldest first; the first failure ends them, nothing else."""
@@ -225,6 +240,107 @@ class Run:
             self.n["ja_failed"] += 1
             _say(f"ja replies stopped: {e}")
 
+    # ------------------------------------------------------------ curator translation
+
+    def curator_events(self, fetch=None, root=TRUST_ROOT_PUBKEY):
+        """(event, root id, of, channel) for each curator root or amendment in the mirror,
+        oldest first, from after the backfill floor. None when the mirror cannot be read."""
+        st = State.load(self.config.mirror_dir)
+        if translate.bounded(lambda: pull.fetch(self.config.translate_mirror_url, st, fetch=fetch,
+                                                root_pubkey=root, now=self.now), 120).error is not None:
+            return None
+        m, evs, names = st.manifest, st.events, {v: k for k, v in self.channels.items()}
+        self.mirror_ids, out = set(evs), []
+        for ev in sorted(evs.values(), key=lambda e: (e["created_at"], e["id"])):
+            h = [t[1] for t in ev["tags"] if len(t) >= 2 and t[0] == "h"]
+            if (manifest.role_of(m, ev["pubkey"]) != "curator" or ev["created_at"] < self.state["since"]
+                    or len(h) != 1 or h[0] not in names):
+                continue
+            ref = pull._thread_ref(ev)
+            if ref is None and pull._is_root(ev) and schema.parse_post(ev["content"]) is not None:
+                out.append((ev, ev["id"], None, names[h[0]], None))
+            elif ref in evs and (pull._first_line(ev["content"]) in _LEVEL_LINE or pull._patch(ev["content"]) is not None):
+                # An amendment's text says what changed, then the whole advisory as amended
+                # (readers show the root's translation and every change's, in order).
+                upto = (ev["created_at"], ev["id"])
+                t = next((t for t in pull.threads_from([e for e in evs.values()
+                                                        if (e["created_at"], e["id"]) <= upto], m)
+                          if t.root_id == ref and not t.retracted), None)
+                if t is not None:
+                    out.append((ev, ref, ev["id"], names[h[0]], t.adv))
+        return out
+
+    def translate_curator(self, fetch=None, call=None, read_key=translate.read_key, root=TRUST_ROOT_PUBKEY):
+        """Translate new curator events; returns the summary's translate= status. Each call
+        is counted (20 a UTC day) and its outcome cached by event id before anything is sent."""
+        if not self.config.translate_curator:
+            return "off"
+        path = self.config.translate_state
+        try:
+            tr = inputs.read_json(path, inputs.MAX_RECORD) if path.exists() else {}
+            tr = {"hold": None, "day": None, "calls": 0, "done": {}, **tr}
+            if not (set(tr) == {"hold", "day", "calls", "done"} and type(tr["calls"]) is int
+                    and isinstance(tr["done"], dict) and (tr["hold"] is None or isinstance(tr["hold"], dict))):
+                raise ValueError("not a translate state")
+        except (OSError, ValueError, RecursionError):
+            _say(f"translate state {path} unreadable; translating nothing")
+            return "state-error"
+        if tr["hold"] is not None:
+            return "held"
+        evs = self.curator_events(fetch, root)
+        if evs is None:
+            return "mirror-error"
+        today, memo, start = _utc_date(self.now), {}, time.monotonic()
+        tr["done"] = {k: v for k, v in tr["done"].items() if k in self.mirror_ids}  # bounded by the mirror
+        if tr["day"] != today:
+            tr.update(day=today, calls=0)
+        journaled = {o["key"] for o in self.state["outbox"]}
+        for ev, target, of, channel, adv in evs:
+            key = f"curator:{ev['id']}:{channel}:ja"
+            if tr["done"].get(ev["id"]) in ("ok", "untranslated"):
+                continue
+            if key in journaled:  # journaled by a run that stopped before recording it
+                tr["done"][ev["id"]] = "ok"
+                continue
+            text = ev["content"].split("\n```" + schema.INFO_STRING)[0].strip()
+            if adv is not None:
+                text += "\n\n" + _advisory_text(adv)
+            if text not in memo:
+                if tr["calls"] >= translate.DAILY_CALLS or time.monotonic() - start > PASS_DEADLINE:
+                    break
+                try:
+                    if call is None:  # the key is read once, only when a call is due
+                        call = translate.api_call(read_key(self.config.secrets_helper))
+                    tr["calls"] += 1
+                    inputs.write_json(path, tr)  # counted before the call: a crash never re-spends it
+                    memo[text] = translate.translate(text, call=call)
+                except translate.AuthError as e:
+                    tr["hold"] = {"at": self.now, "why": str(e)}
+                    inputs.write_json(path, tr)
+                    _say(f"translation held: the API refused the key ({e}); "
+                         "a human clears it with: aitools-alerts-poster translate-clear-hold")
+                    return "held"
+                except translate.CallError as e:
+                    self.n["translate_failed"] += 1
+                    tries = tr["done"].get(ev["id"], 0) + 1
+                    tr["done"][ev["id"]] = tries if tries < MAX_TRIES else "untranslated"
+                    self.n["untranslated"] += tries >= MAX_TRIES
+                    inputs.write_json(path, tr)
+                    _say(f"translation failed: {e}")
+                    break  # a service failure: the next run tries again
+            ok = False
+            if memo[text] is not None:
+                try:
+                    reply = compose.lang_reply(memo[text] + "\n\n" + translate.MARK, of)
+                    ok = self._journal_ja(key, None, channel, reply, target)
+                except ValueError:
+                    pass
+            if not ok:
+                self.n["untranslated"] += 1
+            tr["done"][ev["id"]] = "ok" if ok else "untranslated"
+            self.save()  # the journal first: a crash before the next write is reconciled above
+            inputs.write_json(path, tr)
+        return "ok"
 
     def _entry(self, it):
         e = self.led.thread(it["root"]) if it["root"] else self.led.lookup(it["ids"], scope=it["scope"])
@@ -498,6 +614,15 @@ def _real(got, counts: Counter):
     return out
 
 
+def _advisory_text(adv) -> str:
+    """The whole advisory in English lines, as a curator root's body reads."""
+    lines = [f"{adv.level.upper()}: {adv.title}"]
+    lines += [f"Affected: {p.name} {p.affected or '(all versions)'}." + (f" Fixed in {p.fixed}." if p.fixed
+              else " No fixed version yet.") for p in adv.products]
+    lines += [f"Action: {check.describe(a)}." for a in adv.actions]
+    return "\n".join(lines + [f"Source: {x.url}" for x in adv.sources])
+
+
 def _say(msg: str) -> None:
     print(f"aitools-alerts-poster: {msg}", file=sys.stderr)
 
@@ -574,7 +699,8 @@ def _inputs_field(status) -> str:
 
 def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
         http_status=rules.http_status, channels: dict | None = None,
-        digest_now: bool = False, kev_catalog: dict | None = None) -> tuple[int, str]:
+        digest_now: bool = False, kev_catalog: dict | None = None,
+        mirror_fetch=None, translate_call=None, **translate_kw) -> tuple[int, str]:
     """One poster run. Returns (exit code, one-line summary). ``digest_now`` sends
     today's digest whatever the hour (once per date); ``kev_catalog`` replaces the
     KEV fetch with a synthetic catalog (``inputs.read_kev_file``)."""
@@ -590,7 +716,7 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
     if not config.strip_hosts:  # the candidate filter then knows only the input's own host names
         print("aitools-alerts-poster: warning: strip_hosts is empty", file=sys.stderr)
     channels = channels or inputs.load_channels()
-    n, code, err, status, skipped = Counter(), 0, None, None, Counter()
+    n, code, err, status, skipped, tr_status = Counter(), 0, None, None, Counter(), "-"
     try:
         with Ledger(config.ledger) as led:
             state = inputs.load_state(config.state, now, config.backfill_days)
@@ -637,6 +763,11 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
                 state["deferred"] = list(r.deferred.values())  # replaces last run's list only now
             r.save()
             if english_ok:  # last, after marks and deferred are saved together
+                try:
+                    tr_status = r.translate_curator(mirror_fetch, translate_call, **translate_kw)
+                except Exception as e:  # noqa: BLE001 - nothing here may reach the run's exit code
+                    tr_status = "error"
+                    _say(f"curator translation stopped: {type(e).__name__}")
                 r.drain_ja()  # a Japanese reply never delays or stops an English post
     except LedgerError as e:
         code, err = 1, str(e)
@@ -645,7 +776,7 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
     if skipped:
         _say("skipped: " + ", ".join(f"{k}={v}" for k, v in sorted(skipped.items())))
     summary = "aitools-alerts-poster: " + " ".join(f"{k}={n[k]}" for k in SUMMARY) \
-        + " inputs=" + _inputs_field(status)
+        + " translate=" + tr_status + " inputs=" + _inputs_field(status)
     if err:
         print(f"aitools-alerts-poster: {err}", file=sys.stderr)
         summary += " error=" + ("internal" if err.startswith("internal error") else "ledger")
@@ -734,6 +865,22 @@ def resolve(now: int, config, key: str, *, delivered: str | None = None,
         return 1, [f"aitools-alerts-poster: internal error: {type(e).__name__}: {e}"]
 
 
+def clear_hold(config) -> tuple[int, list[str]]:
+    """Remove the translation hold a 401/403 set, under the ledger lock."""
+    try:
+        with Ledger(config.ledger):
+            path = config.translate_state
+            tr = inputs.read_json(path, inputs.MAX_RECORD) if path.exists() else {}
+            if not isinstance(tr, dict) or not tr.get("hold"):
+                return 0, ["aitools-alerts-poster: no translation hold"]
+            hold, tr["hold"] = tr["hold"], None
+            inputs.write_json(path, tr)
+            return 0, [f"aitools-alerts-poster: translation hold cleared (set at {_iso(hold.get('at', 0))}, "
+                       f"{hold.get('why')})"]
+    except (LedgerError, OSError, ValueError, TypeError) as e:
+        return 1, [f"aitools-alerts-poster: {type(e).__name__}: {e}"]
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="aitools-alerts-poster",
                                 description="Post ai-tools security alerts to the relay (hourly).")
@@ -755,14 +902,18 @@ def main(argv=None) -> int:
     how.add_argument("--not-delivered", action="store_true",
                      help="it did not post: send it again on the next run (24 h after the attempt)")
     sp.add_argument("--reason", help="why it is known not delivered (required with --not-delivered)")
+    hp = sub.add_parser("translate-clear-hold", help="resume curator translation after an auth failure")
+    hp.add_argument("--config", type=Path, default=inputs.DEFAULT_CONFIG)
     a = p.parse_args(argv)
-    if a.cmd in ("pending", "resolve"):
+    if a.cmd in ("pending", "resolve", "translate-clear-hold"):
         try:
             cfg = inputs.load_config(a.config)
         except ConfigError as e:
             print(f"aitools-alerts-poster: config error: {e}", file=sys.stderr)
             return 2
-        if a.cmd == "pending":
+        if a.cmd == "translate-clear-hold":
+            code, lines = clear_hold(cfg)
+        elif a.cmd == "pending":
             code, lines = pending(int(time.time()), cfg)
         else:
             code, lines = resolve(int(time.time()), cfg, a.key, delivered=a.delivered, reason=a.reason)

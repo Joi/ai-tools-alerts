@@ -711,11 +711,13 @@ def test_lang_reply_with_a_block_is_ignored_entirely(mirror):
     assert t.adv.level == "critical" and t.updated_at == T0 + 100
 
 
-def test_relay_bot_cannot_translate_a_curator_thread(mirror):
+def test_relay_bot_translates_a_curator_thread_until_the_curator_does(mirror):
     root = mirror.root_post(mirror.cur_sec)
     mirror.reply(mirror.bot_sec, root, "lang: ja\n\nボットの訳")
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(level="notice"), created_at=T0 + 250)  # discussion
     do_pull(mirror)
-    assert threads()[0].translations == {}  # discussion: the curator's word stands
+    assert threads()[0].translations == {"ja": "ボットの訳"}  # ai-tools-alerts#bq8v
+    assert threads()[0].adv.level == "critical"
     mirror.reply(mirror.cur_sec, root, "lang: ja\n\nキュレーターの訳", created_at=T0 + 300)
     do_pull(mirror)
     assert threads()[0].translations == {"ja": "キュレーターの訳"}

@@ -861,7 +861,7 @@ def test_ja_atom_translation_rules_match_the_cli(env):
     c = ev(CUR_SEC, advisory_post("Curated", "x"), 1793865610)
     other = ev(BOT_SEC, advisory_post("Other", "x"), 1793865620)
     rows = [a, c, other,
-            _ja(c, "ボットの訳", 1793865700),  # discussion on a curator thread
+            _ja(c, "ボットの訳", 1793865700),  # a bot translation counts on a curator thread (bq8v)
             ev(BOT_SEC, "lang: ja\n\n言及", 1793865710, tags=[("e", a["id"])]),  # unmarked: a mention
             _ja(other, "別スレッド", 1793865720, of=a["id"]),  # names another thread's root
             ev(BOT_SEC, "lang: ja\n\n同時刻B", 1793865730, tags=[("e", a["id"], "", "root")]),
@@ -870,7 +870,7 @@ def test_ja_atom_translation_rules_match_the_cli(env):
     first = {x.findtext(f"{ATOM}id"): x.findtext(f"{ATOM}title") for x in
                    ET.parse(env[2] / "feed.ja.atom").getroot().findall(f"{ATOM}entry")}
     winner = max(rows[-2:], key=lambda e: e["id"])["content"].split("\n")[-1]
-    assert first == {f"urn:nostr:event:{a['id']}:ja": winner, f"urn:nostr:event:{c['id']}:ja": "Curated",
+    assert first == {f"urn:nostr:event:{a['id']}:ja": winner, f"urn:nostr:event:{c['id']}:ja": "ボットの訳",
                    f"urn:nostr:event:{other['id']}:ja": "Other"}
     run_export(env, rows_reader(rows[:-2] + rows[-1:] + rows[-2:-1]))  # tie order does not matter
     assert {x.findtext(f"{ATOM}id"): x.findtext(f"{ATOM}title") for x in
