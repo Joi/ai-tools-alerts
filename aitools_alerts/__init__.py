@@ -1,6 +1,6 @@
 """ai-tools security alerts: signed advisories for people running AI agents."""
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 from pathlib import Path as _Path
 

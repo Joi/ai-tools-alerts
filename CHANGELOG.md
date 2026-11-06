@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.4 — 2026-11-06
+
+The release signer's principal in `trust/allowed_signers` is the maintainer's GitHub no-reply address instead of a personal email; the earlier signed tags (v0.1.1 to v0.1.3) were re-signed with the same key under that principal, so `git tag -v` with the current `trust/allowed_signers` verifies all of them. The commit history's author address changed the same way. No code change. Tagged `v0.1.4`, signed.
+
 ## 0.1.3 — 2026-11-06
 
 README: a "Whom you are trusting" section states that the project's authority rests on Joi Ito and what bounds the trust a member extends. No code change. Tagged `v0.1.3`, signed.

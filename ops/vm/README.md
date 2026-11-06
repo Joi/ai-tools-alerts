@@ -83,8 +83,8 @@ Do not use `--template`: it resolves desktop-app templates. The wrapper was then
 The mirror exporter on the VM runs from a pinned commit of this repo, never a clone the VM pulls. cell-fleet's `ops/buzz/compose-overlays/buzz-aitools/install-mirror.sh <dir>` ships `aitools_alerts/`, `mirror/`, `spec/` and `trust/` from a local directory as they are on disk, unpacks them into a new `~/.ai-tools-alerts.d/<id>`, and points the `~/ai-tools-alerts` symlink at it. It does not check git state, so give it a fresh export of the release, not a working checkout that may hold local edits:
 
 ```bash
-d="$(mktemp -d)" && git -C <ai-tools-alerts checkout> archive v0.1.3 | tar -x -C "$d"
-git -C <ai-tools-alerts checkout> rev-parse 'v0.1.3^{commit}'   # record this sha on the kata issue
+d="$(mktemp -d)" && git -C <ai-tools-alerts checkout> archive v0.1.4 | tar -x -C "$d"
+git -C <ai-tools-alerts checkout> rev-parse 'v0.1.4^{commit}'   # record this sha on the kata issue
 ./install-mirror.sh "$d"
 ```
 
