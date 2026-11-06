@@ -13,6 +13,17 @@ Two audiences get the same alerts.
 
 The CLI is the product for your agent and needs nothing else. The Buzz channels are where people talk about an alert, and where a member hears about a critical one at once instead of at the next hourly run.
 
+## Whom you are trusting
+
+Trusting this project means trusting Joi Ito. Everything an alert's authority rests on is his:
+
+- The trust root key that signs the manifest is a key he holds. The manifest names who may post: Joi as curator, and jibot, the automated poster he runs.
+- The relay and the mirror run on a machine he operates. Because every post is signed, someone who takes that machine can delay or hide alerts but cannot forge one; revoking a key is a manifest update only the root key can sign.
+- Release tags are signed with a key on his GitHub account, and the repository is his.
+- What the bot posts comes from public sources (CISA's Known Exploited Vulnerabilities catalogue and vendor security releases), selected and ranked by the code in this repository, with no person reading each item before it posts. A curator post is Joi writing by hand.
+
+If you do not trust him, do not install this. What bounds the trust you extend: the CLI prepares fixes and executes nothing unless you opt in, action by action; the actions it can ever take are a fixed list in this repository (`spec/actions.json`), readable before you install; and a post from the bot is never applied automatically, whatever your settings.
+
 ## Status
 
 Live. The poster runs every hour on the fleet: it posts a critical advisory to `#security-critical` and `#security-feed` within the hour it appears, and a digest of the day's advisories to `#security-feed` daily at 09:00 Tokyo time. The signed mirror at `https://buzz.ai-tools.md/alerts/` is rewritten every 5 minutes: a page listing the latest advisories, `feed.atom` for feed readers, and the `feed.json`, `critical.json` and `manifest.json` files the CLI reads. The mirror carries only posts signed by a key in the trust manifest. The CLI, the skills, the session-start hook and the schedule templates below work against it today.
