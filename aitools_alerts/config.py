@@ -1,7 +1,9 @@
 """The member's settings: ~/.config/aitools-alerts/config.toml.
 
-Every path is computed when called, from ``Path.home()``, so a test that sets
-HOME never touches the real one. Unknown keys are ignored; a known key with
+Every path is computed when called, from ``home()``: the home directory in
+the password database, not HOME, because a project's .claude/settings.json
+env block reaches the session hook and must not choose the config, the key
+or the state. Tests patch ``config.home``. Unknown keys are ignored; a known key with
 the wrong type is an error naming the key. ``auto_apply`` keeps only verbs in
 the fixed vocabulary, ``notify`` only known channels. Secrets are not kept
 here: the Telegram bot token lives in its own mode-600 file.
@@ -10,6 +12,7 @@ here: the Telegram bot token lives in its own mode-600 file.
 from __future__ import annotations
 
 import os
+import pwd
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -19,7 +22,7 @@ from . import schema
 from .check import Config
 
 __all__ = ["DEFAULT_MIRROR_URL", "CHANNELS", "ConfigError", "Settings", "config_dir",
-           "config_path", "key_path", "state_dir", "load", "write_default"]
+           "config_path", "home", "key_path", "state_dir", "load", "write_default"]
 
 DEFAULT_MIRROR_URL = "https://buzz.ai-tools.md/alerts/"
 CHANNELS = ("desktop", "imessage", "signal", "telegram", "webhook")
@@ -35,8 +38,20 @@ class ConfigError(ValueError):
     """The config file does not parse, or a key has the wrong type or form."""
 
 
+def home() -> Path:
+    """The real uid's home from the password database. Never HOME: with no
+    entry (some containers) the CLI stops rather than trust the environment."""
+    try:
+        d = pwd.getpwuid(os.getuid()).pw_dir
+    except KeyError:
+        d = ""
+    if not d.startswith("/"):
+        raise ConfigError(f"uid {os.getuid()} has no home directory in the password database")
+    return Path(d)
+
+
 def config_dir() -> Path:
-    return Path.home() / ".config" / "aitools-alerts"
+    return home() / ".config" / "aitools-alerts"
 
 
 def config_path() -> Path:
@@ -48,7 +63,7 @@ def key_path() -> Path:
 
 
 def state_dir() -> Path:
-    return Path.home() / ".local" / "state" / "aitools-alerts"
+    return home() / ".local" / "state" / "aitools-alerts"
 
 
 def _token_default() -> str:
@@ -139,6 +154,8 @@ def load(path: Path | None = None) -> Settings:
     token = raw.get("telegram_token_file", _token_default())
     if not isinstance(token, str):
         raise ConfigError("telegram_token_file must be a path string")
+    if token == "~" or token.startswith("~/"):
+        token = str(home()) + token[1:]
     out["telegram_token_file"] = os.path.expanduser(token)
     return Settings(**out)
 

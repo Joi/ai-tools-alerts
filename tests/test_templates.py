@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import pwd
 import re
 import shutil
 import subprocess
@@ -189,9 +190,23 @@ def test_two_skills_share_one_procedure():
 
 # ----------------------------------------------------------------------- hook
 
+HOME_BLOCK = re.compile(r"# --- home: begin\n.*?# --- home: end\n", re.S)
+BOUNDED = "{h}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+
+
+def _hook_copy(tmp_path: Path, home: Path) -> Path:
+    """The hook with its password-database block replaced by HOME=<home>."""
+    text = HOOK.read_text()
+    assert len(HOME_BLOCK.findall(text)) == 1
+    copy = tmp_path / "hook.sh"
+    copy.write_text(HOME_BLOCK.sub(f"HOME='{home}'; export HOME\n", text))
+    return copy
+
+
 def _run_hook(tmp_path: Path, exit_code: int | None, stdout: str = "echo noise on stdout") -> subprocess.CompletedProcess:
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
+    home = tmp_path / "home"
+    bindir = home / ".local" / "bin"
+    bindir.mkdir(parents=True)
     if exit_code is not None:
         stub = bindir / "aitools-alerts"
         # The stub talks on stdout and stderr and reads stdin, so the test
@@ -202,8 +217,12 @@ def _run_hook(tmp_path: Path, exit_code: int | None, stdout: str = "echo noise o
                         f"{stdout}\necho noise on stderr >&2\n"
                         f"exit {exit_code}\n")
         stub.chmod(0o755)
-    env = {"PATH": f"{bindir}:/usr/bin:/bin", "HOME": str(tmp_path)}
-    return subprocess.run(["/bin/sh", str(HOOK)], input='{"hook_event_name":"SessionStart"}',
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
+    copy = _hook_copy(tmp_path, home)
+    copy.chmod(0o755)  # run by its #! line, as Claude Code does
+    env.update({"SHELLOPTS": "xtrace", "PS4": f'$(touch {tmp_path}/ps4)', "BASH_FUNC_printf%%": "() { :; }"})
+    return subprocess.run([str(copy)],
+                          input='{"hook_event_name":"SessionStart"}',
                           capture_output=True, text=True, env=env, timeout=30)
 
 
@@ -216,27 +235,54 @@ def _run_hook(tmp_path: Path, exit_code: int | None, stdout: str = "echo noise o
 ], ids=["exit2", "exit0", "exit1", "exit127", "missing"])
 def test_session_start_hook(tmp_path, exit_code, expected):
     if exit_code is None and any(os.path.exists(d + "/aitools-alerts")
-                                 for d in ("/opt/homebrew/bin", "/usr/local/bin")):
+                                 for d in ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin")):
         pytest.skip("a real aitools-alerts is installed where the hook also searches")
     r = _run_hook(tmp_path, exit_code)
     assert r.returncode == 0
     assert r.stdout == expected
-    assert r.stderr == ""
+    assert r.stderr == "" and not (tmp_path / "ps4").exists()  # no xtrace, no imported printf
     if exit_code is not None:
         assert (tmp_path / "args").read_text() == "args: run --json\n"
         assert (tmp_path / "stdin").read_text() == ""
 
 
-def test_hook_finds_the_cli_in_local_bin(tmp_path):
-    """A venv install linked into ~/.local/bin is found with a bare PATH."""
-    home = tmp_path / "home"
-    (home / ".local" / "bin").mkdir(parents=True)
-    stub = home / ".local" / "bin" / "aitools-alerts"
-    stub.write_text("#!/bin/sh\nexit 2\n")
-    stub.chmod(0o755)
-    r = subprocess.run(["/bin/sh", str(HOOK)], input="", capture_output=True, text=True,
-                       env={"PATH": "/usr/bin:/bin", "HOME": str(home)}, timeout=30)
-    assert (r.returncode, r.stdout) == (0, HOOK_LINE + "\n")
+CLI_CALL = "aitools-alerts run --json"
+
+
+def test_hook_ignores_project_home_and_path(tmp_path):
+    """A project's settings.json env points HOME and PATH into its checkout,
+    each holding an aitools-alerts. The real hook, with only the CLI call
+    swapped for a probe (a real CLI may be installed), takes HOME from the
+    password database and resolves the CLI from the bounded PATH."""
+    project = tmp_path / "project"
+    for d in (project / "bin", project / ".local" / "bin"):
+        d.mkdir(parents=True)
+        stub = d / "aitools-alerts"
+        stub.write_text(f'#!/bin/sh\ntouch "{tmp_path}/project-ran"\nexit 2\n')
+        stub.chmod(0o755)
+    text = HOOK.read_text()
+    assert text.count(CLI_CALL) == 1
+    out = tmp_path / "probe"
+    probe = tmp_path / "hook.sh"
+    probe.write_text(text.replace(CLI_CALL, "/bin/sh -c 'printf \"%s\\n\" \"$HOME\" \"$PATH\" "
+                                  f"\"$(command -v aitools-alerts)\" > {out}; /usr/bin/env >> {out}'"))
+    r = subprocess.run(["/bin/sh", str(probe)], input="", capture_output=True, text=True,
+                       env={"HOME": str(project), "PATH": f"{project}/bin:/usr/bin:/bin",
+                            "PYTHONPATH": str(project), "AITOOLS_ALERTS_TRUST_ROOT": "0" * 64,
+                            "DBUS_SESSION_BUS_ADDRESS": f"unix:path={project}/bus"},
+                       timeout=30)
+    assert (r.returncode, r.stdout, r.stderr) == (0, "", "")
+    pw = pwd.getpwuid(os.getuid()).pw_dir
+    home, path, cli, *env = out.read_text().splitlines()
+    assert (home, path) == (pw, BOUNDED.replace("{h}", pw))
+    got = dict(ln.split("=", 1) for ln in env)
+    run = f"/run/user/{os.getuid()}"  # Linux: the bus only from the uid's directory
+    bus = {"XDG_RUNTIME_DIR": run, "DBUS_SESSION_BUS_ADDRESS": f"unix:path={run}/bus"}
+    assert {k: got[k] for k in bus if k in got} == (bus if os.path.exists(run + "/bus") else {})
+    assert set(got) - set(bus) <= {"HOME", "PATH", "USER", "LOGNAME", "PWD", "SHLVL", "_", "OLDPWD",
+                                   "__CF_USER_TEXT_ENCODING"}
+    assert str(project) not in cli
+    assert not (tmp_path / "project-ran").exists()
 
 
 def _stub_home(tmp_path: Path) -> Path:

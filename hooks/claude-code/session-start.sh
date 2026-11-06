@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/sh -p
 # Claude Code SessionStart hook for ai-tools-alerts.
 #
 # Runs one pull, check and notify. When a critical advisory that matches
@@ -16,13 +16,34 @@
 # cannot forge the stale_since match: JSON writes a quote inside a string
 # as \", so only the key itself is followed by an unescaped quote.
 #
-# PATH: the session's own PATH, with ~/.local/bin (pipx, or the link the
-# README makes for a venv install) in front and Homebrew at the end, the
-# same places the launchd template searches.
+# Environment: the session's environment includes the env block of the
+# project's .claude/settings.json, so a project could point HOME at its own
+# config and state, PATH at its own aitools-alerts, or PYTHONPATH at its own
+# code. The hook takes HOME from the password database (the CLI does too)
+# and runs the CLI in an empty environment holding only HOME, USER, LOGNAME
+# and the launchd template's PATH: ~/.local/bin (pipx, or the link the
+# README makes for a venv install), Homebrew, /usr/bin and /bin. Register
+# this file by its absolute path (README): a ~ in the hook command expands
+# against the session's HOME. -p stops bash, which is /bin/sh on macOS, from
+# importing functions and SHELLOPTS from the environment. On Linux the
+# desktop bus comes from the uid's /run/user directory, never the session.
+# If the user cannot be resolved, the hook prints nothing.
 
-PATH="$HOME/.local/bin:$PATH:/opt/homebrew/bin:/usr/local/bin"
+# --- home: begin
+u=$(/usr/bin/id -un 2>/dev/null) || exit 0
+case $u in '' | -* | *[!A-Za-z0-9._-]*) exit 0 ;; esac
+case $u in *[!0-9]*) ;; *) exit 0 ;; esac   # bash reads ~0 as the directory stack
+eval "HOME=~$u"
+case $HOME in /*) ;; *) exit 0 ;; esac
+export HOME
+# --- home: end
+PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 export PATH
-out=$(aitools-alerts run --json </dev/null 2>/dev/null)
+r=/run/user/$(/usr/bin/id -u)
+set --
+if [ -S "$r/bus" ]; then set -- XDG_RUNTIME_DIR="$r" DBUS_SESSION_BUS_ADDRESS="unix:path=$r/bus"; fi
+out=$(/usr/bin/env -i HOME="$HOME" PATH="$PATH" USER="$u" LOGNAME="$u" "$@" \
+    aitools-alerts run --json </dev/null 2>/dev/null)
 if [ "$?" -eq 2 ]; then
     printf '%s\n' "AITOOLS-ALERT: critical advisory matches this machine; run the aitools-alerts skill"
 fi

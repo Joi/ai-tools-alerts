@@ -35,7 +35,7 @@ aitools-alerts init
 aitools-alerts run
 ```
 
-Without pipx: `python3 -m venv ~/.local/share/aitools-alerts && ~/.local/share/aitools-alerts/bin/pip install git+https://github.com/Joi/ai-tools-alerts@v0.1.0`, then link the command where the schedules and the hook look for it: `mkdir -p ~/.local/bin && ln -s ~/.local/share/aitools-alerts/bin/aitools-alerts ~/.local/bin/`. The launchd and cron templates search `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and `/bin`; the hook searches `~/.local/bin`, then the session's PATH, then Homebrew.
+Without pipx: `python3 -m venv ~/.local/share/aitools-alerts && ~/.local/share/aitools-alerts/bin/pip install git+https://github.com/Joi/ai-tools-alerts@v0.1.0`, then link the command where the schedules and the hook look for it: `mkdir -p ~/.local/bin && ln -s ~/.local/share/aitools-alerts/bin/aitools-alerts ~/.local/bin/`. The launchd and cron templates search `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and `/bin`; the hook searches the same directories and nothing else.
 
 Install from a release tag, as above, not from the default branch: the trust root is pinned in the code you install, so the tag is what fixes it. `CHANGELOG.md` lists each release. A PyPI package (`aitools-alerts`) is coming; until it ships, install from the tag.
 
@@ -71,7 +71,7 @@ The `grep` removes only lines identical to the template's, so running it again r
 
 ### Interrupt the next Claude Code session
 
-Copy `hooks/claude-code/session-start.sh` to `~/.claude/hooks/aitools-alerts-session-start.sh`, make it executable, and add it to `~/.claude/settings.json`:
+Copy `hooks/claude-code/session-start.sh` to `~/.claude/hooks/aitools-alerts-session-start.sh`, make it executable, and add it to `~/.claude/settings.json` with `/Users/you` replaced by your home directory (`echo ~`). Write the path out in full, not with `~`: a project can change `HOME` for the session, and the command's `~` would then expand into the project.
 
 ```json
 {
@@ -80,7 +80,7 @@ Copy `hooks/claude-code/session-start.sh` to `~/.claude/hooks/aitools-alerts-ses
       {
         "matcher": "startup",
         "hooks": [
-          {"type": "command", "command": "~/.claude/hooks/aitools-alerts-session-start.sh", "timeout": 90}
+          {"type": "command", "command": "/Users/you/.claude/hooks/aitools-alerts-session-start.sh", "timeout": 90}
         ]
       }
     ]
@@ -101,6 +101,8 @@ AITOOLS-ALERT: alerts may be stale (no new signed post for over 3 days, or a tru
 ```
 
 Otherwise it prints nothing (neither line), and it never fails a session: a missing CLI or an unreadable mirror is silent. It usually takes a few seconds. On a slow network it takes longer: each of the three mirror files has a 20-second timeout and each notification a 30-second one, so there is no fixed bound. When Claude Code stops the hook at its timeout (90 seconds here), the line does not appear; an alert the CLI had already marked seen was marked so only after a notification channel accepted it, so you still got that notification.
+
+A project's `.claude/settings.json` can set environment variables for the session, and the hook inherits them. So the hook and the CLI take your home directory from the password database, not from `HOME`, and the hook runs the CLI with the fixed PATH above and no other variable from the session: a project cannot choose the config, the key, the state, the `aitools-alerts` binary the hook runs or the Python code it loads. (Variables the dynamic loader reads, such as `LD_PRELOAD`, act before any script runs; the hook cannot stop them.) If you set `HOME` to something other than your account's home directory, the CLI still uses the account's; a user with no home directory in the password database gets an error.
 
 The hourly job is the main interrupt: its notification (desktop by default) marks the alert seen, and the hook then stays quiet. The hook covers a session that starts before the hourly job has run. To have Claude Code check at every session start as well, paste `snippets/AGENTS.md` into `~/.claude/CLAUDE.md`.
 

@@ -218,7 +218,10 @@ def collect(home: Path | None = None, runner: Runner | None = None,
             apps_dirs: list[Path] | None = None) -> Inventory:
     """Everything installed, keyed by every scope ecosystem. Never raises."""
     try:
-        home = Path(home) if home is not None else Path.home()
+        if home is None:
+            from .config import home as passwd_home
+            home = passwd_home()
+        home = Path(home)
     except Exception:
         home = Path("/nonexistent")
     runner = runner or default_runner

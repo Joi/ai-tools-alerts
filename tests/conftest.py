@@ -1,8 +1,17 @@
 """Fixtures for the pull and CLI tests."""
 
+from pathlib import Path
+
 import pytest
 
+from aitools_alerts import config
 from mirror_helpers import Mirror
+
+
+@pytest.fixture(autouse=True)
+def _home_from_env(monkeypatch):
+    """Tests isolate by HOME; tests/test_home.py restores the passwd resolver."""
+    monkeypatch.setattr(config, "home", Path.home)
 
 
 @pytest.fixture
