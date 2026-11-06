@@ -29,7 +29,12 @@
 # The key file and the CLI default to $HOME/.buzz-keys/agent.nsec and
 # $HOME/buzz/target/release/buzz; an unset HOME stops the wrapper (exit 1).
 # BUZZ_SEND_KEY_FILE and BUZZ_SEND_BUZZ override the two paths for the tests;
-# the only caller is the key's own uid, so they grant nothing new.
+# the only caller is the key's own uid, so they grant nothing new. Run by
+# the poster's login-shell guard (ops/vm/aitools-poster-shell) through sudo,
+# HOME is the relay user's, not the poster user's: under sudo's default
+# env_reset policy (checked at install, ops/vm/README.md) sudo sets HOME to
+# the target user's home and drops other variables, so the defaults find that
+# user's key and CLI, and BUZZ_SEND_* set by the caller do not pass through.
 #
 # Never add `set -x` here. The first command turns xtrace off, so neither
 # `bash -x buzz-send` nor SHELLOPTS=xtrace in the environment traces the key.

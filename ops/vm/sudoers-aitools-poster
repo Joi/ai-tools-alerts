@@ -1,0 +1,8 @@
+# sudoers drop-in for the poster's send-only route (ai-tools-alerts#w75s).
+# Installed at /etc/sudoers.d/aitools-poster, root-owned, mode 440. Replace
+# RELAY_USER with the relay VM's login user (the owner of ~/bin/buzz-send),
+# check the file with `visudo -cf <file>`, then move it into place.
+# sudoers `*` also matches spaces, so this rule only pins the program and the
+# leading arguments; ops/vm/aitools-poster-shell is the strict check.
+# sudo resets the environment and sets HOME to RELAY_USER's home.
+aitools-poster ALL=(RELAY_USER) NOPASSWD: /home/RELAY_USER/bin/buzz-send messages send --channel [0-9a-f]* --content -, /home/RELAY_USER/bin/buzz-send messages send --channel [0-9a-f]* --content - --reply-to [0-9a-f]*
