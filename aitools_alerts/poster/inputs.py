@@ -111,7 +111,8 @@ class Config:
                  self.translate_state, self.mirror_dir]
         # Case-folded: APFS is case-insensitive, so ledger.json and LEDGER.json are one file.
         real = [os.path.realpath(p).casefold() for p in files]
-        if len(set(real)) != len(real):
+        mirror = real[-1] + os.sep  # the mirror directory holds its own state files and lock
+        if len(set(real)) != len(real) or any(r.startswith(mirror) for r in real[:-1]):
             raise ConfigError("ledger, ledger lock, state, kev_cache and the translation files must differ")
 
 

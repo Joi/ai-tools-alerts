@@ -242,21 +242,31 @@ class Run:
 
     # ------------------------------------------------------------ curator translation
 
-    def curator_events(self, fetch=None, root=TRUST_ROOT_PUBKEY):
+    def curator_events(self, fetch=None, root=TRUST_ROOT_PUBKEY, done=()):
         """(event, root id, of, channel) for each curator root or amendment in the mirror,
         oldest first, from after the backfill floor. None when the mirror cannot be read."""
-        st = State.load(self.config.mirror_dir)
-        if translate.bounded(lambda: pull.fetch(self.config.translate_mirror_url, st, fetch=fetch,
-                                                root_pubkey=root, now=self.now), 120).error is not None:
+        try:
+            st = State.load(self.config.mirror_dir)
+            if translate.bounded(lambda: pull.fetch(self.config.translate_mirror_url, st, fetch=fetch,
+                                                    root_pubkey=root, now=self.now), 120).error is not None:
+                return None
+        except (translate.CallError, ValueError, OSError):  # a timeout, an unreadable mirror state
             return None
-        m, evs, names = st.manifest, st.events, {v: k for k, v in self.channels.items()}
+        m, evs = st.manifest, st.events
+        names = {self.channels[c]: c for c in ("feed", "critical")}  # the journal takes no other channel
         self.mirror_ids, out = set(evs), []
+        # What the bot has already translated, (thread root, of), so a lost translate file never reposts.
+        posted = {(pull._thread_ref(e), (pull.parse_translation(e["content"]) or ("", None))[1])
+                  for e in evs.values() if manifest.role_of(m, e["pubkey"]) == "relay-bot"
+                  and pull._first_line(e["content"]).startswith("lang:")}
         for ev in sorted(evs.values(), key=lambda e: (e["created_at"], e["id"])):
             h = [t[1] for t in ev["tags"] if len(t) >= 2 and t[0] == "h"]
             if (manifest.role_of(m, ev["pubkey"]) != "curator" or ev["created_at"] < self.state["since"]
                     or len(h) != 1 or h[0] not in names):
                 continue
             ref = pull._thread_ref(ev)
+            if ev["id"] in done or ((ref or ev["id"]), None if ref is None else ev["id"]) in posted:
+                continue
             if ref is None and pull._is_root(ev) and schema.parse_post(ev["content"]) is not None:
                 out.append((ev, ev["id"], None, names[h[0]], None))
             elif ref in evs and (pull._first_line(ev["content"]) in _LEVEL_LINE or pull._patch(ev["content"]) is not None):
@@ -268,6 +278,8 @@ class Run:
                           if t.root_id == ref and not t.retracted), None)
                 if t is not None:
                     out.append((ev, ref, ev["id"], names[h[0]], t.adv))
+            if len(out) >= 2 * translate.DAILY_CALLS:  # more cannot be translated today anyway
+                break
         return out
 
     def translate_curator(self, fetch=None, call=None, read_key=translate.read_key, root=TRUST_ROOT_PUBKEY):
@@ -277,21 +289,33 @@ class Run:
             return "off"
         path = self.config.translate_state
         try:
-            tr = inputs.read_json(path, inputs.MAX_RECORD) if path.exists() else {}
-            tr = {"hold": None, "day": None, "calls": 0, "done": {}, **tr}
-            if not (set(tr) == {"hold", "day", "calls", "done"} and type(tr["calls"]) is int
-                    and isinstance(tr["done"], dict) and (tr["hold"] is None or isinstance(tr["hold"], dict))):
+            tr = inputs.read_json(path, inputs.MAX_RECORD) if path.exists() \
+                else {"hold": None, "day": None, "calls": 0, "done": {}}
+            if not (isinstance(tr, dict) and set(tr) == {"hold", "day", "calls", "done"}
+                    and type(tr["calls"]) is int and tr["calls"] >= 0
+                    and (tr["day"] is None or inputs._date_ok(tr["day"]))
+                    and isinstance(tr["done"], dict) and (tr["hold"] is None or isinstance(tr["hold"], dict))
+                    and all(v in ("ok", "untranslated") or type(v) is int for v in tr["done"].values())):
                 raise ValueError("not a translate state")
         except (OSError, ValueError, RecursionError):
             _say(f"translate state {path} unreadable; translating nothing")
             return "state-error"
         if tr["hold"] is not None:
             return "held"
-        evs = self.curator_events(fetch, root)
+        start = time.monotonic()  # the pass deadline covers the mirror and the replay too
+        evs = self.curator_events(fetch, root, {k for k, v in tr["done"].items() if v in ("ok", "untranslated")})
         if evs is None:
             return "mirror-error"
-        today, memo, start = _utc_date(self.now), {}, time.monotonic()
+        today, memo = _utc_date(self.now), {}
         tr["done"] = {k: v for k, v in tr["done"].items() if k in self.mirror_ids}  # bounded by the mirror
+        if call is None:  # the key is read once, only when there is something to translate
+            if not evs or (tr["day"] == _utc_date(self.now) and tr["calls"] >= translate.DAILY_CALLS):
+                return "ok"
+            try:
+                call = translate.api_call(read_key(self.config.secrets_helper))
+            except translate.CallError as e:  # a local problem: never charged to an event
+                _say(f"translation skipped: {e}")
+                return "key-error"
         if tr["day"] != today:
             tr.update(day=today, calls=0)
         journaled = {o["key"] for o in self.state["outbox"]}
@@ -301,6 +325,7 @@ class Run:
                 continue
             if key in journaled:  # journaled by a run that stopped before recording it
                 tr["done"][ev["id"]] = "ok"
+                inputs.write_json(path, tr)  # before drain_ja can send it and drop the journal item
                 continue
             text = ev["content"].split("\n```" + schema.INFO_STRING)[0].strip()
             if adv is not None:
@@ -309,8 +334,6 @@ class Run:
                 if tr["calls"] >= translate.DAILY_CALLS or time.monotonic() - start > PASS_DEADLINE:
                     break
                 try:
-                    if call is None:  # the key is read once, only when a call is due
-                        call = translate.api_call(read_key(self.config.secrets_helper))
                     tr["calls"] += 1
                     inputs.write_json(path, tr)  # counted before the call: a crash never re-spends it
                     memo[text] = translate.translate(text, call=call)
@@ -331,7 +354,10 @@ class Run:
             ok = False
             if memo[text] is not None:
                 try:
-                    reply = compose.lang_reply(memo[text] + "\n\n" + translate.MARK, of)
+                    body = memo[text] + "\n\n" + translate.MARK
+                    if len(body) > pull.MAX_TRANSLATION_CHARS:  # readers would cut the end off
+                        raise ValueError("translation too long")
+                    reply = compose.lang_reply(body, of)
                     ok = self._journal_ja(key, None, channel, reply, target)
                 except ValueError:
                     pass

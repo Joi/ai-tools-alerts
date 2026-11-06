@@ -15,6 +15,7 @@ provider-facing call: JSON over HTTPS to the Messages API, standard library only
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -32,6 +33,7 @@ DAILY_CALLS = 20
 KEY_NAME = "ANTHROPIC_API_KEY"
 MARK = "（機械翻訳）"  # the last line of every machine translation the poster posts
 MAX_RESPONSE = 1 << 20
+MAX_SOURCE = 6000  # characters sent; longer is untranslated without a call (readers cut at 8000)
 
 SYSTEM = """You translate security alerts from English into Japanese for a security alert feed read by software developers.
 
@@ -45,7 +47,7 @@ Rules:
 _URL = re.compile(r"https?://[^\s<>\"'`]+")
 _ID = re.compile(r"\b(?:CVE-\d{4}-\d{4,}|GHSA(?:-[0-9a-z]{4}){3}|[0-9a-f]{64}|[A-Z][A-Z0-9]+-\d[\w.-]*)\b")
 # Whole versions as schema accepts them (2.1.0, 9.9p1, 1.0rc1, 22, v2.0.1-rc1), never a prefix.
-_VERSION = re.compile(r"(?<![\w.-])v?\d+(?:\.\d+)*(?:[a-z]+\d*)?(?:[-+][0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?(?![\w]|\.\d)")
+_VERSION = re.compile(r"(?<![\w.-])v?\d+(?:\.\d+)*(?:[a-z]+\d*)*(?:[-+][0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?(?![\w]|\.\d)")
 
 # Removed from the helper's environment: a stale copy of the key (get_secret falls back
 # to it) and bash startup/trace hooks that would run code or trace inside the process.
@@ -100,9 +102,11 @@ def tokens(text: str) -> set[str]:
 def translate(text: str, *, call) -> str | None:
     """The Japanese translation of text, or None when it is empty or loses a token.
     AuthError and CallError from call propagate."""
+    if len(text) > MAX_SOURCE:
+        return None
     out = call(SYSTEM, text)
     out = out.strip() if isinstance(out, str) else ""
-    if not out or any(t not in out for t in tokens(text)):
+    if not out or not tokens(text) <= tokens(out):  # whole tokens: "2.1" never passes as "2.10"
         return None
     return out
 
@@ -168,7 +172,7 @@ def api_call(key: str, opener=None):
             if e.code in (401, 403):
                 raise AuthError(f"http {e.code}") from None
             raise CallError(f"http {e.code}") from None
-        except (urllib.error.URLError, OSError, ValueError):  # a timeout is an OSError
+        except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):  # a timeout is an OSError
             raise CallError("unreachable") from None
         try:
             msg = json.loads(data) if len(data) <= MAX_RESPONSE else None

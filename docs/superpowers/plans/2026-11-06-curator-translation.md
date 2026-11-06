@@ -14,9 +14,11 @@ README and design.md (run artifacts excluded, as earlier runs counted).
   (root refusal, 0o500 cache dir, write probe, `_DROP_ENV`, old key removed,
   empty-after check, `shutil.rmtree` in `finally`); no `_die`: every failure
   is `CallError` with a fixed message.
-- [ ] `api_call` uses `urllib.request.Request(..., method="POST")` and
-  `urlopen(timeout=TIMEOUT)`; reads at most 1 MiB; never puts the key or
-  the body in an exception.
+- [ ] `api_call` uses `urllib.request.Request(..., method="POST")` through
+  an opener that refuses every redirect (`_NoRedirect`), inside
+  `translate.bounded(…, TIMEOUT)`; reads at most 1 MiB; HTTP protocol
+  errors are `CallError("unreachable")`; never puts the key or the body in an
+  exception. `opener=` is injectable for tests.
 
 Tests `tests/poster/test_translate.py` (fake `call`, no network):
 - [ ] success: tokens kept → translation returned.
@@ -24,8 +26,8 @@ Tests `tests/poster/test_translate.py` (fake `call`, no network):
 - [ ] `tokens` finds URL (trailing period stripped), CVE, GHSA, `USN-1234-1`,
   `1.2.3`, `v2.0.1-rc1`.
 - [ ] `api_call`: 401 and 403 → AuthError; 500 → CallError; refusal
-  stop_reason → CallError; request body has no `temperature`, model and
-  headers as spec (urlopen patched).
+  stop_reason → `""` (untranslated, never retried); request body has no
+  `temperature`, model and headers as spec (fake opener).
 - [ ] `read_key` with a fake runner: returns the one line; the runner's env
   has `SECRETS_CACHE_DIR`, no old key, the key never in argv; a non-zero
   exit → CallError without output in its message.
@@ -49,8 +51,8 @@ Verify: `python3 -m pytest tests/poster/test_translate.py -q`.
   - `run()` calls it after `r.save()` and before `r.drain_ja()`, only when
     `english_ok`, inside `try/except Exception` (counted, never the exit
     code). `run()` gains `mirror_fetch=None, translate_call=None` for tests.
-  - SUMMARY gains `untranslated`, `translate_failed`; summary line ends
-    `translate=<status>` after `inputs=`.
+  - SUMMARY gains `untranslated`, `translate_failed`, then
+    `translate=<status>`, all before `inputs=`, which stays last.
   - `translate-clear-hold` subcommand under the ledger lock.
 - [ ] `pull.py` threads_from: the discussion gate passes `lang:` replies
   (`if role != "curator" and t[3] and not first.startswith("lang:")`, with
@@ -114,5 +116,9 @@ empty (the plan and brief that name the pattern are excluded).
 
 ## Rollback
 
-Revert the branch commits; deployed: `translate_curator = false`, delete
-`<ledger>.translate.json` and `<ledger>.mirror/`.
+To stop translating: `translate_curator = false`. To downgrade, in this
+order: remove `translate_curator`, `translate_mirror_url` and
+`secrets_helper` from the deployed config (the old `load_config` refuses
+unknown keys and would stop all posting), then reinstall the old version.
+`<ledger>.translate.json` and `<ledger>.mirror/` may then be deleted. In the
+repo: revert the branch commits.

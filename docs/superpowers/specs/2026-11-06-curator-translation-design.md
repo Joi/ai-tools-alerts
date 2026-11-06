@@ -117,7 +117,9 @@ Two facts the issue body did not account for:
   "content": text}]}`. No `temperature` (400 on this model). HTTP 401/403 →
   `AuthError`; any other HTTP error, URLError, timeout, bad JSON →
   `CallError("http <code>" | "unreachable" | "bad response")`;
-  `stop_reason != "end_turn"` (a refusal, `max_tokens`) → `CallError`. The
+  `stop_reason != "end_turn"` (a refusal, `max_tokens`) → `""`, so the event
+  is `untranslated` and never retried; an HTTP protocol error →
+  `CallError("unreachable")`; no redirect is followed. The
   result is the joined text blocks. Error text never carries the key or the
   response body.
 
@@ -197,8 +199,16 @@ and lives only in the config, as `relay_ssh_host` does.
 
 `aitools-alerts-poster translate-clear-hold [--config]` removes the hold
 under the ledger lock and prints when it was set and the status. The summary
-gains `untranslated` and `translate_failed` counts and a final
-`translate=<off|ok|held|mirror-error|state-error>` field.
+gains `untranslated` and `translate_failed` counts and
+`translate=<off|ok|held|key-error|mirror-error|state-error|error>`, all
+before `inputs=`, which stays last. A missing or unreadable key is
+`key-error` and is never charged to an event. An existing translate file
+must hold exactly the four fields, each valid (`calls >= 0`), or the pass
+fails closed (`state-error`). A translation longer than readers keep
+(`pull.MAX_TRANSLATION_CHARS`, marker included) or a source over 6000
+characters is `untranslated`. `check_paths` also refuses any file inside
+the mirror directory. The bot's own `lang:` replies already in the mirror
+count as done, so a lost translate file never reposts.
 
 ## Alternatives considered
 

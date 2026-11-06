@@ -1,5 +1,6 @@
 """Curator translation (ai-tools-alerts#bq8v): a fake call, a fake mirror; no network, no secret."""
 
+import http.client
 import io
 import json
 import subprocess
@@ -13,7 +14,7 @@ import pytest
 from aitools_alerts import schema
 from aitools_alerts.poster import main, translate
 from mirror_helpers import Mirror, advisory
-from test_main import CHANNELS, T0, FakeSSH, env  # noqa: F401 - env is a fixture
+from test_main import CHANNELS, T0, FakeSSH, env, finding  # noqa: F401 - env is a fixture
 
 SRC = ("CRITICAL: Invented critical for tests\nAffected: Claude Code <99.0.0. Fixed in 99.0.0.\n"
        "Source: https://example.invalid/advisory")
@@ -40,7 +41,12 @@ def test_translate_keeps_tokens_or_returns_none():
     for drop in ("99.0.0", "https://example.invalid/advisory"):
         assert translate.translate(SRC, call=Call(lambda t: ja_of(t).replace(drop, "X"))) is None
     assert translate.translate(SRC, call=Call(lambda t: "  ")) is None
-    assert translate.tokens("9.9p1, 1.0rc1 and 22.") == {"9.9p1", "1.0rc1", "22"}  # whole, never a prefix
+    assert translate.tokens("9.9p1, 1.0rc1a and 22.") == {"9.9p1", "1.0rc1a", "22"}  # whole, never a prefix
+    for out in ("11.2.30 https://v.example/fix", "1.2.3 https://v.example/fix-old"):
+        assert translate.translate("1.2.3 https://v.example/fix", call=Call(lambda t: out)) is None
+    for src, out in (("Fixed in 2.1.", "2.10 で修正"), ("CRITICAL: 3 packages", "重大: 13 パッケージ")):
+        assert translate.translate(src, call=Call(lambda t: out)) is None
+    assert translate.translate("x" * 6001, call=Call(lambda t: pytest.fail("called"))) is None
 
 
 class Resp(io.BytesIO):
@@ -78,6 +84,12 @@ def test_api_call_request_and_errors():
     assert translate.api_call("k-test", opener=refusal)("s", "t") == ""  # untranslated, never retried
     with pytest.raises(translate.CallError):
         translate.api_call("k-test", opener=lambda req, timeout: Resp(b"<html>"))("s", "t")
+
+    def truncated(req, timeout):
+        raise http.client.IncompleteRead(b"k-test")
+    with pytest.raises(translate.CallError) as e:  # a protocol error counts toward MAX_TRIES
+        translate.api_call("k-test", opener=truncated)("s", "t")
+    assert str(e.value) == "unreachable"
 
 
 def test_read_key_uses_a_throwaway_cache_and_never_argv(tmp_path, monkeypatch):
@@ -184,14 +196,28 @@ def test_budget_is_twenty_calls_a_utc_day(cur):
     assert len(call.texts) == 21
 
 
-def test_a_failing_pass_never_reaches_the_exit_code(cur):
+def test_english_is_sent_and_saved_before_any_translation_work(cur):
     root(cur.mirror)
-    cur.collector([])
+    cur.collector([finding()])
+    order = []
+    ssh = FakeSSH()
 
     def broken(system, text):
+        outbox = json.loads(cur.config.state.read_text())["outbox"]
+        order.append(("call", all(o["kind"] == "ja" for o in outbox)))  # only Japanese replies wait
         raise RuntimeError("boom")
-    code, summary, _ = cur.trun(broken)
-    assert code == 0 and " translate=error " in summary
+
+    def fetch(url):
+        order.append(("fetch", len(ssh.calls)))
+        return cur.mirror.fetch(url)
+    code, summary, _ = cur.run(ssh=ssh, mirror_fetch=fetch, translate_call=broken, root=cur.mirror.root)
+    assert code == 0 and " roots=1 " in summary and " translate=error " in summary
+    assert order[0] == ("fetch", 1) and order[-1] == ("call", True)  # English sent and saved first
+
+    def slow(system, text):
+        return translate.bounded(lambda: __import__("time").sleep(5), 0.1)
+    code, summary, _ = cur.trun(slow)  # a stalled call ends at its deadline, counted as a failure
+    assert code == 0 and " translate_failed=1 " in summary
 
 
 def test_a_failing_event_is_given_up_after_three_runs(cur):
@@ -214,6 +240,8 @@ def test_a_journaled_translation_is_never_requested_again(cur):
     cur.config.translate_state.write_text(json.dumps(tr))
     code, summary, ssh = cur.trun(Call(lambda t: pytest.fail("called again")))
     assert code == 0 and len(ssh.ja) == 1
+    code, summary, ssh = cur.trun(Call(lambda t: pytest.fail("called after the send")))
+    assert code == 0 and ssh.ja == []
 
 
 def test_redirects_are_refused_and_translation_paths_checked(tmp_path):
@@ -222,5 +250,34 @@ def test_redirects_are_refused_and_translation_paths_checked(tmp_path):
     assert translate._NoRedirect().redirect_request(urllib.request.Request("https://api.example.invalid/"),
                                                     io.BytesIO(), 302, "Found", {}, "http://elsewhere.invalid/") is None
     from aitools_alerts.poster import inputs
-    with pytest.raises(inputs.ConfigError):
-        inputs.Config(ledger=tmp_path / "l.json", kev_cache=tmp_path / "l.json.translate.json").check_paths()
+    for kev in ("l.json.translate.json", "l.json.mirror/events.json"):
+        with pytest.raises(inputs.ConfigError):
+            inputs.Config(ledger=tmp_path / "l.json", kev_cache=tmp_path / kev).check_paths()
+
+
+def test_a_malformed_translate_state_fails_closed(cur):
+    root(cur.mirror)
+    for bad in ({}, {"hold": None, "day": None, "calls": -1, "done": {}}):
+        cur.config.translate_state.parent.mkdir(parents=True, exist_ok=True)
+        cur.config.translate_state.write_text(json.dumps(bad))
+        code, summary, _ = cur.trun(Call(lambda t: pytest.fail("called")))
+        assert code == 0 and " translate=state-error " in summary
+
+
+def test_a_missing_key_is_never_charged_to_an_event(cur):
+    root(cur.mirror)
+
+    def no_key(helper):
+        raise translate.CallError("api key unavailable")
+    for _ in range(4):
+        code, summary, _ = cur.run(mirror_fetch=cur.mirror.fetch, root=cur.mirror.root, read_key=no_key)
+        assert code == 0 and " translate=key-error " in summary and " untranslated=0 " in summary
+    assert " translate=ok " in cur.trun(Call())[1]
+
+
+def test_a_translation_already_in_the_mirror_is_not_posted_again(cur):
+    r = root(cur.mirror)
+    cur.mirror.post(cur.mirror.bot_sec, "lang: ja\n\n既訳", created_at=T0 + 150, tags=[h(), ("e", r["id"], "", "root")])
+    cur.mirror.post(cur.mirror.cur_sec, schema.render_post(advisory(), SRC), tags=[("h", "f" * 36)])  # no channel
+    code, summary, ssh = cur.trun(Call(lambda t: pytest.fail("translated again")))
+    assert code == 0 and ssh.ja == []
