@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 — 2026-11-06
+
+First signed release, tagged `v0.1.1`. Install it with
+`pipx install git+https://github.com/Joi/ai-tools-alerts@v0.1.1`.
 
 - Release tags are signed from v0.1.1 with an SSH key on the GitHub account; v0.1.0 stays unsigned. `trust/allowed_signers` and the README's "Verify the release" show how to check a tag and install from the verified checkout; the mirror page carries the key's fingerprint.
 
