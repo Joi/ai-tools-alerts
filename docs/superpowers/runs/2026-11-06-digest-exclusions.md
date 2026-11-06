@@ -1,6 +1,6 @@
 # Run: digest-exclusions
 Instruction: start at medium. Task: ai-tools-alerts#d3f6 — digest excludes retracted, expired and synthetic advisories (brief TASK-ai-tools-alerts#d3f6.md). Non-repoman ending (ff-merge main per brief).
-Stage: verifying
+Stage: done
 Rung: medium (start-floor medium: dispatch floor; evaluator BR1 REV1 NOV1 INT1 FC1 = 5, medium on the prod-shaped test)
 Lens: "Under 150 changed lines"
 Spec: docs/superpowers/specs/2026-11-06-digest-exclusions-design.md   Plan: docs/superpowers/plans/2026-11-06-digest-exclusions.md
@@ -28,3 +28,7 @@ Pass 1 [code:whole branch e806b45]: Stage 1 0B/5S/3C · fresheyes (gpt-6-astra, 
 - The poster never sends a retraction; "a retraction it sent or saw" is the mirror state it pulls.
 - Built while the spec+plan pass ran (the reviewer read a snapshot sha); order deviation as on bq8v, not a skipped step.
 - Size: 122 added / 37 removed in aitools_alerts and tests (159; the issue says under 150). The spec review's fixes (the pull, expired threads, their tests) added it; decided comment on the issue.
+- Rebased on origin/main 6133cea (544a). Reviewed commits became: e806b45 → db3069c (whole-branch pass). e89c5f9 (was 9fa68ad) holds the SUBSTANTIVE review fixes, which had no further pass (no BLOCKER; ruling jibot-code#41e2); `git diff db3069c e89c5f9` shows it.
+- Gate `scripts/test-gate.sh` on e89c5f9: 1041 passed, 1 skipped. Fleet-host-name grep over the branch diff: 0 lines.
+- Landed: ff-merge to main, pushed. roborev: repo not enrolled (as on bq8v); no BLOCKER fix shipped unseen.
+- Live: nothing deployed; the coordinator reinstalls the poster after landing. The digest now pulls the mirror once the digest is due, whether or not translate_curator is on.
