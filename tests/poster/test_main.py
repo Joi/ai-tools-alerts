@@ -1241,14 +1241,14 @@ def test_digest_leaves_out_withdrawn_ledger_posts(env, monkeypatch):
     with main.Ledger(env.config.ledger) as led:
         ids, roots = main.Run(T0, env.config, led, inputs.load_state(env.config.state, T0, 3),
                               CHANNELS, FakeSSH(), None)._withdrawn(m.root, m.fetch)
-    assert roots == {r["id"], old["id"]}
-    assert ids == {"ghsa-abcd-efgh-ijkl", "aita-test-0001", "aita-test-0002", "cve-2026-7777"}
-    env.collector([finding(fid="GHSA-mnop-qrst-uvwx", sources=(GHSA2,))])
+    assert ids == {"ghsa-abcd-efgh-ijkl"} and roots == {r["id"], old["id"]}  # a thread: by root only
+    env.collector([finding(fid="GHSA-mnop-qrst-uvwx", sources=(GHSA2,)),
+                   finding(fid="GHSA-mnop-qrst-uvwx", product="Google Chrome", sources=(GHSA2,))])
     env.run(now=at(6, 6))
-    e = next(e for e in env.ledger()[0] if e["aliases"][0] == "GHSA-mnop-qrst-uvwx")
+    e = next(e for e in env.ledger()[0] if e["aliases"][0] == "GHSA-mnop-qrst-uvwx" and e["scope"] == "Claude Code")
     monkeypatch.setattr(main.Run, "_withdrawn", lambda self, root, fetch: (set(), {e["channel_ids"]["feed"]}))
-    _, _, ssh = env.run(now=at(6, 9))  # the poster's own root, by its thread
-    assert [c[2] for c in ssh.calls] == ["Daily digest for 2026-11-06: no advisories."]
+    _, _, ssh = env.run(now=at(6, 9))  # the poster's own root, by its thread; the other product's stays
+    assert ssh.calls[0][2].startswith("Daily digest for 2026-11-06: 1 advisory.") and "Chrome" in ssh.calls[0][2]
 
 
 def test_failed_mirror_pull_holds_the_digest(env, capsys):
@@ -1257,8 +1257,8 @@ def test_failed_mirror_pull_holds_the_digest(env, capsys):
 
     def down(url):
         raise OSError("down")
-    code, _, ssh = env.run(now=at(5, 9), mirror_fetch=down)
-    assert code == 0 and ssh.calls == [] and env.state()["digest_date"] != "2026-11-05"
+    code, summary, ssh = env.run(now=at(5, 9), mirror_fetch=down)
+    assert code == 0 and ssh.calls == [] and " digest_held=1 " in summary and env.state()["digest_date"] != "2026-11-05"
     assert "digest held: mirror pull: unreachable" in capsys.readouterr().err
     _, _, ssh = env.run(now=at(5, 10))
     assert "GHSA-abcd-efgh-ijkl" in ssh.calls[0][2]

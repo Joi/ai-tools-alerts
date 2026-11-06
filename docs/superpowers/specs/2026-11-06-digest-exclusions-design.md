@@ -27,17 +27,19 @@ next digest, and a synthetic test reaches the public digest at all.
    state the curator-translation pass uses) under the same 120 s bound,
    whether or not translation is on, and builds the set from the trust
    root's manifest and events:
-   - the manifest's `retracted` ids;
-   - for every thread `pull.threads_from` reports retracted, or whose
-     advisory as amended has `expires_at < now` (a curator's expiry reaches
-     the ledger's posts only this way): its root advisory id and aliases,
-     and the ids and aliases of every ledger entry whose `root_event_id` or
-     any channel copy's event id is that thread's root (the poster's own
-     root retracted by a curator reply — the motivating case).
+   - the manifest's `retracted` ids (id-wide, as every reader treats them);
+   - the root event id of every thread `pull.threads_from` reports
+     retracted, or whose advisory as amended has `expires_at < now` (a
+     curator's expiry reaches the ledger's posts only this way). A ledger
+     entry whose `root_event_id` or any channel copy's event id is such a
+     root is left out (the poster's own root retracted by a curator reply —
+     the motivating case). By root, never by bare id: another product's
+     post of the same id, in its own thread, stays (code review S1).
 3. The pull fails (an error in the pull result, a timeout, an unreadable
    state): the digest is not built this run, a line on stderr says why, and
-   the next run tries again (the digest date is not recorded). A digest a
-   run late is cheaper than a retracted advisory announced again.
+   the next run tries again (the digest date is not recorded); the summary
+   line counts it as `digest_held=1`. A digest a run late is cheaper than a
+   retracted advisory announced again.
 4. An excluded item is still acknowledged by the digest snapshot (cutoff,
    roots, held keys) like any listed item, so it is never carried forward
    to the next day's digest.
@@ -83,8 +85,8 @@ when the mirror is up.
 
 - A digest that was journaled and whose send definitely failed is resent
   by `drain()` with the text built when it was journaled. A retraction in
-  the hour between is not applied to that resend; filed as a follow-up
-  (the motivating case, a retracted advisory announced in every later
+  the hour between is not applied to that resend; follow-up
+  ai-tools-alerts#n1fc (the motivating case, a retracted advisory announced in every later
   digest, is fixed here).
 
 ## Blast radius / rollback

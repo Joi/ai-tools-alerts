@@ -66,7 +66,7 @@ MAX_DIGESTED = 5000
 MAX_JA = 200  # Japanese replies waiting in the journal; past it the oldest unsent one is dropped
 MAX_JA_BYTES = 4 * 1024 * 1024  # and their text as JSON-escaped: well inside load_state's 16 MiB
 SUMMARY = ("candidates", "in_scope", "old", "roots", "copies", "replies", "held", "withheld",
-           "busy", "digest", "failed", "unknown", "ja", "ja_failed", "untranslated", "translate_failed")
+           "busy", "digest", "digest_held", "failed", "unknown", "ja", "ja_failed", "untranslated", "translate_failed")
 MAX_TRIES = 3  # failed calls (network, 5xx) before an event counts as untranslated
 PASS_DEADLINE = 300  # seconds of curator translation per run (the ledger lock is held)
 _LEVEL_LINE = ("level: high", "level: notice")
@@ -555,20 +555,20 @@ class Run:
 
     def _withdrawn(self, root, fetch=None) -> tuple[set, set]:
         """(case-folded advisory ids, root event ids) withdrawn under ``root`` as of a
-        mirror pull made now: the manifest's retracted list, and every thread that is
-        retracted or (as amended) expired. Raises when the pull fails."""
+        mirror pull made now: the manifest's retracted ids (whoever posted them), and the
+        root of every thread that is retracted or, as amended, expired (that thread only:
+        another product's post of the same id stays). Raises when the pull fails."""
         st = State.load(self.config.mirror_dir)
         res = translate.bounded(lambda: pull.fetch(self.config.translate_mirror_url, st, fetch=fetch,
                                                    root_pubkey=root, now=self.now), 120)
         if res.error is not None:
             raise ValueError(f"mirror pull: {res.error}")
         m = st.accepted(root)
-        ids, roots = {i.casefold() for i in m.retracted}, set()
+        roots = set()
         for t in pull.threads_from(list(st.events_for(root).values()), m):
             if t.retracted or (t.adv.expires_at is not None and t.adv.expires_at < self.now):
                 roots.add(t.root_id)
-                ids |= {i.casefold() for i in (t.adv.id, *t.adv.aliases)}
-        return ids, roots
+        return {i.casefold() for i in m.retracted}, roots
 
     def digest(self, root=TRUST_ROOT_PUBKEY, fetch=None):
         local = _dt.datetime.fromtimestamp(self.now, TOKYO)
@@ -587,6 +587,7 @@ class Run:
             gone, gone_roots = self._withdrawn(root, fetch)
         except (translate.CallError, OSError, ValueError) as e:  # StateError is a ValueError
             _say(f"digest held: {e}")
+            self.n["digest_held"] += 1
             return
         # Ledger posts oldest change first (so a backlog larger than one post moves forward
         # day by day), then held notices loudest first: (advisory, held entry, last_change).
@@ -602,9 +603,8 @@ class Run:
             except ValueError:
                 self.n["withheld"] += 1
                 continue
-            if not gone_roots.isdisjoint({e.root_event_id, *e.channel_ids.values()}):
-                gone |= {i.casefold() for i in (adv.id, *adv.aliases, *e.aliases)}  # its thread, retracted
-            led_items.append((adv, None, (e.last_change, e.root_event_id)))
+            if gone_roots.isdisjoint({e.root_event_id, *e.channel_ids.values()}):  # else its thread is withdrawn
+                led_items.append((adv, None, (e.last_change, e.root_event_id)))
         for h in self.state["held"]:
             if h not in posted:
                 try:
