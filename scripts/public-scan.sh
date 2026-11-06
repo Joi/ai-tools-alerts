@@ -1,17 +1,31 @@
 #!/bin/sh
-# Public scan: no tracked file names a fleet host, the relay VM's domain or login
-# user, a home-directory path on the poster Mac, the tailnet, the secrets
-# cache or the vault variable names. This file is the only place
-# the pattern is spelled, so it skips itself. Every tracked file is read as bytes,
-# binary ones included. Exit 0 clean, 1 on a hit (each hit printed as path:line),
-# 2 when the scan cannot run or a tracked file cannot be read.
+# Public scan: no tracked file names the deployment (hosts, domains, home paths,
+# vault variable names). The terms are not in this repo: one regex fragment per
+# line, matched case-insensitively, in $PUBLIC_SCAN_TERMS or else
+# ~/.config/aitools-alerts/public-scan.terms (keep it untracked, mode 600).
+# Blank lines and lines starting with # are skipped. Every tracked file, this
+# one included, is read as bytes, binary ones too, and file names are scanned.
+# Exit 0 clean, 1 on a hit (each hit printed as path:line), 2 when the scan
+# cannot run: no terms file, no term in it, a bad term, or a tracked file that
+# cannot be read.
 cd "$(dirname "$0")/.." || exit 2
 exec python3 -I - <<'PY'
-import re, subprocess, sys
-PATTERN = re.compile(rb"host-a|host-b|host-d|host-e|host-f|host-c|vm\.example|relayuser|/home/user"
-                     rb"|exampletailnet|\bts\.net\b|\.cache/amplifier|AITOOLS_ALERTS_ROOT_NSEC|BUZZ_AITOOLS_AGENT_NSEC"
-                     rb"|claude-pool", re.I)
-SELF = b"scripts/public-scan.sh"
+import os, re, subprocess, sys
+TERMS = os.environ.get("PUBLIC_SCAN_TERMS") or os.path.expanduser("~/.config/aitools-alerts/public-scan.terms")
+def fail(why):
+    print(f"public-scan: {why}: {TERMS} (set PUBLIC_SCAN_TERMS to a terms file)", file=sys.stderr)
+    sys.exit(2)
+try:
+    with open(TERMS, "rb") as fh:
+        terms = [t for t in (l.strip() for l in fh.read().split(b"\n")) if t and not t.startswith(b"#")]
+except OSError as e:
+    fail(f"cannot read terms file ({e.strerror})")
+if not terms:
+    fail("no term in terms file")
+try:
+    PATTERN = re.compile(b"|".join(b"(?:" + t + b")" for t in terms), re.I)
+except (re.error, OverflowError, RecursionError, ValueError) as e:
+    fail(f"bad term in terms file ({e})")
 try:
     listed = subprocess.run(["git", "ls-files", "-z"], capture_output=True, check=True).stdout
 except (OSError, subprocess.CalledProcessError) as e:
@@ -23,8 +37,6 @@ for path in filter(None, listed.split(b"\0")):
     if PATTERN.search(path):
         print(f"{name}: (file name)")
         hits += 1
-    if path == SELF:
-        continue
     try:
         with open(path, "rb") as fh:
             data = fh.read()

@@ -153,3 +153,5 @@ Every post the poster makes (an alert, a change to it, the daily digest) gets a 
 ## Tests
 
 `scripts/test-gate.sh`.
+
+The gate starts with `scripts/public-scan.sh`, which fails when a tracked file names the maintainers' deployment. Its terms are not in this repo: the maintainers' machines carry them in a private file, `~/.config/aitools-alerts/public-scan.terms` (one regex fragment per line, `#` for comments). Without that file the scan exits 2 and the gate stops. A contributor runs the rest of the gate by pointing `PUBLIC_SCAN_TERMS` at a file whose fragments match nothing in the tree; `(?!)` matches no text at all: `printf '(?!)\n' > /tmp/terms && PUBLIC_SCAN_TERMS=/tmp/terms scripts/test-gate.sh`.
