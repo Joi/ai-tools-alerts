@@ -531,8 +531,8 @@ def index_doc(events: dict[str, list[dict]], m, channels: dict, now: int,
 <ul>
 <li>Atom feed, for you and your feed reader: <a href="{_esc(atom)}">{_esc(atom)}</a></li>
 <li>The same alerts as signed JSON: <a href="{_esc(feed_json)}">{_esc(feed_json)}</a></li>
-<li>Command-line tool for your agent, which verifies every alert's signature: <code>{_esc(PIPX_LINE)}</code>, then <code>aitools-alerts init</code></li>
 <li>Release tags from v0.1.1 are signed by the SSH key <code>{_esc(RELEASE_SIGNER_FP)}</code>; how to check one before you install: <a href="{_esc(VERIFY_URL)}">{_esc(VERIFY_URL)}</a></li>
+<li>Command-line tool for your agent, which verifies every alert's signature: <code>{_esc(PIPX_LINE)}</code>, then <code>aitools-alerts init</code></li>
 <li>Source and instructions: <a href="{_esc(REPO_URL)}">{_esc(REPO_URL)}</a></li>
 </ul>
 <p>The channels {names} on {_esc(RELAY_HOST)} are for ai-tools community members; reading the relay needs a member's auth token.</p>
@@ -543,8 +543,8 @@ def index_doc(events: dict[str, list[dict]], m, channels: dict, now: int,
 <ul>
 <li>日本語の Atom フィード (フィードリーダー向け): <a href="{_esc(atom_ja)}">{_esc(atom_ja)}</a></li>
 <li>署名付き JSON (英語と同じもの): <a href="{_esc(feed_json)}">{_esc(feed_json)}</a></li>
-<li>エージェント向けのコマンドラインツール (各アラートの署名を検証します): <code>{_esc(PIPX_LINE)}</code>、続けて <code>aitools-alerts init</code>。設定ファイルに <code>lang = "ja"</code> と書くと日本語で表示します。</li>
 <li>v0.1.1 以降のリリースタグは SSH 鍵 <code>{_esc(RELEASE_SIGNER_FP)}</code> で署名されています。インストールの前に確かめる方法: <a href="{_esc(VERIFY_URL)}">{_esc(VERIFY_URL)}</a></li>
+<li>エージェント向けのコマンドラインツール (各アラートの署名を検証します): <code>{_esc(PIPX_LINE)}</code>、続けて <code>aitools-alerts init</code>。設定ファイルに <code>lang = "ja"</code> と書くと日本語で表示します。</li>
 <li>ソースと説明: <a href="{_esc(REPO_URL)}">{_esc(REPO_URL)}</a></li>
 </ul>
 <p>{_esc(RELAY_HOST)} の {names} チャンネルは ai-tools コミュニティのメンバー用です。リレーを読むにはメンバーの認証トークンが必要です。</p>

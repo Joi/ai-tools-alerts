@@ -52,7 +52,7 @@ The coordinator cuts v0.1.1 signed after this lands; this task cuts no tag.
 6. The gate (`scripts/test-gate.sh`: public scan + pytest) passes, apart from
    the known failure ai-tools-alerts#rvw5 if it is still open.
 7. Under 80 changed lines outside docs/superpowers, counted on the committed
-   diff (`git diff --stat origin/main...HEAD`), as the earlier runs on this
+   diff (`git diff --stat origin/main...HEAD -- . ':!docs/superpowers'`), as the earlier runs on this
    build counted (fzr2's run manifest: the budget excludes the /do-it
    artifacts).
 

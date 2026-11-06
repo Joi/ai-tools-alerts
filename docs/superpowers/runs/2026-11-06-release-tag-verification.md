@@ -22,6 +22,13 @@ Pass 2 [spec+plan delta, git diff 1eb44e7 1f37af8, fresheyes gpt-6-astra high, -
 - DB2 verify placed after the v0.1.0 install; `pipx install .` skips an existing install: fixed (Verify section first; `pipx install --force .`; init marked first-install; v0.1.0 block labelled unsigned, below).
 - DB3 `git checkout v0.1.1` picks a same-named branch: fixed (`git checkout --detach 'refs/tags/v0.1.1^{commit}'`; proven in scratchpad, plain checkout landed on the branch).
 - No third spec/plan pass (heavy = one pass + one delta); the fixes are covered by the code round, whose diff contains the README.
+Pass 1 [code:branch, origin/main...0f61956; Stage 1 same-model subagent ∥ Stage 2 fresheyes gpt-6-astra high, REASON=-]: 1B/4S/3C/0R · fixed -/- · velocity = (—→8, escalation no)
+- FB1 (fresheyes) spec criterion 7's command counted docs/superpowers too: fixed (pathspec added). Doc-only: no delta.
+- S1 README "Run it every hour" told a verified member to clone again (default branch, nested dir): fixed (run from the verified checkout; v0.1.0 clone line pins the tag's commit).
+- S2 "Without pipx" had no verified form: fixed (`pip install .` from the verified checkout; v0.1.0 URL as the alternative).
+- S3 mirror lists the URL install line before the verify line: fixed (verify line first, both languages). Order only, no new behaviour; no delta.
+- S4 the mirror shows the fingerprint only after a deploy of a commit with this change: not code; named in the close-out and on jibot-code#gr5b for the v0.1.1 cut (deploy v0.1.1 to the mirror; also bump PIPX_LINE and the install lines to the verified form).
+- C5 paragraph split: fixed. C6 `gpg.minTrustLevel=fully`: not taken; measured on git 2.55.0 an unlisted key already exits 1 (`No principal matched`), and the README requires exit 0 and the principal line. C7 CHANGELOG blank line: matches the file's existing style; left.
 
 ## Build
 - Agency: not used, as on the earlier runs of this build; one 37-line chunk built directly while the plan delta ran (files disjoint from the reviewed artifacts).

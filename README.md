@@ -49,7 +49,9 @@ aitools-alerts init
 aitools-alerts run
 ```
 
-Run the hook, template and skill commands below from this checkout. Until v0.1.1 is tagged, the release is the unsigned v0.1.0, which has no check:
+Run the hook, template and skill commands below from this checkout.
+
+Until v0.1.1 is tagged, the release is the unsigned v0.1.0, which has no check:
 
 ```
 pipx install git+https://github.com/Joi/ai-tools-alerts@v0.1.0
@@ -57,7 +59,7 @@ aitools-alerts init
 aitools-alerts run
 ```
 
-Without pipx: `python3 -m venv ~/.local/share/aitools-alerts && ~/.local/share/aitools-alerts/bin/pip install git+https://github.com/Joi/ai-tools-alerts@v0.1.0`, then link the command where the schedules and the hook look for it: `mkdir -p ~/.local/bin && ln -s ~/.local/share/aitools-alerts/bin/aitools-alerts ~/.local/bin/`. The launchd and cron templates search `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and `/bin`; the hook searches the same directories and nothing else.
+Without pipx: `python3 -m venv ~/.local/share/aitools-alerts && ~/.local/share/aitools-alerts/bin/pip install .` from the verified checkout (for v0.1.0, `git+https://github.com/Joi/ai-tools-alerts@v0.1.0` in place of `.`), then link the command where the schedules and the hook look for it: `mkdir -p ~/.local/bin && ln -s ~/.local/share/aitools-alerts/bin/aitools-alerts ~/.local/bin/`. The launchd and cron templates search `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and `/bin`; the hook searches the same directories and nothing else.
 
 Install from a release tag, as above, not from the default branch: the trust root is pinned in the code you install, so the tag is what fixes it. `CHANGELOG.md` lists each release. A PyPI package (`aitools-alerts`) is coming; until it ships, install from the tag.
 
@@ -71,7 +73,7 @@ Install from a release tag, as above, not from the default branch: the trust roo
 
 ### Run it every hour
 
-The templates, the hook and the skills below are files in this repository: `git clone https://github.com/Joi/ai-tools-alerts` and run the commands from the checkout.
+The templates, the hook and the skills below are files in this repository: run the commands from the checkout you verified above (with v0.1.0, `git clone https://github.com/Joi/ai-tools-alerts && cd ai-tools-alerts && git checkout --detach 'refs/tags/v0.1.0^{commit}'`).
 
 macOS (launchd):
 
