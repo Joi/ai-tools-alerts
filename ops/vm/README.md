@@ -109,11 +109,11 @@ The route is the VM's own OpenSSH on its private network address. The provider's
 On the VM, as root, with `<user>` the relay's login user:
 
 1. `useradd --create-home --shell /usr/local/bin/aitools-poster-shell aitools-poster`; leave the password locked.
-2. Install the guard with `RELAY_USER` replaced by `<user>` (`install -o root -g root -m 755`).
-3. Write the sudoers file with `RELAY_USER` replaced, run `visudo -cf <file>`, then `install -o root -g root -m 440` it into `/etc/sudoers.d/`.
+2. Install the guard with its one line `RELAY_USER="RELAY_USER"` set to `<user>` (`sed 's/^RELAY_USER="RELAY_USER"$/RELAY_USER="<user>"/'`; a global replace breaks it), then `install -o root -g root -m 755`.
+3. Write the sudoers file with every `RELAY_USER` replaced, run `visudo -cf <file>`, then `install -o root -g root -m 440` it into `/etc/sudoers.d/`.
 4. Back up `sshd_config`, append the Match block at the end, run `sshd -t`, and reload sshd only when it passes.
-5. `~aitools-poster/.ssh/authorized_keys`, owned by `aitools-poster`, mode 600 (directory 700), one line: `restrict ssh-ed25519 <poster public key> aitools-alerts-poster`.
-6. Check the effective policy, not only the files. `sshd -T -C user=aitools-poster,host=<poster>,addr=<poster address>` must print `authorizedkeysfile /home/aitools-poster/.ssh/authorized_keys`, `allowtcpforwarding no`, `allowagentforwarding no`, `x11forwarding no`, `permittty no`, `permittunnel no`, `permituserenvironment no`, an `acceptenv` of `LANG LC_*` at most, no `forcecommand`, and no `subsystem ... internal-sftp` (an in-process subsystem never runs the login shell; an accepted `BASH_ENV` would run code before the guard). `sudo -l -U aitools-poster` must list only the one rule, and `sudo -V` must show `env_reset` with no `HOME` or `BUZZ_*` in the variables kept. If any of these differs, do not authorize the key.
+5. Before any key is authorized, check the effective policy. `sshd -T -C user=aitools-poster,host=<poster>,addr=<poster address>` must print `authorizedkeysfile /home/aitools-poster/.ssh/authorized_keys`, `allowtcpforwarding no`, `allowagentforwarding no`, `x11forwarding no`, `permittty no`, `permittunnel no`, `permituserenvironment no`, `forcecommand none`, an `acceptenv` of `LANG LC_*` at most, and no `subsystem ... internal-sftp` (an in-process subsystem never runs the login shell; an accepted `BASH_ENV` would run code before the guard). `sudo -l -U aitools-poster` must list only the one rule, `sudo -V` must show `env_reset` with no `HOME` or `BUZZ_*` kept, and `grep -r Defaults /etc/sudoers /etc/sudoers.d` must show no line for `aitools-poster`, `<user>` or `buzz-send`. If any of these differs, stop.
+6. `~aitools-poster/.ssh/authorized_keys`, owned by `aitools-poster`, mode 600 (directory 700), one line: `restrict ssh-ed25519 <poster public key> aitools-alerts-poster`. `restrict` is required: it is what closes Unix-socket forwarding, which the Match block leaves at its default.
 
 On the poster Mac, a key of its own (`ssh-keygen -t ed25519 -N '' -f ~/.ssh/aitools_alerts_poster`, no passphrase because launchd runs the poster) and an ssh alias:
 
@@ -129,13 +129,13 @@ The poster config then sets `relay_ssh_host = "<poster-alias>"` and `relay_send_
 
 ### Test after every install
 
-From the poster Mac, each with `-v` and `-o ConnectTimeout=20`. A refusal counts only when the same output shows `Authenticated to ... using "publickey"` with the poster key, so it is the guard or sshd refusing and not a failed login:
+From the poster Mac, each with `-v` and `-o ConnectTimeout=20`. Tests 1 to 5 count only when the same output shows `Authenticated to ... using "publickey"` with the poster key, so it is the guard or sshd refusing and not a failed login:
 
 1. A shell command is refused: `ssh <poster-alias> ls` prints `refused: argument count 1`.
 2. An interactive login is refused: `ssh <poster-alias>` prints `PTY allocation request failed` and `refused: interactive login`.
 3. The allowed shape reaches the relay: `printf x | ssh <poster-alias> /home/<user>/bin/buzz-send messages send --channel 00000000-0000-0000-0000-000000000000 --content -` returns the relay's `not a channel member` error, which shows the guard, sudo, the wrapper and the key all ran.
 4. Forwarding is denied in both directions: with `ssh -N -L 9999:127.0.0.1:22 <poster-alias>` running, `nc 127.0.0.1 9999` makes ssh print `administratively prohibited`; `ssh -N -o ExitOnForwardFailure=yes -R 9999:127.0.0.1:22 <poster-alias>` exits with `remote port forwarding failed`.
 5. sftp is refused: `sftp <poster-alias>` ends with `Connection closed`: sshd ran the sftp-server command through the guard, which refused it (`refused: argument count 1`).
-6. Other users are denied the key: `ssh -F /dev/null -o IdentitiesOnly=yes -i ~/.ssh/aitools_alerts_poster <user>@<VM private address> true` fails with `Permission denied (publickey)`.
+6. Other users are denied the key (the one test with no login): `ssh -F /dev/null -o IdentitiesOnly=yes -o BatchMode=yes -o PreferredAuthentications=publickey -i ~/.ssh/aitools_alerts_poster <user>@<VM private address> true` fails with `Permission denied (publickey)`, and `-v` shows the key offered and no `Authenticated to`.
 
 A test of one key must offer only that key. Without `-F /dev/null -o IdentitiesOnly=yes -i <key>`, ssh also offers the keys named in the ssh config and the agent, and the server may accept one of those; with `-v`, the line `Server accepts key: <file>` names the key that was used. A test on 2026-11-06 read a fleet key's login as the poster key's for this reason.
