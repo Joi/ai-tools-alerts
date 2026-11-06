@@ -1,6 +1,6 @@
 # Run: mirror-freshness
 Instruction: ai-tools-alerts#544a per TASK-ai-tools-alerts#544a.md — pull records the newest trusted event's created_at and the manifest's issued time; check and the hook warn with one fixed line (never fail) when the newest trusted event is older than 3 days or the manifest older than 90 days; --json carries stale_since. Tests in tests/test_pull.py and test_cli.py. Under 200 changed lines. Dispatched as /do-it, starting rung floored at medium. Not repoman-managed; non-repoman ending (ff-merge to main, close issue). Security-shaped: FRESHEYES_GPT_MODEL=gpt-6-astra.
-Stage: committing
+Stage: done
 Rung: medium (start-floor medium: constraint-lens; BR1 REV1 NOV1 INT1 FC1 = 5; Lens: "warn with one fixed line (never fail)"; dispatch floor medium)
 Spec: docs/superpowers/specs/2026-11-06-mirror-freshness-design.md   Plan: docs/superpowers/plans/2026-11-06-mirror-freshness.md
 Agency project: — (executed inline, as the earlier tasks did)
@@ -24,3 +24,5 @@ No BLOCKER → no delta pass (Review Cycle); SUBSTANTIVE fixes take no further p
 - Spec and plan reviewed in one fresheyes pass (as the earlier tasks did); code written while it ran against the frozen snapshot.
 - decided (kata comment): stale_since in run --json; check --json stays a list; no new exit status.
 - Gate (scripts/test-gate.sh: public scan + suite) after the review fixes: 1039 passed. 190 changed lines excluding run artifacts.
+- Follow-up filed: ai-tools-alerts#y779 (mirror completeness: a selective mirror that forwards the digest but withholds one advisory or retraction).
+- Landing: origin/main unmoved at c6a0c2e at handoff; the review-fix commit 08531c5 follows the reviewed head 8176b3e (SUBSTANTIVE and COSMETIC fixes only, no further pass per the Review Cycle); this record commit is doc-only.
