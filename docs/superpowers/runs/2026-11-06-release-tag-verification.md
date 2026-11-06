@@ -1,6 +1,6 @@
 # Run: release-tag-verification
 Instruction: Dispatch of ai-tools-alerts#b9mz in mode do-it, starting rung floored at medium; brief TASK-ai-tools-alerts#b9mz.md: add trust/allowed_signers with exactly the public-key line from the decided comment (principal 19930+Joi@users.noreply.github.com); README install section gets a short "Verify the release" block (clone, `git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.1`; v0.1.0 is unsigned, v0.1.1 the first signed tag; GitHub shows the tag as Verified); the mirror index subscribe block gets one line pointing at the verification section; CHANGELOG.md. No tag is cut. Under 80 changed lines.
-Stage: spec-review
+Stage: done
 Rung: heavy (start-floor heavy: hard-trigger credential handling — the diff adds the key file members' `git tag -v` trusts; BR1 REV0 NOV1 INT2 FC1 = 5; dispatch floor was medium)
 Lens: "containing exactly the public-key line from the decided comment (principal 19930+Joi@users.noreply.github.com)"; "No tag is cut by this task"; "Under 80 changed lines"
 Spec: docs/superpowers/specs/2026-11-06-release-tag-verification-design.md   Plan: docs/superpowers/plans/2026-11-06-release-tag-verification.md
@@ -36,7 +36,12 @@ Pass 1 [code:branch, origin/main...0f61956; Stage 1 same-model subagent ∥ Stag
 - tests/mirror/test_export.py: 68 passed.
 
 ## Chunks
-- [ ] trust file + README + mirror line + CHANGELOG + test
+- [x] trust file + README + mirror line + CHANGELOG + test — d54ac61, review fixes a5c666a (rebased on d5d9ff6); landed on main a5c666af5521f3e709a94c10f059a712c921f533
+
+## Landing
+- Gate (scripts/test-gate.sh: public scan + pytest): 1050 passed on 0f61956 and on 05a1970; 1068 passed on the rebased head a5c666a. ai-tools-alerts#rvw5 is closed; no known failure.
+- 53 changed lines outside docs/superpowers. No tag cut. roborev: repo not enrolled, no post-push patrol; the review fixes after the whole-branch pass are doc/order only (no behaviour-changing BLOCKER fix), so no delta.
+- For the v0.1.1 cut (coordinator): sign the tag; bump `__version__`, PIPX_LINE and the README install lines to v0.1.1 in the verified form; deploy v0.1.1 to the mirror so the fingerprint is served.
 
 ## Notes
 - An accidental `fresheyes.sh --help` (no help flag; it took `--help` as scope) launched a detached review 20261106-080924-835d75; its process group was killed within a minute, no verdict used. Not counted as a pass.
