@@ -1,6 +1,6 @@
 # Run: curator-translation
 Instruction: Task ai-tools-alerts#bq8v per TASK-ai-tools-alerts#bq8v.md — poster: Japanese translation of curator free text through one Claude API call (phase 2): aitools_alerts/poster/translate.py, translate(text, *, call) -> str | None; key from Kura line ANTHROPIC_API_KEY through get_secret in a subprocess with a throwaway SECRETS_CACHE_DIR, never argv or logs; model claude-sonnet-5-5, temperature 0, fixed system prompt in the repo; deterministic check that every URL, version string and id in the source appears unchanged, else skip and count `untranslated`; cached by event id; 401/403 sets a hold no run clears; at most 20 calls a day in the poster state; 30 s timeout; the English post is never delayed. Curator posts only. Config translate_curator (default false). Tests with a fake call: success, mismatch skip, auth hold, budget, config off. README one paragraph. Standard library only (urllib). Under 400 changed lines. /do-it, floor medium; security-shaped review on gpt-6-astra. Non-repoman repo (ff-merge ending).
-Stage: committing
+Stage: done
 Rung: heavy (start-floor heavy: hard-trigger — the diff reads an API key from the secrets helper; evaluator BR2 REV1 NOV2 INT2 FC2 = 9; dispatch floor medium)
 Lens: "the English post is never delayed"; "never argv, never logged" (the key); "no other provider-facing call is added"; "standard library only"; "Under 400 changed lines"
 Spec: docs/superpowers/specs/2026-11-06-curator-translation-design.md   Plan: docs/superpowers/plans/2026-11-06-curator-translation.md
@@ -23,9 +23,10 @@ Pass 2 [code:delta --since 86a0b52, head 1b831c2]: 3B/3S/0C/0R · fixed 15/16 pr
 - Heavy delta: the spec's BLOCKER fixes changed it. The delta is folded into the whole-branch code pass, whose diff contains the spec and plan and which carries these 13 findings to verify (one independent look over both; recorded so the shape is auditable).
 
 ## Chunks
-- [ ] translate — translate.py (prompt, check, key, call)
-- [ ] poster — main.py curator pass, inputs.py config, pull.py reader rule
-- [ ] docs — README paragraph, design.md
+- [x] translate — translate.py (prompt, check, key, call)
+- [x] poster — main.py curator pass, inputs.py config, pull.py reader rule
+- [x] docs — README paragraph, design.md
+(three commits: dfa8333 build, 91a2880 whole-branch review fixes, ddcbcdf delta fixes)
 
 ## Notes
 - Built while the spec+plan pass ran (the reviewer read a snapshot sha, so the tree could move); recorded as an order deviation, not a skipped step.
@@ -33,3 +34,7 @@ Pass 2 [code:delta --since 86a0b52, head 1b831c2]: 3B/3S/0C/0R · fixed 15/16 pr
 - Size: 620 added / 26 deleted in aitools_alerts, tests, README.md, docs/design.md (code 385, tests 235); decided comment on the issue.
 - Issue says temperature 0; Sonnet 5.5 returns 400 for it: notice comment posted.
 - Prior work: kata search "translat" / "japanese" finds rd8t (templates, landed e566386) and yxd6 (reader side). capability-search "translate": no existing translation tool in the fleet's scripts. sign-manifest.py's read_root_secret is the key-reading pattern reused here.
+- Rebased on origin/main 0879866 (w75s). Reviewed commits became: 86a0b52 → dfa8333 (whole-branch pass), 1b831c2 → 91a2880 (delta pass). ddcbcdf holds the delta's fixes and had no further pass (ruling jibot-code#41e2); `git diff 91a2880 ddcbcdf` shows it.
+- Gate `scripts/test-gate.sh` on ddcbcdf: 1028 passed, 1 skipped. w75s's tests/test_poster_shell.py needs bash 4+; Homebrew bash 5 installed on this host for it (24 errors before).
+- Landed: ff-merge to main at ddcbcdf, pushed. roborev: repo not enrolled; the delta pass ran before the push.
+- Live: nothing deployed. translate_curator stays off until the coordinator sets it with secrets_helper and reinstalls the poster.
