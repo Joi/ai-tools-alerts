@@ -1262,3 +1262,39 @@ def test_failed_mirror_pull_holds_the_digest(env, capsys):
     assert "digest held: mirror pull: unreachable" in capsys.readouterr().err
     _, _, ssh = env.run(now=at(5, 10))
     assert "GHSA-abcd-efgh-ijkl" in ssh.calls[0][2]
+
+
+# ---------------------------------------------------------------- r7hr: the source title
+
+TOCTOU = "TOCTOU Race in Edit Tool Allows File Writes Outside the Workspace"
+
+
+def _cfe8(title=TOCTOU):
+    """Shaped like the 2026-11-07T012306Z collector record's CVE-2026-88968 finding."""
+    f = finding(fid="CVE-2026-88968", severity="high", fixed=None, sources=(GHSA, "https://example.org/write-up"),
+                aliases=("GHSA-abcd-efgh-ijkl",))
+    f["sources"][0]["title"] = title
+    f["sources"][1]["title"] = "a non-primary source's words"
+    return f
+
+
+def test_root_and_digest_carry_the_source_title(env):
+    env.collector([_cfe8()])
+    _, _, ssh = env.run()
+    root = ssh.calls[0][2].split("\n")
+    assert "(CVE-2026-88968)" in root[0] and root[1] == TOCTOU
+    assert ssh.ja[0][2].split("\n")[3] == f"原題: {TOCTOU}"  # lang: ja, of:, blank, head
+    assert env.ledger()[0][0]["source_title"] == TOCTOU
+    _, _, ssh = env.run(now=at(5, 9))
+    assert f"(CVE-2026-88968): {TOCTOU};" in ssh.calls[0][2]
+
+
+def test_a_title_learned_later_posts_nothing_and_reaches_the_digest(env):
+    env.collector([_cfe8(title=None)])
+    _, _, ssh = env.run()
+    assert ssh.calls[0][2].split("\n")[1].startswith("Affected:")  # exactly as before r7hr
+    assert "source_title" not in env.ledger()[0][0]
+    env.collector([_cfe8()])
+    _, _, ssh = env.run(now=T0 + 600)
+    assert ssh.calls == []  # no reply for a title
+    assert env.ledger()[0][0]["source_title"] == TOCTOU

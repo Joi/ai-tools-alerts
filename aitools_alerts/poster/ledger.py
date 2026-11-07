@@ -45,6 +45,7 @@ class Entry:
     exploited: bool
     advisory: dict
     replies: list
+    source_title: str | None = None  # r7hr: the digest line's upstream title; never identity
 
 
 def _keys(ids) -> set[str]:
@@ -69,7 +70,8 @@ def _entry_ok(e) -> bool:
             and type(e["posted_at"]) is int and type(e["last_change"]) is int
             and isinstance(e["scope"], str) and type(e["exploited"]) is bool
             and isinstance(e["advisory"], dict)
-            and isinstance(e["replies"], list) and all(_ids_map(r) for r in e["replies"]))
+            and isinstance(e["replies"], list) and all(_ids_map(r) for r in e["replies"])
+            and (e.get("source_title") is None or isinstance(e["source_title"], str)))
 
 
 def _pending_ok(p) -> bool:
@@ -197,7 +199,7 @@ class Ledger:
         raise LedgerError(f"no thread {root_event_id}")
 
     def record_root(self, adv: schema.Advisory, root_event_id: str, channel_ids: dict, *,
-                    scope: str, exploited: bool, now: int, ids=()) -> Entry:
+                    scope: str, exploited: bool, now: int, ids=(), source_title: str | None = None) -> Entry:
         """A new thread. ``ids`` is the full identity set (the advisory's aliases are
         capped at 50 for publication; the ledger keeps every id)."""
         if not isinstance(root_event_id, str) or not _ids_map(channel_ids):
@@ -207,7 +209,8 @@ class Ledger:
             raise LedgerError(f"{adv.id} already has a thread; post a reply instead")
         e = dict(root_event_id=root_event_id, channel_ids=dict(channel_ids), level=adv.level,
                  aliases=ids, posted_at=now, last_change=now, scope=scope,
-                 exploited=exploited is True, advisory=asdict(adv), replies=[])
+                 exploited=exploited is True, advisory=asdict(adv), replies=[],
+                 **({"source_title": source_title} if source_title else {}))
         self._state()["entries"].append(e)
         self._save()
         return Entry(**e)
@@ -229,6 +232,13 @@ class Ledger:
             e["aliases"] = merged
             self._save()
         return Entry(**e)
+
+    def learn_title(self, root_event_id: str, title: str) -> None:
+        """A source title learned after the root posted: kept for the digest, never posted."""
+        e = self._entry(root_event_id)
+        if not e.get("source_title") and isinstance(title, str) and title:
+            e["source_title"] = title
+            self._save()
 
     def record_reply(self, root_event_id: str, adv: schema.Advisory, reply_ids: dict, *,
                      now: int, exploited: bool = False, ids=()) -> Entry:

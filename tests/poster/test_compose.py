@@ -416,3 +416,35 @@ def test_lang_reply_header_and_refusals():
     for body, of in (("本文", "x" * 64), ("", None), (f"本文\n\n```{schema.INFO_STRING}\n{{}}\n```\n", None)):
         with pytest.raises(ValueError):
             compose.lang_reply(body, of)
+
+
+# ---------------------------------------------------------------- r7hr: the source title
+
+TOCTOU = "TOCTOU Race in Edit Tool Allows File Writes Outside the Workspace"
+
+
+def test_root_post_carries_the_source_title_second():
+    c = cand(source_title=TOCTOU)
+    text, adv = root(c, ("high", None))
+    lines = text.split("\n\n```aitools-alert\n", 1)[0].split("\n")
+    assert lines[0] == "HIGH: Claude Code: injection to code execution (CVE-2026-0001)"
+    assert lines[1] == TOCTOU and len(lines) == 5
+    assert TOCTOU not in adv.title and schema.parse_post(text) == adv  # never in the block
+    ja = compose.root_post_ja(adv, None, False, compose.source_title(c)).split("\n")
+    assert ja[1] == f"原題: {TOCTOU}"
+    assert root(cand())[0] == root(cand(source_title=None))[0]  # no title: exactly as before
+
+
+def test_source_title_equal_to_a_template_kind_is_dropped():
+    for t in ("Security Advisory", "unverified security advisory", "  ", "two\nlines", "a ``` fence"):
+        assert compose.source_title(cand(source_title=t)) is None
+
+
+def test_digest_line_carries_the_title_after_the_id():
+    _, adv = root(cand(injection_exec=False), ("high", None))
+    titles = {(adv.id, "Claude Code"): TOCTOU}
+    en = compose.digest([adv], "2026-11-07", titles=titles)
+    assert f"(CVE-2026-0001): {TOCTOU}; fixed in 2.1.0." in en
+    ja = compose.digest([adv], "2026-11-07", lang="ja", titles=titles)
+    assert f"(CVE-2026-0001) 原題: {TOCTOU};" in ja
+    assert compose.digest([adv], "2026-11-07") == compose.digest([adv], "2026-11-07", titles={})

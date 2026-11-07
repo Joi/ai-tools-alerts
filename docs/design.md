@@ -71,6 +71,8 @@ posted_by (pubkey role: curator|relay-bot), posted_at, expires_at
 
 Humans read the top; agents parse the block. Replies carry the same block with the changed fields. Final field names and the schema file are the builder's.
 
+The relay bot's root body (ai-tools-alerts#r7hr): the head line carries the template title (the block's `title`, the advisory's identity); when a primary source carries its own title, the second line is that title, English as given, sanitised and capped at 160 characters (the Japanese post prefixes it `原題:`). It never enters the block or the thread's identity, a title learned after the root posted gets no reply, and a digest line carries it after the id.
+
 Translations (coordinator decision 2026-11-06, ai-tools-alerts#rd8t): a translation is a reply in the thread (e tag marked root) from a manifest key whose first line is `lang: ja`, an optional second line `of: <event id>` naming the event it translates (absent = the root), a blank line, then the Japanese body. It carries no aitools-alert block; a lang reply that carries one is ignored entirely by readers (never a patch). For one target the latest lang reply from a manifest key wins. A lang reply from a non-manifest key is discussion. A curator `retract` retracts the translations with the thread. The digest root gets a `lang: ja` reply too. A curator's post or amendment gets a machine translation from the relay-bot key (ai-tools-alerts#bq8v, one Claude API call, body ending `（機械翻訳）`); readers keep a relay-bot lang reply on a curator thread as its translation unless a curator's exists, and every other relay-bot reply there stays discussion.
 
 ### Trust manifest and action vocabulary

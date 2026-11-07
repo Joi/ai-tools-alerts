@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from aitools_alerts.schema import Source  # re-exported: candidates.Source is schema.Source
+from aitools_alerts.schema import Source, is_primary  # re-exported: candidates.Source is schema.Source
 
 KEV_CATALOG_URL = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
 
@@ -44,6 +44,7 @@ MAX_ID = 200
 MAX_TEXT = 500
 MAX_ALIASES = 32
 MAX_SOURCES = 8
+MAX_TITLE = 160
 
 _CVE = re.compile(r"CVE-\d{4}-\d{4,}")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -95,6 +96,7 @@ class Candidate:
     affected: str | None
     sources: tuple[Source, ...]
     observed_at: str | None
+    source_title: str | None = None  # the primary source's own title (r7hr); never identity
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -132,6 +134,22 @@ def _str(v, limit: int = MAX_TEXT) -> str | None:
 def _safe(s: str) -> bool:
     """No control, format (bidi override) or lone surrogate character."""
     return not any(unicodedata.category(ch) in ("Cc", "Cf", "Cs") for ch in s)
+
+
+_TITLE_URL = re.compile(r"\b(?:[a-z][a-z0-9+.-]*://|www\.)\S*", re.I)
+
+
+def _title(v, hosts) -> str | None:
+    """An upstream title made safe for a post line: NFKC, URLs and control characters
+    gone, whitespace collapsed, no code fence, capped; None when nothing is left or it
+    names a host or private detail (the title is dropped, never the finding)."""
+    if not isinstance(v, str):
+        return None
+    t = _TITLE_URL.sub(" ", unicodedata.normalize("NFKC", v[:4 * MAX_TEXT]))
+    t = "".join(ch for ch in t if unicodedata.category(ch) not in ("Cc", "Cf", "Cs", "Co", "Cn")
+                or ch.isspace())
+    t = re.sub(r"`{2,}", "`", " ".join(t.split()))[:MAX_TITLE].rstrip()
+    return _clean(t, hosts) if t else None
 
 
 def _flag(v) -> bool:
@@ -304,7 +322,8 @@ def _sources(raw: list, hosts: _Hosts) -> tuple[Source, ...]:
 
 
 def _build(cid, aliases, product, sources, f: dict, hosts: _Hosts, out: CandidateList, *,
-           exploited: bool = False, fixed: str | None = None, affected: str | None = None) -> None:
+           exploited: bool = False, fixed: str | None = None, affected: str | None = None,
+           title: str | None = None) -> None:
     """Shared tail: validate and append one candidate, or count a skip."""
     if cid is None or len(cid) > MAX_ID:
         out.skipped["no id"] += 1
@@ -331,6 +350,7 @@ def _build(cid, aliases, product, sources, f: dict, hosts: _Hosts, out: Candidat
         affected=_clean(affected, hosts),
         sources=sources,
         observed_at=_timestamp(f.get("observed_at")),
+        source_title=title,
     )
     # Backstop: no field, present or future, may carry a host or private detail.
     d = c.to_dict()
@@ -484,6 +504,17 @@ def _apple_fixed(f: dict, kept: tuple[Source, ...]) -> str | None:
     return _fixed(found.pop()) if len(found) == 1 else None
 
 
+def _source_title(f: dict, kept: tuple[Source, ...], hosts: _Hosts) -> str | None:
+    """The title of the first retained primary source that has one; any other gives None."""
+    urls = {s.url for s in kept if is_primary(s.url)}
+    for s in f["sources"] if isinstance(f.get("sources"), list) else []:
+        if isinstance(s, dict) and _url(s.get("url")) in urls:
+            t = _title(s.get("title"), hosts)
+            if t:
+                return t
+    return None
+
+
 def from_collector(record: dict) -> CandidateList:
     """Candidates from a collector run record (schema_version 1)."""
     out = CandidateList()
@@ -512,6 +543,6 @@ def from_collector(record: dict) -> CandidateList:
         _build(cid, _aliases(f.get("aliases"), cid, hosts), _str(f.get("product")),
                sources, f, hosts, out,
                fixed=_fixed(f.get("fixed")) or _apple_fixed(f, sources),
-               affected=_affected(f.get("affected")))
+               affected=_affected(f.get("affected")), title=_source_title(f, sources, hosts))
 
     return _each(findings, out, one)

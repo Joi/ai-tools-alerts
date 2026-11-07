@@ -95,7 +95,7 @@ class Run:
     # ------------------------------------------------------------ the journal
 
     def _item(self, kind, scope, ids, channel, text, *, key_id, adv=None, exploited=False, date=None,
-              root=None, ja=None):
+              root=None, ja=None, source_title=None):
         """One journal item. ``root`` fixes a reply's or copy's thread at planning time, so a
         later alias bridge cannot move it to another thread. Raises ValueError (withheld)
         for a message the transport would refuse."""
@@ -104,7 +104,8 @@ class Run:
         return {"key": f"{kind}:{scope}:{key_id}:{channel}", "kind": kind, "scope": scope,
                 "ids": list(dict.fromkeys(ids)), "channel": channel, "text": text, "adv": adv,
                 "exploited": exploited is True, "date": date, "sent": None, "root": root,
-                **({"ja": ja} if ja else {})}  # no key without a body: the poster before rd8t loads it
+                **({"ja": ja} if ja else {}),  # no key without a body: the poster before rd8t loads it
+                **({"source_title": source_title} if source_title else {})}
 
     def _ja(self, fn, *a, **kw):
         """A Japanese body, or None: a Japanese failure never withholds the English post."""
@@ -390,7 +391,8 @@ class Run:
                 raise LedgerError(f"{it['key']}: sent as {eid} but {e.root_event_id} holds these ids")
             if e is None:
                 self.led.record_root(schema.validate(it["adv"]), eid, {ch: eid}, scope=it["scope"],
-                                     exploited=it["exploited"], now=self.now, ids=it["ids"])
+                                     exploited=it["exploited"], now=self.now, ids=it["ids"],
+                                     source_title=it.get("source_title"))
             for o in self.state["outbox"]:  # its copies now name this thread, never a lookup
                 if o["kind"] == "copy" and o["root"] is None and o["scope"] == it["scope"] \
                         and _fold(o["ids"]) & _fold(it["ids"]):
@@ -478,29 +480,31 @@ class Run:
     def plan_new(self, c, scope, level, reason, ids):
         test = self.is_synthetic(c)
         text, adv = compose.root_post(c, (level, reason), scope, posted_at=self.now)
+        title = compose.source_title(c)
         if level == "notice":
             if test:  # the digest would list it without its marker
                 raise ValueError("a synthetic entry is never held for the digest")
-            self.hold(scope.name, adv)
+            self.hold(scope.name, adv, title)
             return []
         chans = CHANNELS_FOR[level]
-        ja = self._ja(compose.root_post_ja, adv, reason, compose.fix_unexpressed(c))
+        ja = self._ja(compose.root_post_ja, adv, reason, compose.fix_unexpressed(c), title)
         return [self._item("root" if i == 0 else "copy", scope.name, ids, ch, text, key_id=c.id,
-                           adv=asdict(adv), exploited=c.exploited, ja=ja)
+                           adv=asdict(adv), exploited=c.exploited, ja=ja,
+                           source_title=title if i == 0 else None)
                 for i, ch in enumerate(chans)]
 
     @staticmethod
     def _notice_keys(scope, adv: dict) -> list[str]:
         return [f"{scope}|{i.casefold()}" for i in [adv.get("id"), *adv.get("aliases", [])] if isinstance(i, str)]
 
-    def hold(self, scope, adv):
+    def hold(self, scope, adv, title=None):
         a = asdict(adv)
         known = set(self.state["digested"])
         for h in self.state["held"]:
             known.update(self._notice_keys(h["scope"], h["adv"]))
         if known & set(self._notice_keys(scope, a)):
             return
-        self.state["held"].append({"scope": scope, "adv": a})
+        self.state["held"].append({"scope": scope, "adv": a, **({"source_title": title} if title else {})})
         self.save()
         self.n["held"] += 1
 
@@ -513,6 +517,9 @@ class Run:
         fresh = [i for i in dict.fromkeys(ids) if i.casefold() not in stored and i != prev.id]
         if fresh:  # identity is learned whether or not a reply can say so (the 50-alias cap)
             self.led.add_ids(entry.root_event_id, fresh)
+        title = compose.source_title(c)
+        if title and not entry.source_title:  # learned late: the digest carries it; no reply says it
+            self.led.learn_title(entry.root_event_id, title)
         own_fix = compose.schema_fixed(c.fixed) is not None
         prev_ids = _fold([prev.id, *prev.aliases])
         prev_urls = {s.url for s in prev.sources}
@@ -536,7 +543,7 @@ class Run:
         if any(s.url not in prev_urls for s in new.sources) and len(prev.sources) < 20:
             changes["sources"] = new.sources
         copies = [ch for ch in CHANNELS_FOR[level] if ch not in entry.channel_ids]
-        ja = self._ja(compose.root_post_ja, new, reason, compose.fix_unexpressed(k)) if copies else None
+        ja = self._ja(compose.root_post_ja, new, reason, compose.fix_unexpressed(k), title) if copies else None
         items = [self._item("copy", scope.name, ids, ch, text, key_id=prev.id, exploited=c.exploited,
                             root=entry.root_event_id, ja=ja)
                  for ch in copies]
@@ -593,7 +600,7 @@ class Run:
         # day by day), then held notices loudest first: (advisory, held entry, last_change).
         posted = [h for h in self.state["held"]  # a notice that has since posted is listed once, as posted
                   if self.led.lookup([h["adv"]["id"], *h["adv"]["aliases"]], scope=h["scope"]) is not None]
-        led_items, held_items = [], []
+        led_items, held_items, titles = [], [], {}
         at, done = self.state["digest_at"], set(self.state["digest_roots"])
         for e in self.led.entries_since(at - 1):
             if e.last_change == at and e.root_event_id in done:
@@ -605,10 +612,15 @@ class Run:
                 continue
             if gone_roots.isdisjoint({e.root_event_id, *e.channel_ids.values()}):  # else its thread is withdrawn
                 led_items.append((adv, None, (e.last_change, e.root_event_id)))
+                if adv.products:
+                    titles[(adv.id, adv.products[0].name)] = e.source_title
         for h in self.state["held"]:
             if h not in posted:
                 try:
-                    held_items.append((schema.validate(h["adv"]), h, None))
+                    a = schema.validate(h["adv"])
+                    held_items.append((a, h, None))
+                    if a.products:
+                        titles.setdefault((a.id, a.products[0].name), h.get("source_title"))
                 except ValueError:
                     self.n["withheld"] += 1
         led_items.sort(key=lambda x: x[2])
@@ -617,7 +629,8 @@ class Run:
         keep = len(items)
         while True:  # the largest prefix that fits one post; the rest waits for tomorrow
             try:
-                text = compose.digest([x[0] for x in items[:keep]], local.date(), retracted=gone, now=self.now)
+                text = compose.digest([x[0] for x in items[:keep]], local.date(), retracted=gone, now=self.now,
+                                      titles=titles)
             except ValueError:
                 self.n["withheld"] += 1
                 return
@@ -636,7 +649,8 @@ class Run:
         snap = {"held": sorted({k for _, h, _ in taken if h is not None
                                 for k in self._notice_keys(h["scope"], h["adv"])}),
                 "cutoff": cutoff, "roots": roots}
-        ja = self._ja(compose.digest, [x[0] for x in taken], local.date(), lang="ja", retracted=gone, now=self.now)
+        ja = self._ja(compose.digest, [x[0] for x in taken], local.date(), lang="ja", retracted=gone, now=self.now,
+                      titles=titles)
         self.enqueue([self._item("digest", None, [f"digest:{today}"], "feed", text,
                                  key_id=today, adv=snap, date=today, ja=ja)])
 

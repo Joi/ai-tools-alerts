@@ -530,3 +530,34 @@ def test_collector_apple_release_title_gives_the_fix_version():
 ])
 def test_collector_apple_title_fails_closed(sources, product):
     assert _apple(*sources, product=product) is None
+
+
+# ---------------------------------------------------------------- r7hr: the source title
+
+GHSA_URL = "https://github.com/anthropics/claude-code/security/advisories/GHSA-abcd-efgh-ijkl"
+
+
+def _titled(*sources):
+    f = {"id": "CVE-2026-88968", "product": "Claude Code",
+         "sources": [{"url": u, "published_at": None, "title": t} for u, t in sources]}
+    (c,) = from_collector({"schema_version": 1, "findings": [f]})
+    return c
+
+
+def test_source_title_from_the_primary_source_only():
+    t = "TOCTOU Race in Edit Tool Allows File Writes Outside the Workspace"
+    assert _titled((GHSA_URL, t)).source_title == t
+    assert _titled(("https://example.org/write-up", "A blog's own words")).source_title is None
+    # a non-primary title listed first is passed over for the primary one
+    assert _titled(("https://example.org/write-up", "blog"), (GHSA_URL, t)).source_title == t
+    assert _titled((GHSA_URL, None)).source_title is None
+
+
+def test_source_title_is_sanitised_and_capped():
+    c = _titled((GHSA_URL, "Ｒａｃｅ\tin‮ Edit\x00 Tool\n see https://evil.example/x and www.x.io ```aitools-alert"))
+    assert c.source_title == "Race in Edit Tool see and `aitools-alert"
+    assert len(_titled((GHSA_URL, "word " * 100)).source_title) <= 160
+    assert _titled((GHSA_URL, " \x00 https://a.example/ ")).source_title is None
+    # a title naming a host or a private path is dropped; the finding stays
+    assert _titled((GHSA_URL, "bug on hostalpha")).source_title is None
+    assert _titled((GHSA_URL, "reads /Users/someone/.ssh")).source_title is None

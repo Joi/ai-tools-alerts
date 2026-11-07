@@ -157,8 +157,25 @@ def _ids(raw, exclude: str) -> list[str]:
     return out
 
 
+def source_title(c) -> str | None:
+    """The candidate's upstream title for the second body line, or None: never a bare
+    template kind, never text the publication guard refuses. Not in the block, not identity."""
+    return _upstream(getattr(c, "source_title", None))
+
+
+def _upstream(t) -> str | None:
+    if not isinstance(t, str) or not t.strip() or "\n" in t or "``" in t \
+            or t.strip().casefold() in {p + k for k in _KINDS for p in ("", "unverified ")}:
+        return None
+    try:
+        return _guard(t)
+    except ValueError:
+        return None
+
+
 def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, schema.Advisory]:
-    """(post text, Advisory) for a new thread: four body lines, then the block.
+    """(post text, Advisory) for a new thread: four body lines (five with the source's
+    own title second), then the block.
     ``level`` is ``rules.level_for``'s (level, reason), or a bare level. A reserved
     primary id (a synthetic check, ``run --kev-file``) marks the head line, and
     ``schema.validate`` marks the block's title; nothing else marks either."""
@@ -180,7 +197,8 @@ def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, sc
     head = adv.level.upper() + (f" ({SYNTHETIC})" if is_synthetic(adv.id) else "") \
         + (f" ({UNVERIFIED})" if reason == "unverified" else "")
     unexpressed = fix_unexpressed(c)
-    body = [f"{head}: {adv.title}",
+    title = source_title(c)
+    body = [f"{head}: {adv.title}", *([title] if title else []),
             f"Affected: {p.name}{_words(p.affected)}."
             + (f" Fixed in {fixed}." if fixed else " A fix is listed upstream; see the source."
                if unexpressed else " No fixed version is known yet."),
@@ -207,13 +225,15 @@ def _ja_title(adv: schema.Advisory) -> str:
     return adv.title
 
 
-def root_post_ja(adv: schema.Advisory, reason: str | None = None, unexpressed: bool = False) -> str:
-    """root_post's four body lines in Japanese, from the Advisory root_post returned."""
+def root_post_ja(adv: schema.Advisory, reason: str | None = None, unexpressed: bool = False,
+                 title: str | None = None) -> str:
+    """root_post's body lines in Japanese, from the Advisory root_post returned; ``title``
+    (``source_title``) stays in English on its own line after 原題:."""
     p, fixed = adv.products[0], adv.products[0].fixed
     head = _JA_LEVEL[adv.level] + (f" ({SYNTHETIC})" if is_synthetic(adv.id) else "") \
         + (f" ({UNVERIFIED})" if reason == "unverified" else "")
     return "\n".join([
-        f"{head}: {_ja_title(adv)}",
+        f"{head}: {_ja_title(adv)}", *([f"原題: {title}"] if title else []),
         f"影響: {p.name}{_words_ja(p.affected)}。"
         + (f" 修正版: {fixed}。" if fixed else " 修正は上流で公開されています。出典を参照してください。"
            if unexpressed else " 修正版はまだ知られていません。"),
@@ -366,7 +386,7 @@ _DIGEST = {
                fixed=lambda v: f"fixed in {v}", nofix="no fix yet", end=".",
                leads=lambda n: f"{n} unrated leads.", release=lambda seg: f"release {seg}",
                one="one release", cves=lambda n: f"{n} CVEs", update="update available",
-               see="see the release", title=lambda a: a.title),
+               see="see the release", title=lambda a: a.title, upstream=lambda t: f": {t}"),
     "ja": dict(empty=lambda d: f"{d} のデイリーダイジェスト: アドバイザリはありません。",
                head=lambda d, n: f"{d} のデイリーダイジェスト: {n} 件。",
                section=lambda lv, n: f"{_JA_LEVEL[lv]} ({n})",
@@ -374,13 +394,14 @@ _DIGEST = {
                fixed=lambda v: f"修正版 {v}", nofix="修正版はまだありません", end="。",
                leads=lambda n: f"未評価のリード {n} 件。", release=lambda seg: f"リリース {seg}",
                one="1 件のリリース", cves=lambda n: f"CVE {n} 件", update="更新あり",
-               see="リリースを参照", title=_ja_title),
+               see="リリースを参照", title=_ja_title, upstream=lambda t: f" 原題: {t}"),
 }
 
 
-def _single(a: schema.Advisory, t=_DIGEST["en"]) -> str:
+def _single(a: schema.Advisory, t=_DIGEST["en"], title: str | None = None) -> str:
     fixed = t["fixed"](a.products[0].fixed) if a.products[0].fixed else t["nofix"]
-    return f"- {t['title'](a)}; {fixed}{t['end']} {_primary(a.sources)}"
+    up = t["upstream"](title) if title else ""
+    return f"- {t['title'](a)}{up}; {fixed}{t['end']} {_primary(a.sources)}"
 
 
 def _group_key(a: schema.Advisory):
@@ -409,7 +430,8 @@ def _group_line(key, members, t=_DIGEST["en"]) -> str:
     return f"- {key[1]}: {label}, {t['cves'](len(members))}; {fix}{t['end']} {url}"
 
 
-def digest(advs_today, date, lang: str = "en", *, retracted=(), now: int | None = None) -> str:
+def digest(advs_today, date, lang: str = "en", *, retracted=(), now: int | None = None,
+           titles=None) -> str:
     """The daily digest: every advisory once per id and product (latest posted_at
     wins), critical first. Within high and notice, plain CVE advisories sharing a
     primary source URL and product are one line (a vendor release), and leads are one
@@ -418,7 +440,8 @@ def digest(advs_today, date, lang: str = "en", *, retracted=(), now: int | None 
     advisory: this grouping is presentation only. ``lang="ja"``: the same digest from
     the Japanese templates. Left out, and not counted: a synthetic id, an advisory
     whose id or alias is in ``retracted`` (case-folded) and, given ``now``, one whose
-    latest version expired before it (``pull.active``'s rule)."""
+    latest version expired before it (``pull.active``'s rule). ``titles`` maps (id,
+    product name) to a source title, which a line of its own carries after the id."""
     t = _DIGEST[lang]
     latest: dict[tuple, schema.Advisory] = {}
     for adv in advs_today:
@@ -440,7 +463,8 @@ def digest(advs_today, date, lang: str = "en", *, retracted=(), now: int | None 
         for a in sorted((a for a in latest.values() if a.level == level), key=lambda a: (a.posted_at, a.id)):
             k = _group_key(a)
             groups.setdefault(k if k is not None else ("single", a.id, a.products[0].name), []).append(a)
-        sections[level] = [_single(m[0], t) if k[0] == "single" or len(m) == 1 else _group_line(k, m, t)
+        sections[level] = [_single(m[0], t, _upstream((titles or {}).get((m[0].id, m[0].products[0].name))))
+                           if k[0] == "single" or len(m) == 1 else _group_line(k, m, t)
                            for k, m in groups.items()]
     n = sum(len(v) for v in sections.values())
     lines, withheld = [t["head"](day, n)], 0

@@ -266,8 +266,9 @@ def _adv_ok(v) -> bool:
 def _item_ok(it) -> bool:
     """A journal item that a later run can finish: every field its kind needs is there
     and well formed, so nothing fails after the post is public."""
-    if not (isinstance(it, dict) and set(it) in (_ITEM_KEYS, _ITEM_KEYS | {"ja"})  # "ja": rd8t; older items lack it
-            and (it.get("ja") is None or isinstance(it["ja"], str) and it["ja"]) and isinstance(it["kind"], str)
+    if not (isinstance(it, dict) and _ITEM_KEYS <= set(it) <= _ITEM_KEYS | {"ja", "source_title"}  # rd8t, r7hr
+            and all(it.get(k) is None or isinstance(it[k], str) and it[k] for k in ("ja", "source_title"))
+            and isinstance(it["kind"], str)
             and it["kind"] in _KINDS and isinstance(it["key"], str) and it["key"]
             and it["channel"] in ("feed", "critical") and isinstance(it["text"], str) and it["text"]
             and _strs(it["ids"]) and it["ids"] and type(it["exploited"]) is bool
@@ -292,7 +293,8 @@ def _item_ok(it) -> bool:
 
 def candidate_from(d) -> Candidate:
     """A Candidate rebuilt from Candidate.to_dict(); ValueError when it is not one."""
-    if not (isinstance(d, dict) and set(d) == _CANDIDATE_FIELDS):
+    if not (isinstance(d, dict) and set(d) | {"source_title"} == _CANDIDATE_FIELDS  # r7hr: older lack it
+            and (d.get("source_title") is None or isinstance(d["source_title"], str))):
         raise ValueError("not a candidate")
     strs = ("id", "product_text")
     opt = ("advisory_severity", "local_level_hint", "fixed", "affected", "observed_at")
@@ -318,8 +320,9 @@ def _deferred_ok(d) -> bool:
 
 
 def _held_ok(h) -> bool:
-    return isinstance(h, dict) and set(h) == {"scope", "adv"} and isinstance(h["scope"], str) \
-        and _adv_ok(h["adv"])
+    return isinstance(h, dict) and set(h) in ({"scope", "adv"}, {"scope", "adv", "source_title"}) \
+        and isinstance(h["scope"], str) and _adv_ok(h["adv"]) \
+        and (h.get("source_title") is None or isinstance(h["source_title"], str))
 
 
 def load_state(path: Path, now: int, backfill_days: int) -> dict:
