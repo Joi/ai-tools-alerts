@@ -1,6 +1,6 @@
 # Run: severity-tier1
 Instruction: ai-tools-alerts#0vy7 per TASK-ai-tools-alerts#0vy7.md — a new reason `severity-tier1` in rules.level_for: tier 1, no critical rule applies, advisory_severity normalised is `high` or `critical` on a candidate carrying a CVE or GHSA id → ("high", "severity-tier1"), no fixed required, fix-rce-tier1 checked first, critical reserved for the three rules; docs/plan.md Global Constraints and Task B2 (notice: on the issue); tests in tests/poster/test_rules.py including the cfe8-shaped collector acceptance. Under 150 changed lines. Dispatched as /do-it, starting rung floored at medium. Not repoman-managed; non-repoman ending.
-Stage: committing
+Stage: done
 Rung: medium (start-floor medium: dispatch floor; evaluator agrees — Hard-trigger none, BR1 REV1 NOV1 INT1 FC1 = 5, prod-shaped; Lens: "Under 150 changed lines"; "critical stays reserved"; "no fix required")
 Spec: docs/superpowers/specs/2026-11-07-severity-tier1-design.md   Plan: docs/superpowers/plans/2026-11-07-severity-tier1.md
 Agency project: — (executed inline, as the earlier tasks did)
@@ -23,3 +23,4 @@ passes: code 2 (one whole-branch, one delta).
 - Existing assertion changed: test_fix_rce_tier1_is_high's `"CRITICAL"` with a fix was notice and is now severity-tier1 high; that is the rule.
 - Gate (scripts/test-gate.sh) at 4db5a4c working tree: 1072 passed, 1 skipped; public scan 0. 72 changed lines (numstat, run artifacts excluded). Fleet host-name grep on the diff: 0 hits.
 - notice: comment posted on the issue for the Global Constraints change, old and new sentences quoted.
+- Landed: origin/main was b33573f (unmoved); final gate at aa0ebeb 1072 passed, 1 skipped; fast-forwarded main to aa0ebeb and pushed. roborev: repo not enrolled, post-push check skipped.
