@@ -112,13 +112,58 @@ def test_fix_rce_tier1_is_high():
     cred = cand(product_text="Tailscale", fixed="1.76.0", advisory_severity="credential exposure")
     assert level(cred) == ("high", "fix-rce-tier1")
     plain = cand(product_text="Node.js", fixed="22.11.1", advisory_severity="CRITICAL")
-    assert level(plain) == ("notice", "notice")
+    assert level(plain) == ("high", "severity-tier1")  # the level word alone: severity-tier1
     for text in ("High; remote code-execution", "lets an attacker execute arbitrary commands",
                  "\uff32\uff23\uff25 in the inspector"):
         assert level(cand(product_text="Node.js", fixed="22.11.1", advisory_severity=text)) == \
             ("high", "fix-rce-tier1"), text
     nofix = cand(product_text="Node.js", advisory_severity="remote code execution")
     assert level(nofix) == ("notice", "notice")
+
+
+def test_severity_tier1_is_high():
+    for sev in ("high", "critical", "High ", " CRITICAL", "\uff28\uff49\uff47\uff48", "high\u3000"):
+        assert level(cand(advisory_severity=sev)) == ("high", "severity-tier1"), sev
+    ghsa = cand(id="GHSA-5xjx-9qx6-jcrv", advisory_severity="high")
+    assert level(ghsa) == ("high", "severity-tier1")
+    alias = cand(id="OSV-2026-1", aliases=("CVE-2026-0009",), advisory_severity="high")
+    assert level(alias) == ("high", "severity-tier1")
+    for sev in ("moderate", "low", "medium", None, "high-ish", "not high", ""):
+        assert level(cand(advisory_severity=sev)) == ("notice", "notice"), sev
+    # Tier 2 stays notice; critical stays reserved for the three critical rules.
+    assert level(cand(product_text="Google Chrome", advisory_severity="critical")) == ("notice", "notice")
+    assert level(cand(advisory_severity="critical"), True)[0] == "high"
+
+
+def test_fix_rce_tier1_wins_over_severity_tier1():
+    c = cand(fixed="2.1.251", advisory_severity="high")
+    assert level(c) == ("high", "severity-tier1")
+    rce = cand(fixed="2.1.251", advisory_severity="high: remote code execution")
+    assert level(rce) == ("high", "fix-rce-tier1")
+
+
+def test_news_lead_severity_never_raises_level():
+    for cid, aliases in (("LEAD-2026-11-07-claude-code", ()), ("LEAD-1", ("not-an-advisory",)),
+                         ("cve-2026-0001", ()), ("CVE-2026-0001x", ())):
+        lead = cand(id=cid, aliases=aliases, advisory_severity="critical")
+        assert level(lead, True) == ("notice", "notice"), cid
+
+
+def test_collector_claude_code_advisory_is_tier1_high():
+    # The cfe8 collector record: a repo-level GHSA on Claude Code, no "fixed" field.
+    record = {"schema_version": 1, "findings": [{
+        "id": "CVE-2026-88968", "aliases": ["GHSA-5xjx-9qx6-jcrv"], "product": "claude-code",
+        "advisory_severity": "high",
+        "sources": [{"url": "https://github.com/anthropics/claude-code/security/advisories/"
+                            "GHSA-5xjx-9qx6-jcrv", "published_at": "2026-11-05T00:00:00Z"}],
+    }]}
+    out = candidates.from_collector(record)
+    assert len(out) == 1, out.skipped
+    c = out[0]
+    assert (c.advisory_severity, c.fixed) == ("high", None)  # what from_collector sets today
+    scope = rules.scope_of(c.product_text)
+    assert scope.tier == 1
+    assert rules.level_for(c, scope, False) == ("high", "severity-tier1")
 
 
 def test_hint_never_raises_level():

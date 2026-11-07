@@ -39,6 +39,9 @@ _SEVERE = re.compile(
     re.I,
 )
 _TOKEN = re.compile(r"(?:[^\W_]|\.)+")
+# An advisory id: only a candidate carrying one has a severity an advisory set.
+_ADVISORY_ID = re.compile(r"CVE-\d{4}-\d{4,}|GHSA(?:-[0-9a-z]{4}){3}")
+_HIGH_WORDS = frozenset({"high", "critical"})
 
 
 _DASHES = re.compile("[\u2010-\u2015\u2212]")
@@ -165,7 +168,9 @@ def level_for(c: Candidate, scope: schema.ScopeEntry, source_ok: bool) -> tuple[
     """(level, reason) for an in-scope candidate, by the Global Constraints.
 
     Reasons: kev-tier1, trojanized-primary, injection-exec-fixed, unverified,
-    fix-rce-tier1, kev-tier2, notice. ``source_ok`` counts only when it is the
+    fix-rce-tier1, severity-tier1, kev-tier2, notice. severity-tier1 is a tier-1
+    candidate with a CVE or GHSA id whose advisory severity is the word "high" or
+    "critical"; it needs no fix, and it never makes a critical. ``source_ok`` counts only when it is the
     bool True. ``local_level_hint`` is never read: it cannot raise a level.
     """
     if scope is None:
@@ -188,6 +193,9 @@ def level_for(c: Candidate, scope: schema.ScopeEntry, source_ok: bool) -> tuple[
     severity = c.advisory_severity
     if c.fixed and isinstance(severity, str) and _SEVERE.search(_norm(severity)):
         return "high", "fix-rce-tier1"
+    if isinstance(severity, str) and _norm(severity).strip() in _HIGH_WORDS \
+            and any(isinstance(i, str) and _ADVISORY_ID.fullmatch(i) for i in (c.id, *c.aliases)):
+        return "high", "severity-tier1"
     return "notice", "notice"
 
 
