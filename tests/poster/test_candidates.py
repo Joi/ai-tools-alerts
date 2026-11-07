@@ -561,3 +561,9 @@ def test_source_title_is_sanitised_and_capped():
     # a title naming a host or a private path is dropped; the finding stays
     assert _titled((GHSA_URL, "bug on hostalpha")).source_title is None
     assert _titled((GHSA_URL, "reads /Users/someone/.ssh")).source_title is None
+
+
+def test_source_title_fences_and_hidden_urls_are_neutralised():
+    assert _titled((GHSA_URL, "Race ~~~advisory")).source_title == "Race ~advisory"
+    # a zero-width character inside a scheme is removed before the URL is matched
+    assert _titled((GHSA_URL, "See htt​ps://evil.example/x now")).source_title == "See now"

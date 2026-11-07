@@ -232,3 +232,11 @@ def test_entries_since_and_has_pending(tmp_path):
         assert not led.has_pending("k")
         led.pending("k", ["CVE-2026-0001"], now=T0)
         assert led.has_pending("k")
+
+
+def test_merge_keeps_a_source_title_whichever_member_comes_first():
+    beat = cand()
+    col = cand(id="GHSA-abcd-efgh-ijkl", aliases=("CVE-2026-0001",), source_title="Race in Edit Tool")
+    for order in ([beat, col], [col, beat]):
+        (m, _), = ledger.merge([pair(c) for c in order])
+        assert m.source_title == "Race in Edit Tool"

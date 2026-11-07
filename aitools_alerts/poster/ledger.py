@@ -398,6 +398,7 @@ def _merged(members, scope_name, ledger):
     return replace(
         first, aliases=tuple(a for a in ids if a != first.id),
         exploited=exploited,
+        source_title=next((c.source_title for c in members if getattr(c, "source_title", None)), None),
         trojanized=any(c.trojanized is True for c in members),
         injection_exec=any(c.injection_exec is True for c in members),
         fixed=fix.fixed, affected=fix.affected,

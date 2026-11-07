@@ -1298,3 +1298,21 @@ def test_a_title_learned_later_posts_nothing_and_reaches_the_digest(env):
     _, _, ssh = env.run(now=T0 + 600)
     assert ssh.calls == []  # no reply for a title
     assert env.ledger()[0][0]["source_title"] == TOCTOU
+
+
+def test_a_fence_in_the_title_never_withholds_the_advisory(env):
+    env.collector([_cfe8(title="Race ~~~aitools-alert ``` in Edit")])
+    _, _, ssh = env.run()
+    assert ssh.calls and ssh.calls[0][2].split("\n")[1] == "Race ~aitools-alert ` in Edit"
+
+
+def test_a_held_notice_learns_its_title_for_the_digest(env):
+    mac = dict(MAC, sources=[{"url": APPLE, "published_at": None}])
+    env.collector([mac])
+    env.run()
+    mac["sources"][0]["title"] = "Kernel memory corruption"
+    env.collector([mac])
+    env.run(now=T0 + 600)
+    assert env.state()["held"][0]["source_title"] == "Kernel memory corruption"
+    _, _, ssh = env.run(now=at(5, 9))
+    assert "(CVE-2026-5000): Kernel memory corruption;" in ssh.calls[0][2]

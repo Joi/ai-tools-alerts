@@ -145,10 +145,10 @@ def _title(v, hosts) -> str | None:
     names a host or private detail (the title is dropped, never the finding)."""
     if not isinstance(v, str):
         return None
-    t = _TITLE_URL.sub(" ", unicodedata.normalize("NFKC", v[:4 * MAX_TEXT]))
-    t = "".join(ch for ch in t if unicodedata.category(ch) not in ("Cc", "Cf", "Cs", "Co", "Cn")
-                or ch.isspace())
-    t = re.sub(r"`{2,}", "`", " ".join(t.split()))[:MAX_TITLE].rstrip()
+    t = "".join(ch for ch in unicodedata.normalize("NFKC", v[:4 * MAX_TEXT]) if ch.isspace()
+                or unicodedata.category(ch) not in ("Cc", "Cf", "Cs", "Co", "Cn"))
+    t = " ".join(_TITLE_URL.sub(" ", t).split())  # controls first: a removed one cannot join a URL
+    t = re.sub(r"([`~]){2,}", r"\1", t)[:MAX_TITLE].rstrip()  # no code fence of either kind
     return _clean(t, hosts) if t else None
 
 

@@ -164,7 +164,7 @@ def source_title(c) -> str | None:
 
 
 def _upstream(t) -> str | None:
-    if not isinstance(t, str) or not t.strip() or "\n" in t or "``" in t \
+    if not isinstance(t, str) or not t.strip() or "\n" in t or "``" in t or "~~" in t \
             or t.strip().casefold() in {p + k for k in _KINDS for p in ("", "unverified ")}:
         return None
     try:

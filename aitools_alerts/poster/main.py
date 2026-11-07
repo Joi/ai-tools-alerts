@@ -503,6 +503,11 @@ class Run:
         for h in self.state["held"]:
             known.update(self._notice_keys(h["scope"], h["adv"]))
         if known & set(self._notice_keys(scope, a)):
+            for h in self.state["held"]:  # a title learned while held reaches the digest
+                if title and not h.get("source_title") and h["scope"] == scope \
+                        and set(self._notice_keys(scope, h["adv"])) & set(self._notice_keys(scope, a)):
+                    h["source_title"] = title
+                    self.save()
             return
         self.state["held"].append({"scope": scope, "adv": a, **({"source_title": title} if title else {})})
         self.save()
