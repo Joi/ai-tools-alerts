@@ -128,6 +128,8 @@ def test_severity_tier1_is_high():
     assert level(ghsa) == ("high", "severity-tier1")
     alias = cand(id="OSV-2026-1", aliases=("CVE-2026-0009",), advisory_severity="high")
     assert level(alias) == ("high", "severity-tier1")
+    upper = cand(id="GHSA-5XJX-9QX6-JCRV", advisory_severity="high")
+    assert level(upper) == ("high", "severity-tier1")
     for sev in ("moderate", "low", "medium", None, "high-ish", "not high", ""):
         assert level(cand(advisory_severity=sev)) == ("notice", "notice"), sev
     # Tier 2 stays notice; critical stays reserved for the three critical rules.
@@ -144,7 +146,7 @@ def test_fix_rce_tier1_wins_over_severity_tier1():
 
 def test_news_lead_severity_never_raises_level():
     for cid, aliases in (("LEAD-2026-11-07-claude-code", ()), ("LEAD-1", ("not-an-advisory",)),
-                         ("cve-2026-0001", ()), ("CVE-2026-0001x", ())):
+                         ("CVE-2026-01", ()), ("CVE-2026-0001x", ()), ("GHSA-5xjx-9qx6", ())):
         lead = cand(id=cid, aliases=aliases, advisory_severity="critical")
         assert level(lead, True) == ("notice", "notice"), cid
 

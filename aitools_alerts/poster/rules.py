@@ -40,7 +40,7 @@ _SEVERE = re.compile(
 )
 _TOKEN = re.compile(r"(?:[^\W_]|\.)+")
 # An advisory id: only a candidate carrying one has a severity an advisory set.
-_ADVISORY_ID = re.compile(r"CVE-\d{4}-\d{4,}|GHSA(?:-[0-9a-z]{4}){3}")
+_ADVISORY_ID = re.compile(r"CVE-\d{4}-\d{4,}|GHSA(?:-[0-9a-z]{4}){3}", re.I)
 _HIGH_WORDS = frozenset({"high", "critical"})
 
 
@@ -193,7 +193,8 @@ def level_for(c: Candidate, scope: schema.ScopeEntry, source_ok: bool) -> tuple[
     severity = c.advisory_severity
     if c.fixed and isinstance(severity, str) and _SEVERE.search(_norm(severity)):
         return "high", "fix-rce-tier1"
-    if isinstance(severity, str) and _norm(severity).strip() in _HIGH_WORDS \
+    # ledger.merge joins members' severities with "; ": any one member's word counts.
+    if isinstance(severity, str) and any(p.strip() in _HIGH_WORDS for p in _norm(severity).split(";")) \
             and any(isinstance(i, str) and _ADVISORY_ID.fullmatch(i) for i in (c.id, *c.aliases)):
         return "high", "severity-tier1"
     return "notice", "notice"

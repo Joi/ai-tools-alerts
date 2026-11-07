@@ -32,7 +32,7 @@ Spec: docs/superpowers/specs/2026-11-07-severity-tier1-design.md. One chunk.
 
 - `python3 -m pytest tests/poster -q`, then the whole gate `scripts/test-gate.sh`.
 - `git diff --numstat origin/main -- . ':!docs/superpowers'`: under 150 lines.
-- `git diff origin/main | grep -E 'jibotmac|macazbd|azbd2|joimba|macct|azbdmini'`: no hits.
+- The brief's fleet host-name grep on the diff: no hits. `scripts/public-scan.sh` (run by the gate) covers tracked files.
 
 ## Acceptance
 

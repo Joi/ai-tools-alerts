@@ -22,7 +22,11 @@ A new reason `severity-tier1`: tier 1, none of the critical rules apply,
 (`rules._norm`: NFKC, lowercase, whitespace runs to one space, then stripped)
 is exactly `high` or `critical`, and the candidate's `id` or one of its
 `aliases` is a CVE id (`CVE-\d{4}-\d{4,}`) or a GHSA id
-(`GHSA(-[0-9a-z]{4}){3}`), matched whole → `("high", "severity-tier1")`.
+(`GHSA(-[0-9a-z]{4}){3}`), matched whole and without regard to case (as
+`pull.py` compares ids) → `("high", "severity-tier1")`. `ledger.merge` joins
+the severities of candidates that share an id with `"; "` before the rule
+runs, so each `;`-separated part is compared, and one member's level word
+is enough.
 
 - No `fixed` required. Whether a fix exists changes compose.py's advice
   sentence ("Fixed in …" / "No fixed version is known yet"), not the level.

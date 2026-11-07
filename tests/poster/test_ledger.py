@@ -189,6 +189,15 @@ def test_merge_keeps_severity_and_one_fix_in_either_order():
         assert (m.fixed, m.affected) == ("2.1.0", "<2.1.0")
 
 
+def test_merge_keeps_severity_tier1():
+    a = cand(advisory_severity="high", fixed=None)
+    b = cand(id="GHSA-5xjx-9qx6-jcrv", aliases=("CVE-2026-0001",), advisory_severity="Critical")
+    c = cand(id="CVE-2026-0001", aliases=(), advisory_severity="moderate")
+    for order in ([a, b], [b, a], [c, a], [a, c]):
+        (m, s), = ledger.merge([pair(x) for x in order])
+        assert rules.level_for(m, s, False) == ("high", "severity-tier1"), m.advisory_severity
+
+
 def test_delta_fixes(tmp_path, monkeypatch):
     a = cand(affected="<2.0.0", fixed=None, advisory_severity="x" * 500)
     b = cand(id="GHSA-q", aliases=("CVE-2026-0001",), fixed="2.0.0-rc.1", injection_exec=True,
