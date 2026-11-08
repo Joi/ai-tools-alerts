@@ -117,7 +117,7 @@ def _guard(text: str) -> str:
 _URL_TOKEN = re.compile(r"https?://\S+")
 # The relay reads "@" at the start or after whitespace, then [A-Za-z0-9._-]+, as a
 # member mention and refuses an unknown name; it skips inline code.
-_MENTION = re.compile(r"(?<!\S)@[A-Za-z0-9._-][!-_a-~]*")
+_MENTION = re.compile(r"(?<!\S)@[A-Za-z0-9._-][!-\[\]-_a-~]*")  # printable ASCII but ` and backslash
 
 
 def _inline(text: str) -> str:

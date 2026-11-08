@@ -1,10 +1,10 @@
 # Run: mention-inline-code
 Instruction: ai-tools-alerts#k5tr — start at medium. Task: exactly the kata issue body (TASK-ai-tools-alerts#k5tr.md): every rendered text wraps a whitespace-preceded @token in inline code; a source title cannot supply a backtick pairing with ours; /@user/ URLs untouched; aitools-alert block unchanged; tests as listed; acceptance fixture shaped like the 2026-11-08 digest. Under 120 changed lines. Repoman-lane ending.
-Stage: code-review:compose-inline
+Stage: verifying
 Rung: medium (start-floor medium: constraint-lens, BR1 REV1 NOV1 INT1 FC1 = 5; dispatch floor medium too)
 Lens: "aitools-alert block unchanged"; "a source title cannot supply a backtick pairing with ours"; "/@user/ URLs untouched"; "under 120 changed lines"
 Spec: docs/superpowers/specs/2026-11-09-mention-inline-code-design.md   Plan: docs/superpowers/plans/2026-11-09-mention-inline-code.md
-Agency project: —
+Agency project: 01a1bcee-3e21-73bb-b2f9-ca7f17ba6a22
 Kata: ai-tools-alerts#k5tr
 Last reviewed: —
 Pre-handoff review: —
@@ -19,9 +19,19 @@ Pass 1 [plan]: 0B/2S/0C/0R · fixed -/- · velocity = (—→2, escalation no)  
   S1 no repoman row, gate cannot run; poster-only verification — fixed: repo is not repoman-managed (no marker, no row); verification is `python3 -m pytest tests -q`.
   S2 reply paths untested — fixed: scoped-product-name test over root, reply en/ja and block; mutation-checked.
 plan: passes 1
+Pass 1 [code:compose-inline]: 0B/3S/4C/0R · fixed -/- · velocity = (—→7, escalation no)   (Stage 2 fresheyes gpt-6.1-sol whole branch origin/main...75a4a48, run 20261109-055849-b3b471 ∥ Stage 1 general-purpose subagent)
+  S1 (fresheyes) host name in the run record — fixed at 80122e6.
+  S2 (fresheyes) plan's gate skips the public scan — fixed at 80122e6: scripts/test-gate.sh, run on the head (1089 passed, scan clean).
+  S3 (stage 1) curator translation path can send a bare @token — rebutted, filed ai-tools-alerts#mz81: outside the issue's compose scope; needs its own design (a curator's code spans cannot share _inline's own-every-backtick rule); line budget.
+  C1 token ending in a backslash — fixed: `\` excluded from the token run.
+  C2 a mid-token title backtick is removed, joining the name — rebutted: candidates._title already collapses runs; the spec chooses removal.
+  C3 mirror readers show the backticks in a root's first line — rebutted: display only, the token is exact.
+  C4 tests miss Japanese punctuation, tab, `@.` — fixed: one unit case covers them.
+code: passes 1
+Last reviewed: code whole branch at 75a4a48f96a42ede8bf4f668b7b1680a183bbd2b
 
 ## Chunks
-- [ ] compose-inline — `_inline` in compose.py, applied to every body; tests
+- [x] compose-inline — `_inline` in compose.py, applied to every body; tests
 
 ## Notes
 - kata search "mention backtick inline code": only k5tr itself; prior work r7hr (fe140a9..a33feb8) added the source-title line and `candidates._title`'s run collapse.

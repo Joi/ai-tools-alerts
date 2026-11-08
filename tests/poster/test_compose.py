@@ -469,6 +469,7 @@ def test_inline_wraps_whitespace_at_tokens_only():
         assert i(same) == same
     assert i("x https://h.example/a`b y") == "x https://h.example/a%60b y"
     assert i("a `b @s/p c`") == "a b `@s/p` c"
+    assert i("影響: @s/p（x）。\t@.\n@a\\ b") == "影響: `@s/p`（x）。\t`@.`\n`@a`\\ b"
 
 
 def test_root_and_digest_wrap_a_scoped_package_title():
