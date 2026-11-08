@@ -1,13 +1,13 @@
 # Run: mention-inline-code
 Instruction: ai-tools-alerts#k5tr — start at medium. Task: exactly the kata issue body (TASK-ai-tools-alerts#k5tr.md): every rendered text wraps a whitespace-preceded @token in inline code; a source title cannot supply a backtick pairing with ours; /@user/ URLs untouched; aitools-alert block unchanged; tests as listed; acceptance fixture shaped like the 2026-11-08 digest. Under 120 changed lines. Repoman-lane ending.
-Stage: verifying
+Stage: done
 Rung: medium (start-floor medium: constraint-lens, BR1 REV1 NOV1 INT1 FC1 = 5; dispatch floor medium too)
 Lens: "aitools-alert block unchanged"; "a source title cannot supply a backtick pairing with ours"; "/@user/ URLs untouched"; "under 120 changed lines"
 Spec: docs/superpowers/specs/2026-11-09-mention-inline-code-design.md   Plan: docs/superpowers/plans/2026-11-09-mention-inline-code.md
 Agency project: 01a1bcee-3e21-73bb-b2f9-ca7f17ba6a22
 Kata: ai-tools-alerts#k5tr
 Last reviewed: —
-Pre-handoff review: —
+Pre-handoff review: 75a4a48f96a42ede8bf4f668b7b1680a183bbd2b passed +fix 80122e64ffd3012d641cfdbd3b443dfa35139e30 +fix a4a763031ca97908926a7a12f2497eba89b3fad2   (direct-push lane: the whole-branch Stage-2 pass is the independent look; no BLOCKER, so no delta)
 
 ## Scorecards
 Pass 1 [spec]: 0B/2S/1C/0R · fixed -/- · velocity = (—→3, escalation no)   (fresheyes gpt-6.1-sol, snap 161ce40, run 20261109-055057-d7f09f)
