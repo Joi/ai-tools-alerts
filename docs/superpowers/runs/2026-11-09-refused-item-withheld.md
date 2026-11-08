@@ -1,13 +1,13 @@
 # Run: refused-item-withheld
 Instruction: ai-tools-alerts#8acj — mode do-it, rung floored at medium. Task: exactly the kata issue body (TASK-ai-tools-alerts#8acj.md): a user_error the relay marks retryable:false moves that one outbox item to a withheld list in the state with the relay's message, counted `withheld`, and the run continues (later items send, marks save, translation runs); never retried unchanged; one stderr line per run while the list is non-empty; `pending` lists it with the message; a resolve-style action requeues or drops it. Transport failures and unknown outcomes keep today's stop-and-retry behaviour. Acceptance: fixture run with one refused item and two sendable items ends 1 withheld, 2 sent, marks saved; a network failure still stops the run; the withheld item lists and requeues. Under 200 changed lines. No .repoman-managed marker: land by fast-forward of main after scripts/test-gate.sh, close with commit evidence.
-Stage: verifying
+Stage: done
 Rung: medium (start-floor medium: FC=2, BR1 REV2 NOV1 INT1 FC2 = 7; dispatch floor medium too)
 Lens: "Transport failures and unknown outcomes keep today's stop-and-retry behaviour"; "never retried unchanged"; "Under 200 changed lines"
 Spec: docs/superpowers/specs/2026-11-09-refused-item-withheld-design.md   Plan: docs/superpowers/plans/2026-11-09-refused-item-withheld.md
 Agency project: —
 Kata: ai-tools-alerts#8acj
 Last reviewed: —
-Pre-handoff review: —
+Pre-handoff review: 5f846dfec4f86cb36131a6228eb2007c699a5ab2 fixed+delta 7518d782cca63141a113245a303a14070347b6a2 +fix e3f681b11392bb093914ea811038a1e022ce65ea   (direct-push lane, no repoman row: the whole-branch fresheyes pass plus one delta is the independent look; e3f681b is the delta BLOCKER fix, landed without a further pass per jibot-code#41e2)
 
 ## Scorecards
 Pass 1 [spec]: 0B/7S/0C/0R · fixed -/- · velocity = (—→7, escalation no)   (fresheyes gpt-6.1-sol, snap 60f4c8c, run 20261109-063510-ee33eb; "major" read as SUBSTANTIVE)
@@ -47,3 +47,5 @@ Last reviewed: code whole branch at 5f846dfec4f86cb36131a6228eb2007c699a5ab2; de
 - Code was drafted while the spec review ran (as k5tr did); the review's findings were applied to it after. Spec and plan edits after the spec review used an asserting python replace, not the Edit tool (deviation from the artifact-edit guardrail; each replace asserted exactly one match).
 - Line budget: code + tests `git diff --shortstat origin/main -- aitools_alerts tests` = 213 (code 117, tests 96) at the end: over the issue's 200 by 13 after the delta fix; notice: posted on the issue.
 - kata search "withheld refused relay retryable" and "poster wedge outbox": only 8acj itself. Prior work: k5tr (75a4a48..01b0dcf, compose._inline) removed the cause of the 2026-11-08 refusal; r7hr; the pending/resolve shapes from poster-resolve-pending (2026-11-05).
+- Gate: scripts/test-gate.sh on e3f681b: public scan clean, 1101 passed, 1 skipped.
+- Ending: no .repoman-managed marker and no registry row (as k5tr); landed by fast-forward of main; roborev not enrolled, so no post-push check.
