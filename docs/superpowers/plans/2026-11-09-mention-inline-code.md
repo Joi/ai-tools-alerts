@@ -60,9 +60,10 @@ Spec: docs/superpowers/specs/2026-11-09-mention-inline-code-design.md
 
 - `python3 -m pytest tests/poster -q` while building.
 - The repo has no `.repoman-managed` marker and no repoman registry row, so
-  there is no scoped gate: the verification is the project's full suite,
-  `python3 -m pytest tests -q` (the issue's acceptance command), run on the
-  committed head.
+  there is no scoped gate: the verification is the repository's own gate,
+  `scripts/test-gate.sh` (the public scan of tracked files, then the whole
+  suite, which includes the issue's `python3 -m pytest tests -q`), run on
+  the committed head.
 - `git diff --stat origin/main` code+tests under 120 changed lines.
 
 ### Acceptance

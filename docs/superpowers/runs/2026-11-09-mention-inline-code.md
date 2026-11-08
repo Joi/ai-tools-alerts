@@ -28,4 +28,4 @@ plan: passes 1
 - Ending: the brief says repoman lane, but the repo has no `.repoman-managed` marker and no registry row (checked cell-fleet origin/main repos.tsv). r7hr landed by fast-forward of main with a close; this run does the same (decided: comment on k5tr). roborev is not enrolled for this repo, so no post-push check; the whole-branch fresheyes pass is the independent look before landing.
 - Code was drafted while the spec review ran (before plan approval); the plan review's findings were applied to it after. Spec edits from the spec review were applied with an asserting python replace, not the Edit tool; noted per the artifact-edit guardrail.
 - Agency: project 01a1bcee-3e21-73bb-b2f9-ca7f17ba6a22, task 01a1bcef-d860-7f1e-b582-4b2f9f4bc212 (assign → execute → evaluator → submitted, score 90).
-- The buzz-upstream checkout named in the brief is not on this host (macct); the relay rule is taken from the issue body.
+- The buzz-upstream checkout named in the brief is not on the build machine; the relay rule is taken from the issue body.
