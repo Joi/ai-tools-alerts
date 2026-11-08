@@ -27,6 +27,13 @@ Pass 1 [plan]: 0B/6S/0C/0R · fixed -/- · velocity = (—→6, escalation no)  
   S5 withheld size unbounded (post cap is 1 Mi chars) — fixed: a group is stored only while the list's JSON stays within MAX_JA_BYTES (4 MiB); past it, dropped with its stderr line. Not unit-tested at the boundary (line budget).
   S6 rollback with an empty list — fixed: always remove the key, with the hourly job stopped.
 plan: passes 1
+Pass 1 [code:withheld]: 2B/2S/6C/0R · fixed -/- · velocity = (—→10, escalation no)   (Stage 2 fresheyes gpt-6.1-sol whole branch origin/main...5f846df, run 20261109-065030-e8dec3, OUT empty, read from LOG ∥ Stage 1 general-purpose subagent; fresheyes called both its majors "blocking", so they are counted as BLOCKERs)
+  B1 (fresheyes) --text-file requeue can write a state past load_state's 16 MiB — fixed by removing --text-file (decided: comment); the text-fix route is compose fix + --drop, which S1's fix makes work.
+  B2 (fresheyes) past the 4 MiB bound a refused item is dropped, so it (e.g. a digest) is rebuilt and sent again — rebutted: reaching it needs more than 4 MiB of refused groups left unsettled while every run's stderr names the list; the only alternatives are an unloadable state (stops everything) or today's hourly wedge. Since S2's fix, a second refusal in a run stops it, so at most one item a run reaches the list. Not fixed.
+  S1 (stage 1) a refused root's candidate is never deferred, so --drop loses the advisory — fixed: one() defers it; busy keeps it deferred; mutation-checked. Items refused while draining an earlier run's journal have no candidate — stated in the spec.
+  S2 (stage 1) a relay refusing everything withholds the whole hour under exit 0 — fixed: a second English refusal in a run withholds it and stops the run (_Stop, exit 1, marks not saved).
+  C3 resolve saved before clearing marks — fixed (marks first). C4 stderr wording vs spec — fixed in the spec. C7 control characters in the relay message — fixed (`?`), tested. C5 --digest-now message for a withheld digest, C6 text-file read error wording (moot), C8 a stale mark listed as an orphan beside its withheld line — rebutted as cosmetic, line budget.
+code: passes 1 (delta follows: B1's fix changed behaviour)
 
 ## Chunks
 - [ ] withheld — transport outcome `refused`, Run withholds, pending/resolve, tests

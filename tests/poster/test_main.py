@@ -1332,7 +1332,7 @@ def test_a_refused_item_is_withheld_and_the_run_goes_on(env, capsys):
     code, summary, ssh = env.run(ssh=FakeSSH("refuse", ja=("refuse",)))  # a refused ja reply is dropped
     assert code == 0 and "withheld=1" in summary and "roots=2" in summary and "ja=1 ja_failed=1" in summary
     st, (entries, pending) = env.state(), env.ledger()
-    assert st["collector"] and len(entries) == 2 and pending == [] and st["outbox"] == []  # marks saved
+    assert st["collector"] and len(entries) == 2 and not pending and not st["outbox"] and len(st["deferred"]) == 1
     assert st["withheld"][0]["message"] == "relay error: blocked mention" and "GHSA-abcd" in st["withheld"][0]["key"]
     assert capsys.readouterr().err.count("withheld=1 refused by the relay") == 1
     env.collector([finding()])
@@ -1349,33 +1349,30 @@ def test_a_refused_root_withholds_its_copy(env):
 
 
 def test_a_refused_digest_blocks_new_digests_until_resolved(env):
-    env.collector([MAC])
-    env.run()
+    env.collector([MAC]), env.run()
     assert "withheld=1" in env.run(now=at(5, 9), ssh=FakeSSH("refuse"))[1] and env.state()["digest_date"] is None
     assert env.run(now=at(5, 10))[2].calls == []  # neither resent nor rebuilt
 
 
 def test_pending_lists_and_resolve_requeues_or_drops_a_withheld_item(env, tmp_path, capsys, monkeypatch):
     env.collector(THREE[:2])
-    env.run(ssh=FakeSSH("refuse", "refuse"))
+    assert env.run(ssh=FakeSSH("refuse", "refuse"))[0] == 1  # a second refusal in one run stops it
     w, w2 = env.state()["withheld"]
     code, lines = main.pending(T0 + 60, env.config)
     assert code == 0 and lines[-1].endswith("orphan=0 withheld=2")
     assert lines[0] == f"{w['key']} kind=root channel=feed withheld_at=2026-11-04T21:20:00Z outcome=refused " \
         "message=relay error: blocked mention" and w["items"][0]["text"] not in "\n".join(lines)
     assert main.resolve(T0, env.config, "root:x:y:feed", requeue=True)[0] == 2
-    assert main.resolve(T0, env.config, w["key"], drop=True, text="x")[0] == 2
-    assert main.resolve(T0, env.config, w["key"], requeue=True, text="no alert block")[0] == 2
     monkeypatch.setattr(main.time, "time", lambda: T0 + 60)
-    cfg, fixed = tmp_path / "config.toml", tmp_path / "fixed.txt"
+    cfg = tmp_path / "config.toml"
     cfg.write_text(f'ledger = "{env.config.ledger}"\nkev_cache = "{env.config.kev_cache}"\n')
-    fixed.write_text(w["items"][0]["text"].replace("Claude Code", "Claude  Code", 1))
-    assert main.main(["resolve", w["key"], "--config", str(cfg), "--requeue", "--text-file", str(fixed)]) == 0
-    assert env.state()["withheld"] == [w2] and env.state()["outbox"][-1]["text"] == fixed.read_text()
-    code, summary, ssh = env.run(now=T0 + 3600)
-    assert code == 0 and "roots=1" in summary and ssh.calls[0][2] == fixed.read_text()
+    assert main.main(["resolve", w["key"], "--config", str(cfg), "--requeue"]) == 0
+    assert env.state()["withheld"] == [w2] and env.state()["outbox"][-1] == w["items"][0]
+    code, summary, ssh = env.run(now=T0 + 3600)  # requeued as the operator asked; w2's advisory still waits
+    assert code == 0 and "roots=1" in summary and ssh.calls[0][2] == w["items"][0]["text"]
     assert main.main(["resolve", w2["key"], "--config", str(cfg), "--drop"]) == 0
     assert env.state()["withheld"] == [] and "dropped 1 item(s)" in capsys.readouterr().out
+    assert "roots=1" in env.run(now=T0 + 7200)[1]  # its deferred candidate is planned anew
 
 
 def test_a_withheld_reply_holds_its_thread_under_any_alias(env):

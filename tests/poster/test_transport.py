@@ -225,9 +225,9 @@ def test_bad_wrapper_raises_before_ssh(wrapper):
 
 
 def test_a_non_retryable_user_error_is_refused():  # ai-tools-alerts#8acj
-    err = b"warn\n" + json.dumps({"error": "user_error", "message": "blocked:\n @x", "retryable": False}).encode()
+    err = b"warn\n" + json.dumps({"error": "user_error", "message": "blocked:\n @x\x1b", "retryable": False}).encode()
     r = send(FEED, "x", ssh=FakeSSH(rc=1, stderr=err))
-    assert (r.ok, r.exit_code, r.outcome, r.message) == (False, 1, "refused", "blocked: @x")
+    assert (r.ok, r.exit_code, r.outcome, r.message) == (False, 1, "refused", "blocked: @x?")
 
 
 @pytest.mark.parametrize("rc,body,outcome", [

@@ -31,27 +31,32 @@ issue makes sure one refused post can never stop the service again.
    is built while a digest is withheld, so no equivalent text is regenerated
    and refused again, and two digests never acknowledge the same notices.
 4. Each run prints one stderr line while `withheld` is non-empty:
-   `aitools-alerts-poster: withheld=N refused by the relay; see 'pending', then 'resolve <key> --requeue|--drop'`.
+   `aitools-alerts-poster: withheld=N refused by the relay; see pending, resolve --requeue|--drop`.
+   The relay's message is one line of printable characters (others become `?`).
 5. `pending` lists each withheld item: `<key> kind=… channel=… withheld_at=… outcome=refused message=<relay message>`
    (one line, no post text), and its totals line adds `withheld=N` while the
    list is non-empty (unchanged otherwise).
-6. `resolve <key> --requeue [--text-file PATH]` moves the withheld group back
-   to the end of the outbox; with `--text-file`, the file's text replaces the
-   refused text in every item of the group that carried it (checked as a journal
-   item's text is: non-empty, within the post cap, no NUL) and must keep the
-   `aitools-alert` block byte-identical (`schema._last_block`), so the ledger's
-   record of the advisory still matches what posts; only the prose changes.
-   `resolve <key> --drop` discards the group. Both run under the ledger lock,
-   clear any pending mark left on the group's keys (never one whose key is
-   journaled again as a live item), and refuse (exit 2, nothing
-   changed) a key that is not withheld or a requeue whose keys are journaled
-   again. Keys are unique within the journal as today; withheld keys are not
-   checked against it at load, so an unexpected clash refuses the requeue
-   instead of making the state unloadable.
-   After `--drop`, the advisory's deferred candidates (or, for a digest, the
-   held notices) are planned again by the next run from the current code: this
-   is the route after a compose fix lands. If the new text is refused again it
-   is withheld again: one send per operator action, never an automatic retry.
+6. `resolve <key> --requeue` moves the withheld group back to the end of the
+   outbox unchanged (for a refusal whose cause was on the relay's side).
+   `resolve <key> --drop` discards the group; the advisory's candidate, which
+   `one()` deferred when its item was withheld (and `busy` keeps deferring),
+   is planned anew by the next run from the current code. That is how a text is
+   fixed: land the compose fix, then `--drop`. If the new text is refused again
+   it is withheld again: one send per operator action, never an automatic
+   retry. (A `--text-file` replacement was built and removed for the 200-line
+   budget; see the run record.) Both run under the ledger lock, clear any
+   pending mark left on the group's keys (never one whose key is journaled
+   again as a live item) before saving, and refuse (exit 2, nothing changed) a
+   key that is not withheld or a requeue whose keys are journaled again. Keys
+   are unique within the journal as today; withheld keys are not checked
+   against it at load, so an unexpected clash refuses the requeue instead of
+   making the state unloadable. An item journaled by an earlier run and
+   refused while draining has no candidate in hand; `--drop` discards it for
+   good, and `pending` says so by listing it.
+6a. A second English refusal in one run withholds that item too, then stops the
+   run as a failed send does (`_Stop`, exit 1, marks not saved, unplanned
+   candidates deferred): a relay refusing everything for a reason unrelated to
+   the text never withholds a whole hour's output under exit 0.
 7. Transport `failed` and `unknown` keep today's behaviour: `_Stop`, exit 1,
    nothing more sent, marks not saved.
 8. A Japanese reply the relay refuses is dropped (counted `ja_failed`, one

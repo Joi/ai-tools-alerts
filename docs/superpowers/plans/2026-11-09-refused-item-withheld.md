@@ -48,19 +48,18 @@ these docs).
 - [ ] `pending` (line 868): one line per withheld group; the totals line gains
       ` withheld=N` only when the list is non-empty (existing exact assertions
       stay green).
-- [ ] `resolve` (line 891): new keywords `requeue=False, drop=False,
-      text=None`; a withheld key is settled before the pending lookup: requeue
-      (refuse when a key is already journaled; with `text`, validate as `_item`
-      does, require `schema._last_block` unchanged, and replace the refused text
-      in each item that carried it) appends the items to the outbox; drop
-      removes the group; both clear a pending mark left on the group's keys
-      unless the key is journaled again as a live item. The withheld branch
-      runs before the old `--not-delivered needs --reason` guard, which is
-      relaxed for `requeue`/`drop`; `main` reads `--text-file` inside its config
-      try (OSError/UnicodeError exit 2) and forwards `requeue`, `drop`, `text`.
-      CLI tests run `--requeue --text-file` and `--drop` end to end. `main` adds
-      `--requeue`, `--drop` to the mutually exclusive group and
-      `--text-file PATH`.
+- [ ] `resolve` (line 891): new keywords `requeue=False, drop=False`; a
+      withheld key is settled before the pending lookup: requeue (refused when a
+      key is journaled again) appends the items unchanged to the outbox; drop
+      removes the group; both clear a pending mark left on the group's keys,
+      before saving, unless the key is journaled again as a live item. The old
+      `--not-delivered needs --reason` guard is relaxed for `requeue`/`drop`;
+      `main` adds `--requeue`, `--drop` to the mutually exclusive group and
+      forwards them. CLI tests run `--requeue` and `--drop` end to end.
+      (Amended after the code review: `--text-file` removed for the line budget.)
+- [ ] `one()` (line 458): after `enqueue`, a candidate whose item was withheld
+      is deferred, so `--drop` plans it anew. `deliver`: a second English
+      refusal in one run raises `_Stop` after withholding it.
 - [ ] Module docstring: one paragraph on withheld items.
 
 ### Step 4 — tests (`tests/poster/test_main.py`)
@@ -75,13 +74,12 @@ these docs).
       `test_one_failure_stops_further_sends` also asserts `withheld == []`.
 - [ ] A refused digest blocks new digests until resolved.
 - [ ] `pending` lists the withheld item with its message and no post text;
-      `resolve --requeue --text` puts it back with the new text and the next run
-      posts it; `resolve --drop` removes it; a key not withheld is refused; the
-      CLI flags parse.
+      `resolve --requeue` puts it back and the next run posts it; `resolve --drop`
+      removes it and the deferred candidate posts next run; a key not withheld
+      is refused; a second refusal in one run exits 1.
 - [ ] A refused Japanese reply is dropped; the other Japanese replies send.
 - [ ] A refused reply holds its thread when the same update arrives under
       another alias.
-- [ ] Requeue with text that changes the alert block is refused.
 - [ ] Old state without `withheld` loads (extend
       `test_old_state_without_digest_ids_loads` or a new small test).
 

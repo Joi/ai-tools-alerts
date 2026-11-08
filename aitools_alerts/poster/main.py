@@ -31,7 +31,7 @@ After an unknown send, ``pending`` lists what is in flight and ``resolve <key>
 the ledger lock: delivered records as a successful send would; not delivered
 expires the pending entry (24 h after the attempt) so the next run sends again.
 
-A ``refused`` send never stops the run: it waits in ``withheld`` (``pending``) for ``resolve --requeue|--drop``.
+A ``refused`` send never stops the run (a second one does): it waits in ``withheld`` (``pending``) for ``resolve``.
 
 Every sent post also gets a Japanese ``lang: ja`` reply (docs/design.md "Post format"),
 journaled as its own item ``<key>:ja`` once the original is recorded and sent after
@@ -168,6 +168,9 @@ class Run:
             if r.outcome == "refused":  # never sent again unchanged; the run goes on
                 self._withhold(it, r.message)  # saved before the mark clears: a crash between holds it
                 self.led.clear_pending(it["key"])
+                self.n["refused"] += not ja
+                if self.n["refused"] > 1:  # a relay refusing everything stops the run as before
+                    raise _Stop
                 return True
             if r.outcome != "ok":
                 if r.outcome == "failed":
@@ -194,8 +197,7 @@ class Run:
         self.n[{"root": "roots", "copy": "copies", "reply": "replies", "digest": "digest", "ja": "ja"}[it["kind"]]] += 1
         return True
 
-    def _withhold(self, it, message):
-        """Move a refused item, and a root's copies that need it, from the journal to ``withheld``."""
+    def _withhold(self, it, message):  # a refused item, with a root's copies that need it, leaves the journal
         group = [it] + [o for o in self.state["outbox"] if it["kind"] == "root" and o["kind"] == "copy"
                         and o["root"] is None and o["scope"] == it["scope"] and _fold(o["ids"]) & _fold(it["ids"])]
         for o in group:
@@ -499,6 +501,8 @@ class Run:
             return
         if items:
             self.enqueue(items)
+            if any(it in self._withheld_items() for it in items):  # waits for resolve; after --drop, planned anew
+                self.defer([(c, scope)])
 
     def plan_new(self, c, scope, level, reason, ids):
         test = self.is_synthetic(c)
@@ -919,19 +923,16 @@ def pending(now: int, config) -> tuple[int, list[str]]:
 
 
 def resolve(now: int, config, key: str, *, delivered: str | None = None,
-            reason: str | None = None, requeue: bool = False, drop: bool = False,
-            text: str | None = None) -> tuple[int, list[str]]:
+            reason: str | None = None, requeue: bool = False, drop: bool = False) -> tuple[int, list[str]]:
     """Settle one send whose outcome was unknown, under the ledger lock. ``delivered``:
     the post's event id, recorded exactly as a successful send records it (Run.deliver
     with ``sent`` set). Otherwise expire the pending entry (24 h rule) so it sends again.
-    A withheld group goes back to the journal's end (``requeue``, ``text`` replacing the refused text) or away (``drop``).
+    A withheld group goes back to the journal's end (``requeue``) or away (``drop``: its advisory is planned anew).
     Returns 2, changing nothing, when the request cannot apply."""
     def refuse(msg):
         return 2, [f"aitools-alerts-poster: resolve {key}: {msg}"]
     if delivered is not None and not transport._HEX64.fullmatch(delivered):
         return refuse("event id must be 64 lowercase hex characters")
-    if text is not None and (not requeue or not text or len(text) > transport.MAX_CONTENT or "\x00" in text):
-        return refuse("--text-file needs --requeue and non-empty text within the post size cap, without NUL")
     if delivered is None and not (requeue or drop or (reason or "").strip()):
         return refuse("--not-delivered needs a non-blank --reason")
     try:
@@ -944,16 +945,13 @@ def resolve(now: int, config, key: str, *, delivered: str | None = None,
                 live = {o["key"] for o in state["outbox"]}  # journaled again: its pending mark is its own
                 if requeue and live & {it["key"] for it in w["items"]}:
                     return refuse("its key is journaled again; --drop it")
-                if text is not None and schema._last_block(text) != schema._last_block(w["items"][0]["text"]):
-                    return refuse("the new text must keep the aitools-alert block unchanged")
                 state["withheld"].remove(w)
-                if requeue:  # the new text replaces the refused one wherever the group carried it
-                    state["outbox"] += [{**it, "text": text if text and it["text"] == w["items"][0]["text"]
-                                         else it["text"]} for it in w["items"]]
-                inputs.save_state(config.state, state)
+                if requeue:
+                    state["outbox"] += w["items"]
                 for it in w["items"]:  # a crash between withholding and clearing left the mark; never a live item's
                     if it["key"] not in live and led.has_pending(it["key"]):
-                        led.clear_pending(it["key"])
+                        led.clear_pending(it["key"])  # first: a withheld item never sends, so this order is safe
+                inputs.save_state(config.state, state)
                 return 0, [f"aitools-alerts-poster: resolved {key}: " + ("requeued; the next run sends it"
                                                                           if requeue else f"dropped {len(w['items'])} item(s)")]
             p = next((p for p in led.pending_entries() if p["key"] == key), None)
@@ -1036,15 +1034,13 @@ def main(argv=None) -> int:
     how.add_argument("--requeue", action="store_true", help="a withheld (refused) item: send it again next run")
     how.add_argument("--drop", action="store_true", help="a withheld (refused) item: discard it")
     sp.add_argument("--reason", help="why it is known not delivered (required with --not-delivered)")
-    sp.add_argument("--text-file", type=Path, metavar="PATH", help="with --requeue: the corrected post text")
     hp = sub.add_parser("translate-clear-hold", help="resume curator translation after an auth failure")
     hp.add_argument("--config", type=Path, default=inputs.DEFAULT_CONFIG)
     a = p.parse_args(argv)
     if a.cmd in ("pending", "resolve", "translate-clear-hold"):
         try:
             cfg = inputs.load_config(a.config)
-            text = a.text_file.read_text(encoding="utf-8") if getattr(a, "text_file", None) else None
-        except (ConfigError, OSError, UnicodeError) as e:  # OSError, UnicodeError: --text-file
+        except ConfigError as e:
             print(f"aitools-alerts-poster: config error: {e}", file=sys.stderr)
             return 2
         if a.cmd == "translate-clear-hold":
@@ -1052,8 +1048,8 @@ def main(argv=None) -> int:
         elif a.cmd == "pending":
             code, lines = pending(int(time.time()), cfg)
         else:
-            code, lines = resolve(int(time.time()), cfg, a.key, delivered=a.delivered, reason=a.reason, requeue=a.requeue,
-                                  drop=a.drop, text=text)
+            code, lines = resolve(int(time.time()), cfg, a.key, delivered=a.delivered, reason=a.reason,
+                                  requeue=a.requeue, drop=a.drop)
         print("\n".join(lines), file=sys.stdout if code == 0 else sys.stderr)
         return code
     try:

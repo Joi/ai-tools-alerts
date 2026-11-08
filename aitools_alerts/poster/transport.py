@@ -164,4 +164,5 @@ def send(channel_id: str, content: str, reply_to: str | None = None, ssh=None, *
     stderr = _decode(proc.stderr)
     outcome, eid = _classify(proc.returncode, proc.stdout, stderr)  # on the whole stderr
     msg = " ".join(_cli_error(stderr)[1].split())[:300] if outcome == "refused" else ""
+    msg = "".join(ch if ch.isprintable() else "?" for ch in msg)  # printed by pending and every run
     return SendResult(outcome == "ok", eid, proc.returncode, stderr[-MAX_STDERR:], outcome, msg)
