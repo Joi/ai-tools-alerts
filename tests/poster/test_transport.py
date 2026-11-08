@@ -222,3 +222,19 @@ def test_bad_wrapper_raises_before_ssh(wrapper):
     with pytest.raises(ValueError):
         send(FEED, "x", ssh=ssh, wrapper=wrapper)
     assert ssh.calls == []
+
+
+def test_a_non_retryable_user_error_is_refused():  # ai-tools-alerts#8acj
+    err = b"warn\n" + json.dumps({"error": "user_error", "message": "blocked:\n @x", "retryable": False}).encode()
+    r = send(FEED, "x", ssh=FakeSSH(rc=1, stderr=err))
+    assert (r.ok, r.exit_code, r.outcome, r.message) == (False, 1, "refused", "blocked: @x")
+
+
+@pytest.mark.parametrize("rc,body,outcome", [
+    (1, {"error": "user_error", "retryable": True}, "failed"), (1, {"error": "user_error"}, "failed"),
+    (1, {"error": "user_error", "retryable": 0}, "failed"), (1, {"error": "auth_error", "retryable": False}, "failed"),
+    (5, {"error": "user_error", "retryable": False}, "failed"), (2, {"error": "user_error", "retryable": False}, "unknown"),
+])
+def test_other_refusals_keep_their_outcome(rc, body, outcome):
+    r = send(FEED, "x", ssh=FakeSSH(rc=rc, stderr=json.dumps({**body, "message": "m"}).encode()))
+    assert (r.outcome, r.message) == (outcome, "")

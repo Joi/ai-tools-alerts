@@ -41,7 +41,7 @@ RUN_DIR = re.compile(r"\d{4}-\d{2}-\d{2}T\d{6}Z")
 
 _STATE_KEYS = {"schema_version", "since", "heartbeat", "collector", "kev_since",
                "digest_date", "digest_at", "digest_roots", "digest_ids", "held", "digested",
-               "outbox", "deferred"}
+               "outbox", "deferred", "withheld"}
 MAX_DIGEST_IDS = 10  # the event ids of the last digests sent, oldest first
 _ITEM_KEYS = {"key", "kind", "scope", "ids", "channel", "text", "adv", "exploited", "date", "sent", "root"}
 _CANDIDATE_FIELDS = frozenset(Candidate.__dataclass_fields__)
@@ -238,7 +238,7 @@ def new_state(now: int, backfill_days: int) -> dict:
     since = now - backfill_days * 86400
     return {"schema_version": 1, "since": since, "heartbeat": None, "collector": None,
             "kev_since": None, "digest_date": None, "digest_at": since, "digest_roots": [], "digest_ids": [],
-            "held": [], "digested": [], "outbox": [], "deferred": []}
+            "held": [], "digested": [], "outbox": [], "deferred": [], "withheld": []}
 
 
 def _strs(v) -> bool:
@@ -325,6 +325,12 @@ def _held_ok(h) -> bool:
         and (h.get("source_title") is None or isinstance(h["source_title"], str))
 
 
+def _withheld_ok(w) -> bool:  # 8acj: the refused item, then a root's copies; the relay's message; when
+    return isinstance(w, dict) and set(w) == {"key", "items", "message", "at"} \
+        and isinstance(w["items"], list) and w["items"] and all(_item_ok(it) for it in w["items"]) \
+        and w["items"][0]["key"] == w["key"] and isinstance(w["message"], str) and type(w["at"]) is int
+
+
 def load_state(path: Path, now: int, backfill_days: int) -> dict:
     """The run state, or a fresh one; a malformed file is a LedgerError (send nothing)."""
     try:
@@ -333,6 +339,8 @@ def load_state(path: Path, now: int, backfill_days: int) -> dict:
         return new_state(now, backfill_days)
     except (OSError, ValueError, RecursionError) as e:
         raise LedgerError(f"state {path} unreadable: {e}") from None
+    if isinstance(st, dict) and "withheld" not in st:
+        st["withheld"] = []  # a state file written before withheld existed (8acj)
     if isinstance(st, dict) and set(st) == _STATE_KEYS - {"digest_ids"}:
         st["digest_ids"] = []  # a state file written before digest_ids existed
     try:
@@ -348,6 +356,7 @@ def load_state(path: Path, now: int, backfill_days: int) -> dict:
               and isinstance(st["held"], list) and all(_held_ok(h) for h in st["held"])
               and isinstance(st["digested"], list) and all(isinstance(i, str) for i in st["digested"])
               and isinstance(st["outbox"], list) and all(_item_ok(it) for it in st["outbox"])
+              and isinstance(st["withheld"], list) and all(_withheld_ok(w) for w in st["withheld"])
               and len({it["key"] for it in st["outbox"]}) == len(st["outbox"])  # one item per key
               and isinstance(st["deferred"], list) and all(_deferred_ok(d) for d in st["deferred"]))
     except (TypeError, KeyError, AttributeError):

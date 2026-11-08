@@ -11,6 +11,7 @@ the VM, the CLI refused it before sending, the relay rejected it), so the caller
 may try again next hour. ``unknown``: it may have happened (timeout, a session
 dropped mid-command, the CLI's "delivery unknown"), so the caller must never
 resend it until a human has looked.
+``refused``: a ``user_error`` marked ``retryable: false`` (exit 1): this text never posts.
 """
 
 from __future__ import annotations
@@ -62,7 +63,8 @@ class SendResult:
     event_id: str | None
     exit_code: int | None
     stderr: str
-    outcome: str  # "ok" | "failed" | "unknown"
+    outcome: str  # "ok" | "failed" | "unknown" | "refused"
+    message: str = ""  # a refusal's reason, from the relay's error line
 
 
 def remote_argv(channel_id: str, reply_to: str | None = None, *, wrapper: str) -> list[str]:
@@ -85,7 +87,7 @@ def _decode(b) -> str:
     return b if isinstance(b, str) else ""
 
 
-def _cli_error(stderr: str) -> tuple[str | None, str]:
+def _cli_error(stderr: str) -> tuple[str | None, str, object]:
     """The Buzz CLI's error line: one JSON object {"error": category, "message": ...},
     the last such line on stderr (crates/buzz-cli/src/error.rs print_error)."""
     for line in reversed(stderr.splitlines()):
@@ -95,8 +97,8 @@ def _cli_error(stderr: str) -> tuple[str | None, str]:
             continue
         if isinstance(obj, dict) and isinstance(obj.get("error"), str):
             msg = obj.get("message")
-            return obj["error"], msg if isinstance(msg, str) else ""
-    return None, ""
+            return obj["error"], msg if isinstance(msg, str) else "", obj.get("retryable")
+    return None, "", None
 
 
 def _default_ssh(*args, **kwargs):
@@ -124,7 +126,7 @@ def _classify(rc: int, stdout, stderr: str) -> tuple[str, str | None]:
         never_ran = _SSH_NEVER_RAN.search(stderr) and not _decode(stdout).strip()
         return ("failed" if never_ran else "unknown"), None
     if rc == 2:  # the CLI's network/relay/delivery-unknown code: read its own error line
-        category, message = _cli_error(stderr)
+        category, message, _ = _cli_error(stderr)
         if category == "network_error":
             return "failed", None  # the CLI keeps only never-received failures as network errors
         if category == "relay_error":
@@ -132,6 +134,8 @@ def _classify(rc: int, stdout, stderr: str) -> tuple[str, str | None]:
             if m and int(m.group(1)) in _RELAY_REJECTED:
                 return "failed", None
         return "unknown", None  # delivery_unknown, a relay 5xx, or no recognisable error line
+    if rc == 1 and (err := _cli_error(stderr))[0] == "user_error" and err[2] is False:
+        return "refused", None  # this text will never be accepted: resending it changes nothing
     if rc in _NEVER_SENT:
         return "failed", None
     return "unknown", None  # a signal (negative) or any other exit proves nothing
@@ -159,4 +163,5 @@ def send(channel_id: str, content: str, reply_to: str | None = None, ssh=None, *
         return SendResult(False, None, None, f"ssh could not start: {e}"[-MAX_STDERR:], "failed")
     stderr = _decode(proc.stderr)
     outcome, eid = _classify(proc.returncode, proc.stdout, stderr)  # on the whole stderr
-    return SendResult(outcome == "ok", eid, proc.returncode, stderr[-MAX_STDERR:], outcome)
+    msg = " ".join(_cli_error(stderr)[1].split())[:300] if outcome == "refused" else ""
+    return SendResult(outcome == "ok", eid, proc.returncode, stderr[-MAX_STDERR:], outcome, msg)
