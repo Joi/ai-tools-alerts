@@ -417,6 +417,17 @@ def test_partial_reply_retried_in_failed_channel_only(env):
     assert len(e2["replies"]) == 2
 
 
+def test_a_refused_reply_is_fixed_and_requeued_when_its_sibling_recorded(env, tmp_path):  # 8acj
+    env.kev.catalog = {"vulnerabilities": [kev_item()]}
+    env.run(), env.collector([finding(fid="CVE-2026-0001", sources=(GHSA2,))])
+    assert "withheld=1" in env.run(now=T0 + 3600, ssh=FakeSSH("refuse"))[1]  # critical refused, feed recorded
+    (w,) = env.state()["withheld"]
+    assert main.resolve(T0, env.config, w["key"], requeue=True, text="no alert block")[0] == 2
+    fixed = w["items"][0]["text"].replace("\n", " \n", 1)
+    assert main.resolve(T0, env.config, w["key"], requeue=True, text=fixed)[0] == 0
+    assert env.run(now=T0 + 7200)[2].calls[0][2] == fixed and len(env.ledger()[0][0]["replies"]) == 2
+
+
 def test_busy_candidate_learns_ids(env):
     env.collector([finding(fid="GHSA-aaaa-aaaa-aaaa")])
     env.run(ssh=FakeSSH("unknown"))

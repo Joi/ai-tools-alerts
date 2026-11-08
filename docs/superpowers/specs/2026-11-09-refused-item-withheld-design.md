@@ -41,10 +41,16 @@ issue makes sure one refused post can never stop the service again.
    `resolve <key> --drop` discards the group; the advisory's candidate, which
    `one()` deferred when its item was withheld (and `busy` keeps deferring),
    is planned anew by the next run from the current code. That is how a text is
-   fixed: land the compose fix, then `--drop`. If the new text is refused again
-   it is withheld again: one send per operator action, never an automatic
-   retry. (A `--text-file` replacement was built and removed for the 200-line
-   budget; see the run record.) Both run under the ledger lock, clear any
+   fixed for a root or a digest: land the compose fix, then `--drop`. A reply
+   or copy whose sibling channel already recorded the change cannot be planned
+   again (the ledger holds the change), so it is fixed in place:
+   `resolve <key> --requeue --text-file PATH` replaces the refused text in every
+   item of the group that carried it, refusing (nothing changed) text that is
+   empty, over the post cap, holds NUL, changes the `aitools-alert` block
+   (`schema._last_block`, so the ledger's record still matches what posts), or
+   would make the saved state larger than `load_state` accepts. If the new text
+   is refused again it is withheld again: one send per operator action, never
+   an automatic retry. Both run under the ledger lock, clear any
    pending mark left on the group's keys (never one whose key is journaled
    again as a live item) before saving, and refuse (exit 2, nothing changed) a
    key that is not withheld or a requeue whose keys are journaled again. Keys
@@ -73,7 +79,8 @@ issue makes sure one refused post can never stop the service again.
 Acceptance (issue): a fixture run with one refused item and two sendable items
 ends with `withheld=1`, two sends recorded, marks saved; a network failure still
 stops the run; the withheld item is listed and can be requeued;
-`scripts/test-gate.sh` passes; under 200 changed lines.
+`scripts/test-gate.sh` passes; under 200 changed lines (exceeded: 213 in code and tests after the delta
+review's fix; see the run record and the kata notice).
 
 ## Approach
 

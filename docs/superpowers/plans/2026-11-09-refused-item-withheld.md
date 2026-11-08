@@ -56,7 +56,9 @@ these docs).
       `--not-delivered needs --reason` guard is relaxed for `requeue`/`drop`;
       `main` adds `--requeue`, `--drop` to the mutually exclusive group and
       forwards them. CLI tests run `--requeue` and `--drop` end to end.
-      (Amended after the code review: `--text-file` removed for the line budget.)
+      (Amended after the code review: `--text-file` removed; restored after the
+      delta review, with the block-unchanged and state-size checks, as the only
+      recovery for a reply whose sibling channel recorded the change.)
 - [ ] `one()` (line 458): after `enqueue`, a candidate whose item was withheld
       is deferred, so `--drop` plans it anew. `deliver`: a second English
       refusal in one run raises `_Stop` after withholding it.
