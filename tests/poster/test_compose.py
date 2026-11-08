@@ -448,3 +448,76 @@ def test_digest_line_carries_the_title_after_the_id():
     ja = compose.digest([adv], "2026-11-07", lang="ja", titles=titles)
     assert f"(CVE-2026-0001) 原題: {TOCTOU};" in ja
     assert compose.digest([adv], "2026-11-07") == compose.digest([adv], "2026-11-07", titles={})
+
+
+# ---------------------------------------------------------------- k5tr: an @token is inline code
+
+MCP = ("@modelcontextprotocol/server-filesystem", "@modelcontextprotocol/server-everything",
+       "@modelcontextprotocol/inspector")
+
+
+def bare_mentions(text):
+    """What the relay would read as a mention: @ at the start or after whitespace, outside code."""
+    return re.findall(r"(?<!\S)@[A-Za-z0-9._-]+", re.sub(r"`[^`]*`", "", text))
+
+
+def test_inline_wraps_whitespace_at_tokens_only():
+    i = compose._inline
+    assert i("see @scope/pkg.") == "see `@scope/pkg`."
+    assert i("@a/b@1.2 x\n@c;") == "`@a/b@1.2` x\n`@c`;"
+    for same in ("https://mastodon.social/@user/1", "a@b.c", "@ x", "(@x)"):
+        assert i(same) == same
+    assert i("x https://h.example/a`b y") == "x https://h.example/a%60b y"
+    assert i("a `b @s/p c`") == "a b `@s/p` c"
+
+
+def test_root_and_digest_wrap_a_scoped_package_title():
+    title = f"Path traversal in {MCP[0]} allows reads outside roots"
+    c = cand(source_title=title)
+    text, adv = root(c, ("high", None))
+    plain, _ = root(cand(), ("high", None))
+    assert f"`{MCP[0]}`" in text and not bare_mentions(text)
+    assert text.split("```aitools-alert", 1)[1] == plain.split("```aitools-alert", 1)[1]
+    assert schema.parse_post(text) == adv
+    ja = compose.root_post_ja(adv, None, False, compose.source_title(c))
+    assert f"`{MCP[0]}`" in ja and not bare_mentions(ja)
+    for lang in ("en", "ja"):
+        d = compose.digest([adv], "2026-11-08", lang, titles={(adv.id, "Claude Code"): title})
+        assert f"`{MCP[0]}`" in d and not bare_mentions(d)
+
+
+def test_title_backtick_cannot_pair_with_ours():
+    c = cand(source_title="a `b @scope/pkg c")
+    line = root(c, ("high", None))[0].split("\n")[1]
+    assert line == "a b `@scope/pkg` c"
+
+
+def test_digest_shaped_like_2026_11_08_has_no_bare_mention():
+    advs, titles = [], {}
+    for n in range(43):
+        _, adv = compose.root_post(cand(id=f"CVE-2026-{1000 + n}", aliases=()), ("high", None),
+                                   scope(cand()), posted_at=NOW + n)
+        advs.append(adv)
+    for n, pkg in enumerate((MCP[0], MCP[1], MCP[0], MCP[2])):
+        titles[(advs[n].id, "Claude Code")] = f"Advisory for {pkg} before 2026.11"
+    for lang in ("en", "ja"):
+        d = compose.digest(advs, "2026-11-08", lang, titles=titles)
+        assert "43" in d.split("\n")[0] and d.count("`@modelcontextprotocol/") == 4
+        assert not bare_mentions(d)
+
+
+def test_a_scoped_product_name_is_inline_code_in_roots_and_replies():
+    pkg = MCP[2]
+    sc = dataclasses.replace(scope(cand()), name=pkg)
+    c = cand()
+    text, prev = compose.root_post(c, ("high", None), sc, posted_at=NOW)
+    assert text.startswith(f"HIGH: `{pkg}`: ") and not bare_mentions(text.split("```")[0])
+    fixed = [{"name": pkg, "ecosystem": prev.products[0].ecosystem, "affected": "<2.1.1", "fixed": "2.1.1"}]
+    reply = compose.reply_post(prev, c, {"products": fixed})
+    body = reply.split("```")[0]
+    assert f"upgrade `{pkg}` to 2.1.1" in body and not bare_mentions(body)
+    assert _block(reply)["products"] == fixed  # the block keeps the name as it is
+    merged = compose.parse_reply(reply, prev)
+    assert merged.products[0].name == pkg
+    ja = compose.reply_post_ja(merged, c, _block(reply)) + compose.root_post_ja(merged)
+    assert f"`{pkg}`" in ja and not bare_mentions(ja)

@@ -114,6 +114,26 @@ def _guard(text: str) -> str:
     return text
 
 
+_URL_TOKEN = re.compile(r"https?://\S+")
+# The relay reads "@" at the start or after whitespace, then [A-Za-z0-9._-]+, as a
+# member mention and refuses an unknown name; it skips inline code.
+_MENTION = re.compile(r"(?<!\S)@[A-Za-z0-9._-][!-_a-~]*")
+
+
+def _inline(text: str) -> str:
+    """Body text with every mention-shaped @token in inline code, exact and readable.
+    The only backticks left are those pairs: one in a URL is percent-encoded (the
+    same URL), any other removed, so no text can open or close a span around ours."""
+    text = _URL_TOKEN.sub(lambda m: m.group().replace("`", "%60"), text).replace("`", "")
+
+    def wrap(m):
+        tok = m.group()
+        core = tok.rstrip(".,;:!?)]}'\"")
+        core = core if len(core) > 1 else tok
+        return f"`{core}`{tok[len(core):]}"
+    return _MENTION.sub(wrap, text)
+
+
 def _primary(sources) -> str:
     return next((s.url for s in sources if schema.is_primary(s.url)), sources[0].url)
 
@@ -168,7 +188,7 @@ def _upstream(t) -> str | None:
             or t.strip().casefold() in {p + k for k in _KINDS for p in ("", "unverified ")}:
         return None
     try:
-        return _guard(t)
+        return _guard(" ".join(t.replace("`", "").split()))  # no backtick to pair with ours
     except ValueError:
         return None
 
@@ -206,7 +226,7 @@ def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, sc
             else "Action: upgrade as the source describes." if unexpressed
             else "Action: no fix is published yet; watch this thread.",
             f"Source: {_primary(adv.sources)}"]
-    return _guard(schema.render_post(adv, "\n".join(body))), adv
+    return _guard(schema.render_post(adv, _inline("\n".join(body)))), adv
 
 
 def fix_unexpressed(c) -> bool:
@@ -232,7 +252,7 @@ def root_post_ja(adv: schema.Advisory, reason: str | None = None, unexpressed: b
     p, fixed = adv.products[0], adv.products[0].fixed
     head = _JA_LEVEL[adv.level] + (f" ({SYNTHETIC})" if is_synthetic(adv.id) else "") \
         + (f" ({UNVERIFIED})" if reason == "unverified" else "")
-    return "\n".join([
+    return _inline("\n".join([
         f"{head}: {_ja_title(adv)}", *([f"原題: {title}"] if title else []),
         f"影響: {p.name}{_words_ja(p.affected)}。"
         + (f" 修正版: {fixed}。" if fixed else " 修正は上流で公開されています。出典を参照してください。"
@@ -240,7 +260,7 @@ def root_post_ja(adv: schema.Advisory, reason: str | None = None, unexpressed: b
         f"対応: {p.name} を {fixed} 以降に更新してください。" if fixed
         else "対応: 出典の説明に従って更新してください。" if unexpressed
         else "対応: 修正はまだ公開されていません。このスレッドで続報を確認してください。",
-        f"出典: {_primary(adv.sources)}"])
+        f"出典: {_primary(adv.sources)}"]))
 
 
 def _change_line_ja(k: str, adv: schema.Advisory) -> str:
@@ -264,7 +284,7 @@ def reply_post_ja(merged: schema.Advisory, c, keys, *, reason: str | None = None
     body = [UNVERIFIED[0].upper() + UNVERIFIED[1:] + "."] if reason == "unverified" else []
     body += [_change_line_ja(k, merged) for k in sorted(keys)]
     body.append(f"出典: {_primary(_sources(c.sources) or merged.sources)}")
-    return "\n".join(body)
+    return _inline("\n".join(body))
 
 
 def lang_reply(body: str, of: str | None = None) -> str:
@@ -369,7 +389,7 @@ def reply_post(prev: schema.Advisory, c, changes: dict, *, reason: str | None = 
     body += [_change_line(k, merged) for k in sorted(patch)]
     body.append(f"Source: {_primary(_sources(c.sources) or merged.sources)}")
     block = json.dumps(patch, indent=2, ensure_ascii=False)
-    out = "\n".join(body) + f"\n\n```{schema.INFO_STRING}\n{block}\n```\n"
+    out = _inline("\n".join(body)) + f"\n\n```{schema.INFO_STRING}\n{block}\n```\n"
     if parse_reply(out, prev) != merged:
         raise ValueError("reply does not parse back")
     return _guard(out)
@@ -473,7 +493,7 @@ def digest(advs_today, date, lang: str = "en", *, retracted=(), now: int | None 
             lines += ["", t["section"](level, len(items))]
             for line in items:
                 try:
-                    lines.append(_guard(line))
+                    lines.append(_guard(_inline(line)))
                 except ValueError:
                     withheld += 1
     if withheld:
