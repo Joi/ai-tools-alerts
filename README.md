@@ -47,7 +47,7 @@ Check it on two different hosts: `trust/root.pub` at the release tag on GitHub (
 
 Paste this into your agent chat to set up ai-tools-alerts:
 
-> Set up ai-tools-alerts for me using this repository's instructions. Read the trust and installation sections first, and verify the signed release and trust-root fingerprint exactly as documented; stop if verification fails. Identify the supported integration for your harness and install or adapt the documented agent instructions without weakening their safety rules. Tell me what you installed, how alerts are checked, and any remaining manual steps or limitations.
+> Set up ai-tools-alerts from https://github.com/Joi/ai-tools-alerts. Read this repository's trust and installation instructions, verify the signed release and trust-root fingerprint exactly as documented, and stop if verification fails. Install the required tools and CLI, initialize it, and enable the documented hourly monitoring schedule for this system. Add the supported agent instructions for your harness without weakening their safety rules. Verify that monitoring runs, then tell me what you installed and any remaining manual steps or limitations.
 
 ## Detailed install
 
