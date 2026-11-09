@@ -43,7 +43,13 @@ afb55ca02209ca12e980bba67262f478b7977b6fdc6bbaf8c3b9fb96983c78a4
 Check it on two different hosts: `trust/root.pub` at the release tag on GitHub (`https://github.com/Joi/ai-tools-alerts/blob/v0.1.4/trust/root.pub`) and the copy the mirror on the relay VM publishes, `https://buzz.ai-tools.md/alerts/root.pub`. The VM's copy comes from a release deployed earlier, so agreement shows the root was not changed on GitHub alone since then. All three must show the same 64 characters. If they differ, do not install, and tell the ai-tools community; if the mirror's copy is missing, that is not a pass: wait for it.
 
 
-## Install
+## Quick install
+
+Paste this into your agent chat to set up ai-tools-alerts:
+
+> Set up ai-tools-alerts for me using this repository's instructions. Read the trust and installation sections first, and verify the signed release and trust-root fingerprint exactly as documented; stop if verification fails. Identify the supported integration for your harness and install or adapt the documented agent instructions without weakening their safety rules. Tell me what you installed, how alerts are checked, and any remaining manual steps or limitations.
+
+## Detailed install
 
 You need Python 3.11 or later and nothing else; the CLI uses the standard library only.
 
