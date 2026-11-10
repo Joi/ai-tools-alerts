@@ -533,11 +533,11 @@ def relay_mentions(text):
     extract_at_mentions_with_known with no known names."""
     out, i = [], 0
     while i < len(text):
-        if text.startswith("```", i) and not text[text.rfind("\n", 0, i) + 1:i].strip(" \t\r\f\v"):
+        if text.startswith("```", i) and not text[text.rfind("\n", 0, i) + 1:i].strip(" \t\r\f"):
             nl = text.find("\n", i + 3)
             j, end = (len(text) if nl < 0 else nl + 1), len(text)
             while j < len(text) and (p := text.find("```", j)) >= 0:
-                if not text[text.rfind("\n", 0, p) + 1:p].strip(" \t\r\f\v"):
+                if not text[text.rfind("\n", 0, p) + 1:p].strip(" \t\r\f"):
                     nl = text.find("\n", p + 3)
                     end = len(text) if nl < 0 else nl + 1
                     break
@@ -556,13 +556,18 @@ def relay_mentions(text):
         out.append(text[i])
         i += 1
     s = "".join(out)
-    return re.findall(r"(?:^|(?<=[ \t\n\r\f\v]))@([A-Za-z0-9._-]+)", s)
+    return re.findall(r"(?:^|(?<=[ \t\n\r\f]))@([A-Za-z0-9._-]+)", s)
 
 
 def test_relay_oracle_matches_the_scanner():
     assert relay_mentions("a @x `@y` z\n`b`@w") == ["x", "w"]
     assert relay_mentions("```\n@x\n```\n@y") == ["y"]
     assert relay_mentions("a ` @x") == ["x"] and relay_mentions("a@b `@c`") == []
+    # buzz-sdk's own strip_code_regions vectors, as mentions, and the fence edges
+    assert relay_mentions("before\n```rust\n@x\n```\nafter @y") == ["y"]
+    assert relay_mentions("see `@x` here") == [] and relay_mentions("hello `@world") == [] and relay_mentions("hello ` @world") == ["world"]
+    assert relay_mentions("```\n@x") == [] and relay_mentions("  ```\n@x\n  ``` tail\n@y") == ["y"]
+    assert relay_mentions("a\n@x `") == ["x"] and relay_mentions("x\v@y\n\v```\n@z") == ["z"]
 
 
 def test_mention_safe_wraps_outside_spans_and_never_touches_one():
@@ -584,3 +589,13 @@ def test_mention_safe_refuses_what_it_cannot_wrap_safely():
     for bad in ("`code`@x", "a @x`code`", "a ` lone @x", "a ` lone `@x`", "```\n@x\n```",
                 "``a`` @x", "\\` @scope/pkg `", "\\`literal`npm i @scope/pkg --help` tail `"):
         assert m(bad) is None, bad
+
+
+def test_mention_safe_never_rewrites_where_a_reader_could_pair_backticks_otherwise():
+    m = compose.mention_safe
+    for amb in ("`\r\r`npm i @scope/pkg --help`\r\r`",  # CR breaks a Markdown paragraph
+                "See <https://example.invalid/a`b> then `npm i @scope/pkg --help` tail `.",
+                "See https://example.invalid/a`b then `npm i @scope/pkg --help` tail `."):
+        assert m(amb) is None, amb
+    for same in ("a\r\nb `c`", "<https://example.invalid/a> `x @s/p`", "https://example.invalid/a `c`"):
+        assert m(same) == same

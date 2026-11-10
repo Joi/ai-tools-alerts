@@ -51,8 +51,11 @@ A post-translation guard in `compose`, applied to the model's output before
   pairs with the next backtick on the same line, the span is replaced by one
   space, no escapes) pairs these backticks 1st with 2nd, 3rd with 4th, within
   each line; a line-crossing left-to-right scanner and CommonMark's
-  equal-length rule pair them the same way. A backslash before a backtick is
-  excluded because CommonMark reads it as an escape and the relay does not. Split
+  equal-length rule pair them the same way. Excluded, because a Markdown
+  reader can pair the backticks otherwise than the relay: a backslash before a
+  backtick (an escape to CommonMark, not to the relay), a CR (a line break to
+  CommonMark, not to the relay), and a backtick inside `<...>` (an autolink or
+  HTML) or inside a URL (whole-branch review, pass 1). Split
   each line on backticks; even-indexed parts are outside spans. Wrap every
   mention-shaped token in an outside part with the same wrapping `_inline`
   uses (factored out as `_wrap_mentions`; a token at the start of an outside

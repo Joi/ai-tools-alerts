@@ -137,18 +137,22 @@ def _wrap_mentions(text: str) -> str:
 
 
 # An @ the relay could read as a mention once it has replaced each code region with a space.
+# No re.M: \s in the lookbehind already covers the character after a newline.
 _LIVE_AT = re.compile(r"(?:^|(?<=[\s`]))@[A-Za-z0-9._-]")
+# Where a Markdown reader could pair backticks otherwise than the relay: a doubled or
+# escaped backtick, a CR line break, a backtick inside <...> (autolink, HTML) or a URL.
+_AMBIGUOUS = re.compile(r"``|\\`|\r|<[^<>\n]*`[^<>\n]*>|https?://[^\s`]*`")
 
 
 def mention_safe(text: str) -> str | None:
     """Text from outside the poster (a curator translation) with every mention-shaped
     @token outside code in inline code, its own code spans untouched; None when that
     cannot be done safely. The relay pairs a backtick with the next one on its line and
-    reads no escapes, so only text whose backticks pair the same way under any reading
-    (none doubled, none escaped, an even count on every line) is wrapped; other text
-    passes only when it holds no @ a code-region strip could leave as a mention."""
+    reads no escapes, so only text whose backticks the relay and a Markdown reader pair
+    the same way (an even count on every line, none in an _AMBIGUOUS place) is wrapped;
+    other text passes only when it holds no @ a code-region strip could leave as a mention."""
     lines = text.split("\n")
-    if "``" in text or "\\`" in text or any(line.count("`") % 2 for line in lines):
+    if _AMBIGUOUS.search(text) or any(line.count("`") % 2 for line in lines):
         return None if _LIVE_AT.search(text) else text
     out = []
     for line in lines:
