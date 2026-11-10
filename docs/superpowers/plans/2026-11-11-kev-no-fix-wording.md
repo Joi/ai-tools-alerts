@@ -35,7 +35,7 @@ Spec: docs/superpowers/specs/2026-11-11-kev-no-fix-wording-design.md. One chunk,
 - [ ] Add the main.py wiring test (red), then change main.py's three `root_post_ja` calls (`exploited=`) and `_advisory_text`, and curator.py `_body`; run `python3 -m pytest tests/poster/test_main.py tests/poster/test_translate.py tests/test_curator.py -q`: pass.
 - [ ] `grep -rn -e "No fixed version is known" -e "No fixed version yet" -e "no fix is published" -e "no fix yet" -e "修正版はまだ" -e "修正はまだ" aitools_alerts/` prints nothing.
 - [ ] README and CHANGELOG.
-- [ ] `grep -rn -e /Users/ -e '\.local' docs/superpowers/*/2026-11-11-kev-no-fix-wording*` prints nothing (no deployment detail in the landed docs; the public scan is the real check).
+- [ ] No deployment detail (host names, home paths) in the landed docs: `scripts/public-scan.sh`, the first half of the gate, is the check.
 - [ ] Commit; then `scripts/test-gate.sh` (public scan + whole suite) on the commit.
 - [ ] Review: Stage 1 subagent ∥ fresheyes on `git diff origin/main...HEAD`.
 

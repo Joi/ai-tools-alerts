@@ -1416,3 +1416,37 @@ def test_japanese_roots_carry_the_candidates_exploited_state(env, monkeypatch): 
     _, summary, ssh = env.run(now=T0 + 3600)
     assert "replies=2" in summary and len(seen) == 2 and all(s is True for s in seen)  # the new root, then the reply
     assert all("直ちに更新" in text for _, _, text in ssh.ja)
+
+
+def test_kev_learned_at_the_same_level_makes_the_japanese_action_urgent(env):  # 4yr1
+    """A verified trojanized release with no fix is critical; KEV listing it later keeps
+    the level, so the thread keeps its title. The reply's full Japanese advisory still
+    says it is exploited."""
+    first = finding(fid="CVE-2026-0001", fixed=None)
+    first["trojanized"] = True
+    env.collector([first])
+    assert "roots=1" in env.run()[1]
+    (e,), _ = env.ledger()
+    assert e["advisory"]["title"] == "Claude Code: trojanized release (CVE-2026-0001)"
+    env.kev.catalog = {"vulnerabilities": [kev_item()]}
+    code, summary, ssh = env.run(now=T0 + 3600)
+    assert code == 0 and "replies=2" in summary and "ja=2" in summary
+    (e,), _ = env.ledger()
+    assert e["advisory"]["title"] == "Claude Code: trojanized release (CVE-2026-0001)"  # kept
+    for _, _, text in ssh.ja:
+        assert "改ざんされたリリース (CVE-2026-0001)" in text
+        assert "悪用が確認されているため、リリースがあれば直ちに更新してください。" in text
+
+
+def test_a_level_rise_copy_gets_the_exploited_flag(env, monkeypatch):  # 4yr1
+    seen = []
+    real = main.compose.root_post_ja
+    monkeypatch.setattr(main.compose, "root_post_ja",
+                        lambda *a, **kw: seen.append(kw.get("exploited")) or real(*a, **kw))
+    env.collector([finding(fid="GHSA-abcd-efgh-ijkl", severity="high", fixed=None,
+                           aliases=("CVE-2026-0001",))])
+    _, summary, _ = env.run()
+    assert "roots=1" in summary and seen == [False]  # high, not exploited
+    env.kev.catalog = {"vulnerabilities": [kev_item()]}
+    _, summary, _ = env.run(now=T0 + 3600)
+    assert "copies=1" in summary and seen[1:] == [True, True]  # the copy, then the reply

@@ -14,10 +14,10 @@ CISA's Known Exploited Vulnerabilities catalogue carries no version data, so eve
    - Action, known-exploited: `Action: check the vendor for an update; this is exploited in the wild, so update now if a release is out.`
 2. `compose.root_post_ja`, same branch:
    - 影響 suffix: ` 出典には修正版の記載がありません。ベンダーのアドバイザリを確認してください。`
-   - 対応, not known-exploited: `対応: ベンダーで更新を確認し、リリースがあれば適用してください。`
-   - 対応, known-exploited: `対応: ベンダーで更新を確認してください。悪用が確認されているため、リリースがあれば直ちに更新してください。`
+   - 対応, not known-exploited: `対応: ベンダーの更新情報を確認し、リリースがあれば適用してください。`
+   - 対応, known-exploited: `対応: ベンダーの更新情報を確認してください。悪用が確認されているため、リリースがあれば直ちに更新してください。`
 3. "Fixed in X" / 修正版: X and the unexpressed branch are byte-identical to today.
-4. Digest single line without a fixed version: `fixed version not stated, check the vendor` (en) and `修正版の記載なし、ベンダーを確認してください` (ja), followed by the existing end mark. With a fixed version, unchanged.
+4. Digest single line without a fixed version: `fixed version not stated, check the vendor` (en) and `修正版の記載なし、ベンダーの情報を確認してください` (ja), followed by the existing end mark. With a fixed version, unchanged.
 5. No template the poster or the curator CLI fills in says or implies that no fix exists. `curator._body` and `main._advisory_text` (the English the poster sends for a curator translation, which mirrors `_body`) both say ` No fixed version stated.` instead of ` No fixed version yet.`. Verified on rendered output, not only by grep: tests render a KEV-shaped root (plain, unverified, synthetic), its Japanese twin and both digests, and assert none contains "no fix", "No fixed version is known", "watch this thread", "修正版はまだ" or "修正はまだ"; a grep of `aitools_alerts/` for the old literals returns nothing. A source's own title, quoted on its own line (`原題:` in Japanese), is the source's words and is not rewritten.
 6. README, in the "What the bot posts" bullet: one sentence that KEV entries carry no version data, so such an alert may not name the fix even when one exists.
 7. Tests: the existing assertions of the old wording (`tests/poster/test_compose.py` English root ~65-66, Japanese root ~361, Japanese digest ~389) change to the new strings; new tests cover the exploited and non-exploited actions, plain, unverified and synthetic titles, an exploited candidate merged into a thread whose title is not "known exploited vulnerability" (main.plan_known keeps the title when the level does not rise), and exact line equality of the fixed and unexpressed branches in both languages. Fixtures only; no live post.

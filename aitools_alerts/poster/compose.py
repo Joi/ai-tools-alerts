@@ -301,8 +301,8 @@ def root_post_ja(adv: schema.Advisory, reason: str | None = None, unexpressed: b
            if unexpressed else " 出典には修正版の記載がありません。ベンダーのアドバイザリを確認してください。"),
         f"対応: {p.name} を {fixed} 以降に更新してください。" if fixed
         else "対応: 出典の説明に従って更新してください。" if unexpressed
-        else "対応: ベンダーで更新を確認してください。悪用が確認されているため、リリースがあれば直ちに更新してください。"
-        if exploited else "対応: ベンダーで更新を確認し、リリースがあれば適用してください。",
+        else "対応: ベンダーの更新情報を確認してください。悪用が確認されているため、リリースがあれば直ちに更新してください。"
+        if exploited else "対応: ベンダーの更新情報を確認し、リリースがあれば適用してください。",
         f"出典: {_primary(adv.sources)}"]))
 
 
@@ -454,7 +454,7 @@ _DIGEST = {
                head=lambda d, n: f"{d} のデイリーダイジェスト: {n} 件。",
                section=lambda lv, n: f"{_JA_LEVEL[lv]} ({n})",
                withheld=lambda n: f"{n} 件を公開前チェックで保留しました。",
-               fixed=lambda v: f"修正版 {v}", nofix="修正版の記載なし、ベンダーを確認してください", end="。",
+               fixed=lambda v: f"修正版 {v}", nofix="修正版の記載なし、ベンダーの情報を確認してください", end="。",
                leads=lambda n: f"未評価のリード {n} 件。", release=lambda seg: f"リリース {seg}",
                one="1 件のリリース", cves=lambda n: f"CVE {n} 件", update="更新あり",
                see="リリースを参照", title=_ja_title, upstream=lambda t: f" 原題: {t}"),

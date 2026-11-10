@@ -361,7 +361,7 @@ def test_root_post_ja_keeps_names_ids_versions_urls():
                         "Claude Code: unverified 改ざんされたリリース (CVE-2026-0001)")
     assert lines[1] == ("影響: Claude Code（バージョン不明）。 "
                         "出典には修正版の記載がありません。ベンダーのアドバイザリを確認してください。")
-    assert lines[2] == "対応: ベンダーで更新を確認し、リリースがあれば適用してください。"
+    assert lines[2] == "対応: ベンダーの更新情報を確認し、リリースがあれば適用してください。"
     syn = cand(id="CVE-2099-0001", aliases=())
     _, adv = root(syn, ("high", "high"))
     assert compose.root_post_ja(adv).startswith(
@@ -388,7 +388,7 @@ def test_root_post_kev_without_version_never_says_no_fix():
         ja = compose.root_post_ja(adv, level[1], compose.fix_unexpressed(kev))
         assert ja.split("\n")[1:3] == [
             "影響: Chrome（バージョン不明）。 出典には修正版の記載がありません。ベンダーのアドバイザリを確認してください。",
-            "対応: ベンダーで更新を確認してください。悪用が確認されているため、リリースがあれば直ちに更新してください。"]
+            "対応: ベンダーの更新情報を確認してください。悪用が確認されているため、リリースがあれば直ちに更新してください。"]
         digests = compose.digest([adv], "2026-11-11") + compose.digest([adv], "2026-11-11", lang="ja")
         for claim in _NO_FIX_CLAIMS:
             assert claim not in text and claim not in ja and claim not in digests
@@ -397,7 +397,7 @@ def test_root_post_kev_without_version_never_says_no_fix():
     tro = dataclasses.replace(kev, exploited=False, trojanized=True)
     _, adv = compose.root_post(tro, ("high", "high"), scope(tro), posted_at=NOW)
     assert "trojanized release" in adv.title
-    assert compose.root_post_ja(adv).split("\n")[2] == "対応: ベンダーで更新を確認し、リリースがあれば適用してください。"
+    assert compose.root_post_ja(adv).split("\n")[2] == "対応: ベンダーの更新情報を確認し、リリースがあれば適用してください。"
     assert "直ちに更新" in compose.root_post_ja(adv, exploited=True).split("\n")[2]
     # A synthetic KEV check keeps the exploited action.
     syn = dataclasses.replace(kev, id="CVE-2099-0001")
@@ -445,7 +445,7 @@ def test_digest_ja_scaffold_and_groups():
     lines = ja.split("\n")
     assert lines[0] == "2026-11-06 のデイリーダイジェスト: 2 件。" and "注意 (2)" in lines
     assert f"- macOS: リリース 149521, CVE 3 件; リリースを参照。 {REL}" in lines
-    assert f"- Chrome: セキュリティアドバイザリ (CVE-2098-0009); 修正版の記載なし、ベンダーを確認してください。 {BLOG}" in lines
+    assert f"- Chrome: セキュリティアドバイザリ (CVE-2098-0009); 修正版の記載なし、ベンダーの情報を確認してください。 {BLOG}" in lines
     assert (f"- Chrome: security advisory (CVE-2098-0009); fixed version not stated, check the vendor. {BLOG}"
             in en.split("\n"))
 
