@@ -309,3 +309,55 @@ def test_recovery_needs_no_key_and_other_languages_do_not_count(cur):
     code, summary, _ = cur.trun(call)
     assert len(call.texts) == 1 and " untranslated=1 " in summary  # French is not Japanese; big: no call
     assert json.loads(cur.config.translate_state.read_text())["calls"] == 2 and big
+
+
+# ------------------------------------------------------------ no bare @token (mz81)
+
+PKG = "@modelcontextprotocol/inspector"
+
+
+def echo(text):  # a "translation" that keeps every token and every character
+    return text
+
+
+def relay_ok(reply):
+    from test_compose import relay_mentions
+    return not relay_mentions(reply)
+
+
+def test_a_scoped_package_in_a_curator_root_comes_back_wrapped(cur):
+    root(cur.mirror, title=f"Path traversal in {PKG}")
+    code, summary, ssh = cur.trun(Call(echo))
+    [(_, _, text)] = ssh.ja
+    assert f"in `{PKG}`" in text and relay_ok(text) and " untranslated=0 " in summary
+
+
+def test_a_scoped_product_in_an_amendment_comes_back_wrapped(cur):
+    r = root(cur.mirror)
+    fixed = [{"name": "@scope/pkg", "ecosystem": "claude-code", "affected": "<99.0.1", "fixed": "99.0.1"}]
+    cur.mirror.post(cur.mirror.cur_sec, cur.mirror.patch_text(products=fixed).replace("Update.", "Amended: x"),
+                    created_at=T0 + 200, tags=[h(), ("e", r["id"], "", "root")])
+    call = Call(echo)
+    code, summary, ssh = cur.trun(call)
+    assert "Affected: @scope/pkg <99.0.1." in call.texts[1]  # _advisory_text: bare at the source
+    texts = [t for _, _, t in ssh.ja]
+    assert len(texts) == 2 and "Affected: `@scope/pkg` <99.0.1." in texts[1] and all(map(relay_ok, texts))
+
+
+def test_a_curator_code_span_and_a_harmless_lone_backtick_pass_unchanged(cur):
+    root(cur.mirror, title="Run `npm i @scope/pkg --help` now")
+    root(cur.mirror, title="A lone ` backtick", at=T0 + 150)
+    code, summary, ssh = cur.trun(Call(echo))
+    texts = [t for _, _, t in ssh.ja]
+    assert len(texts) == 2 and all(map(relay_ok, texts))
+    assert "Run `npm i @scope/pkg --help` now" in texts[0] and "A lone ` backtick" in texts[1]
+    assert all(t.endswith(translate.MARK) and t.count("`") == s for t, s in zip(texts, (2, 1)))
+
+
+def test_a_mention_that_cannot_be_wrapped_safely_is_not_posted(cur):
+    root(cur.mirror)
+    call = Call(lambda t: t + "\n` lone @x/y")
+    code, summary, ssh = cur.trun(call)
+    assert len(call.texts) == 1 and ssh.ja == [] and " untranslated=1 " in summary
+    code, summary, ssh = cur.trun(Call(lambda t: pytest.fail("retried")))
+    assert ssh.ja == []

@@ -386,7 +386,10 @@ class Run:
             ok = False
             if memo[text] is not None:
                 try:
-                    body = memo[text] + "\n\n" + translate.MARK
+                    safe = compose.mention_safe(memo[text])  # the relay refuses a bare @token
+                    if safe is None:
+                        raise ValueError("a mention that cannot be put in inline code safely")
+                    body = safe + "\n\n" + translate.MARK
                     if len(body) > pull.MAX_TRANSLATION_CHARS:  # readers would cut the end off
                         raise ValueError("translation too long")
                     reply = compose.lang_reply(body, of)

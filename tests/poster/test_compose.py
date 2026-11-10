@@ -522,3 +522,65 @@ def test_a_scoped_product_name_is_inline_code_in_roots_and_replies():
     assert merged.products[0].name == pkg
     ja = compose.reply_post_ja(merged, c, _block(reply)) + compose.root_post_ja(merged)
     assert f"`{pkg}`" in ja and not bare_mentions(ja)
+
+
+# ------------------------------------------------------------ curator translations (mz81)
+
+def relay_mentions(text):
+    """Unknown names the relay would read as mentions: a port of buzz-sdk strip_code_regions
+    (a fence at a line start runs to the end of its closing fence line; a backtick pairs with
+    the next one on the same line; each region becomes one space) and of the ASCII branch of
+    extract_at_mentions_with_known with no known names."""
+    out, i = [], 0
+    while i < len(text):
+        if text.startswith("```", i) and not text[text.rfind("\n", 0, i) + 1:i].strip(" \t\r\f\v"):
+            nl = text.find("\n", i + 3)
+            j, end = (len(text) if nl < 0 else nl + 1), len(text)
+            while j < len(text) and (p := text.find("```", j)) >= 0:
+                if not text[text.rfind("\n", 0, p) + 1:p].strip(" \t\r\f\v"):
+                    nl = text.find("\n", p + 3)
+                    end = len(text) if nl < 0 else nl + 1
+                    break
+                j = p + 3
+            else:
+                end = len(text)
+            out.append(" ")
+            i = end
+            continue
+        if text[i] == "`":
+            close = text.find("`", i + 1)
+            if close >= 0 and "\n" not in text[i + 1:close]:
+                out.append(" ")
+                i = close + 1
+                continue
+        out.append(text[i])
+        i += 1
+    s = "".join(out)
+    return re.findall(r"(?:^|(?<=[ \t\n\r\f\v]))@([A-Za-z0-9._-]+)", s)
+
+
+def test_relay_oracle_matches_the_scanner():
+    assert relay_mentions("a @x `@y` z\n`b`@w") == ["x", "w"]
+    assert relay_mentions("```\n@x\n```\n@y") == ["y"]
+    assert relay_mentions("a ` @x") == ["x"] and relay_mentions("a@b `@c`") == []
+
+
+def test_mention_safe_wraps_outside_spans_and_never_touches_one():
+    m = compose.mention_safe
+    pkg = "@modelcontextprotocol/inspector"
+    assert m(f"影響: {pkg} 2.1.0\n{pkg}.") == f"影響: `{pkg}` 2.1.0\n`{pkg}`."
+    for same in ("https://mastodon.social/@user/1 a@b.example", f"`{pkg}`", "対象は@scope/pkg",
+                 "no backtick", "a ` lone, no token", "```\ncode\n```\nend", "@"):
+        assert m(same) == same
+    span = "run `npm i @scope/pkg --help` then @other/pkg"
+    assert m(span) == "run `npm i @scope/pkg --help` then `@other/pkg`"
+    assert m("影響:　@s/p") == "影響:　`@s/p`"
+    for x in ("a @x b", span, "`a` b `c` @d"):
+        assert m(m(x)) == m(x) and not relay_mentions(m(x))
+
+
+def test_mention_safe_refuses_what_it_cannot_wrap_safely():
+    m = compose.mention_safe
+    for bad in ("`code`@x", "a @x`code`", "a ` lone @x", "a ` lone `@x`", "```\n@x\n```",
+                "``a`` @x", "\\` @scope/pkg `", "\\`literal`npm i @scope/pkg --help` tail `"):
+        assert m(bad) is None, bad

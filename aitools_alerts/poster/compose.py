@@ -124,14 +124,39 @@ def _inline(text: str) -> str:
     """Body text with every mention-shaped @token in inline code, exact and readable.
     The only backticks left are those pairs: one in a URL is percent-encoded (the
     same URL), any other removed, so no text can open or close a span around ours."""
-    text = _URL_TOKEN.sub(lambda m: m.group().replace("`", "%60"), text).replace("`", "")
+    return _wrap_mentions(_URL_TOKEN.sub(lambda m: m.group().replace("`", "%60"), text).replace("`", ""))
 
+
+def _wrap_mentions(text: str) -> str:
     def wrap(m):
         tok = m.group()
         core = tok.rstrip(".,;:!?)]}'\"")
         core = core if len(core) > 1 else tok
         return f"`{core}`{tok[len(core):]}"
     return _MENTION.sub(wrap, text)
+
+
+# An @ the relay could read as a mention once it has replaced each code region with a space.
+_LIVE_AT = re.compile(r"(?:^|(?<=[\s`]))@[A-Za-z0-9._-]")
+
+
+def mention_safe(text: str) -> str | None:
+    """Text from outside the poster (a curator translation) with every mention-shaped
+    @token outside code in inline code, its own code spans untouched; None when that
+    cannot be done safely. The relay pairs a backtick with the next one on its line and
+    reads no escapes, so only text whose backticks pair the same way under any reading
+    (none doubled, none escaped, an even count on every line) is wrapped; other text
+    passes only when it holds no @ a code-region strip could leave as a mention."""
+    lines = text.split("\n")
+    if "``" in text or "\\`" in text or any(line.count("`") % 2 for line in lines):
+        return None if _LIVE_AT.search(text) else text
+    out = []
+    for line in lines:
+        parts = line.split("`")  # even indexes are outside spans
+        parts[0::2] = [_wrap_mentions(p) for p in parts[0::2]]
+        out.append("`".join(parts))
+    text = "\n".join(out)
+    return None if "``" in text else text  # a wrapped token touching a span
 
 
 def _primary(sources) -> str:
