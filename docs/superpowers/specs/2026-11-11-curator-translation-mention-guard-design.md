@@ -54,8 +54,12 @@ A post-translation guard in `compose`, applied to the model's output before
   equal-length rule pair them the same way. Excluded, because a Markdown
   reader can pair the backticks otherwise than the relay: a backslash before a
   backtick (an escape to CommonMark, not to the relay), a CR (a line break to
-  CommonMark, not to the relay), and a backtick inside `<...>` (an autolink or
-  HTML) or inside a URL (whole-branch review, pass 1). Split
+  CommonMark, not to the relay), a backtick inside a URL (whole-branch review)
+  and any `<` that can open an HTML tag or an autolink (`<` then a letter, `!`,
+  `?` or `/`: a tag may span lines and hold a backtick in an attribute; delta
+  review). A version range (`<2.1`, `<=2.1`) is none of these. These checks
+  apply only to text that holds a backtick; text without one has no pairing to
+  disagree on and is always wrapped. Split
   each line on backticks; even-indexed parts are outside spans. Wrap every
   mention-shaped token in an outside part with the same wrapping `_inline`
   uses (factored out as `_wrap_mentions`; a token at the start of an outside

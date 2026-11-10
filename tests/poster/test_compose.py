@@ -597,5 +597,10 @@ def test_mention_safe_never_rewrites_where_a_reader_could_pair_backticks_otherwi
                 "See <https://example.invalid/a`b> then `npm i @scope/pkg --help` tail `.",
                 "See https://example.invalid/a`b then `npm i @scope/pkg --help` tail `."):
         assert m(amb) is None, amb
-    for same in ("a\r\nb `c`", "<https://example.invalid/a> `x @s/p`", "https://example.invalid/a `c`"):
+    assert m('See <span\ntitle="`"> `npm i @scope/pkg --help` tail `.') is None  # delta review
+    for same in ("a\r\nb `c`", "<https://example.invalid/a> `x`", "https://example.invalid/a `c`",
+                 '<span\ntitle="`"> `c`'):
         assert m(same) == same
+    # Without a backtick there is no pairing to disagree on: a version range or a CR still wraps.
+    assert m("Affected: @s/p <2.1, <=3\r\n@t/q") == "Affected: `@s/p` <2.1, <=3\r\n`@t/q`"
+    assert m("`x` @s/p <2.1 and <=3") == "`x` `@s/p` <2.1 and <=3"
