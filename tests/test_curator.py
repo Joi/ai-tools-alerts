@@ -82,6 +82,9 @@ def test_post_event_has_block_and_h_tag(mirror):
     adv = schema.parse_post(ev["content"])
     assert adv.level == "high" and adv.posted_by == "curator" and adv.posted_at == NOW
     assert ev["content"].startswith("HIGH: Invented high for tests\n")
+    p = adv.products[0]  # no version is not no fix (4yr1)
+    assert ("Fixed in" in ev["content"]) if p.fixed else ("No fixed version stated." in ev["content"])
+    assert "No fixed version yet" not in ev["content"]
     crit = post(mirror, level="critical")  # the interrupt channel, and the feed stays complete
     assert [e["tags"] for e in crit] == [[["h", CRITICAL]], [["h", FEED]]]
     assert [e["tags"] for e in post(mirror, level="critical", channel="feed")] == [[["h", FEED]]]

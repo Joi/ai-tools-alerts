@@ -123,7 +123,7 @@ def _body(adv: schema.Advisory) -> str:
     p = adv.products[0]
     lines = [f"{adv.level.upper()}: {adv.title}",
              f"Affected: {p.name} {p.affected or '(all versions)'}."
-             + (f" Fixed in {p.fixed}." if p.fixed else " No fixed version yet.")]
+             + (f" Fixed in {p.fixed}." if p.fixed else " No fixed version stated.")]
     lines += [f"Action: {check.describe(a)}." for a in adv.actions]
     lines.append(f"Source: {next(s.url for s in adv.sources if schema.is_primary(s.url))}")
     return "\n".join(lines)

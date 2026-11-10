@@ -62,8 +62,9 @@ def test_root_post_without_fix_and_unverified():
     lines = text.split("\n")
     assert lines[0].startswith("HIGH (unverified")
     assert "unverified" in lines[0]
-    assert lines[1] == "Affected: Claude Code, versions not stated. No fixed version is known yet."
-    assert lines[2] == "Action: no fix is published yet; watch this thread."
+    assert lines[1] == ("Affected: Claude Code, versions not stated. "
+                        "The source does not state a fixed version; check the vendor's advisory.")
+    assert lines[2] == "Action: check the vendor for an update and apply it."
     assert adv.actions == [] and "trojanized release" in adv.title
     # A bare level string is accepted.
     assert compose.root_post(c, "notice", scope(c), posted_at=NOW)[1].level == "notice"
@@ -358,11 +359,69 @@ def test_root_post_ja_keeps_names_ids_versions_urls():
     lines = compose.root_post_ja(adv, "unverified").split("\n")
     assert lines[0] == ("重要 (unverified: no primary source confirmed it): "
                         "Claude Code: unverified 改ざんされたリリース (CVE-2026-0001)")
-    assert lines[1] == "影響: Claude Code（バージョン不明）。 修正版はまだ知られていません。"
+    assert lines[1] == ("影響: Claude Code（バージョン不明）。 "
+                        "出典には修正版の記載がありません。ベンダーのアドバイザリを確認してください。")
+    assert lines[2] == "対応: ベンダーで更新を確認し、リリースがあれば適用してください。"
     syn = cand(id="CVE-2099-0001", aliases=())
     _, adv = root(syn, ("high", "high"))
     assert compose.root_post_ja(adv).startswith(
         "重要 (SYNTHETIC TEST): SYNTHETIC TEST: Claude Code: コード実行につながるインジェクション (CVE-2099-0001)")
+
+
+_NO_FIX_CLAIMS = ("no fix", "No fixed version is known", "watch this thread", "修正版はまだ", "修正はまだ")
+
+
+def test_root_post_kev_without_version_never_says_no_fix():
+    """A KEV entry carries no version data: the post says the source states none and
+    sends the reader to the vendor, and a known-exploited one says to update now."""
+    kev = cand(id="CVE-2026-1253", aliases=(), product_text="Chrome", exploited=True,
+               injection_exec=False, fixed=None, affected=None, sources=(Source(BLOG, None),))
+    for level, mark in ((("high", "high"), ""), (("high", "unverified"), "unverified ")):
+        text, adv = compose.root_post(kev, level, scope(kev), posted_at=NOW)
+        assert adv.title == f"Chrome: {mark}known exploited vulnerability (CVE-2026-1253)"
+        lines = text.split("\n\n```")[0].split("\n")
+        assert lines[1:3] == [
+            "Affected: Chrome, versions not stated. "
+            "The source does not state a fixed version; check the vendor's advisory.",
+            "Action: check the vendor for an update; this is exploited in the wild, "
+            "so update now if a release is out."]
+        ja = compose.root_post_ja(adv, level[1], compose.fix_unexpressed(kev))
+        assert ja.split("\n")[1:3] == [
+            "影響: Chrome（バージョン不明）。 出典には修正版の記載がありません。ベンダーのアドバイザリを確認してください。",
+            "対応: ベンダーで更新を確認してください。悪用が確認されているため、リリースがあれば直ちに更新してください。"]
+        digests = compose.digest([adv], "2026-11-11") + compose.digest([adv], "2026-11-11", lang="ja")
+        for claim in _NO_FIX_CLAIMS:
+            assert claim not in text and claim not in ja and claim not in digests
+    # A thread that was a trojanized release keeps that title when KEV adds it at the same
+    # level (main.plan_known): the candidate's flag still makes the action urgent.
+    tro = dataclasses.replace(kev, exploited=False, trojanized=True)
+    _, adv = compose.root_post(tro, ("high", "high"), scope(tro), posted_at=NOW)
+    assert "trojanized release" in adv.title
+    assert compose.root_post_ja(adv).split("\n")[2] == "対応: ベンダーで更新を確認し、リリースがあれば適用してください。"
+    assert "直ちに更新" in compose.root_post_ja(adv, exploited=True).split("\n")[2]
+    # A synthetic KEV check keeps the exploited action.
+    syn = dataclasses.replace(kev, id="CVE-2099-0001")
+    text, adv = compose.root_post(syn, ("high", "high"), scope(syn), posted_at=NOW)
+    assert "update now if a release is out" in text
+    assert "直ちに更新" in compose.root_post_ja(adv)
+
+
+def test_root_post_fixed_and_unexpressed_lines_unchanged():
+    """The fixed and unexpressed branches read exactly as before 4yr1."""
+    kev = cand(exploited=True, injection_exec=False)
+    text, adv = root(kev)
+    assert text.split("\n")[1:3] == ["Affected: Claude Code below 2.1.0. Fixed in 2.1.0.",
+                                     "Action: upgrade Claude Code to 2.1.0 or later."]
+    assert compose.root_post_ja(adv).split("\n")[1:3] == [
+        "影響: Claude Code（2.1.0 未満）。 修正版: 2.1.0。", "対応: Claude Code を 2.1.0 以降に更新してください。"]
+    for c in (cand(fixed="2.0.0-rc.1"), cand(fixed="2.0.0-rc.1", exploited=True, injection_exec=False)):
+        text, adv = root(c)
+        assert text.split("\n")[1:3] == [
+            "Affected: Claude Code below 2.1.0. A fix is listed upstream; see the source.",
+            "Action: upgrade as the source describes."]
+        assert compose.root_post_ja(adv, None, True).split("\n")[1:3] == [
+            "影響: Claude Code（2.1.0 未満）。 修正は上流で公開されています。出典を参照してください。",
+            "対応: 出典の説明に従って更新してください。"]
 
 
 def test_reply_post_ja_names_the_changed_fields():
@@ -386,7 +445,9 @@ def test_digest_ja_scaffold_and_groups():
     lines = ja.split("\n")
     assert lines[0] == "2026-11-06 のデイリーダイジェスト: 2 件。" and "注意 (2)" in lines
     assert f"- macOS: リリース 149521, CVE 3 件; リリースを参照。 {REL}" in lines
-    assert f"- Chrome: セキュリティアドバイザリ (CVE-2098-0009); 修正版はまだありません。 {BLOG}" in lines
+    assert f"- Chrome: セキュリティアドバイザリ (CVE-2098-0009); 修正版の記載なし、ベンダーを確認してください。 {BLOG}" in lines
+    assert (f"- Chrome: security advisory (CVE-2098-0009); fixed version not stated, check the vendor. {BLOG}"
+            in en.split("\n"))
 
 
 def test_digest_leaves_out_retracted_expired_and_synthetic():

@@ -1392,3 +1392,27 @@ def test_a_withheld_reply_holds_its_thread_under_any_alias(env):
     assert "withheld=1" in env.run(now=T0 + 600, ssh=FakeSSH("refuse"))[1]
     env.collector([finding(fid="CVE-2026-0042", fixed="2.2.0")])  # the same update under the alias alone
     assert env.run(now=T0 + 1200)[2].calls == [] and len(env.state()["withheld"]) == 1
+
+
+def test_japanese_roots_carry_the_candidates_exploited_state(env, monkeypatch):  # 4yr1
+    """A thread keeps its first title unless its level rises, so the title can miss a
+    KEV entry: every Japanese root rendering gets the candidate's exploited flag."""
+    seen = []
+    real = main.compose.root_post_ja
+
+    def spy(*a, **kw):
+        seen.append(kw.get("exploited"))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(main.compose, "root_post_ja", spy)
+    first = finding(fid="CVE-2026-0001", fixed=None)
+    first["affected"] = "<2.0.0"
+    env.kev.catalog = {"vulnerabilities": [kev_item()]}
+    env.collector([first])
+    env.run()
+    corrected = finding(fid="CVE-2026-0001", fixed=None)
+    corrected["affected"] = "<2.5.0"
+    env.collector([corrected])
+    _, summary, ssh = env.run(now=T0 + 3600)
+    assert "replies=2" in summary and len(seen) == 2 and all(s is True for s in seen)  # the new root, then the reply
+    assert all("直ちに更新" in text for _, _, text in ssh.ja)

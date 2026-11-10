@@ -517,7 +517,8 @@ class Run:
             self.hold(scope.name, adv, title)
             return []
         chans = CHANNELS_FOR[level]
-        ja = self._ja(compose.root_post_ja, adv, reason, compose.fix_unexpressed(c), title)
+        ja = self._ja(compose.root_post_ja, adv, reason, compose.fix_unexpressed(c), title,
+                      exploited=c.exploited is True)
         return [self._item("root" if i == 0 else "copy", scope.name, ids, ch, text, key_id=c.id,
                            adv=asdict(adv), exploited=c.exploited, ja=ja,
                            source_title=title if i == 0 else None)
@@ -578,7 +579,8 @@ class Run:
         if any(s.url not in prev_urls for s in new.sources) and len(prev.sources) < 20:
             changes["sources"] = new.sources
         copies = [ch for ch in CHANNELS_FOR[level] if ch not in entry.channel_ids]
-        ja = self._ja(compose.root_post_ja, new, reason, compose.fix_unexpressed(k), title) if copies else None
+        ja = self._ja(compose.root_post_ja, new, reason, compose.fix_unexpressed(k), title,
+                      exploited=k.exploited is True) if copies else None
         items = [self._item("copy", scope.name, ids, ch, text, key_id=prev.id, exploited=c.exploited,
                             root=entry.root_event_id, ja=ja)
                  for ch in copies]
@@ -589,7 +591,8 @@ class Run:
                 raise ValueError("reply does not parse back")
             # The changed lines, then the whole current advisory: readers show the latest translation.
             ja = self._ja(lambda: compose.reply_post_ja(merged, k, json.loads(schema._last_block(reply)),
-                          reason=reason) + "\n\n" + compose.root_post_ja(merged, reason, compose.fix_unexpressed(k)))
+                          reason=reason) + "\n\n" + compose.root_post_ja(merged, reason, compose.fix_unexpressed(k),
+                                                          exploited=k.exploited is True))
             items += [self._item("reply", scope.name, ids, ch, reply, key_id=prev.id,
                                  adv=asdict(merged), exploited=c.exploited, root=entry.root_event_id, ja=ja)
                       for ch in entry.channel_ids]
@@ -726,7 +729,7 @@ def _advisory_text(adv) -> str:
     """The whole advisory in English lines, as a curator root's body reads."""
     lines = [f"{adv.level.upper()}: {adv.title}"]
     lines += [f"Affected: {p.name} {p.affected or '(all versions)'}." + (f" Fixed in {p.fixed}." if p.fixed
-              else " No fixed version yet.") for p in adv.products]
+              else " No fixed version stated.") for p in adv.products]
     lines += [f"Action: {check.describe(a)}." for a in adv.actions]
     return "\n".join(lines + [f"Source: {x.url}" for x in adv.sources])
 

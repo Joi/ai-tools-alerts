@@ -20,7 +20,7 @@ Trusting this project means trusting Joi Ito. Everything an alert's authority re
 - The trust root key that signs the manifest is a key he holds. The manifest names who may post: Joi as curator, and jibot, the automated poster he runs.
 - The relay and the mirror run on a machine he operates. Because every post is signed, someone who takes that machine can delay or hide alerts but cannot forge one; revoking a key is a manifest update only the root key can sign.
 - Release tags are signed with a key on his GitHub account, and the repository is his.
-- What the bot posts comes from public sources (CISA's Known Exploited Vulnerabilities catalogue and vendor security releases), selected and ranked by the code in this repository, with no person reading each item before it posts. A curator post is Joi writing by hand.
+- What the bot posts comes from public sources (CISA's Known Exploited Vulnerabilities catalogue and vendor security releases), selected and ranked by the code in this repository, with no person reading each item before it posts. CISA's catalogue carries no version data, so an alert built from one of its entries may not name the fixed release even when the vendor has shipped one; such an alert says the source states no version and sends you to the vendor's advisory. A curator post is Joi writing by hand.
 
 If you do not trust him, do not install this. What bounds the trust you extend: the CLI prepares fixes and executes nothing unless you opt in, action by action; the actions it can ever take are a fixed list in this repository (`spec/actions.json`), readable before you install; and a post from the bot is never applied automatically, whatever your settings.
 

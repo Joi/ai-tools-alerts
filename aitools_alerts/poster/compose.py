@@ -195,6 +195,11 @@ def _kind(c, reason) -> str:
     return "unverified " + kind if reason == "unverified" else kind
 
 
+def _exploited(adv: schema.Advisory) -> bool:
+    """The title says known exploited (plain, unverified or synthetic, as _kind built it)."""
+    return adv.title.endswith(f"{_KINDS[0]} ({adv.id})")
+
+
 def _titles(name: str, adv_id: str) -> set[str]:
     mark = f"{SYNTHETIC}: " if is_synthetic(adv_id) else ""
     return {f"{mark}{name}: {pre}{k} ({adv_id})" for k in _KINDS for pre in ("", "unverified ")}
@@ -249,13 +254,16 @@ def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, sc
         + (f" ({UNVERIFIED})" if reason == "unverified" else "")
     unexpressed = fix_unexpressed(c)
     title = source_title(c)
+    # No version is not no fix: a KEV entry carries no version data at all (4yr1).
     body = [f"{head}: {adv.title}", *([title] if title else []),
             f"Affected: {p.name}{_words(p.affected)}."
             + (f" Fixed in {fixed}." if fixed else " A fix is listed upstream; see the source."
-               if unexpressed else " No fixed version is known yet."),
+               if unexpressed else " The source does not state a fixed version; check the vendor's advisory."),
             f"Action: upgrade {p.name} to {fixed} or later." if fixed
             else "Action: upgrade as the source describes." if unexpressed
-            else "Action: no fix is published yet; watch this thread.",
+            else "Action: check the vendor for an update; this is exploited in the wild, "
+                 "so update now if a release is out." if c.exploited is True or _exploited(adv)
+            else "Action: check the vendor for an update and apply it.",
             f"Source: {_primary(adv.sources)}"]
     return _guard(schema.render_post(adv, _inline("\n".join(body)))), adv
 
@@ -277,9 +285,12 @@ def _ja_title(adv: schema.Advisory) -> str:
 
 
 def root_post_ja(adv: schema.Advisory, reason: str | None = None, unexpressed: bool = False,
-                 title: str | None = None) -> str:
+                 title: str | None = None, *, exploited: bool = False) -> str:
     """root_post's body lines in Japanese, from the Advisory root_post returned; ``title``
-    (``source_title``) stays in English on its own line after 原題:."""
+    (``source_title``) stays in English on its own line after 原題:. ``exploited`` is the
+    candidate's: a thread keeps its first title unless its level rises, so the title
+    alone can miss a KEV entry learned later."""
+    exploited = exploited or _exploited(adv)
     p, fixed = adv.products[0], adv.products[0].fixed
     head = _JA_LEVEL[adv.level] + (f" ({SYNTHETIC})" if is_synthetic(adv.id) else "") \
         + (f" ({UNVERIFIED})" if reason == "unverified" else "")
@@ -287,10 +298,11 @@ def root_post_ja(adv: schema.Advisory, reason: str | None = None, unexpressed: b
         f"{head}: {_ja_title(adv)}", *([f"原題: {title}"] if title else []),
         f"影響: {p.name}{_words_ja(p.affected)}。"
         + (f" 修正版: {fixed}。" if fixed else " 修正は上流で公開されています。出典を参照してください。"
-           if unexpressed else " 修正版はまだ知られていません。"),
+           if unexpressed else " 出典には修正版の記載がありません。ベンダーのアドバイザリを確認してください。"),
         f"対応: {p.name} を {fixed} 以降に更新してください。" if fixed
         else "対応: 出典の説明に従って更新してください。" if unexpressed
-        else "対応: 修正はまだ公開されていません。このスレッドで続報を確認してください。",
+        else "対応: ベンダーで更新を確認してください。悪用が確認されているため、リリースがあれば直ちに更新してください。"
+        if exploited else "対応: ベンダーで更新を確認し、リリースがあれば適用してください。",
         f"出典: {_primary(adv.sources)}"]))
 
 
@@ -434,7 +446,7 @@ _DIGEST = {
                head=lambda d, n: f"Daily digest for {d}: {n} advisor{'y' if n == 1 else 'ies'}.",
                section=lambda lv, n: f"{lv.capitalize()} ({n})",
                withheld=lambda n: f"{n} item{'s' if n > 1 else ''} withheld by the publication check.",
-               fixed=lambda v: f"fixed in {v}", nofix="no fix yet", end=".",
+               fixed=lambda v: f"fixed in {v}", nofix="fixed version not stated, check the vendor", end=".",
                leads=lambda n: f"{n} unrated leads.", release=lambda seg: f"release {seg}",
                one="one release", cves=lambda n: f"{n} CVEs", update="update available",
                see="see the release", title=lambda a: a.title, upstream=lambda t: f": {t}"),
@@ -442,7 +454,7 @@ _DIGEST = {
                head=lambda d, n: f"{d} のデイリーダイジェスト: {n} 件。",
                section=lambda lv, n: f"{_JA_LEVEL[lv]} ({n})",
                withheld=lambda n: f"{n} 件を公開前チェックで保留しました。",
-               fixed=lambda v: f"修正版 {v}", nofix="修正版はまだありません", end="。",
+               fixed=lambda v: f"修正版 {v}", nofix="修正版の記載なし、ベンダーを確認してください", end="。",
                leads=lambda n: f"未評価のリード {n} 件。", release=lambda seg: f"リリース {seg}",
                one="1 件のリリース", cves=lambda n: f"CVE {n} 件", update="更新あり",
                see="リリースを参照", title=_ja_title, upstream=lambda t: f" 原題: {t}"),

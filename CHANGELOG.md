@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+An alert whose source names no fixed version no longer says that no fix is published. CISA's Known Exploited Vulnerabilities catalogue carries no version data, so on 2026-11-10 the Chromium and OpenSSH alerts said "no fix is published yet" while both vendors had shipped one. Such an alert now says the source does not state a fixed version, tells the reader to check the vendor for an update, and, for a known-exploited item, to update now if a release is out; the Japanese twin and the digest line say the same. A curator post with no fixed version says "No fixed version stated." The "Fixed in" wording and the wording for a fix the schema cannot express are unchanged.
+
 ## 0.1.4 — 2026-11-06
 
 The release signer's principal in `trust/allowed_signers` is the maintainer's GitHub no-reply address instead of a personal email; the earlier signed tags (v0.1.1 to v0.1.3) were re-signed with the same key under that principal, so `git tag -v` with the current `trust/allowed_signers` verifies all of them. The commit history's author address changed the same way. No code change. Tagged `v0.1.4`, signed.
