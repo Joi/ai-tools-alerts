@@ -117,6 +117,55 @@ Linux or anything with cron:
 
 The `grep` removes only lines identical to the template's, so running it again replaces an earlier copy and keeps every other job.
 
+### Verify monitoring coverage and delivery
+
+A successful interactive `run` does not prove that the hourly job can see the
+same tools, or that its notifications reach you. Check these separately:
+
+1. **The job runs.** On macOS, inspect
+   `launchctl print gui/$(id -u)/com.aitools.alerts` and
+   `~/Library/Logs/aitools-alerts.log`. With cron, inspect `crontab -l` and
+   `~/.local/state/aitools-alerts/cron.log` after a scheduled run. Do not add a
+   second monitor just to test the first. Exit 2 means an unseen critical match,
+   not necessarily a fetch or process failure; check the output too.
+2. **The tools are visible.** The schedules and Claude Code hook use the fixed
+   PATH documented above, not your interactive shell's version-manager setup.
+   For example, Node or Gemini installed under an nvm version directory can be
+   visible interactively but absent from the hourly inventory. From a trusted
+   login shell, outside a project, compare `command -v node gemini` and their
+   `--version` output with this read-only, fixed-PATH probe:
+
+   ```sh
+   /usr/bin/env -i HOME="$HOME" \
+     PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+     /bin/sh -c 'for tool in aitools-alerts claude codex node gemini; do
+       printf "\n%s: " "$tool"
+       command -v "$tool" || continue
+       "$tool" --version
+     done'
+   ```
+
+   This checks selected CLI probes, not the whole inventory or every difference
+   in the scheduler's environment. A missing binary, failed version command or
+   unreadable version is omitted from inventory. `check --json` and `run --json`
+   list **matches**, not every installed tool: an empty list is not proof of
+   complete coverage. Record any gaps. Do not fix them by importing a project's
+   PATH, sourcing its shell scripts, or weakening the hook's clean environment.
+3. **The feed is usable.** Inspect `run --json` for `pull_error`,
+   `stale_since` and `ignored_env`, as described in the skill. `run` can send
+   notifications: use it only after reviewing the configured destinations.
+   A cached match after a pull error is not evidence of a fresh feed.
+4. **The destination reaches you.** Desktop is the default; it is not proof of
+   phone delivery. If you need an unattended phone interruption, explicitly
+   configure a supported destination and verify receipt there with your
+   permission. Do not invent recipients or reuse credentials from other tools.
+   A run with no pending critical advisory does not exercise delivery. With
+   `notify = []`, a pending critical produces `no notify channel configured`
+   and stays unseen; exit 2 still takes precedence over that delivery failure.
+   The Claude Code hook can surface it at the next startup, but cannot interrupt
+   you while no session is running. Report that limitation rather than calling
+   phone alerting verified. Do not mark an alert seen just to clear a test.
+
 ### Interrupt the next Claude Code session
 
 Copy `hooks/claude-code/session-start.sh` to `~/.claude/hooks/aitools-alerts-session-start.sh`, make it executable, and add it to `~/.claude/settings.json` with `/Users/you` replaced by your home directory (`echo ~`). Write the path out in full, not with `~`: a project can change `HOME` for the session, and the command's `~` would then expand into the project.
