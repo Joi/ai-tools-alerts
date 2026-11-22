@@ -190,11 +190,29 @@ def _after(st: State, root_id: str, now: int) -> int:
     pull.MAX_AHEAD_S ahead (one an older reader admitted) is not counted: a
     reply dated after it would itself be refused by every reader and left out
     by the exporter, so one such event would silence every later correction.
-    The result is never more than MAX_AHEAD_S ahead of ``now``."""
+    The result is strictly after every counted event and never more than
+    MAX_AHEAD_S ahead of ``now``."""
     last = max([ev["created_at"] for ev in st.events.values()
                 if (ev["id"] == root_id or pull._thread_ref(ev) == root_id)
-                and ev["created_at"] <= now + pull.MAX_AHEAD_S] or [0])
-    return min(max(now, last + 1), now + pull.MAX_AHEAD_S)
+                and not _ahead(ev, now)] or [0])
+    return max(now, last + 1)
+
+
+def _ahead(ev: dict, now: int) -> bool:
+    """Dated so far ahead that a reply after it could not be admitted."""
+    return ev["created_at"] >= now + pull.MAX_AHEAD_S
+
+
+def _present(st: State, root_id: str, now: int, thread):
+    """The thread built without its events dated ahead (see _after): what a
+    correction dated now amends. The reply sorts before those events, so it
+    must be written against the advisory as it stands without them."""
+    m, evs = st.roots[st.manifest_root]
+    if not any(_ahead(ev, now) and pull._thread_ref(ev) == root_id for ev in evs.values()):
+        return thread
+    kept = {i: ev for i, ev in evs.items() if not (_ahead(ev, now) and pull._thread_ref(ev) == root_id)}
+    view = State(dir=st.dir, roots={**st.roots, st.manifest_root: [m, kept]}, manifest_root=st.manifest_root)
+    return next((t for t in pull.advisories(view) if t.root_id == root_id), thread)
 
 
 def _replayed(st: State, ev: dict, root_id: str):
@@ -219,6 +237,8 @@ def amend_event(sec: str, m, root: str, st: State, thread, root_ev: dict, *, lev
     """A signed reply that changes the thread; refused unless the readers,
     replaying the stored thread with it, reach exactly the merged advisory."""
     _curator_pub(sec, m, root)
+    wall = int(time.time() if now is None else now)
+    thread = _present(st, thread.root_id, wall, thread)
     prev = thread.adv
     old = asdict(prev)
     new = json.loads(json.dumps(old))
@@ -265,8 +285,7 @@ def amend_event(sec: str, m, root: str, st: State, thread, root_ev: dict, *, lev
     content = "\n".join(lines)
     if patch:
         content += f"\n\n```{schema.INFO_STRING}\n{json.dumps(patch, indent=2, ensure_ascii=False)}\n```\n"
-    now = _after(st, thread.root_id, int(time.time() if now is None else now))
-    ev = _sign(sec, _reply_tags(root_ev), content, now)
+    ev = _sign(sec, _reply_tags(root_ev), content, _after(st, thread.root_id, wall))
     t = _replayed(st, ev, thread.root_id)
     if t.retracted or t.adv != merged:
         raise CuratorError("the readers would not apply this amendment as written")

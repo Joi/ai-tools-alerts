@@ -1,6 +1,6 @@
 # Run: gefy-reader-channel-binding
 Instruction: Piece 1 of ai-tools-alerts#ek5q (brief TASK-ai-tools-alerts#ek5q.md, /do-it, starting rung floored at medium): the reader accepts only kind 9 events with an h tag naming a channel in spec/channels.json (report M3), refuses an event dated more than a few minutes ahead of the local clock, and each manifest lists every retraction.
-Stage: code-review:branch delta
+Stage: committing
 Rung: medium (dispatch floor medium; start-floor evaluator not run: its rubric file is outside the paths the seat rules let this session read; no hard trigger in this piece: no key or credential handling changes)
 Lens: "Readers at v0.1.4 are on member machines. A change they cannot parse must fail safe (they ignore it), never crash them."
 Last reviewed: spec 5dcb8f3b0fffa8c0e0e148abe3d1ce893706e528
@@ -20,6 +20,11 @@ Pass 1 [code:branch]: 1B/5S/4C/0R · fixed -/- · velocity = (—→10, escalati
   S fixed: the exporter's date bound is an admission check too (a clock set back withdrew a published retraction); channel_ids requires exactly feed and critical, distinct, no duplicate key; the freshness tests now tell a broken filter from a working one (unbound event dated newer, revoked-key event channel-bound); a pull that refuses future-dated events warns on stderr (a slow clock lost news silently); last_pull's newest_event_at asserted for a stored future event.
   C fixed: stale exporter comment. C not changed: _bound on a hand-edited state file (the same input already breaks _thread_ref; State.load is the place, not this piece); no real-clock test of the fixture README's claim.
   Medium does not loop: the BLOCKER fix changed behaviour, so it gets the one delta pass of the Review Cycle (fresheyes --since 61519d8), no rebuttals file (nothing left unfixed that was B or S).
+Pass 2 [code:branch delta]: 1B/1S/1C/0R · fixed 6/6 prior · velocity ↓ (10→3, escalation no)   (fresheyes --since 61519d8, reviewed bfb128d, gpt-6-astra high, REASON=-)
+  B fixed: an event the v0.1.4 exporter had published years ahead was exempt from the bound for being in the old output; an event now counts as admitted only if dated within the bound of its file's generated_at, and generated_at never goes back (regression tests: legacy output; three runs with the clock set back).
+  S fixed: an amendment is written against the thread without its future-dated events, so a stored future bot patch no longer makes the amendment fail its own replay check (regression test with a bot root and a future retitle).
+  C fixed: _after is strictly after every counted event (events at the bound count as ahead).
+  No further pass (ruling jibot-code#41e2): these fixes are unreviewed by an independent model and are named in the kata comment.
 
 ## Chunks
 - [x] chunk 1 — reader: channel binding and the future-date bound (pull.py, cli.py, tests, fixtures)

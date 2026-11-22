@@ -981,3 +981,15 @@ def test_exporter_clock_set_back_keeps_a_published_retraction(env):
     fresh = ev(BOT_SEC, "never published, dated ahead", now)  # still refused at admission
     result = run_export(env, rows_reader([root, gone, fresh]), now=now - 3600)
     assert result["channels"]["feed"]["future"] == 1
+
+
+def test_future_event_published_by_an_older_exporter_is_withdrawn(env):
+    """The output directory of the v0.1.4 exporter, which had no date bound, may hold
+    an event dated years ahead: being in the old file is no proof it was admitted."""
+    now = 1793865900
+    far = ev(BOT_SEC, "ten years on", now + 3650 * 86400)
+    ok = ev(CUR_SEC, "normal", now - 60)
+    (env[2] / "feed.json").write_bytes(em.channel_doc("feed", [ok, far], em._iso(now - 300)))
+    result = run_export(env, rows_reader([ok, far]), now=now)
+    assert result["channels"]["feed"]["future"] == 1
+    assert [e["id"] for e in json.loads((env[2] / "feed.json").read_text())["events"]] == [ok["id"]]

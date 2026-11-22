@@ -157,17 +157,24 @@ def file_reader(path):
     return read
 
 
-def published_ids(out: Path, names) -> frozenset:
-    """Ids of the events in the channel files already in ``out``. An unreadable
-    or missing file contributes none."""
-    ids = set()
+def published_ids(out: Path, names) -> tuple[frozenset, int]:
+    """(ids of the events in the channel files already in ``out`` that were
+    within the date bound when their file was written, the newest
+    generated_at of those files or 0). An event an exporter without the bound
+    published years ahead of its own clock is not among the ids, so it is
+    judged again. An unreadable or missing file contributes nothing."""
+    ids, newest = set(), 0
     for name in names:
         try:
             doc = json.loads((out / f"{name}.json").read_text(encoding="utf-8"))
-            ids.update(e["id"] for e in doc["events"] if isinstance(e.get("id"), str))
+            at = int(datetime.strptime(doc["generated_at"], "%Y-%m-%dT%H:%M:%SZ")
+                     .replace(tzinfo=timezone.utc).timestamp())
+            ids.update(e["id"] for e in doc["events"]
+                       if isinstance(e["id"], str) and e["created_at"] <= at + pull.MAX_AHEAD_S)
+            newest = max(newest, at)
         except (OSError, ValueError, RecursionError, KeyError, TypeError, AttributeError):
             continue
-    return frozenset(ids)
+    return frozenset(ids), newest
 
 
 def clean(rows, m, channel_ids, now: int, admitted=frozenset()) -> tuple[list[dict], Counter]:
@@ -622,10 +629,13 @@ def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_
     if not mirror_url.endswith("/"):
         mirror_url += "/"
     now = int(now if now is not None else datetime.now(timezone.utc).timestamp())
-    generated_at = _iso(now)
+    # generated_at never goes back: it is what the next run measures a published
+    # event's date against (published_ids), so after a clock set back it must
+    # still vouch for what the earlier, later-dated run admitted.
+    admitted, previous_at = published_ids(out, channels)
+    generated_at = _iso(max(now, previous_at))
 
     events, counts = {}, {}
-    admitted = published_ids(out, channels)
     for name, cid in channels.items():
         events[name], counts[name] = clean(reader(name, cid), m, frozenset(channels.values()), now, admitted)
     events, capped = cap(events, m, generated_at)

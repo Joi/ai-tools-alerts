@@ -448,3 +448,25 @@ def test_correction_is_not_dated_after_a_stored_future_event(mirror):
                      now=NOW + 2)
     assert res.dropped == {"future-dated": 1}  # the bot's, never the curator's
     assert [t.retracted for t in pull.advisories(st2) if t.root_id == root["id"]] == [True]
+
+
+def test_amendment_is_written_against_the_thread_without_future_patches(mirror):
+    """A bot root with a stored bot patch dated years ahead that retitles it: the
+    curator's amendment sorts before that patch, so it amends the advisory as it
+    stands without it, and the readers reach exactly what the curator signed."""
+    from mirror_helpers import advisory
+    root = mirror.root_post(mirror.bot_sec, advisory(posted_by="relay-bot", title="Original"), created_at=NOW)
+    far = mirror.post(mirror.bot_sec, mirror.patch_text(title="Updated"), created_at=NOW + 3650 * 86400,
+                      tags=[("e", root["id"], "", "root")])
+    edge = mirror.post(mirror.bot_sec, mirror.patch_text(title="At the bound"), created_at=NOW + 1 + pull.MAX_AHEAD_S,
+                       tags=[("e", root["id"], "", "root")])
+    mirror.events["feed.json"][:] = [root]
+    st = pulled(mirror)
+    st.events.update({far["id"]: far, edge["id"]: edge})  # as an older reader stored them
+    (t,) = [t for t in pull.advisories(st) if t.root_id == root["id"]]
+    assert t.adv.title == "Updated"
+    up = curator.amend_event(mirror.cur_sec, st.manifest, mirror.root, st, t, root, now=NOW + 1, level="notice")
+    assert NOW + 1 <= up["created_at"] <= NOW + 1 + pull.MAX_AHEAD_S
+    st.events[up["id"]] = up
+    (after,) = [t for t in pull.advisories(st) if t.root_id == root["id"]]
+    assert after.adv.level == "notice" and after.adv.title == "Original"  # the bot's later patches are discussion
