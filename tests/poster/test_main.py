@@ -8,6 +8,8 @@ import subprocess
 from dataclasses import replace
 
 import pytest
+
+from aitools_alerts import schema
 from pathlib import Path
 
 from aitools_alerts.poster import inputs, main
@@ -79,8 +81,8 @@ def kev_item(cve="CVE-2026-0001", added="2026-11-04"):
 
 
 def finding(fid="GHSA-abcd-efgh-ijkl", product="Claude Code", severity="remote code execution",
-            fixed="2.1.0", sources=(GHSA,), aliases=(), observed="2026-11-05T00:00:00Z"):
-    return {"id": fid, "product": product, "advisory_severity": severity, "fixed": fixed,
+            fixed="2.1.0", sources=(GHSA,), aliases=(), observed="2026-11-05T00:00:00Z", affected=None):
+    return {"id": fid, "product": product, "advisory_severity": severity, "fixed": fixed, "affected": affected,
             "aliases": list(aliases), "observed_at": observed,
             "sources": [{"url": u, "published_at": None} for u in sources]}
 
@@ -1301,7 +1303,7 @@ TOCTOU = "TOCTOU Race in Edit Tool Allows File Writes Outside the Workspace"
 def _cfe8(title=TOCTOU):
     """Shaped like the 2026-11-07T012306Z collector record's CVE-2026-88968 finding."""
     f = finding(fid="CVE-2026-88968", severity="high", fixed=None, sources=(GHSA, "https://example.org/write-up"),
-                aliases=("GHSA-abcd-efgh-ijkl",))
+                aliases=("GHSA-abcd-efgh-ijkl",), affected="<2.1.0")
     f["sources"][0]["title"] = title
     f["sources"][1]["title"] = "a non-primary source's words"
     return f
@@ -1459,7 +1461,7 @@ def test_a_level_rise_copy_gets_the_exploited_flag(env, monkeypatch):  # 4yr1
     monkeypatch.setattr(main.compose, "root_post_ja",
                         lambda *a, **kw: seen.append(kw.get("exploited")) or real(*a, **kw))
     env.collector([finding(fid="GHSA-abcd-efgh-ijkl", severity="high", fixed=None,
-                           aliases=("CVE-2026-0001",))])
+                           aliases=("CVE-2026-0001",), affected="<2.1.0")])
     _, summary, _ = env.run()
     assert "roots=1" in summary and seen == [False]  # high, not exploited
     env.kev.catalog = {"vulnerabilities": [kev_item()]}
@@ -1470,7 +1472,7 @@ def test_a_level_rise_copy_gets_the_exploited_flag(env, monkeypatch):  # 4yr1
 def test_a_change_in_the_digest_run_is_listed_that_day_only(env):  # 8ke5
     """Live 11-10/11-11: a reply recorded in the digest's own run was listed again the
     next day, because a digest that took everything recorded no roots at its cutoff."""
-    env.collector([finding(fixed=None, severity="high")])
+    env.collector([finding(fixed=None, severity="high", affected="<2.1.0")])
     assert "roots=1" in env.run()[1]
     env.collector([finding(fixed="2.1.0", severity="high")])  # the fix, in the 09:20 run
     _, summary, ssh = env.run(now=at(5, 9))
@@ -1534,3 +1536,114 @@ def test_a_confirmed_held_notice_keeps_every_id_it_was_held_under(env):  # 8ke5 
     env.collector([{**MAC, "id": "GHSA-mmmm-nnnn-pppp"}])  # the alias alone, later: listed once only
     env.run(now=at(5, 12))
     assert env.state()["held"] == []
+
+
+# ---------------------------------------------------------------- 0dvh: hold, age, severity
+
+def _roots(ssh):
+    return [c for c in ssh.calls if c[1] is None and not c[2].startswith("Daily digest")]
+
+
+def test_a_high_with_no_fix_waits_and_posts_with_its_fix(env):  # 0dvh
+    env.collector([finding(fixed=None, severity="high")])
+    _, summary, ssh = env.run()
+    assert "waiting=1" in summary and _roots(ssh) == []
+    assert list(env.state()["waiting"]) == ["Claude Code|ghsa-abcd-efgh-ijkl"]  # saved: a restart keeps it
+    env.collector([finding(fixed="2.1.0", severity="high")])  # the next run reads the fix
+    _, summary, ssh = env.run(now=T0 + 3600)
+    assert "roots=1" in summary and len(_roots(ssh)) == 1 and "Fixed in 2.1.0." in _roots(ssh)[0][2]
+    assert env.state()["waiting"] == {} and env.state()["deferred"] == []
+    _, summary, ssh = env.run(now=T0 + 7200)
+    assert ssh.calls == []  # posted once
+
+
+def test_a_hold_ends_after_six_hours_with_what_is_known(env):  # 0dvh
+    env.collector([finding(fixed=None, severity="high")])
+    env.run()
+    _, summary, ssh = env.run(now=T0 + main.HOLD_SECONDS - 60)
+    assert "waiting=1" in summary and _roots(ssh) == []
+    _, summary, ssh = env.run(now=T0 + main.HOLD_SECONDS)
+    assert "roots=1" in summary and "does not state a fixed version" in _roots(ssh)[0][2]
+    assert env.state()["waiting"] == {}
+
+
+@pytest.mark.parametrize("kind", ["kev", "range"])
+def test_these_never_wait(env, kind):  # 0dvh: a KEV entry (critical, exploited), a high with a range
+    if kind == "kev":
+        env.kev.catalog = {"vulnerabilities": [kev_item()]}
+    else:
+        env.collector([finding(fixed=None, severity="high", affected="<2.1.0")])
+    _, summary, ssh = env.run()
+    assert "waiting=0" in summary and _roots(ssh), summary
+
+
+def test_a_full_waiting_map_holds_nothing_new(env, monkeypatch):  # 0dvh: never a state it refuses
+    monkeypatch.setattr(main.inputs, "MAX_WAITING", 1)
+    env.collector([finding(fixed=None, severity="high"),
+                   finding(fid="GHSA-mnop-qrst-uvwx", fixed=None, severity="high", sources=(GHSA2,))])
+    _, summary, ssh = env.run()
+    assert "waiting=1" in summary and len(_roots(ssh)) == 1 and len(env.state()["waiting"]) == 1
+
+
+def test_an_old_source_posts_no_root_and_reaches_the_digest_notices(env):  # 0dvh
+    old = finding(fixed=None, severity="critical")
+    old["sources"][0]["published_at"] = "2026-10-20T00:00:00Z"  # 16 days before first sight
+    env.collector([old])
+    _, summary, ssh = env.run()
+    assert "aged=1" in summary and ssh.calls == []
+    fixed = finding(fixed="2.1.0", severity="critical")
+    fixed["sources"][0]["published_at"] = None  # the date comes from the held notice
+    env.collector([fixed])
+    _, summary, ssh = env.run(now=T0 + 3600)
+    assert "aged=1" in summary and ssh.calls == []
+    env.collector([finding(fixed=None, severity="critical", affected="<2.1.0")])  # no fix: the fix stays
+    env.run(now=T0 + 7200)
+    p = env.state()["held"][0]["adv"]["products"][0]
+    assert (p["fixed"], p["affected"]) == ("2.1.0", "<2.1.0")
+    _, _, ssh = env.run(now=at(6, 9))
+    text = ssh.calls[0][2]
+    assert "\nNotice (1)\n" in text and "(GHSA-abcd-efgh-ijkl); fixed in 2.1.0." in text
+
+
+def test_first_sight_as_a_notice_dates_the_age_limit(env):  # 0dvh
+    note = finding(severity=None, fixed=None)  # no severity word: a notice
+    note["sources"][0]["published_at"] = "2026-10-30T00:00:00Z"  # six days before T0
+    env.collector([note])
+    env.run()
+    assert env.state()["held"]
+    env.collector([{**note, "fixed": "2.1.0", "advisory_severity": "high"}])
+    _, summary, ssh = env.run(now=T0 + 2 * 86400 - 3600)  # eight days after the source; before the digest
+    assert "aged=0" in summary and "roots=1" in summary and len(_roots(ssh)) == 1
+
+
+def test_an_old_critical_posts_in_neither_channel(env, monkeypatch):  # 0dvh
+    monkeypatch.setattr(main.rules, "level_for", lambda c, scope, ok: ("critical", "trojanized-primary"))
+    old = finding(fixed="2.1.0")
+    old["sources"][0]["published_at"] = "2026-10-01"
+    env.collector([old])
+    _, summary, ssh = env.run()
+    assert "aged=1" in summary and "roots=0" in summary and "copies=0" in summary and ssh.calls == []
+
+
+def test_the_japanese_root_says_a_range_is_in_the_source(env):  # 0dvh
+    env.collector([finding(fixed=None, severity="high", affected=">=1.0 || <0.5")])
+    _, _, ssh = env.run()
+    assert "affected versions: see the source" in _roots(ssh)[0][2]
+    assert "影響バージョンは出典を参照" in ssh.ja[0][2]
+
+
+def test_the_block_carries_the_loudest_upstream_severity(env):  # 0dvh
+    env.collector([finding(severity="high"), finding(severity="critical")])
+    _, _, ssh = env.run()
+    assert schema.parse_post(_roots(ssh)[0][2]).advisory_severity == "critical"
+
+
+def test_a_severity_change_rides_a_reply_and_never_posts_alone(env):  # 0dvh
+    env.collector([finding(fixed=None, severity="high", affected="<2.1.0")])
+    env.run()
+    env.collector([finding(fixed=None, severity="critical", affected="<2.1.0")])
+    _, summary, ssh = env.run(now=T0 + 600)
+    assert "replies=0" in summary and ssh.calls == []
+    env.collector([finding(fixed="2.1.0", severity="critical", affected="<2.1.0")])
+    _, summary, ssh = env.run(now=T0 + 1200)
+    assert "replies=1" in summary and "Upstream severity: critical." in ssh.calls[0][2]

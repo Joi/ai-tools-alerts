@@ -150,6 +150,10 @@ def test_state_roundtrip_atomic(tmp_path):
     lambda st: st["outbox"].append(item(key="reply:x", kind="reply")),  # a reply names its root
     lambda st: st["outbox"].append(item(root="ab" * 32)),  # a root names none
     lambda st: st["deferred"].append({"id": "x"}),
+    lambda st: st.update(waiting=[]),  # 0dvh
+    lambda st: st["waiting"].update({"no-scope": 1}),
+    lambda st: st["waiting"].update({"Claude Code|x": "1"}),
+    lambda st: st["waiting"].update({f"Claude Code|{i}": 1 for i in range(inputs.MAX_WAITING + 1)}),
 ])
 def test_malformed_state_is_ledger_error(tmp_path, mutate):
     st = inputs.new_state(0, 0)
@@ -367,3 +371,11 @@ def test_two_letter_suffix_loads(tmp_path):
     cfg = tmp_path / "config.toml"
     cfg.write_text('internal_host_suffixes = [".io"]\n')
     assert inputs.load_config(cfg).internal_host_suffixes == (".io",)
+
+
+def test_a_state_written_before_waiting_loads(tmp_path):  # 0dvh
+    st = inputs.new_state(0, 0)
+    del st["waiting"]
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps(st))
+    assert inputs.load_state(path, 0, 0)["waiting"] == {}

@@ -41,7 +41,8 @@ RUN_DIR = re.compile(r"\d{4}-\d{2}-\d{2}T\d{6}Z")
 
 _STATE_KEYS = {"schema_version", "since", "heartbeat", "collector", "kev_since",
                "digest_date", "digest_at", "digest_roots", "digest_ids", "held", "digested",
-               "outbox", "deferred", "withheld"}
+               "outbox", "deferred", "withheld", "waiting"}
+MAX_WAITING = 2000  # 0dvh: first sight of a held high, per scope and id
 MAX_DIGEST_IDS = 10  # the event ids of the last digests sent, oldest first
 _ITEM_KEYS = {"key", "kind", "scope", "ids", "channel", "text", "adv", "exploited", "date", "sent", "root"}
 _CANDIDATE_FIELDS = frozenset(Candidate.__dataclass_fields__)
@@ -238,7 +239,7 @@ def new_state(now: int, backfill_days: int) -> dict:
     since = now - backfill_days * 86400
     return {"schema_version": 1, "since": since, "heartbeat": None, "collector": None,
             "kev_since": None, "digest_date": None, "digest_at": since, "digest_roots": [], "digest_ids": [],
-            "held": [], "digested": [], "outbox": [], "deferred": [], "withheld": []}
+            "held": [], "digested": [], "outbox": [], "deferred": [], "withheld": [], "waiting": {}}
 
 
 def _strs(v) -> bool:
@@ -341,6 +342,8 @@ def load_state(path: Path, now: int, backfill_days: int) -> dict:
         raise LedgerError(f"state {path} unreadable: {e}") from None
     if isinstance(st, dict) and "withheld" not in st:
         st["withheld"] = []  # a state file written before withheld existed (8acj)
+    if isinstance(st, dict) and "waiting" not in st:
+        st["waiting"] = {}  # a state file written before waiting existed (0dvh)
     if isinstance(st, dict) and set(st) == _STATE_KEYS - {"digest_ids"}:
         st["digest_ids"] = []  # a state file written before digest_ids existed
     try:
@@ -357,6 +360,8 @@ def load_state(path: Path, now: int, backfill_days: int) -> dict:
               and isinstance(st["digested"], list) and all(isinstance(i, str) for i in st["digested"])
               and isinstance(st["outbox"], list) and all(_item_ok(it) for it in st["outbox"])
               and isinstance(st["withheld"], list) and all(_withheld_ok(w) for w in st["withheld"])
+              and isinstance(st["waiting"], dict) and len(st["waiting"]) <= MAX_WAITING
+              and all(isinstance(k, str) and "|" in k and type(t) is int for k, t in st["waiting"].items())
               and len({it["key"] for it in st["outbox"]}) == len(st["outbox"])  # one item per key
               and isinstance(st["deferred"], list) and all(_deferred_ok(d) for d in st["deferred"]))
     except (TypeError, KeyError, AttributeError):
