@@ -514,9 +514,14 @@ class Run:
         return next((h for h in self.state["held"]
                      if h["scope"] == scope and keys & set(self._notice_keys(scope, h["adv"]))), None)
 
+    def _seen_key(self, scope, ids, default) -> str:
+        """The ``waiting`` key already recorded under any of the ids, else ``default``."""
+        w = self.state["waiting"]
+        return next((k for k in (f"{scope}|{i.casefold()}" for i in ids) if k in w), default)
+
     def first_seen(self, scope, ids, held=None) -> int:
-        """When the state first saw the candidate under any of its ids (a high waiting for
-        its fix, or a notice held for the digest, stamped by the run that held it), else now."""
+        """When the state first saw the candidate under any of its ids (``waiting``: a high
+        waiting for its fix, or a notice in its first AGE_LIMIT; a held notice's stamp), else now."""
         w = self.state["waiting"]
         seen = [w[k] for k in (f"{scope}|{i.casefold()}" for i in ids) if k in w]
         return min(seen + ([held["adv"]["posted_at"]] if held else []) + [self.now])
@@ -526,21 +531,27 @@ class Run:
         held = self._held_for(scope.name, ids)
         seen = self.first_seen(scope.name, ids, held)
         published = _published(c.sources) or (_published(schema.validate(h["adv"]).sources) if (h := held) else None)
-        key = f"{scope.name}|{c.id.casefold()}"
-        if level != "notice" and not test and published is not None and seen - published > AGE_LIMIT:
+        w, key = self.state["waiting"], self._seen_key(scope.name, ids, f"{scope.name}|{c.id.casefold()}")
+        # A KEV entry is exempt: the day CISA lists it is the news, whatever the advisory's age.
+        if level != "notice" and not test and c.exploited is not True and published is not None \
+                and seen - published > AGE_LIMIT:
             level = "notice"  # 0dvh: old news when first seen goes to the digest, never a root
             self.n["aged"] += 1
         elif level == "high" and not test and c.exploited is not True and not _stated(c.fixed) \
                 and not _stated(c.affected) and self.now - seen < HOLD_SECONDS \
-                and (key in self.state["waiting"] or len(self.state["waiting"]) < inputs.MAX_WAITING):
+                and (key in w or len(w) < inputs.MAX_WAITING):
             # 0dvh: wait for the fix or the range; the deferred candidate is planned again
             # next run, merged with any new sighting, and posts with what is known at the end.
             # A full map holds nothing new: the candidate posts now, as before 0dvh.
-            self.state["waiting"][key] = min(seen, self.state["waiting"].get(key, seen))
-            self.save()
+            w[key] = min(seen, w.get(key, seen))
             self.defer([(c, scope)])
+            if c.to_dict() not in self.state["deferred"]:  # on disk with its time: a crash keeps it
+                self.state["deferred"].append(c.to_dict())
+            self.save()
             self.n["waiting"] += 1
             return []
+        if level == "notice" and not test and key not in w and len(w) < inputs.MAX_WAITING // 2:
+            w[key] = seen  # first sight outlives the digest that lists it, for AGE_LIMIT (0dvh)
         text, adv = compose.root_post(c, (level, reason), scope, posted_at=self.now)
         title = compose.source_title(c)
         if level == "notice":
@@ -581,8 +592,10 @@ class Run:
                 if compose.listable(adv) and not compose.listable(schema.validate(h["adv"])):
                     # 8ke5: a primary source learned while held: the digest lists that, under
                     # every id either sighting knew (digested and retracted match by them).
+                    # 0dvh: the merged fix and range and the first sight's stamp stay.
                     old = [h["adv"]["id"], *h["adv"]["aliases"]]
-                    h["adv"] = {**a, "aliases": compose._ids([*a["aliases"], *old], a["id"])[:50]}
+                    h["adv"] = {**a, "aliases": compose._ids([*a["aliases"], *old], a["id"])[:50],
+                                **{k: h["adv"][k] for k in ("products", "actions", "posted_at")}}
                     self.save()
             return
         self.state["held"].append({"scope": scope, "adv": a, **({"source_title": title} if title else {})})
@@ -787,9 +800,12 @@ def _epoch(v) -> int | None:
 
 
 def _published(sources) -> int | None:
-    """When the primary source (the one a post names) was published, if it says."""
+    """When the primary source (the one a post names) was published, if it says: read from
+    the input's own timestamp, which the wire form may drop (a space before the time)."""
     src = next((s for s in compose._sources(sources) if schema.is_primary(s.url)), None)
-    return _epoch(src.published_at) if src is not None else None
+    raw = next((getattr(s, "published_at", None) for s in sources if getattr(s, "url", None) == src.url),
+               None) if src is not None else None
+    return _epoch(raw.replace(" ", "T", 1) if isinstance(raw, str) else raw)
 
 
 def _stated(v) -> bool:
@@ -962,7 +978,8 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
             if merged is not None:
                 state["deferred"] = list(r.deferred.values())  # replaces last run's list only now
                 live = {f"{sc}|{i.casefold()}" for (sc, _), d in r.deferred.items() for i in [d["id"], *d["aliases"]]}
-                state["waiting"] = {k: t for k, t in state["waiting"].items() if k in live}  # 0dvh
+                state["waiting"] = {k: t for k, t in state["waiting"].items()  # 0dvh
+                                    if k in live or now - t < AGE_LIMIT}
             r.save()
             if english_ok:  # last, after marks and deferred are saved together
                 try:

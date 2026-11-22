@@ -28,15 +28,17 @@ The live feed shows three faults this slice removes.
 
 - New state key `waiting`: `{"<scope>|<primary id casefold>": first_seen_epoch}`, one key per held candidate. `inputs.load_state` adds `{}` to a state written before it (as it does for `withheld` and `digest_ids`) and validates it (string keys, int values, at most `MAX_WAITING` = 2000 entries). The writer never exceeds the cap: when the map is full, a new candidate is not held and posts at once (the fail-open direction: a post without its fix, as today). The validator cap equals the writer cap, so the writer cannot produce a state its next run refuses.
 - `Run.first_seen(scope, ids)`: the smallest time recorded under any of the candidate's ids, in `waiting` or as the `posted_at` of a held notice (root_post stamps a held notice with the run that held it), else `now`. So a notice first seen at six days that becomes high with a fix two days later is judged at six days, not eight.
-- In `Run.plan_new`, before composing a high root: when `level == "high"`, `c.exploited is not True`, `c.fixed` and `c.affected` are both empty, and `now - first_seen < 6 h`, record first sight under every id, defer the candidate (`Run.defer`), count `waiting`, and plan nothing. The deferred candidate comes back next run through `state["deferred"]`, merged with any fresh sighting (fresh first, so the fresh fix wins, as `ledger.merge` already does).
+- In `Run.plan_new`, before composing a high root: when `level == "high"`, `c.exploited is not True`, `c.fixed` and `c.affected` are both empty, and `now - first_seen < 6 h`, record first sight under its primary id (found later under any id), defer the candidate (`Run.defer`), count `waiting`, and plan nothing. The deferred candidate comes back next run through `state["deferred"]`, merged with any fresh sighting (fresh first, so the fresh fix wins, as `ledger.merge` already does).
 - Exploited highs (KEV entries) do not wait: KEV never carries versions, so a hold only delays an exploited flaw by six hours.
-- After planning, `waiting` keeps only keys of candidates still deferred, so a posted or dropped candidate leaves it; the map never grows past the deferred list.
+- The held candidate is written to the state file's deferred list in the same save as its first sight, so a run that dies later keeps it (whole-branch review).
+- A new notice also records its first sight in `waiting` while the map is under half full, so holds keep their room. The end of a run keeps a key while a deferred candidate carries it, or for `AGE_LIMIT` after first sight. So a notice the digest has listed that becomes high two days later is still dated from its first sight. Dropping a key after seven days only ever turns a later post into a notice, the age rule's own direction.
+- A hold whose primary id changes (a fresh sighting under an alias) keeps its key, so a full map does not release it.
 
 ### Age limit (main.py)
 
-- `_published(c)`: the `published_at` of the first primary source among `compose._sources(c.sources)` (primary first), parsed as a date or timestamp; None when absent or unparsable.
-- In `Run.plan_new`, for every level: when `_published(c)` is not None and `first_seen - published > 7 days`, compose at level notice and `hold()` it for the digest; count `aged`. No real-time root, no copy.
-- `Run.hold`: when a held notice is seen again, field by field: a fixed version or a range the held copy lacks is taken from the new sighting; a field the new sighting omits keeps the held value; the upgrade action follows the resulting fixed version. A value the held copy already has is never replaced by a missing one; a different non-empty value replaces it (a correction).
+- `_published(c)`: the `published_at` of the first primary source among `compose._sources(c.sources)` (primary first), parsed as a date or timestamp from the input's own value (which may hold a space before the time, a form the wire schema drops); None when absent or unparsable.
+- In `Run.plan_new`, for every level, except a KEV entry (exploited: the day CISA lists it is the news, whatever the advisory's age; whole-branch review): when `_published(c)` is not None and `first_seen - published > 7 days`, compose at level notice and `hold()` it for the digest; count `aged`. No real-time root, no copy.
+- `Run.hold`: when a held notice is seen again, field by field: a fixed version or a range the held copy lacks is taken from the new sighting; a field the new sighting omits keeps the held value; the upgrade action follows the resulting fixed version. A value the held copy already has is never replaced by a missing one; a different non-empty value replaces it (a correction). When a primary source confirms a held notice (8ke5), the merged products, actions and first-sight stamp stay.
 - The published date also falls back to the held notice's primary source when the new sighting's primary source carries none, so a re-sighting with an undated source cannot take the real-time path while the notice is held. After the digest lists it, only its ids remain (`digested`); a later sighting with an undated source can then post. Accepted: the digest runs daily, and such a sighting has no date to judge.
 - Not changed: the backfill floor (`observed_at < state["since"]`, fixed when the state is created) still drops candidates observed before the poster's first run. It is a separate, earlier rule; this slice judges what passes it.
 
@@ -58,14 +60,14 @@ The live feed shows three faults this slice removes.
 
 - **Hold in the ledger instead of the run state.** The ledger records what was posted; a candidate not yet posted has no thread. The state file already carries deferred candidates across runs, so the hold lives beside them.
 - **Hold exploited highs too.** Rejected: KEV entries never gain a version, so they would always wait the full six hours.
-- **Age limit only for high.** Rejected: the issue says "never posts a real-time root" without a level; a critical that old is already in the catalog.
+- **Age limit only for high.** Rejected: the issue says "never posts a real-time root" without a level; a critical that old is already in the catalog. The one exception is a KEV listing, whose news is the listing itself.
 - **Rewrite the block id to the public id.** Rejected: readers at v0.1.4 and the ledger match threads by the block id; changing it would split existing threads. The issue keeps the ledger key internal and this slice only removes it from public text.
 - **Dedupe threads in `pull.threads_from` (6e20).** Rejected: the CLI counts each channel's root separately on purpose (a member may subscribe to one channel); the duplicate is a presentation fault of the page.
 
 ## Blast radius and rollback
 
 - The poster on one Mac (uv tool install). A malformed `waiting` key fails state load as LedgerError, which sends nothing: the safe failure.
-- State migration is additive. Rollback: revert on main, reinstall; the older poster refuses a state with the extra `waiting` key, so remove that key from the state file (one `jq 'del(.waiting)'`) before the first run of the old version.
+- State migration is additive. Rollback: revert on main, reinstall; the older poster refuses a state with the extra `waiting` key, so remove that key from the state file (one `jq 'del(.waiting)'`) before the first run of the old version. The older poster also refuses every reply to a thread rooted after this change (its title templates know only the ledger-key form, and it refuses a set severity): those replies wait in `withheld` for `resolve`. Roll back before such a thread needs a reply, or resolve them by hand.
 - Readers: block keys unchanged; `advisory_severity` was already a nullable string in the schema.
 
 ## Assumes

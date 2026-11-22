@@ -343,11 +343,11 @@ def root_post_ja(adv: schema.Advisory, reason: str | None = None, unexpressed: b
         f"出典: {_primary(adv.sources)}"]))
 
 
-def _change_line_ja(k: str, adv: schema.Advisory) -> str:
+def _change_line_ja(k: str, adv: schema.Advisory, unexpressed: bool = False) -> str:
     p = adv.products[0]
     return {
         "level": f"レベルは{_JA_LEVEL[adv.level]}になりました。",
-        "products": f"影響: {p.name}{_words_ja(p.affected)}。" + (f" 修正版: {p.fixed}。" if p.fixed else ""),
+        "products": f"影響: {p.name}{_words_ja(p.affected, unexpressed)}。" + (f" 修正版: {p.fixed}。" if p.fixed else ""),
         "actions": f"対応: {p.name} を {p.fixed} 以降に更新してください。" if adv.actions
         else "現在、記載された対応はありません。",
         "title": f"件名: {_ja_title(adv)}",
@@ -363,7 +363,7 @@ def _change_line_ja(k: str, adv: schema.Advisory) -> str:
 def reply_post_ja(merged: schema.Advisory, c, keys, *, reason: str | None = None) -> str:
     """reply_post's body lines in Japanese for the changed ``keys``; no block."""
     body = [UNVERIFIED[0].upper() + UNVERIFIED[1:] + "."] if reason == "unverified" else []
-    body += [_change_line_ja(k, merged) for k in sorted(keys)]
+    body += [_change_line_ja(k, merged, range_unexpressed(c)) for k in sorted(keys)]
     body.append(f"出典: {_primary(_sources(c.sources) or merged.sources)}")
     return _inline("\n".join(body))
 
@@ -424,11 +424,11 @@ def _publishable(prev: schema.Advisory, merged: schema.Advisory, patch: dict) ->
         raise ValueError("reply: a source fails the publication checks")
 
 
-def _change_line(k: str, adv: schema.Advisory) -> str:
+def _change_line(k: str, adv: schema.Advisory, unexpressed: bool = False) -> str:
     p = adv.products[0]
     return {
         "level": f"Level is now {adv.level}.",
-        "products": f"Affected: {p.name}{_words(p.affected)}." + (f" Fixed in {p.fixed}." if p.fixed else ""),
+        "products": f"Affected: {p.name}{_words(p.affected, unexpressed)}." + (f" Fixed in {p.fixed}." if p.fixed else ""),
         "actions": f"Action: upgrade {p.name} to {p.fixed} or later." if adv.actions else "No action listed now.",
         "title": f"Now: {adv.title}",
         "expires_at": "Expiry cleared." if adv.expires_at is None else "This advisory now expires.",
@@ -469,7 +469,7 @@ def reply_post(prev: schema.Advisory, c, changes: dict, *, reason: str | None = 
     merged = apply_patch(prev, patch)
     _publishable(prev, merged, patch)
     body = [UNVERIFIED[0].upper() + UNVERIFIED[1:] + "."] if reason == "unverified" else []
-    body += [_change_line(k, merged) for k in sorted(patch)]
+    body += [_change_line(k, merged, range_unexpressed(c)) for k in sorted(patch)]
     body.append(f"Source: {_primary(_sources(c.sources) or merged.sources)}")
     block = json.dumps(patch, indent=2, ensure_ascii=False)
     out = _inline("\n".join(body)) + f"\n\n```{schema.INFO_STRING}\n{block}\n```\n"

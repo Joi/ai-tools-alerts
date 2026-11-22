@@ -200,4 +200,4 @@ def test_replay_11_18_posts_each_once_with_its_fix(env, monkeypatch):  # noqa: F
         heads[text.splitlines()[0]] = adv.id
     assert {re.search(r"\((GHSA-[^)]+)\)$", h).group(1) for h in heads} == want  # public ids only
     assert all(":mcp-server" not in h for h in heads)
-    assert env.state()["waiting"] == {}
+    assert env.state()["deferred"] == []  # nothing waits; first sight stays for AGE_LIMIT
