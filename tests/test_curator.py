@@ -470,3 +470,29 @@ def test_amendment_is_written_against_the_thread_without_future_patches(mirror):
     st.events[up["id"]] = up
     (after,) = [t for t in pull.advisories(st, checkpointed=False) if t.root_id == root["id"]]
     assert after.adv.level == "notice" and after.adv.title == "Original"  # the bot's later patches are discussion
+
+
+def test_curator_amends_and_retracts_a_thread_no_checkpoint_lists_yet(mirror, capsys, monkeypatch):
+    """ai-tools-alerts#6whv: the curator command reads every verified event (the writers'
+    view), so a thread posted a minute ago can be corrected before the signer's next
+    checkpoint lists it, while the member view of the same state still leaves it out."""
+    first = publish(mirror, *post(mirror))
+    st = State.load()
+    assert pull.fetch("https://mirror.example.invalid/alerts", st, fetch=mirror.fetch, root_pubkey=mirror.root).error is None
+    mirror.checkpoint()  # the signer ran: it lists the first thread only
+    late = publish(mirror, *post(mirror, title="Posted after the checkpoint", adv_id="AITA-TEST-0077"))
+    monkeypatch.setattr(pull, "default_fetch", mirror.fetch)
+    monkeypatch.setenv(cli.TRUST_ROOT_ENV, mirror.root)
+    config.write_default(force=True)
+    config.config_path().write_text('trust_root_override = true\nmirror_url = "https://mirror.example.invalid/alerts/"\n')
+    write_key(nostr.nsec(mirror.cur_sec))
+    capsys.readouterr()
+    assert cli.main(["curator", "amend", late["id"], "--dry-run", "--level", "notice"]) == 0  # pulls first, writer mode
+    assert cli.main(["curator", "retract", late["id"], "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert '"content": "level: notice' in out and '"content": "retract"' in out
+    st = State.load()
+    assert late["id"] in st.events
+    assert [t.root_id for t in pull.advisories(st)] == [first["id"]]  # the member view: listed events only
+    assert {t.root_id for t in pull.advisories(st, checkpointed=False)} == {first["id"], late["id"]}
+    assert pull.unverified(st) == "the last pull checked no checkpoint"

@@ -156,7 +156,7 @@ class Mirror:
         return json.dumps({"generated_at": "2099-01-01T00:00:00Z",
                            "channel": name.split(".")[0], "events": self.events[name]}).encode()
 
-    def fetch(self, url: str) -> bytes:
+    def fetch(self, url: str, timeout=None) -> bytes:
         name = url.rsplit("/", 1)[1]
         if url.startswith(SECOND):
             if self.second.get(name) is None:
@@ -167,4 +167,41 @@ class Mirror:
         return self.body(name)
 
 
-__all__ = ["CHANNELS", "FIXTURE_MIRROR", "FIXTURE_ROOT", "SECOND", "T0", "Mirror", "advisory", "asdict"]
+def released_reader(tmp_path, home=None, tag="v0.1.4"):
+    """A function running the released reader (unpacked from its tag) as
+    ``run(*argv) -> CompletedProcess`` with ``home`` as its home directory
+    and the fixture root allowed as a test root. That release takes its home
+    from the password database, never HOME, so it is redirected in-process:
+    otherwise it would read and write the real user's state. The
+    compatibility check is mandatory: a clone without the tag fails."""
+    import io
+    import os
+    import subprocess
+    import sys
+    import tarfile
+    import pytest
+    repo = Path(__file__).resolve().parents[1]
+    tar = subprocess.run(["git", "-C", str(repo), "archive", tag, "aitools_alerts", "spec", "trust"],
+                         capture_output=True)
+    if tar.returncode != 0:
+        pytest.fail(f"tag {tag} is not in this clone (git fetch --tags): the released-reader check cannot run")
+    old = tmp_path / ("released-" + tag)
+    old.mkdir()
+    with tarfile.open(fileobj=io.BytesIO(tar.stdout)) as tf:
+        tf.extractall(old, filter="data")
+    home = home or tmp_path / "released-home"
+    cfg = home / ".config" / "aitools-alerts"
+    cfg.mkdir(parents=True, exist_ok=True)
+    if not (cfg / "config.toml").exists():
+        (cfg / "config.toml").write_text("trust_root_override = true\n")
+    boot = ("import pathlib, sys; from aitools_alerts import cli, config; "
+            "config.home = lambda: pathlib.Path(sys.argv[1]); sys.exit(cli.main(sys.argv[2:]))")
+
+    def run(*args, root=FIXTURE_ROOT):
+        env = {"HOME": str(home), "PATH": os.environ["PATH"], "AITOOLS_ALERTS_TRUST_ROOT": root}
+        return subprocess.run([sys.executable, "-c", boot, str(home), *args], cwd=old, env=env,
+                              capture_output=True, text=True, timeout=120)
+    return run
+
+
+__all__ = ["released_reader", "CHANNELS", "FIXTURE_MIRROR", "FIXTURE_ROOT", "SECOND", "T0", "Mirror", "advisory", "asdict"]

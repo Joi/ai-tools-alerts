@@ -3,9 +3,10 @@
 #
 # Runs one pull, check and notify. When a critical advisory that matches
 # this machine had not been seen before, prints one line to stdout, which
-# Claude Code adds to the session's context; when no new signed post
-# arrived for over 3 days, or the manifest is over 90 days old (a frozen or
-# replayed mirror), prints another fixed line. Anything else prints nothing.
+# Claude Code adds to the session's context; when the alerts are stale or
+# unverified (no fresh signed checkpoint, or the last pull failed: a frozen,
+# replayed or incomplete mirror), prints another fixed line. Anything else
+# prints nothing.
 # The hook always exits 0: a missing CLI, an unreadable mirror or a slow
 # network must never fail a session. The pull and a notification each have
 # their own timeout; the timeout in settings.json (README) bounds the rest.
@@ -49,6 +50,6 @@ if [ "$?" -eq 2 ]; then
 fi
 case $out in
     *'"stale_since": "'*)
-        printf '%s\n' "AITOOLS-ALERT: alerts may be stale (no new signed post for over 3 days, or a trust manifest over 90 days old); run aitools-alerts check" ;;
+        printf '%s\n' "AITOOLS-ALERT: alerts may be stale or unverified (no fresh signed checkpoint, or the last pull failed); run aitools-alerts check" ;;
 esac
 exit 0

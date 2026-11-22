@@ -998,33 +998,11 @@ def test_live_feed_fixture_is_read_whole(monkeypatch):
 
 
 def test_released_reader_reads_the_regenerated_fixture(tmp_path):
-    """The fixture mirror's events now carry h tags; the released v0.1.4 reader, which
-    knows nothing of them, still reads the mirror."""
-    import subprocess
-    import sys
-    import tarfile
-    repo = FIXTURE_MIRROR.parents[2]
-    tar = subprocess.run(["git", "-C", str(repo), "archive", "v0.1.4", "aitools_alerts", "spec", "trust"],
-                         capture_output=True)
-    if tar.returncode != 0:
-        pytest.skip("tag v0.1.4 is not in this clone")
-    old = tmp_path / "v014"
-    old.mkdir()
-    with tarfile.open(fileobj=io.BytesIO(tar.stdout)) as tf:
-        tf.extractall(old, filter="data")
-    home = tmp_path / "home014"
-    (home / ".config" / "aitools-alerts").mkdir(parents=True)
-    (home / ".config" / "aitools-alerts" / "config.toml").write_text("trust_root_override = true\n")
-    env = {"HOME": str(home), "PATH": os.environ["PATH"], "AITOOLS_ALERTS_TRUST_ROOT": FIXTURE_ROOT}
-
-    # v0.1.4 takes the home from the password database, never HOME: point it at the temp home
-    # in-process, or this test would read and write the real user's state.
-    boot = ("import pathlib, sys; from aitools_alerts import cli, config; "
-            "config.home = lambda: pathlib.Path(sys.argv[1]); sys.exit(cli.main(sys.argv[2:]))")
-
-    def run(*args):
-        return subprocess.run([sys.executable, "-c", boot, str(home), *args], cwd=old, env=env,
-                              capture_output=True, text=True, timeout=120)
+    """The fixture mirror's events carry h tags and the mirror also serves a certificate
+    and a checkpoint; the released v0.1.4 reader, which knows none of them, still reads it."""
+    from mirror_helpers import released_reader
+    assert {"checkpoint-key.json", "checkpoint.json"} <= {p.name for p in FIXTURE_MIRROR.iterdir()}
+    run = released_reader(tmp_path)
     got = run("pull", "--mirror-url", FIXTURE_MIRROR.as_uri() + "/")
     assert got.returncode == 0 and "2 new events" in got.stdout and "Traceback" not in got.stderr, got.stderr
     got = run("check")

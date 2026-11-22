@@ -673,17 +673,21 @@ def test_check_and_run_json_warn_when_the_mirror_is_stale(monkeypatch, sent, cap
     assert cli.main(["check"]) == 0 and "warning:" not in capsys.readouterr().out
     monkeypatch.setattr(pull.time, "time", lambda: newest + 4 * 86400)
     assert cli.main(["check"]) == 0
-    assert cli._stale_since(type("A", (), {"root": "0" * 64})(), State.load()) is None  # other root
-    line = cli.STALE_LINE.format(since="2099-01-01T00:02:00Z")
-    assert capsys.readouterr().out.splitlines()[0] == line
+    other = type("A", (), {"root": "0" * 64})()  # state under another root verifies nothing for this one
+    assert cli._unverified(other, State.load()) == cli.OTHER_ROOT and cli._stale_since(other, State.load())
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == cli.UNVERIFIED_LINE.format(reason="checkpoint out of date")
+    assert out[1] == cli.STALE_LINE.format(since="2099-01-01T00:02:00Z")  # the checkpoint's own time
     assert cli.main(["run", "--json"]) == 2  # stale never changes the exit status
     raw = capsys.readouterr().out
     assert json.loads(raw)["stale_since"] == "2099-01-01T00:02:00Z"
+    assert json.loads(raw)["unverified"] == "checkpoint out of date"
     assert '"stale_since": "' in raw  # the hook's match, on the real output
     monkeypatch.setattr(pull.time, "time", lambda: newest + 3600)
     assert cli.main(["run", "--json"]) == 0
     raw = capsys.readouterr().out
     assert json.loads(raw)["stale_since"] is None and '"stale_since": "' not in raw
+    assert json.loads(raw)["unverified"] is None
     hostile = json.dumps({"stale_since": None, "title": '"stale_since": "x'}, indent=2)
     assert '"stale_since": "' not in hostile  # a quote in a value is escaped
 
@@ -716,3 +720,31 @@ def test_events_dated_ahead_are_said_out_loud(monkeypatch, capsys, reader_clock)
     reader_clock.at = T0 + 1000 + pull.MAX_AHEAD_S + 1
     assert cli.main(["pull"]) == 0
     assert "dated ahead" not in capsys.readouterr().err
+
+
+def test_second_origin_setting(monkeypatch):
+    """Default: the project's repository, for the pinned root only. "" turns it off."""
+    assert config.load().second_origin is None
+    pinned = type("A", (), {"root": cli.TRUST_ROOT_PUBKEY})()
+    test_root = type("A", (), {"root": FIXTURE_ROOT})()
+    assert cli._second_origin(pinned, config.load()) == config.DEFAULT_SECOND_ORIGIN
+    assert config.DEFAULT_SECOND_ORIGIN.startswith("https://") and config.DEFAULT_SECOND_ORIGIN.endswith("/trust/")
+    assert cli._second_origin(test_root, config.load()) is None  # the repository serves no test root
+    write_config('second_origin = ""\n')
+    assert cli._second_origin(pinned, config.load()) is None
+    write_config('second_origin = "https://example.invalid/trust/"\n')
+    assert cli._second_origin(test_root, config.load()) == "https://example.invalid/trust/"
+    for bad in ('"http://example.invalid/trust/"', '"https://example.invalid/trust"', '"file:///tmp/x/"', "5",
+                '"https://example.invalid/a b/"'):
+        write_config(f"second_origin = {bad}\n")
+        with pytest.raises(config.ConfigError, match="second_origin"):
+            config.load()
+    assert "second_origin" in config.TEMPLATE
+
+
+def test_pull_prints_the_checkpoint_and_check_stays_quiet_when_verified(capsys):
+    assert cli.main(["pull", "--mirror-url", MIRROR]) == 0
+    assert "checkpoint 1 lists 2 events" in capsys.readouterr().out
+    assert cli.main(["check"]) == 0
+    out = capsys.readouterr().out
+    assert "unverified" not in out and "stale" not in out
