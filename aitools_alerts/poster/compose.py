@@ -205,10 +205,20 @@ def _titles(name: str, adv_id: str) -> set[str]:
     return {f"{mark}{name}: {pre}{k} ({adv_id})" for k in _KINDS for pre in ("", "unverified ")}
 
 
+# A poster ledger key (an id, a colon, a scope slug: CVE-2026-123158:openssh) is
+# identity, never a public alias (8ke5).
+_LEDGER_KEY = re.compile(r"(?:CVE-\d{4}-\d{4,}|GHSA(?:-[0-9a-z]{4}){3}):", re.I)
+
+
+def public_id(a) -> bool:
+    """An id the schema accepts that is not a ledger key: one a post may name as an alias."""
+    return isinstance(a, str) and schema._IDENT.fullmatch(a) is not None and not _LEDGER_KEY.match(a)
+
+
 def _ids(raw, exclude: str) -> list[str]:
     out = []
     for a in raw:
-        if isinstance(a, str) and a != exclude and a not in out and schema._IDENT.fullmatch(a):
+        if a != exclude and a not in out and public_id(a):
             out.append(a)
     return out
 
@@ -316,7 +326,7 @@ def _change_line_ja(k: str, adv: schema.Advisory) -> str:
         "title": f"件名: {_ja_title(adv)}",
         "expires_at": "有効期限は解除されました。" if adv.expires_at is None
         else "このアドバイザリには有効期限が設定されました。",
-        "aliases": "別名: " + ", ".join(adv.aliases) + "。",
+        "aliases": "別名: " + ", ".join(a for a in adv.aliases if public_id(a)) + "。",
         "sources": "新しい出典が追加されました。",
         "advisory_severity": "深刻度の評価は解除されました。",
     }[k]
@@ -394,7 +404,7 @@ def _change_line(k: str, adv: schema.Advisory) -> str:
         "actions": f"Action: upgrade {p.name} to {p.fixed} or later." if adv.actions else "No action listed now.",
         "title": f"Now: {adv.title}",
         "expires_at": "Expiry cleared." if adv.expires_at is None else "This advisory now expires.",
-        "aliases": "Also known as: " + ", ".join(adv.aliases) + ".",
+        "aliases": "Also known as: " + ", ".join(a for a in adv.aliases if public_id(a)) + ".",
         "sources": "New sources listed.",
         "advisory_severity": "Severity rating cleared.",
     }[k]
@@ -412,8 +422,9 @@ def reply_post(prev: schema.Advisory, c, changes: dict, *, reason: str | None = 
     for k, v in changes.items():
         if isinstance(v, (list, tuple)):
             v = [asdict(x) if hasattr(x, "__dataclass_fields__") else x for x in v]
-        if k == "aliases" and isinstance(v, list):  # a union with prev, filtered as root_post does
-            v = _ids(old["aliases"] + v, prev.id)[:50]
+        if k == "aliases" and isinstance(v, list):  # prev's list as published, then new public ids
+            have = {a.casefold() for a in old["aliases"]}  # a reply never removes an alias
+            v = (old["aliases"] + [a for a in _ids(v, prev.id) if a.casefold() not in have])[:50]
         elif k == "sources" and isinstance(v, list):
             v = [asdict(s) for s in _sources(old["sources"] + v)]
         if k not in old or k in ("id", "posted_by") or old[k] != v:
@@ -447,17 +458,17 @@ _DIGEST = {
                section=lambda lv, n: f"{lv.capitalize()} ({n})",
                withheld=lambda n: f"{n} item{'s' if n > 1 else ''} withheld by the publication check.",
                fixed=lambda v: f"fixed in {v}", nofix="fixed version not stated, check the vendor", end=".",
-               leads=lambda n: f"{n} unrated leads.", release=lambda seg: f"release {seg}",
+               release=lambda seg: f"release {seg}",
                one="one release", cves=lambda n: f"{n} CVEs", update="update available",
-               see="see the release", title=lambda a: a.title, upstream=lambda t: f": {t}"),
+               title=lambda a: a.title, upstream=lambda t: f": {t}"),
     "ja": dict(empty=lambda d: f"{d} のデイリーダイジェスト: アドバイザリはありません。",
                head=lambda d, n: f"{d} のデイリーダイジェスト: {n} 件。",
                section=lambda lv, n: f"{_JA_LEVEL[lv]} ({n})",
                withheld=lambda n: f"{n} 件を公開前チェックで保留しました。",
                fixed=lambda v: f"修正版 {v}", nofix="修正版の記載なし、ベンダーの情報を確認してください", end="。",
-               leads=lambda n: f"未評価のリード {n} 件。", release=lambda seg: f"リリース {seg}",
+               release=lambda seg: f"リリース {seg}",
                one="1 件のリリース", cves=lambda n: f"CVE {n} 件", update="更新あり",
-               see="リリースを参照", title=_ja_title, upstream=lambda t: f" 原題: {t}"),
+               title=_ja_title, upstream=lambda t: f" 原題: {t}"),
 }
 
 
@@ -474,22 +485,17 @@ def _group_key(a: schema.Advisory):
     name = a.products[0].name
     if a.level == "critical" or a.title != f"{name}: security advisory ({a.id})":
         return None
-    if a.id.startswith("LEAD-"):  # "unrated": a lead rated above notice keeps its own line
-        return ("lead", name) if a.level == "notice" else None
     if a.id.startswith("CVE-"):
         return ("release", name, _primary(a.sources))
     return None
 
 
 def _group_line(key, members, t=_DIGEST["en"]) -> str:
-    if key[0] == "lead":
-        return f"- {key[1]}: {t['leads'](len(members))}"
-    url = key[2]
+    url = key[2]  # primary: digest() lists only advisories with a primary source
     seg = next((p for p in reversed(urlsplit(url).path.split("/")) if p), "")
     label = t["release"](seg) if _LABEL.fullmatch(seg) else t["one"]
     fixes = {a.products[0].fixed for a in members}
-    fix = t["fixed"](fixes.pop()) if len(fixes) == 1 and None not in fixes \
-        else t["update"] if schema.is_primary(url) else t["see"]
+    fix = t["fixed"](fixes.pop()) if len(fixes) == 1 and None not in fixes else t["update"]
     return f"- {key[1]}: {label}, {t['cves'](len(members))}; {fix}{t['end']} {url}"
 
 
@@ -497,12 +503,12 @@ def digest(advs_today, date, lang: str = "en", *, retracted=(), now: int | None 
            titles=None) -> str:
     """The daily digest: every advisory once per id and product (latest posted_at
     wins), critical first. Within high and notice, plain CVE advisories sharing a
-    primary source URL and product are one line (a vendor release), and leads are one
-    line per scope; N counts lines. An item that fails the publication guard is
+    primary source URL and product are one line (a vendor release); N counts lines. An item that fails the publication guard is
     withheld and counted, never the whole digest. The ledger and --json keep every
     advisory: this grouping is presentation only. ``lang="ja"``: the same digest from
-    the Japanese templates. Left out, and not counted: a synthetic id, an advisory
-    whose id or alias is in ``retracted`` (case-folded) and, given ``now``, one whose
+    the Japanese templates. Left out, and not counted: a lead (a ``LEAD-`` id) and any
+    advisory with no primary source (8ke5: nothing a member can act on), a synthetic
+    id, an advisory whose id or alias is in ``retracted`` (case-folded) and, given ``now``, one whose
     latest version expired before it (``pull.active``'s rule). ``titles`` maps (id,
     product name) to a source title, which a line of its own carries after the id."""
     t = _DIGEST[lang]
@@ -515,7 +521,9 @@ def digest(advs_today, date, lang: str = "en", *, retracted=(), now: int | None 
             latest[key] = adv
     gone = {i.casefold() for i in retracted}
     latest = {k: a for k, a in latest.items() if not (
-        is_synthetic(a.id) or not gone.isdisjoint(i.casefold() for i in (a.id, *a.aliases))
+        is_synthetic(a.id) or a.id.startswith("LEAD-")
+        or not any(schema.is_primary(s.url) for s in a.sources)
+        or not gone.isdisjoint(i.casefold() for i in (a.id, *a.aliases))
         or (now is not None and a.expires_at is not None and a.expires_at < now))}
     day = date.isoformat() if hasattr(date, "isoformat") else str(date)
     if not latest:

@@ -247,8 +247,9 @@ def test_synthetic_digest_and_reply_keep_one_mark():
         compose.reply_post(adv, c, {"title": legacy.title})
 
 
-REL = "https://vendor.example.com/en-us/149521"
-USN = "https://distro.example.com/security/notices/USN-8928-1"
+REL = "https://support.apple.com/en-us/149521"  # primary: a digest lists only primary-sourced items
+USN = "https://ubuntu.com/security/notices/USN-8928-1"
+SOCIAL = "https://social.example.com/@bot/"
 KEV = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
 
 
@@ -258,33 +259,35 @@ def _plain(i, product, url, level="notice", fixed=None, prefix="CVE-2098-", **kw
     return compose.root_post(c, (level, level), scope(c), posted_at=NOW + i)[1]
 
 
-def test_digest_groups_releases_and_leads():
+def test_digest_groups_releases_and_leaves_out_leads():
     advs = [_plain(i, "macOS", REL) for i in range(1, 45)]
     advs += [_plain(100 + i, "Ubuntu linux kernel", USN) for i in range(9)]
-    advs += [_plain(200 + i, "Chrome", f"https://social.example.com/@bot/{i}", prefix="LEAD-2099-")
-             for i in range(12)]
+    leads = [_plain(200 + i, "Chrome", f"{SOCIAL}{i}", prefix="LEAD-2099-") for i in range(12)]
+    leads += [_plain(220, "Chrome", REL, prefix="LEAD-2099-")]  # a lead with a primary source too
+    leads += [dataclasses.replace(_plain(221, "Chrome", REL, prefix="LEAD-2099-"), level="high")]
     crit = dataclasses.replace(_plain(300, "macOS", REL), level="critical")
-    out = compose.digest(advs + [crit], "2026-11-06")
+    out = compose.digest(advs + leads + [crit], "2026-11-06")
     lines = out.split("\n")
-    assert lines[0] == "Daily digest for 2026-11-06: 4 advisories."
-    assert "Critical (1)" in lines and "Notice (3)" in lines
-    assert f"- macOS: release 149521, 44 CVEs; see the release. {REL}" in lines
-    assert f"- Linux kernel: release USN-8928-1, 9 CVEs; see the release. {USN}" in lines
-    assert "- Chrome: 12 unrated leads." in lines  # a LEAD id is never a reserved one
+    assert lines[0] == "Daily digest for 2026-11-06: 3 advisories."  # leads are not counted
+    assert "Critical (1)" in lines and "Notice (2)" in lines and "High" not in out
+    assert f"- macOS: release 149521, 44 CVEs; update available. {REL}" in lines
+    assert f"- Linux kernel: release USN-8928-1, 9 CVEs; update available. {USN}" in lines
+    assert "LEAD-" not in out and "leads" not in out and "Chrome" not in out  # 8ke5
     assert out.count("CVE-2098-0300") == 1 and "CVE-2098-0001" not in out
-    # An allowlisted vendor URL says an update exists; one fixed version is named.
-    with pytest.MonkeyPatch.context() as m:
-        m.setattr(schema, "is_primary", lambda url, domains=None: url == REL)
-        assert "44 CVEs; update available." in compose.digest(advs, "2026-11-06")
     same = [_plain(i, "macOS", REL, fixed="27.2") for i in range(1, 4)]
     assert "3 CVEs; fixed in 27.2." in compose.digest(same, "2026-11-06")
+    # Only leads, or only items with no primary source: nothing to list, in either language.
+    social = [_plain(400 + i, "macOS", f"{SOCIAL}{i}") for i in range(3)]
+    for lang in ("en", "ja"):
+        assert compose.digest(leads + social, "2026-11-06", lang=lang) \
+            == compose.digest([], "2026-11-06", lang=lang)
 
 
 def test_digest_groups_keep_marks_and_kinds_apart():
     real = [_plain(i, "macOS", REL, prefix="CVE-2026-") for i in (1, 2)]
     syn = [_plain(i, "macOS", REL, prefix="CVE-2099-") for i in (3, 4)]
     out = compose.digest(real + syn, "2026-11-06")
-    assert f"- macOS: release 149521, 2 CVEs; see the release. {REL}" in out.split("\n")
+    assert f"- macOS: release 149521, 2 CVEs; update available. {REL}" in out.split("\n")
     assert "SYNTHETIC" not in out and "1 advisory." in out
     # A shared catalog URL is not a release, and unverified titles keep their mark.
     kev = [_plain(i, "macOS", KEV, level="high", exploited=True, prefix="CVE-2026-") for i in (5, 6)]
@@ -294,17 +297,16 @@ def test_digest_groups_keep_marks_and_kinds_apart():
                              scope(c), posted_at=NOW)[1] for i in (7, 8)]
     out = compose.digest(kev + unv, "2026-11-06")
     assert "4 advisories" in out and "CVEs" not in out and out.count("unverified") == 2
-    # So do unverified or higher-rated leads: only plain notice leads are "unrated".
-    lc = cand(id="LEAD-2099-0001", aliases=(), product_text="Chrome", injection_exec=False,
-              trojanized=True, fixed=None, sources=(Source("https://social.example.com/@bot/1", None),))
-    leads = [compose.root_post(dataclasses.replace(lc, id=f"LEAD-2099-000{i}"), ("high", "unverified"),
-                               scope(lc), posted_at=NOW)[1] for i in (1, 2)]
-    leads += [dataclasses.replace(_plain(i, "Chrome", REL, prefix="LEAD-2099-"), level="high") for i in (3, 4)]
-    out = compose.digest(leads, "2026-11-06")
-    assert "4 advisories" in out and "leads" not in out and out.count("unverified trojanized release") == 2
-    notice = [dataclasses.replace(a, level="notice") for a in leads[:2]]  # the title alone keeps them apart
+    # An unverified trojanized release keeps its own line and its mark, at any level.
+    tc = cand(id="CVE-2026-0011", aliases=(), product_text="macOS", injection_exec=False,
+              trojanized=True, fixed=None, sources=(Source(REL, None),))
+    troj = [compose.root_post(dataclasses.replace(tc, id=f"CVE-2026-001{i}"), ("high", "unverified"),
+                              scope(tc), posted_at=NOW)[1] for i in (1, 2)]
+    out = compose.digest(troj, "2026-11-06")
+    assert "2 advisories" in out and "CVEs" not in out and out.count("unverified trojanized release") == 2
+    notice = [dataclasses.replace(a, level="notice") for a in troj]  # the title alone keeps them apart
     out = compose.digest(notice, "2026-11-06")
-    assert "2 advisories" in out and "leads" not in out and out.count("unverified trojanized release") == 2
+    assert "2 advisories" in out and "CVEs" not in out and out.count("unverified trojanized release") == 2
     # A group the guard refuses is one withheld item; the next group still prints.
     bad = [dataclasses.replace(a, products=[dataclasses.replace(a.products[0], name="host-alpha")],
                                title=f"host-alpha: security advisory ({a.id})") for a in real]
@@ -439,15 +441,17 @@ def test_reply_post_ja_names_the_changed_fields():
 
 def test_digest_ja_scaffold_and_groups():
     assert compose.digest([], "2026-11-06", lang="ja") == "2026-11-06 のデイリーダイジェスト: アドバイザリはありません。"
-    advs = [_plain(i, "macOS", REL) for i in range(1, 4)] + [_plain(9, "Chrome", BLOG)]
+    advs = [_plain(i, "macOS", REL) for i in range(1, 4)] + [_plain(9, "Chrome", KEV)]
+    advs += [_plain(10, "Chrome", BLOG), _plain(11, "Chrome", f"{SOCIAL}1", prefix="LEAD-2099-")]  # left out
     en, ja = compose.digest(advs, "2026-11-06"), compose.digest(advs, "2026-11-06", lang="ja")
     assert len(en.split("\n")) == len(ja.split("\n"))
     lines = ja.split("\n")
     assert lines[0] == "2026-11-06 のデイリーダイジェスト: 2 件。" and "注意 (2)" in lines
-    assert f"- macOS: リリース 149521, CVE 3 件; リリースを参照。 {REL}" in lines
-    assert f"- Chrome: セキュリティアドバイザリ (CVE-2098-0009); 修正版の記載なし、ベンダーの情報を確認してください。 {BLOG}" in lines
-    assert (f"- Chrome: security advisory (CVE-2098-0009); fixed version not stated, check the vendor. {BLOG}"
+    assert f"- macOS: リリース 149521, CVE 3 件; 更新あり。 {REL}" in lines
+    assert f"- Chrome: セキュリティアドバイザリ (CVE-2098-0009); 修正版の記載なし、ベンダーの情報を確認してください。 {KEV}" in lines
+    assert (f"- Chrome: security advisory (CVE-2098-0009); fixed version not stated, check the vendor. {KEV}"
             in en.split("\n"))
+    assert "CVE-2098-0010" not in en + ja and "LEAD-" not in en + ja and "未評価" not in ja
 
 
 def test_digest_leaves_out_retracted_expired_and_synthetic():
@@ -665,3 +669,35 @@ def test_mention_safe_never_rewrites_where_a_reader_could_pair_backticks_otherwi
     # Without a backtick there is no pairing to disagree on: a version range or a CR still wraps.
     assert m("Affected: @s/p <2.1, <=3\r\n@t/q") == "Affected: `@s/p` <2.1, <=3\r\n`@t/q`"
     assert m("`x` @s/p <2.1 and <=3") == "`x` `@s/p` <2.1 and <=3"
+
+
+# ------------------------------------------------ ledger keys are never aliases (8ke5)
+
+def test_a_ledger_key_is_never_published_as_an_alias():
+    key = "CVE-2026-0001:claude-code"
+    assert not compose.public_id(key) and not compose.public_id("ghsa-abcd-efgh-ijkl:x")
+    assert compose.public_id("GHSA-abcd-efgh-ijkl") and compose.public_id("CVE-2026-0002")
+    c = cand(id="CVE-2026-0002", aliases=(key, "GHSA-abcd-efgh-ijkl"))
+    _, adv = root(c)
+    assert adv.aliases == ["GHSA-abcd-efgh-ijkl"]
+    out = compose.reply_post(adv, c, {"aliases": [key, "CVE-2026-0003"]})
+    patch = json.loads(schema._last_block(out))
+    assert patch["aliases"] == ["GHSA-abcd-efgh-ijkl", "CVE-2026-0003"] and key not in out
+    with pytest.raises(ValueError, match="no changed field"):  # only a key: nothing to say
+        compose.reply_post(adv, c, {"aliases": [key]})
+
+
+def test_a_published_ledger_key_stays_in_the_list_and_off_the_line():
+    """The live OpenSSH thread published CVE-2026-123158:openssh as an alias: a later
+    reply keeps it in the block (a list replaces the reader's whole) and never shows it."""
+    key = "CVE-2026-0001:claude-code"
+    c = cand(aliases=())
+    _, adv = root(c)
+    adv = dataclasses.replace(adv, aliases=[key])  # as the live thread holds it
+    out = compose.reply_post(adv, c, {"aliases": ["CVE-2026-0009"]})
+    patch = json.loads(schema._last_block(out))
+    assert patch["aliases"] == [key, "CVE-2026-0009"]
+    assert "Also known as: CVE-2026-0009." in out and out.count(key) == 1  # in the block only
+    merged = compose.parse_reply(out, adv)
+    ja = compose.reply_post_ja(merged, c, patch)
+    assert "別名: CVE-2026-0009。" in ja and key not in ja
