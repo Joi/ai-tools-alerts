@@ -340,10 +340,19 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float, second: st
     old_cp = t["checkpoint"] if t else None
     old_applied = set(t["applied"]) if t and old_cp is not None else None
     unchecked = "checkpoint_ok" not in state.last_pull or state.last_pull.get("writer") is True
-    if old_applied is not None and unchecked and not set(before) <= old_applied:
-        old_applied |= set(before)
-        state.set_trust(root_pubkey, old_cert, old_cp, old_applied)
-        state.save_trust()
+    if unchecked:
+        # last_pull is one record for every trust root, and step 0 is about to
+        # overwrite it: merge for each root that holds a checkpoint, not only
+        # the one this pull is for.
+        merged = False
+        for r, tr in state.trust.items():
+            if tr["checkpoint"] is not None and not set(state.events_for(r)) <= tr["applied"]:
+                tr["applied"] |= set(state.events_for(r))
+                merged = True
+        if merged:
+            state.save_trust()
+        if old_applied is not None:
+            old_applied = set(state.trust[root_pubkey]["applied"])
     # 0. The pull has begun and nothing is verified yet. Written before any
     # fetch, in every mode, so a crash, or a failed write of the final record,
     # never leaves an earlier pull's success standing.

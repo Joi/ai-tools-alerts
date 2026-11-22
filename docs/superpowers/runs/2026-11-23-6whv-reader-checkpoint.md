@@ -1,6 +1,6 @@
 # Run: 6whv-reader-checkpoint
 Instruction: Piece 3 of ai-tools-alerts#ek5q (brief TASK-ai-tools-alerts#ek5q.md, /do-it, starting rung floored at medium): the reader fetches the certificate and checkpoint, takes the higher manifest of the mirror and a second origin, applies only checkpointed events, refuses an incomplete mirror, reports stale from the checkpoint, and marks alerts unverified (no auto-apply) without a usable certificate and fresh checkpoint. The four attacks of the ek5q body become tests.
-Stage: code-review:branch delta
+Stage: committing (pull request left open: no merge until ai-tools-alerts#xrx2 closes)
 Rung: heavy (escalated from medium at the plan review: its pass found three blockers in the design that the single medium pass left open; the pass taken counts as heavy's first, and the fix gets the one delta. Started medium: dispatch floor medium; no hard trigger: the reader handles public keys and signatures only, no secret, no credential, no deploy path. Start-floor evaluator not run: its rubric file is outside the paths the seat rules let this session read.)
 Lens: "Readers at v0.1.4 are on member machines. A change they cannot parse must fail safe (they ignore it), never crash them."
 Spec: docs/superpowers/specs/2026-11-23-6whv-reader-checkpoint-design.md   Plan: docs/superpowers/plans/2026-11-23-6whv-reader-checkpoint.md
@@ -23,6 +23,10 @@ Pass 1 [code:branch]: 5B/7S/7C/0R · fixed -/- · velocity = (—→19, escalati
   S rebutted (2): with both the checkpoint key and a bot key the applied set can be filled to the store limit and a new checkpoint key does not heal it. Both keys are needed; revoking the bot key in the manifest, the remedy for that key anyway, clears it; the store limit is a deliberate fail-closed bound. And: an honest thread that ages out between signing and a pull reads unverified until the next checkpoint; the remedy is the signer leaving a margin below the retention, which is piece 4's (noted on ai-tools-alerts#nfm3).
   C fixed: the changelog sentence, the README's count of fetches. C not changed: "N new events" counts what was stored; a step 0 write that itself fails leaves the earlier state (nothing was fetched).
   Heavy: the BLOCKER fixes changed behaviour, so one delta pass follows (fresheyes --since fb74a9c --rebuttals).
+Pass 2 [code:branch delta]: 1B/1S/0C/0R · fixed 17/19 prior (2 rebutted, neither overturned) · velocity ↓ (19→2, escalation no)   (fresheyes --since fb74a9c --rebuttals, reviewed 9820b53, gpt-6-astra high, REASON=-)
+  B fixed: last_pull is one record for every trust root, so a pull under another root stamped it and the first root's unchecked-pull events were never merged, then deleted; the merge now covers every root that holds a checkpoint (regression test, both for a writer's pull and the released reader).
+  S fixed: the plan and spec lines that still described staged events and the first curator-view rule are superseded in place.
+  No further pass (ruling jibot-code#41e2): the fix commit after 9820b53 is unreviewed by an independent model and is named in the kata comment.
 
 ## Chunks
 - [x] chunk 1 — state file and the pull (pull.py, state.py, the poster's two calls, the curator's pull and reads)

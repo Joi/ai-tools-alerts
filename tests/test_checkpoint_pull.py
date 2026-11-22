@@ -884,3 +884,26 @@ def test_cli_pull_says_when_the_accepted_checkpoint_is_already_out_of_date(mirro
     reader_clock.at = T0 + 3 * DAY  # the mirror is frozen: the same checkpoint, days later
     assert cli.main(["pull"]) == 0
     assert cli.UNVERIFIED_LINE.format(reason="checkpoint out of date") in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("how", ["a writer's pull", "the released reader"])
+def test_a_pull_under_another_root_does_not_lose_what_an_unchecked_pull_stored(mirror, how):
+    """last_pull is one record for every trust root. Root A: checkpoint C1, then a
+    retraction stored by an unchecked pull. A pull under root B stamps last_pull. Back
+    under A with C1 replayed, the retraction must still be stored and applied."""
+    root = mirror.root_post(mirror.cur_sec)
+    c1 = mirror.checkpoint()
+    do_pull(mirror)
+    gone = mirror.reply(mirror.cur_sec, root, "retract", created_at=T0 + 300)
+    if how == "a writer's pull":
+        do_pull(mirror, checkpoint=False)
+    else:
+        _as_the_released_reader_pulled(mirror, gone)
+    other = Mirror()
+    other.raw["manifest.json"] = None  # it fails before any manifest, and still stamps last_pull
+    st = State.load()
+    assert pull.fetch(URL, st, fetch=other.fetch, root_pubkey=other.root, now=T0 + 1000).error == "unreachable"
+    mirror.stored_checkpoint = c1
+    mirror.events["feed.json"].remove(gone)
+    res, st = do_pull(mirror)
+    assert res.error is None and gone["id"] in st.events and titles(st) == [(advisory().title, True)]
