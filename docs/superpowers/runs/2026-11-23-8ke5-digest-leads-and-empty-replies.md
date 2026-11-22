@@ -18,6 +18,8 @@ Pass 1 [code:branch]: 1B/1S/4C/0R · fixed -/- · velocity = (—→6, escalatio
   B1 fixed: a held notice left out for no primary source was marked digested, so its later confirmation never listed; now it leaves held unmarked, and a confirmation while held replaces the snapshot (two regression tests, both fail on 53f6532).
   S1 fixed: spec and plan named no exploitation exception; both now do.
   C1 fixed: learned sources pass compose._sources first. C2-C4 not changed: an exploitation-only reply does not re-list (matches the issue's level/fix/action rule); an unverified high root is left out of the digest (issue item 1); extra validator tests noted, not added.
+Pass 2 [code:branch delta]: 1B/0S/0C/0R · fixed 2/2 prior · velocity ↓ (2→1, escalation no)   (fresheyes --since 53f6532 --rebuttals, reviewed 6cdfa06, REASON=-; no rebuttal overturned)
+  B fixed: refreshing a held snapshot dropped the earlier sighting's ids; the new snapshot now carries them (regression test fails without the fix). No further pass (ruling jibot-code#41e2).
 
 ## Chunks
 - [x] chunk 1 — compose: no lead lines, no ledger-key aliases (poster tests: compose 54 passed)

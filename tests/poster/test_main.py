@@ -1518,3 +1518,18 @@ def test_a_primary_source_learned_while_held_reaches_the_digest(env):  # 8ke5
     assert [s["url"] for s in h["adv"]["sources"]] == [APPLE]
     _, _, ssh = env.run(now=at(5, 9))
     assert "CVE-2026-5000" in ssh.calls[0][2] and APPLE in ssh.calls[0][2]
+
+
+def test_a_confirmed_held_notice_keeps_every_id_it_was_held_under(env):  # 8ke5 delta
+    env.collector([{**MAC, "aliases": ["GHSA-mmmm-nnnn-pppp"], "sources": [{"url": SOCIAL, "published_at": None}]}])
+    env.run()
+    env.collector([MAC])  # Apple's advisory names only the CVE
+    env.run(now=T0 + 3600)
+    (h,) = env.state()["held"]
+    assert h["adv"]["id"] == "CVE-2026-5000" and h["adv"]["aliases"] == ["GHSA-mmmm-nnnn-pppp"]
+    assert [s["url"] for s in h["adv"]["sources"]] == [APPLE]
+    env.run(now=at(5, 9))
+    assert {"macOS|cve-2026-5000", "macOS|ghsa-mmmm-nnnn-pppp"} <= set(env.state()["digested"])
+    env.collector([{**MAC, "id": "GHSA-mmmm-nnnn-pppp"}])  # the alias alone, later: listed once only
+    env.run(now=at(5, 12))
+    assert env.state()["held"] == []

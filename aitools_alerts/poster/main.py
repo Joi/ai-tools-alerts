@@ -541,7 +541,10 @@ class Run:
                     h["source_title"] = title
                     self.save()
                 if compose.listable(adv) and not compose.listable(schema.validate(h["adv"])):
-                    h["adv"] = a  # 8ke5: a primary source learned while held: the digest lists that
+                    # 8ke5: a primary source learned while held: the digest lists that, under
+                    # every id either sighting knew (digested and retracted match by them).
+                    old = [h["adv"]["id"], *h["adv"]["aliases"]]
+                    h["adv"] = {**a, "aliases": compose._ids([*a["aliases"], *old], a["id"])[:50]}
                     self.save()
             return
         self.state["held"].append({"scope": scope, "adv": a, **({"source_title": title} if title else {})})
