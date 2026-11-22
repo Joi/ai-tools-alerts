@@ -71,6 +71,8 @@ def test_max_ahead_matches_the_reader():
     dict(content={"expires_at": "2099-01-01T00:00:00Z"}),  # not after issued_at
     dict(content={"expires_at": "2098-12-31T23:59:59Z"}),
     dict(content={"issued_at": "2099-01-01 00:00:00"}), dict(content={"issued_at": "2099-02-30T00:00:00Z"}),
+    dict(content={"expires_at": "2099-05-01t00:00:00z"}),  # 20 characters, not canonical
+    dict(content={"expires_at": "２０９９-05-01T00:00:00Z"}), dict(content={"expires_at": "2099-5-01T00:00:00Z "}),
     dict(content={"issued_at": 4070908800}), dict(content={"expires_at": None}),
     dict(content={"checkpoint_key": "zz" * 32}), dict(content={"checkpoint_key": "AB" * 32}),
     dict(content={"checkpoint_key": "ff" * 32}),  # 64 hex, not on the curve
@@ -181,7 +183,7 @@ def test_checkpoint_round_trip(w):
     dict(tags=[["d", cp.CHECKPOINT_D_TAG], ["h", "x"]]), dict(tags=[["d", cp.CHECKPOINT_D_TAG, "x"]]),
     dict(content={"seq": 0}), dict(content={"seq": -1}), dict(content={"seq": True}),
     dict(content={"seq": 1.0}), dict(content={"seq": "1"}), dict(content={"seq": DROP}),
-    dict(content={"seq": 2**31}),
+    dict(content={"seq": 2**53}), dict(created_at=cp.MAX_TIME + 1),
     dict(content={"valid_until": "2099-01-02T00:00:00Z"}), dict(content={"valid_until": DROP}),
     dict(content={"valid_until": -1}), dict(content={"valid_until": 1.5}),
     dict(content={"events": "x"}), dict(content={"events": DROP}), dict(content={"events": [IDS[1], IDS[0]]}),
@@ -232,6 +234,58 @@ def test_checkpoint_refuses_an_extra_event_key(w):
         cp.load_checkpoint(raw(short))
 
 
+def test_every_dataclass_field_is_compared_with_the_event(w):
+    """verify_* compares each field the later checks read (the manifest id among them)
+    with the signed event: a dataclass changed after loading never verifies."""
+    w.m.publish_manifest()  # version 2, so no field equals a default
+    man2 = manifest.load(raw(w.m.manifest))
+    cert = cp.load_cert(raw(cp.build_cert(w.m.root_sec, man2, w.ck, T0, T0 + DAY)))
+    assert cert.manifest_version == 2 and cp.verify_cert(cert, w.m.root)
+    for change in (dict(manifest_id="0" * 64), dict(manifest_version=1), dict(checkpoint_key=w.m.bot),
+                   dict(issued_at=T0 - 1), dict(expires_at=T0 + 2 * DAY)):
+        assert not cp.verify_cert(replace(cert, **change), w.m.root), change
+    c = cp.load_checkpoint(raw(cp.build_checkpoint(w.ck_sec, man2, 5, IDS, T0 + 100)))
+    assert c.manifest_version == 2 and cp.verify_checkpoint(c, cert)
+    for change in (dict(seq=6), dict(created_at=T0 + 99), dict(valid_until=T0), dict(manifest_id="0" * 64),
+                   dict(manifest_version=1), dict(events=frozenset())):
+        assert not cp.verify_checkpoint(replace(c, **change), cert), change
+
+
+def test_loaders_copy_the_event_and_refuse_odd_json_inside_it(w):
+    ev = json.loads(raw(w.cert_ev))
+    cert = cp.load_cert(raw(ev))
+    assert cert.event == w.cert_ev and cert.event is not w.cert_ev
+    body = raw(w.cert_ev).decode()
+    twice = body.replace('"kind": 30078', '"kind": 30078, "kind": 30078')  # a duplicate key in a valid event
+    assert twice != body
+    with pytest.raises(cp.CheckpointError, match="duplicate key"):
+        cp.load_cert(twice.encode())
+    for content in ('{"v": 1, "v": 1}', '{"v": NaN}', "[" * 600 + "]" * 600):
+        for sec, src, load in ((w.m.root_sec, w.cert_ev, cp.load_cert),
+                               (w.ck_sec, w.checkpoint().event, cp.load_checkpoint)):
+            odd = nostr.sign_event(sec, {**{k: src[k] for k in ("created_at", "kind", "tags")}, "content": content})
+            with pytest.raises(cp.CheckpointError):
+                load(raw(odd))
+
+
+@pytest.mark.parametrize("data", [b"[" * 500 + b"]" * 500, b'{"a":' * 600 + b"1" + b"}" * 600])
+def test_deeply_nested_json_is_a_checkpoint_error(data):
+    """Unauthenticated mirror input: nesting the JSON decoder accepts must not escape
+    as a RecursionError from copying it."""
+    for load in (cp.load_cert, cp.load_checkpoint):
+        with pytest.raises(cp.CheckpointError):
+            load(data)
+
+
+def test_nested_tags_in_a_signed_looking_event_are_a_checkpoint_error(w):
+    deep = "[" * 600 + "]" * 600
+    for src, load in ((w.cert_ev, cp.load_cert), (w.checkpoint().event, cp.load_checkpoint)):
+        body = raw(src).decode().replace('"tags": [["d"', '"tags": [' + deep + ', ["d"', 1)
+        assert deep in body
+        with pytest.raises(cp.CheckpointError):
+            load(body.encode())
+
+
 def test_checkpoint_size_cap_and_the_full_list(w):
     full = w.checkpoint(ids=[f"{i:064x}" for i in range(cp.MAX_EVENT_IDS)])
     assert len(full.events) == cp.MAX_EVENT_IDS and len(raw(full.event)) < cp.MAX_CHECKPOINT_BYTES
@@ -271,6 +325,9 @@ def test_fresh_until_honours_at_most_two_days(w):
     assert cp.fresh_until(w.checkpoint(now=T0)) == T0 + DAY  # the signer's default
     assert cp.fresh_until(w.checkpoint(now=T0, valid_s=3600)) == T0 + 3600
     assert cp.fresh_until(w.checkpoint(now=T0, valid_s=3650 * DAY)) == T0 + 2 * DAY  # ten years asked
+    assert cp.fresh_until(w.checkpoint(now=T0, valid_s=2 * DAY)) == T0 + 2 * DAY
+    assert cp.fresh_until(w.checkpoint(now=T0, valid_s=2 * DAY + 1)) == T0 + 2 * DAY
+    assert cp.fresh_until(w.checkpoint(now=T0, valid_s=2 * DAY - 1)) == T0 + 2 * DAY - 1
     past = w.resign(w.ck_sec, w.checkpoint(now=T0).event, {"valid_until": T0 - 5})
     assert cp.fresh_until(cp.load_checkpoint(raw(past))) == T0 - 5  # never fresh
 
@@ -295,7 +352,7 @@ def test_checkpoint_order(w):
 def test_build_checkpoint_refuses_bad_input(w):
     bad = [dict(ids=["xyz"]), dict(ids=["AB" * 32]), dict(ids=[5]), dict(ids=[IDS[0], 5, None]),
            dict(ids=[f"{i:064x}" for i in range(cp.MAX_EVENT_IDS + 1)]),
-           dict(seq=0), dict(seq=True), dict(seq=1.0), dict(now=1.5), dict(now=-1),
+           dict(seq=0), dict(seq=True), dict(seq=1.0), dict(seq=2**53), dict(now=1.5), dict(now=-1),
            dict(valid_s=0), dict(valid_s=1.5), dict(now=cp.MAX_TIME)]
     for kw in bad:
         args = dict(seq=1, ids=IDS, now=T0)
@@ -368,7 +425,7 @@ def script(w, tmp_path, monkeypatch):
 
 
 def test_script_signs_a_certificate_that_verifies(w, script, capsys):
-    assert script.main(script.argv(w.ck)) == 0
+    assert script.main(script.argv(nostr.npub(w.ck))) == 0
     cert = cp.load_cert(script.out)
     assert cp.verify_cert(cert, w.m.root) and cp.cert_problem(cert, w.man, T0 + 50) is None
     assert cert.checkpoint_key == w.ck and cert.issued_at == T0 + 50
@@ -387,10 +444,10 @@ def test_script_takes_an_npub_and_a_number_of_days(w, script):
     assert cert.checkpoint_key == w.ck and cert.expires_at - cert.issued_at == 30 * DAY
 
 
-@pytest.mark.parametrize("args", [["zz" * 32], ["ff" * 32], ["npub1qqqq"], ["KEY", "--days", "0"],
+@pytest.mark.parametrize("args", [["zz" * 32], ["ff" * 32], ["npub1qqqq"], ["HEX"], ["KEY", "--days", "0"],
                                   ["KEY", "--days", "401"], ["KEY", "--days", "-3"]])
 def test_script_checks_its_inputs_before_reading_the_root_key(w, script, capsys, args):
-    args = [w.ck if a == "KEY" else a for a in args]
+    args = [{"KEY": nostr.npub(w.ck), "HEX": w.ck}.get(a, a) for a in args]
     with pytest.raises(SystemExit) as e:
         script.main(script.argv(*args))
     assert str(e.value).startswith("sign-checkpoint-key: ") or e.value.code == 2  # argparse for --days
@@ -398,30 +455,75 @@ def test_script_checks_its_inputs_before_reading_the_root_key(w, script, capsys,
 
 
 def test_script_refuses_a_secret_key_as_the_checkpoint_key(w, script):
-    with pytest.raises(SystemExit) as e:
-        script.main(script.argv(nostr.nsec(w.ck_sec)))
-    assert "public key" in str(e.value) and nostr.nsec(w.ck_sec) not in str(e.value)
+    """A 64-hex secret is a valid x coordinate about half the time, so hex is not taken
+    at all: the key comes as an npub, which a secret cannot be."""
+    for _ in range(20):
+        sec, pub = nostr.keygen()
+        for secret in (sec, nostr.nsec(sec)):
+            with pytest.raises(SystemExit) as e:
+                script.main(script.argv(secret))
+            assert "npub" in str(e.value) and secret not in str(e.value)
     assert script.calls == [] and not script.out.exists()
+
+
+def test_script_refuses_the_root_and_the_posters_as_the_checkpoint_key(w, script):
+    """The checkpoint must come from a key the relay machine does not hold."""
+    for pub in (w.m.root, w.m.bot, w.m.cur):
+        with pytest.raises(SystemExit, match="its own key"):
+            script.main(script.argv(nostr.npub(pub)))
+    assert script.calls == [] and not script.out.exists()
+
+
+def test_script_never_signs_a_certificate_readers_would_refuse(w, script, monkeypatch):
+    """cert_order: a certificate issued before, or in the same second as, the one
+    already published is refused by every reader that holds that one."""
+    assert script.main(script.argv(nostr.npub(w.ck))) == 0  # issued at T0 + 50
+    first = script.out.read_bytes()
+    for clock in (T0 + 10.0, T0 + 50.2):  # set back; the same second
+        monkeypatch.setattr(script.time, "time", lambda: clock)
+        with pytest.raises(SystemExit, match="check the clock"):
+            script.main(script.argv(nostr.npub(nostr.keygen()[1])))
+    assert script.out.read_bytes() == first and len(script.calls) == 1
+    monkeypatch.setattr(script.time, "time", lambda: T0 + 51.0)
+    assert script.main(script.argv(nostr.npub(w.ck), "--days", "5")) == 0
+    assert cp.cert_order(cp.load_cert(script.out), cp.load_cert(first)) is None
+    script.out.write_text("{")
+    with pytest.raises(SystemExit, match="unreadable"):
+        script.main(script.argv(nostr.npub(w.ck)))
+    stranger, _ = nostr.keygen()
+    script.out.write_bytes(raw(cp.build_cert(stranger, w.man, w.ck, T0, T0 + DAY)))
+    with pytest.raises(SystemExit, match="not signed by the trust root"):
+        script.main(script.argv(nostr.npub(w.ck)))
+    with pytest.raises(SystemExit, match="is the manifest"):
+        script.main([nostr.npub(w.ck), "--manifest", str(script.man), "--out", str(script.man)])
+    assert len(script.calls) == 2
+
+
+def test_script_checks_what_it_signed_before_writing(w, script, monkeypatch):
+    monkeypatch.setattr(script.checkpoint, "verify_cert", lambda *a: False)
+    with pytest.raises(SystemExit, match="does not verify"):
+        script.main(script.argv(nostr.npub(w.ck)))
+    assert not script.out.exists()
 
 
 def test_script_refuses_a_manifest_it_cannot_trust(w, script, tmp_path):
     stranger, _ = nostr.keygen()
     script.man.write_bytes(raw(w.m.publish_manifest(signer=stranger)))
     with pytest.raises(SystemExit, match="not signed by the trust root"):
-        script.main(script.argv(w.ck))
+        script.main(script.argv(nostr.npub(w.ck)))
     script.man.write_text("{")
     with pytest.raises(SystemExit, match="manifest"):
-        script.main(script.argv(w.ck))
+        script.main(script.argv(nostr.npub(w.ck)))
     script.man.write_bytes(raw(w.m.publish_manifest()))
     with pytest.raises(SystemExit, match="output directory"):
-        script.main([w.ck, "--manifest", str(script.man), "--out", str(tmp_path / "absent" / "c.json")])
+        script.main([nostr.npub(w.ck), "--manifest", str(script.man), "--out", str(tmp_path / "absent" / "c.json")])
     assert script.calls == [] and not script.out.exists()
 
 
 def test_script_refuses_a_key_that_is_not_the_root(w, script):
     script.answer = w.m.cur_sec
     with pytest.raises(SystemExit, match="not the trust root"):
-        script.main(script.argv(w.ck))
+        script.main(script.argv(nostr.npub(w.ck)))
     assert len(script.calls) == 1 and not script.out.exists()
 
 

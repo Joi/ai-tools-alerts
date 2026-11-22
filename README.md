@@ -213,7 +213,7 @@ Actions come from a fixed list: `upgrade`, `disable_skill`, `remove_mcp_server`,
 
 Both take the ledger lock, so they never overlap an hourly run. Exit 0 on success, 2 when the request does not apply and nothing changed, 1 when the ledger or journal cannot be used.
 
-`scripts/sign-checkpoint-key.py <checkpoint public key>` signs, with the trust root, the certificate that names the key allowed to sign feed checkpoints; it is bound to the current manifest, so it is signed again after every new manifest. The format of the certificate and the checkpoint is in `aitools_alerts/checkpoint.py`. No released reader uses them yet.
+`scripts/sign-checkpoint-key.py <checkpoint public key as an npub>` signs, with the trust root, the certificate that names the key allowed to sign feed checkpoints; it is bound to the current manifest, so it is signed again after every new manifest. The format of the certificate and the checkpoint is in `aitools_alerts/checkpoint.py`. No released reader uses them yet.
 
 Every post the poster makes (an alert, a change to it, the daily digest) gets a Japanese version as a reply in the same thread, in each channel the post went to. Its first line is `lang: ja`; a reply that translates a change adds `of: <event id>` naming it. It is built from fixed templates, with no model call: product names, ids, versions, links and the SYNTHETIC TEST and unverified marks stay as they are. It carries no alert block, so it never changes an alert. The Japanese reply is sent after every English post of the run; one that fails waits for the next hour and never holds an English post back (summary fields `ja` and `ja_failed`; its pending key ends in `:ja`, or `:ja:<event id>` for a change).
 

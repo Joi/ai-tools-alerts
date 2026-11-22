@@ -29,7 +29,8 @@ Acceptance: every listed case is a test; `grep -rn "import checkpoint\|from .che
 
 - [ ] `tests/test_checkpoint.py` (script section), loading the script with `importlib` as `tests/test_manifest.py` loads `sign-manifest.py`, with `TRUST_ROOT_PUBKEY` monkeypatched to a throwaway root and `read_root_secret` replaced by a stub returning that root's secret:
   - writes `--out`, mode 0644, a certificate that `load_cert`, `verify_cert` and `cert_problem(now)` accept for `--manifest`; `expires_at - issued_at == days * 86400`; default 120 days; stdout is exactly the event id and a newline;
-  - accepts the key as 64 hex and as an npub; refuses a malformed key, a key not on the curve, an nsec;
+  - accepts the key as an npub only; refuses hex (a secret key in hex is a valid public key half the time), an nsec, a malformed npub, the trust root and every manifest poster;
+  - refuses, before the key is read, a certificate that readers holding the existing `--out` would refuse (clock set back, same second), an unreadable or non-root existing `--out`, and `--out` equal to `--manifest`;
   - refuses a manifest that does not load or does not verify under the root, `--days 0`, `--days 401`, a missing output directory: each a `SystemExit` with a `sign-checkpoint-key:` message, the stub never called (the key is not read before the inputs are checked);
   - refuses when the secret read is not the trust root's (stub returns another key): nothing written;
   - the secret never appears in stdout, stderr or the output file.
@@ -37,7 +38,7 @@ Acceptance: every listed case is a test; `grep -rn "import checkpoint\|from .che
 - [ ] `README.md` ("For the fleet: the poster" section): one paragraph naming the two documents and the script. `CHANGELOG.md`: one entry under Unreleased. `pyproject.toml`: no change (`trust/*.json` is already package data, so a future `trust/checkpoint-key.json` ships).
 - [ ] Verify: `scripts/test-gate.sh`.
 
-Acceptance: gate green; the diff outside `docs/superpowers/` is under 600 changed lines; the v0.1.4 reader test of piece 1 still passes (no file that reader fetches or bundles changes: `trust/` gains nothing in this piece).
+Acceptance: gate green; the code (module and script) is about 430 lines and its tests about 600. The first draft of this line asked for under 600 changed lines in all, which the refusal matrix of two signed formats cannot meet; the module and its only caller stay one deliverable (recorded as a rebuttal in the run manifest); the v0.1.4 reader test of piece 1 still passes (no file that reader fetches or bundles changes: `trust/` gains nothing in this piece).
 
 ## Rollback
 

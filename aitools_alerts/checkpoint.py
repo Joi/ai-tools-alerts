@@ -34,6 +34,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -57,6 +58,8 @@ MAX_AHEAD_S = 600  # pull.MAX_AHEAD_S; tests/test_checkpoint.py checks the two a
 MAX_VALID_S = 2 * 86400  # the longest validity a reader honours, whatever the signer wrote
 DEFAULT_VALID_S = 86400
 MAX_INT = 2**31 - 1
+MAX_SEQ = 2**53 - 1  # an exact integer in every JSON reader; room for any numbering a signer picks
+_ISO_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 MAX_TIME = 253402300799  # 9999-12-31T23:59:59Z
 _EVENT_KEYS = frozenset({"id", "pubkey", "created_at", "kind", "tags", "content", "sig"})
 _ISO = "%Y-%m-%dT%H:%M:%SZ"
@@ -172,7 +175,7 @@ def _hex(c: dict, key: str, what: str) -> str:
 def _time(c: dict, key: str, what: str) -> int:
     v = c.get(key)
     try:
-        if not isinstance(v, str) or len(v) != 20:
+        if not isinstance(v, str) or not _ISO_RE.fullmatch(v):  # ASCII digits, upper-case T and Z only
             raise ValueError
         return int(datetime.strptime(v, _ISO).replace(tzinfo=timezone.utc).timestamp())
     except ValueError:
@@ -206,7 +209,8 @@ def _parse_cert(ev) -> tuple:
 def load_cert(src) -> Cert:
     """Parse a certificate from a path or bytes. Does NOT verify the signature."""
     ev = _json(_read(src, MAX_CERT_BYTES, "certificate"))
-    return Cert(copy.deepcopy(ev), *_parse_cert(ev))
+    fields = _parse_cert(ev)  # the shape first: only a well-formed event is copied
+    return Cert(copy.deepcopy(ev), *fields)
 
 
 def verify_cert(cert: Cert, root_pubkey: str) -> bool:
@@ -275,7 +279,9 @@ def _parse_checkpoint(ev) -> tuple:
         raise CheckpointError("checkpoint: every event id must be 64 lowercase hex characters")
     if any(a >= b for a, b in zip(ids, ids[1:])):
         raise CheckpointError("checkpoint: event ids must be sorted, each once")
-    return (_int(c, "seq", 1, MAX_INT, "checkpoint"), ev["created_at"],
+    if ev["created_at"] > MAX_TIME:
+        raise CheckpointError("checkpoint: created_at is past the year 9999")
+    return (_int(c, "seq", 1, MAX_SEQ, "checkpoint"), ev["created_at"],
             _int(c, "valid_until", 0, MAX_TIME, "checkpoint"), _hex(c, "manifest_id", "checkpoint"),
             _int(c, "manifest_version", 1, MAX_INT, "checkpoint"), frozenset(ids))
 
@@ -283,7 +289,8 @@ def _parse_checkpoint(ev) -> tuple:
 def load_checkpoint(src) -> Checkpoint:
     """Parse a checkpoint from a path or bytes. Does NOT verify the signature."""
     ev = _json(_read(src, MAX_CHECKPOINT_BYTES, "checkpoint"))
-    return Checkpoint(copy.deepcopy(ev), *_parse_checkpoint(ev))
+    fields = _parse_checkpoint(ev)
+    return Checkpoint(copy.deepcopy(ev), *fields)
 
 
 def verify_checkpoint(cp: Checkpoint, cert: Cert) -> bool:
@@ -348,8 +355,8 @@ def build_checkpoint(sec: str, m: Manifest, seq: int, event_ids, now: int,
     ids = sorted(set(ids))
     if len(ids) > MAX_EVENT_IDS:
         raise CheckpointError(f"more than {MAX_EVENT_IDS} event ids")
-    if type(seq) is not int or not 1 <= seq <= MAX_INT:
-        raise CheckpointError(f"seq must be an integer in 1..{MAX_INT}")
+    if type(seq) is not int or not 1 <= seq <= MAX_SEQ:
+        raise CheckpointError(f"seq must be an integer in 1..{MAX_SEQ}")
     if type(now) is not int or type(valid_s) is not int or valid_s < 1 or not 0 <= now <= MAX_TIME - valid_s:
         raise CheckpointError("now and valid_s must be whole seconds, valid_s at least 1")
     content = {"v": VERSION, "seq": seq, "valid_until": now + valid_s, "manifest_id": m.event["id"],

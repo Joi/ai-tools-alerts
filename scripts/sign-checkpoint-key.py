@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """Sign the checkpoint key certificate with the trust root key.
 
-    scripts/sign-checkpoint-key.py <checkpoint public key: 64 hex or npub>
+    scripts/sign-checkpoint-key.py <checkpoint public key, as an npub>
         [--manifest trust/manifest.json] [--days 120] [--out trust/checkpoint-key.json]
 
 The certificate names the one key that may sign feed checkpoints
 (aitools_alerts/checkpoint.py). It is bound to the manifest at --manifest by
 that manifest's event id, so every new manifest needs a new certificate: sign
 the manifest, then run this. It expires --days after now (1 to 400).
+
+The key is taken as an npub only. A 64-hex secret key is a valid public key
+about half the time, so a hex argument could put a secret, pasted by mistake,
+into a public file; an npub cannot be a secret. The script also refuses the
+trust root and every poster in the manifest as the checkpoint key (the
+checkpoint must come from a key the relay machine does not hold), an --out
+that is the manifest, and a certificate that readers holding the one already
+at --out would refuse (cert_order): each before the root key is read.
 
 The root secret is read by scripts/sign-manifest.py's read_root_secret, the
 one implementation of that handling: see that script for the helper, its
@@ -46,16 +54,14 @@ def _die(msg: str) -> None:
 
 
 def _public_key(text: str) -> str:
-    """The checkpoint public key as 64 hex, from hex or an npub. The value is never echoed:
+    """The checkpoint public key as 64 hex, from an npub. The value is never echoed:
     a secret key pasted by mistake must not reach a terminal or a log."""
-    if text.startswith("npub1"):
-        try:
-            return nostr.npub_to_hex(text)
-        except ValueError:
-            _die("the checkpoint key is not a valid npub")
-    if nostr._is_hex(text, 32) and nostr._lift_x(int(text, 16)) is not None:
-        return text
-    _die("the checkpoint key must be a public key: 64 lowercase hex characters or an npub")
+    if not text.startswith("npub1"):
+        _die("the checkpoint key must be a public key written as an npub (npub1...)")
+    try:
+        return nostr.npub_to_hex(text)
+    except ValueError:
+        _die("the checkpoint key is not a valid npub")
 
 
 def _days(text: str) -> int:
@@ -70,7 +76,7 @@ def _days(text: str) -> int:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Sign the checkpoint key certificate with the root key.")
-    ap.add_argument("checkpoint_key", help="the checkpoint public key: 64 hex or an npub")
+    ap.add_argument("checkpoint_key", help="the checkpoint public key, as an npub")
     ap.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     ap.add_argument("--days", type=_days, default=120, help="days until the certificate expires (default 120)")
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
@@ -83,9 +89,23 @@ def main(argv=None) -> int:
         _die(f"manifest {args.manifest} is unusable: {e}")
     if not manifest.verify(m, TRUST_ROOT_PUBKEY):
         _die(f"manifest {args.manifest} is not signed by the trust root")
+    if key == TRUST_ROOT_PUBKEY or manifest.role_of(m, key) is not None:
+        _die("the checkpoint key must be its own key: not the trust root, not a poster in the manifest")
     if not args.out.parent.is_dir():
         _die(f"output directory {args.out.parent} does not exist")
+    if args.out.resolve() == args.manifest.resolve():
+        _die("--out is the manifest; the certificate is a separate file")
     now = int(time.time())
+    previous = None
+    if args.out.exists():
+        try:
+            previous = checkpoint.load_cert(args.out)
+        except checkpoint.CheckpointError as e:
+            _die(f"existing {args.out} is unreadable ({e}); move it aside to replace it")
+        if not checkpoint.verify_cert(previous, TRUST_ROOT_PUBKEY):
+            _die(f"existing {args.out} is not signed by the trust root; move it aside to replace it")
+        if previous.issued_at >= now:  # readers that hold it would refuse the new one (cert_order)
+            _die(f"existing {args.out} is issued at or after this machine's clock; check the clock")
 
     sec = read_root_secret()
     try:
@@ -102,8 +122,9 @@ def main(argv=None) -> int:
         cert = checkpoint.load_cert(data)
     except checkpoint.CheckpointError as e:
         _die(f"signed certificate does not load: {e}")
-    if not checkpoint.verify_cert(cert, TRUST_ROOT_PUBKEY) or checkpoint.cert_problem(cert, m, now) is not None:
-        _die("signed certificate does not verify for this manifest")
+    if (not checkpoint.verify_cert(cert, TRUST_ROOT_PUBKEY) or checkpoint.cert_problem(cert, m, now) is not None
+            or checkpoint.cert_order(cert, previous) is not None):
+        _die("signed certificate does not verify for this manifest, or would not replace the existing one")
     _sign_manifest._write(args.out, data)
     print(ev["id"])
     return 0

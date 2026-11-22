@@ -39,7 +39,7 @@ Signed by the certified key on the poster machine, every poster run. It answers 
 - `kind` 30078, `tags` exactly `[["d", "aitools-alerts-checkpoint"]]`, `pubkey` the certificate's `checkpoint_key`.
 - `content`: JSON object with
   - `v`: the format version, the integer 1;
-  - `seq`: integer from 1, raised by one for every checkpoint the signer makes with this key;
+  - `seq`: integer from 1 to 2^53 - 1, higher in every checkpoint the signer makes with this key;
   - `valid_until`: integer, seconds since the epoch;
   - `manifest_id`, `manifest_version`: the manifest the signer held;
   - `events`: the ids (64 hex) of every event the signer vouches for, sorted, no duplicates, at most 2,000.
@@ -66,6 +66,8 @@ The reader keeps the last checkpoint and certificate it accepted (piece 3 stores
 
 - `cert_order(new, old)`: a certificate replaces the stored one when it is the same event, or its `issued_at` is later. An earlier `issued_at`, or the same `issued_at` with a different event id, is refused (`"older certificate"`, `"conflicting certificate"`).
 - `checkpoint_order(new, old)`: `seq` is scoped to the checkpoint key. With the same key: the same event id is a retransmission and is fine; a lower `seq` is refused (`"older checkpoint"`); the same `seq` with a different id is refused and reported (`"conflicting checkpoint"`: two different statements under one number mean a stolen key or a split view); a higher `seq` must not be dated before the stored one (`"older checkpoint"`). With a different key (a new certificate named a new key): accepted only if `created_at` is not before the stored checkpoint's; `seq` starts again.
+
+A signer that loses its count cannot go back under the same key: it needs a new key and a certificate naming it (piece 4 states this in the poster's recovery steps). A thief who signs the highest possible `seq` ends that key's use the same way; the remedy is the same new certificate.
 
 A manifest change does not reset anything: the certificate for the new manifest is newer by `issued_at`, and the checkpoint key it names continues its own `seq` if it is the same key.
 
@@ -106,9 +108,11 @@ build_checkpoint(sec, manifest, seq, event_ids, now:int, valid_s=DEFAULT_VALID_S
 ## The signing script: `scripts/sign-checkpoint-key.py`
 
 ```
-scripts/sign-checkpoint-key.py <checkpoint public key: 64 hex or npub>
+scripts/sign-checkpoint-key.py <checkpoint public key, as an npub>
     [--manifest trust/manifest.json] [--days 120] [--out trust/checkpoint-key.json]
 ```
+
+The key is taken as an npub only: a 64-hex secret key is a valid public key about half the time, so a hex argument could put a secret pasted by mistake into a public file, and an npub cannot be a secret. The script refuses the trust root and every poster of the manifest as the checkpoint key, an `--out` that is the manifest, and a certificate that readers holding the one already at `--out` would refuse (issued at or before it: `cert_order`). All of that is checked before the root key is read.
 
 It loads and verifies the manifest under the pinned root, refuses `--days` outside 1..400, reads the root key exactly as `scripts/sign-manifest.py` does (it imports that script's `read_root_secret`, so there is one implementation of the key handling: the helper, the read-only cache directory, the refusal to run as root), signs, checks the result with `load_cert`, `verify_cert` and `cert_problem`, writes it atomically, and prints only the event id. It refuses a key that is not the trust root.
 
