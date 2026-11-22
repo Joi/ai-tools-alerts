@@ -9,7 +9,7 @@ import pytest
 
 from aitools_alerts import config, manifest, nostr, pull
 from aitools_alerts.state import State, StateError
-from mirror_helpers import FIXTURE_MIRROR, FIXTURE_ROOT, T0, Mirror, advisory
+from mirror_helpers import CHANNELS, FIXTURE_MIRROR, FIXTURE_ROOT, T0, Mirror, advisory
 
 
 @pytest.fixture(autouse=True)
@@ -792,7 +792,9 @@ def test_pull_records_newest_trusted_event_and_manifest_time(mirror):
 
 def test_old_manifest_is_stale_even_with_fresh_events(mirror):
     mirror.post(mirror.cur_sec, "digest", created_at=T0 + 90 * DAY)
-    _, st = do_pull(mirror)
+    st = State.load()
+    pull.fetch("https://mirror.example.invalid/alerts", st, fetch=mirror.fetch, root_pubkey=mirror.root,
+               now=T0 + 90 * DAY)  # a clock that admits the event
     assert pull.stale_since(st, T0 + 90 * DAY + 1) is None
     assert pull.stale_since(st, T0 + 1 + 90 * DAY + 1) == T0 + 1  # the manifest's issued time
 
@@ -801,7 +803,8 @@ def test_events_of_keys_the_manifest_does_not_trust_do_not_count(mirror):
     mirror.post(mirror.cur_sec, "old", created_at=T0 + 100)
     _, st = do_pull(mirror)
     sec, pub = nostr.keygen()  # cached under no current key, as after a bundled revocation
-    ev = nostr.sign_event(sec, {"created_at": T0 + 900, "kind": 9, "tags": [], "content": "x"})
+    ev = nostr.sign_event(sec, {"created_at": T0 + 900, "kind": 9, "tags": [["h", CHANNELS["feed"]]],
+                                "content": "x"})  # channel-bound: only its key keeps it out
     st.events[ev["id"]] = ev
     assert pull.freshness(st) == (T0 + 100, T0 + 1)
     assert pull.stale_since(st, T0 + 900 + 3 * DAY) == T0 + 100
@@ -812,3 +815,201 @@ def test_no_events_measures_from_the_manifest_and_never_pulled_is_not_stale(mirr
     _, st = do_pull(mirror)
     assert pull.freshness(st) == (None, T0 + 1)
     assert pull.stale_since(st, T0 + 1 + 3 * DAY + 1) == T0 + 1
+
+
+# ------------------------------- channel binding and the date bound (ai-tools-alerts#gefy)
+
+LIVE = FIXTURE_MIRROR.parent / "poster" / "live-feed-2026-11-07-to-11.json"
+OTHER_CHANNEL = "11111111-2222-4333-8444-555555555555"
+
+
+def _store(mirror, *events):
+    """Put events straight into saved state, as a v0.1.4 pull would have stored them."""
+    st = State.load()
+    st.accept(mirror.root, manifest.load(json.dumps(mirror.manifest).encode()),
+              {**st.events_for(mirror.root), **{e["id"]: e for e in events}})
+    st.save_pull()
+    return State.load()
+
+
+def test_event_of_another_kind_is_not_an_advisory(mirror):
+    """Report M3: a kind 1 note a curator key signed elsewhere, served by the mirror."""
+    mirror.root_post(mirror.cur_sec, kind=1)
+    res, st = do_pull(mirror)
+    assert res.error is None and res.dropped == {"not-channel-post": 1}
+    assert st.events == {} and threads(st) == []
+
+
+@pytest.mark.parametrize("tags", [[], [("h", OTHER_CHANNEL)], [("h",)], [("h", ""), ("x", "y")],
+                                  [("h", CHANNELS["feed"]), ("h", CHANNELS["critical"])],
+                                  [("h", CHANNELS["feed"]), ("h", OTHER_CHANNEL)]])
+def test_event_without_one_alert_channel_tag_is_not_an_advisory(mirror, tags):
+    mirror.root_post(mirror.cur_sec, tags=tags, h=None)
+    res, st = do_pull(mirror)
+    assert res.dropped == {"not-channel-post": 1} and st.events == {} and threads(st) == []
+
+
+def test_unbound_reply_cannot_retract_lower_or_patch(mirror):
+    root = mirror.root_post(mirror.bot_sec, advisory(posted_by="relay-bot"))
+    for text in ("retract", "level: notice", mirror.patch_text(title="Rewritten")):
+        mirror.post(mirror.cur_sec, text, created_at=T0 + 200, tags=[("e", root["id"], "", "root")], h=None)
+        mirror.post(mirror.cur_sec, text, created_at=T0 + 201, tags=[("e", root["id"], "", "root")], kind=1)
+    res, st = do_pull(mirror)
+    assert res.dropped == {"not-channel-post": 6}
+    (t,) = threads(st)
+    assert not t.retracted and t.adv.level == "critical" and t.adv.title == advisory().title
+
+
+def test_stored_unbound_event_is_ignored_then_removed(mirror):
+    good = mirror.root_post(mirror.cur_sec, advisory(id="AITA-TEST-0002"), created_at=T0 + 101)
+    odd = mirror.root_post(mirror.cur_sec, kind=1, files=(), created_at=T0 + 900)  # newer, inside the date bound
+    bare = mirror.post(mirror.cur_sec, "retract", created_at=T0 + 950, files=(), h=None,
+                       tags=[("e", good["id"], "", "root")])
+    st = _store(mirror, odd, bare, good)
+    (t,) = threads(st)  # before any pull by this reader
+    assert t.root_id == good["id"] and not t.retracted
+    assert pull.freshness(st, T0 + 1000)[0] == T0 + 101  # the unbound ones are not news
+    assert pull.stale_since(st, T0 + 101 + 3 * DAY + 1) == T0 + 101
+    res, st = do_pull(mirror)
+    assert res.dropped == {"not-channel-post": 2} and set(State.load().events) == {good["id"]}
+
+
+def test_future_dated_event_is_refused(mirror):
+    now = T0 + 1000
+    mirror.post(mirror.bot_sec, "at the bound", created_at=now + pull.MAX_AHEAD_S)
+    ahead = mirror.post(mirror.bot_sec, "past the bound", created_at=now + pull.MAX_AHEAD_S + 1)
+    res, st = do_pull(mirror)
+    assert res.error is None and res.dropped == {"future-dated": 1}
+    assert len(st.events) == 1 and ahead["id"] not in State.load().events
+    st = State.load()
+    pull.fetch("https://mirror.example.invalid/alerts", st, fetch=mirror.fetch, root_pubkey=mirror.root,
+               now=now + 1)  # its date has come: admitted
+    assert ahead["id"] in State.load().events
+
+
+def test_future_dated_event_does_not_hide_a_frozen_mirror(mirror):
+    """ai-tools-alerts#ek5q attack 4: one bot event dated ten years ahead."""
+    mirror.post(mirror.cur_sec, "digest", created_at=T0 + 500)
+    mirror.post(mirror.bot_sec, "ten years on", created_at=T0 + 3650 * DAY)
+    res, st = do_pull(mirror)
+    assert res.dropped == {"future-dated": 1}
+    for days in (30, 80):  # the report: stale_since stayed empty 30 and 80 days into a freeze
+        assert pull.stale_since(st, T0 + days * DAY) == T0 + 500
+    assert State.load().last_pull["newest_event_at"] == T0 + 500
+
+
+def test_stored_future_event_only_leaves_the_stale_check(mirror):
+    """An event v0.1.4 already stored is never dropped for its date; it only stops
+    passing for fresh news."""
+    real = mirror.root_post(mirror.cur_sec, created_at=T0 + 500)
+    far = mirror.reply(mirror.cur_sec, real, "retract", created_at=T0 + 3650 * DAY)
+    st = _store(mirror, real, far)
+    assert threads(st)[0].retracted  # still part of its thread
+    assert pull.freshness(st, T0 + 1000)[0] == T0 + 500
+    assert pull.stale_since(st, T0 + 30 * DAY) == T0 + 500
+    assert pull.freshness(st, T0 + 3650 * DAY)[0] == T0 + 3650 * DAY  # once its date has come
+    mirror.events["feed.json"].remove(far)
+    do_pull(mirror)
+    assert far["id"] in State.load().events and threads()[0].retracted
+    assert State.load().last_pull["newest_event_at"] == T0 + 500  # the pull records by its own clock
+
+
+def test_clock_set_back_keeps_a_stored_retraction(mirror):
+    """A stored retraction is not re-judged by the clock: set back an hour, with a
+    mirror that now withholds the reply, the thread stays retracted."""
+    root = mirror.root_post(mirror.cur_sec)
+    gone = mirror.reply(mirror.cur_sec, root, "retract", created_at=T0 + 900)
+    do_pull(mirror)  # now = T0 + 1000
+    mirror.events["feed.json"].remove(gone)
+    st = State.load()
+    res = pull.fetch("https://mirror.example.invalid/alerts", st, fetch=mirror.fetch, root_pubkey=mirror.root,
+                     now=T0 + 1000 - 3600)
+    assert res.error is None and not res.dropped
+    assert gone["id"] in State.load().events and threads()[0].retracted
+
+
+ONE, TWO = CHANNELS["feed"], CHANNELS["critical"]
+
+
+@pytest.mark.parametrize("damage", [
+    "missing", "not json", '["a"]', "{}", '{"feed": "not-a-uuid", "critical": "%s"}' % TWO,
+    '{"feed": "%s"}' % ONE,  # one channel only: the other's alerts and retractions would vanish
+    '{"feed": "%s", "critical": "%s"}' % (ONE, ONE),  # not distinct
+    '{"feed": "%s", "critical": "%s", "extra": "%s"}' % (ONE, TWO, OTHER_CHANNEL),  # a third channel
+    '{"feed": "%s", "critical": "%s", "feed": "%s"}' % (OTHER_CHANNEL, TWO, ONE)])  # a duplicate key
+def test_broken_channel_spec_is_a_pull_error(mirror, tmp_path, monkeypatch, damage):
+    root = mirror.root_post(mirror.cur_sec)
+    do_pull(mirror)
+    before = (config.state_dir() / "events.json").read_bytes()
+    spec = tmp_path / "spec"
+    spec.mkdir()
+    if damage != "missing":
+        (spec / "channels.json").write_text(damage)
+    monkeypatch.setattr(pull.schema, "SPEC_DIR", spec)
+    mirror.reply(mirror.cur_sec, root, "retract")
+    res, st = do_pull(mirror)
+    assert res.error == "bad channel spec" and res.error in pull.PULL_ERRORS
+    assert (config.state_dir() / "events.json").read_bytes() == before
+    last = State.load().last_pull
+    assert last["ok"] is False and last["error"] == "bad channel spec" and last["newest_event_at"] is None
+    with pytest.raises(pull.ChannelSpecError):
+        threads()
+    assert pull.freshness(State.load(), T0 + 1000)[0] is None
+
+
+def test_live_feed_fixture_is_read_whole(monkeypatch):
+    """The ten real signed events of 2026-11-07 to 11-11, each with the relay's h tag,
+    served as a mirror under the real manifest: none is dropped."""
+    doc = json.loads(LIVE.read_text())
+    m = pull.bundled_manifest()
+    assert m is not None
+    if any(manifest.role_of(m, e["pubkey"]) is None for e in doc["events"]):
+        pytest.skip("a fixture event's key is no longer in the bundled manifest")
+    files = {"manifest.json": json.dumps(m.event).encode(),
+             "feed.json": json.dumps({"generated_at": doc["generated_at"], "channel": "feed",
+                                      "events": doc["events"]}).encode(),
+             "critical.json": json.dumps({"generated_at": doc["generated_at"], "channel": "critical",
+                                          "events": []}).encode()}
+    st = State.load()
+    now = max(e["created_at"] for e in doc["events"]) + 60
+    res = pull.fetch("https://mirror.example.invalid/alerts", st, fetch=lambda u: files[u.rsplit("/", 1)[1]],
+                     now=now)
+    assert res.error is None and not res.dropped
+    assert set(st.events) == {e["id"] for e in doc["events"]} and len(doc["events"]) == 10
+    assert all(e["kind"] == 9 and [t[0] for t in e["tags"]].count("h") == 1 for e in doc["events"])
+    got = pull.advisories(st)
+    assert got and got == pull.threads_from(doc["events"], m)
+
+
+def test_released_reader_reads_the_regenerated_fixture(tmp_path):
+    """The fixture mirror's events now carry h tags; the released v0.1.4 reader, which
+    knows nothing of them, still reads the mirror."""
+    import subprocess
+    import sys
+    import tarfile
+    repo = FIXTURE_MIRROR.parents[2]
+    tar = subprocess.run(["git", "-C", str(repo), "archive", "v0.1.4", "aitools_alerts", "spec", "trust"],
+                         capture_output=True)
+    if tar.returncode != 0:
+        pytest.skip("tag v0.1.4 is not in this clone")
+    old = tmp_path / "v014"
+    old.mkdir()
+    with tarfile.open(fileobj=io.BytesIO(tar.stdout)) as tf:
+        tf.extractall(old, filter="data")
+    home = tmp_path / "home014"
+    (home / ".config" / "aitools-alerts").mkdir(parents=True)
+    (home / ".config" / "aitools-alerts" / "config.toml").write_text("trust_root_override = true\n")
+    env = {"HOME": str(home), "PATH": os.environ["PATH"], "AITOOLS_ALERTS_TRUST_ROOT": FIXTURE_ROOT}
+
+    # v0.1.4 takes the home from the password database, never HOME: point it at the temp home
+    # in-process, or this test would read and write the real user's state.
+    boot = ("import pathlib, sys; from aitools_alerts import cli, config; "
+            "config.home = lambda: pathlib.Path(sys.argv[1]); sys.exit(cli.main(sys.argv[2:]))")
+
+    def run(*args):
+        return subprocess.run([sys.executable, "-c", boot, str(home), *args], cwd=old, env=env,
+                              capture_output=True, text=True, timeout=120)
+    got = run("pull", "--mirror-url", FIXTURE_MIRROR.as_uri() + "/")
+    assert got.returncode == 0 and "2 new events" in got.stdout and "Traceback" not in got.stderr, got.stderr
+    got = run("check")
+    assert got.returncode == 0 and "2 advisories" in got.stdout and "Traceback" not in got.stderr, got.stderr

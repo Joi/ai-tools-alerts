@@ -4,8 +4,29 @@ from pathlib import Path
 
 import pytest
 
-from aitools_alerts import config
-from mirror_helpers import Mirror
+from aitools_alerts import config, curator, pull
+from mirror_helpers import T0, Mirror
+
+
+class _Clock:
+    """The reader's clock for the tests: a fixed instant after the 2099-dated
+    test events, so a pull that takes the default clock admits them."""
+    def __init__(self, real, at):
+        self._real, self.at = real, at
+
+    def time(self):
+        return self.at
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+@pytest.fixture(autouse=True)
+def reader_clock(monkeypatch):
+    clock = _Clock(pull.time, T0 + 1000)
+    monkeypatch.setattr(pull, "time", clock)
+    monkeypatch.setattr(curator, "time", clock)  # the curator dates replies by the same clock
+    return clock
 
 
 @pytest.fixture(autouse=True)

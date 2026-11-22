@@ -157,9 +157,37 @@ def file_reader(path):
     return read
 
 
-def clean(rows, m) -> tuple[list[dict], Counter]:
+def published_ids(out: Path, names) -> tuple[frozenset, int]:
+    """(ids of the events in the channel files already in ``out`` that were
+    within the date bound when their file was written, the newest
+    generated_at of those files or 0). An event an exporter without the bound
+    published years ahead of its own clock is not among the ids, so it is
+    judged again. An unreadable or missing file contributes nothing."""
+    ids, newest = set(), 0
+    for name in names:
+        try:
+            doc = json.loads((out / f"{name}.json").read_text(encoding="utf-8"))
+            at = int(datetime.strptime(doc["generated_at"], "%Y-%m-%dT%H:%M:%SZ")
+                     .replace(tzinfo=timezone.utc).timestamp())
+            ids.update(e["id"] for e in doc["events"]
+                       if isinstance(e["id"], str) and e["created_at"] <= at + pull.MAX_AHEAD_S)
+            newest = max(newest, at)
+        except (OSError, ValueError, RecursionError, KeyError, TypeError, AttributeError):
+            continue
+    return frozenset(ids), newest
+
+
+def clean(rows, m, channel_ids, now: int, admitted=frozenset()) -> tuple[list[dict], Counter]:
     """Keep rows that are NIP-01 events whose id and signature verify, whose
-    kind is 9 and whose pubkey is a poster in manifest m.
+    kind is 9, whose pubkey is a poster in manifest m, whose one h tag names
+    an alert channel (the reader's rule, pull._bound: an event it would drop
+    is not published) and whose date is not more than pull.MAX_AHEAD_S ahead of
+    now. A future-dated event (counted future) would otherwise be the newest
+    signed event for every released reader, hiding a frozen mirror from
+    them; it stays in the relay and is published once its date has come.
+    The date bound is an admission check, as in the reader: an event whose id
+    is in ``admitted`` (already published) is kept whatever the clock says
+    now, so a clock set back never withdraws a published retraction.
 
     The relay also stores NIP-29 admin events in a channel (kinds 9000-9020,
     39000-39003, 40099...), signed by the relay-bot key with no e tag: they
@@ -182,6 +210,12 @@ def clean(rows, m) -> tuple[list[dict], Counter]:
             continue
         if mf.role_of(m, ev["pubkey"]) is None:
             counts["not_poster"] += 1
+            continue
+        if not pull._bound(ev, channel_ids):
+            counts["unbound"] += 1
+            continue
+        if ev["id"] not in admitted and ev["created_at"] > now + pull.MAX_AHEAD_S:
+            counts["future"] += 1
             continue
         kept.append(ev)
     counts["kept"] = len(kept)
@@ -348,8 +382,8 @@ def atom_doc(events: list[dict], m, generated_at: str, mirror_url: str, lang: st
     CLI reads it, pull.threads_from) takes its title and text, and its
     updated moves to the translation's time (past it, for a withdrawal)."""
     names = {p.pubkey: p.name for p in m.posters}
-    # created_at beyond 9999-12-31 has no Atom date: such an event stays in
-    # the JSON (it is signed and raw) but takes no part in the Atom.
+    # created_at beyond 9999-12-31 has no Atom date: clean() publishes such an
+    # event only once its date has come, and it takes no part in the Atom.
     dated = [ev for ev in events if ev["created_at"] <= schema.MAX_TIMESTAMP]
     retraction = {}
     for ev in dated:  # query order is created_at order: the latest wins
@@ -451,7 +485,8 @@ def _threads(events: dict[str, dict], m, now: int) -> list:
     kept = pull._retain(events, now, pull.PullResult())
     st = State(dir=Path("/nonexistent"), roots={TRUST_ROOT_PUBKEY: [m, kept]},
                manifest_root=TRUST_ROOT_PUBKEY)
-    return pull.advisories(st)
+    # clean() bound every event to its channel in --channels already
+    return pull.threads_from(kept.values(), pull.effective_manifest(st))
 
 
 def _source(adv) -> tuple[str, bool]:
@@ -594,11 +629,15 @@ def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_
     if not mirror_url.endswith("/"):
         mirror_url += "/"
     now = int(now if now is not None else datetime.now(timezone.utc).timestamp())
-    generated_at = _iso(now)
+    # generated_at never goes back: it is what the next run measures a published
+    # event's date against (published_ids), so after a clock set back it must
+    # still vouch for what the earlier, later-dated run admitted.
+    admitted, previous_at = published_ids(out, channels)
+    generated_at = _iso(max(now, previous_at))
 
     events, counts = {}, {}
     for name, cid in channels.items():
-        events[name], counts[name] = clean(reader(name, cid), m)
+        events[name], counts[name] = clean(reader(name, cid), m, frozenset(channels.values()), now, admitted)
     events, capped = cap(events, m, generated_at)
     for name in channels:
         counts[name]["capped"] = capped[name]
@@ -622,6 +661,7 @@ def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_
 def summary_line(result: dict) -> str:
     parts = [f"{name} kept={c['kept']} malformed={c['malformed']} bad_sig={c['bad_sig']}"
              f" other_kind={c['other_kind']} not_poster={c['not_poster']} capped={c['capped']}"
+             f" unbound={c['unbound']} future={c['future']}"
              for name, c in result["channels"].items()]
     return ("export_mirror: " + "; ".join(parts) + f"; atom entries={result['atom_entries']}"
             f"; index advisories={result['index_advisories']}")

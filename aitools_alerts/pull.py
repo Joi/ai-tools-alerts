@@ -17,6 +17,13 @@ Relay deletions (kind 9005, by a relay admin or by a root's own author) and
 NIP-09 deletions (kind 5) are not read, whoever signed them. Readers trust signed posters, not relay admin events: the stored
 events and the manifest floor stand, and a thread is withdrawn only by a
 trusted curator's retraction or by the manifest's ``retracted`` list.
+
+An event counts only when it is a kind 9 message carrying one ``h`` tag that
+names a channel in spec/channels.json (``_bound``): a signature a poster's key
+made anywhere else is never an alert, a patch or a retraction. An event not
+yet stored and dated more than MAX_AHEAD_S after the reader's clock is
+refused. A stored event is never re-judged by its date: a clock set back must
+not undo a stored retraction. It only leaves the stale check while ahead.
 """
 
 from __future__ import annotations
@@ -41,7 +48,8 @@ from .state import EVENT_KEYS, State
 __all__ = ["FILES", "FetchError", "PULL_ERRORS", "MAX_FETCH_BYTES", "MAX_EVENTS", "PullResult", "Thread",
            "fetch", "default_fetch", "advisories", "active", "bundled_manifest",
            "parse_translation", "translation_title", "threads_from",
-           "STALE_EVENT_S", "STALE_MANIFEST_S", "freshness", "stale_since"]
+           "STALE_EVENT_S", "STALE_MANIFEST_S", "freshness", "stale_since",
+           "MAX_AHEAD_S", "CHAT_KIND", "ChannelSpecError", "channel_ids"]
 
 FILES = ("feed.json", "critical.json")
 MAX_FETCH_BYTES = 8 << 20
@@ -51,6 +59,10 @@ MAX_STORED_BYTES = 32 << 20  # serialized, all roots; half state.MAX_STATE_BYTES
 RETENTION_S = 400 * 86400
 STALE_EVENT_S = 3 * 86400  # the poster's daily digest is the signed heartbeat
 STALE_MANIFEST_S = 90 * 86400
+MAX_AHEAD_S = 600  # an event dated further ahead of the local clock is not admitted
+CHAT_KIND = 9  # NIP-29 group chat message: the only kind posters and curators send
+CHANNEL_NAMES = ("feed", "critical")  # the keys of spec/channels.json, exactly
+_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 TIMEOUT = 20
 _RANK = {"notice": 1, "high": 2, "critical": 3}
 _PATCH_KEYS = frozenset(f for f in Advisory.__dataclass_fields__)
@@ -82,7 +94,36 @@ class Thread:
 
 # PullResult.error is None, "http <status>" or one of these: never server text.
 PULL_ERRORS = ("timeout", "unreachable", "too large", "bad manifest", "bad event file",
-               "manifest not signed by the trust root", "state limit reached: new events not stored")
+               "manifest not signed by the trust root", "state limit reached: new events not stored",
+               "bad channel spec")
+
+
+class ChannelSpecError(ValueError):
+    """spec/channels.json is missing or malformed: no event can be bound to a channel."""
+
+
+def channel_ids() -> frozenset:
+    """The ids of the alert channels, from the packaged spec/channels.json."""
+    try:
+        obj = json.loads((schema.SPEC_DIR / "channels.json").read_text(encoding="utf-8"),
+                         object_pairs_hook=schema._no_duplicates, parse_constant=schema._reject_constant)
+    except (OSError, ValueError, RecursionError):
+        raise ChannelSpecError("spec/channels.json is unreadable; reinstall aitools-alerts") from None
+    # Exactly the two channels, distinct: a file naming one would silently drop the
+    # other's alerts and retractions, and an extra entry would admit a third channel.
+    if (not isinstance(obj, dict) or set(obj) != set(CHANNEL_NAMES)
+            or not all(isinstance(v, str) and _UUID.fullmatch(v) for v in obj.values())
+            or len(set(obj.values())) != len(CHANNEL_NAMES)):
+        raise ChannelSpecError("spec/channels.json does not name the alert channels; reinstall aitools-alerts")
+    return frozenset(obj.values())
+
+
+def _bound(ev: dict, channels) -> bool:
+    """A kind 9 event with exactly one h tag, naming an alert channel."""
+    if ev.get("kind") != CHAT_KIND or not isinstance(ev.get("tags"), list):
+        return False
+    h = [t for t in ev["tags"] if isinstance(t, list) and t and t[0] == "h"]
+    return len(h) == 1 and len(h[0]) >= 2 and h[0][1] in channels
 
 
 class FetchError(OSError):
@@ -167,12 +208,14 @@ def fetch(base_url: str, state: State, fetch=None, root_pubkey: str = TRUST_ROOT
 
 
 def _filter(stored: dict, fetched: list, m: Manifest, floor: Manifest | None,
-            res: PullResult) -> dict:
+            res: PullResult, channels, now: float) -> dict:
     """Events whose key is in ``m``: the stored ones (verified when they were
     stored), then each fetched one that verifies. A fetched event is verified
     before it can claim its id, so a forged copy of a genuine id never
     displaces the genuine one. Only the seven NIP-01 fields are kept: an
-    unsigned extra field never reaches state."""
+    unsigned extra field never reaches state. An event not bound to an alert
+    channel is dropped, stored or fetched; one dated more than MAX_AHEAD_S
+    ahead is dropped only when it is not stored yet (see the module text)."""
     kept: dict[str, dict] = {}
     why: dict[str, str] = {}  # id -> reason, counted once per id
     for ev, verified in [(e, True) for e in stored.values()] + [(e, False) for e in fetched]:
@@ -188,6 +231,10 @@ def _filter(stored: dict, fetched: list, m: Manifest, floor: Manifest | None,
             was = verified or (floor is not None
                                and manifest.role_of(floor, ev["pubkey"]) is not None)
             why.setdefault(eid, "revoked" if was else "unknown-poster")
+        elif not _bound(ev, channels):
+            why.setdefault(eid, "not-channel-post")
+        elif not verified and ev["created_at"] > now + MAX_AHEAD_S:
+            why.setdefault(eid, "future-dated")
         else:
             kept[eid] = {k: copy.deepcopy(ev[k]) for k in EVENT_KEYS}
             why.pop(eid, None)
@@ -224,7 +271,7 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float) -> PullRes
             last.update(new=len(res.new_events), dropped=dict(res.dropped))
         same_root = state.manifest_root == root_pubkey  # else the times are another root's
         last.update(zip(("newest_event_at", "manifest_issued_at"),
-                        freshness(state) if same_root else (None, None)))
+                        freshness(state, now, channels) if same_root and channels else (None, None)))
         state.last_pull = last
 
     def fail(msg: str) -> PullResult:
@@ -233,6 +280,11 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float) -> PullRes
         state.save_last_pull()
         return res
 
+    try:
+        channels = channel_ids()
+    except ChannelSpecError:
+        channels = None
+        return fail("bad channel spec")
     # 1. manifest: well formed, not older than the floor
     try:
         m = manifest.load(get(base + "manifest.json"), previous=floor)
@@ -261,11 +313,11 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float) -> PullRes
     # or the store is full: its revocations apply to the stored events at
     # once, while the previous events of keys it still trusts are kept.
     res.manifest = m
-    kept = _retain(_filter(before, [] if error else fetched, m, floor, res), now, res)
+    kept = _retain(_filter(before, [] if error else fetched, m, floor, res, channels, now), now, res)
     if (len(kept) > MAX_STORED_EVENTS
             or state.size_with(root_pubkey, m, kept) > MAX_STORED_BYTES):
         res.dropped.clear()
-        kept = _retain(_filter(before, [], m, floor, res), now, res)
+        kept = _retain(_filter(before, [], m, floor, res, channels, now), now, res)
         error = error or "state limit reached: new events not stored"
     res.new_events = sorted((ev for eid, ev in kept.items() if eid not in before),
                             key=lambda e: (e["created_at"], e["id"]))
@@ -288,15 +340,25 @@ def effective_manifest(state: State) -> Manifest | None:
     return m
 
 
-def freshness(state: State) -> tuple[int | None, int | None]:
-    """(newest created_at among the stored events a current key signed,
-    the manifest's issued time), from the effective manifest; None, None
-    before any pull. Signed times only: a mirror's generated_at is not."""
+def freshness(state: State, now: float | None = None, channels=None) -> tuple[int | None, int | None]:
+    """(newest created_at among the stored channel events a current key
+    signed, the manifest's issued time), from the effective manifest; None,
+    None before any pull. Signed times only: a mirror's generated_at is not.
+    An event dated more than MAX_AHEAD_S after ``now`` is left out: one event
+    dated years ahead must not look like fresh news for years. With a damaged
+    channel spec there is no newest event."""
     m = effective_manifest(state)
     if m is None:
         return None, None
+    now = time.time() if now is None else now
+    if channels is None:
+        try:
+            channels = channel_ids()
+        except ChannelSpecError:
+            channels = frozenset()
     newest = max((ev["created_at"] for ev in state.events.values()
-                  if manifest.role_of(m, ev["pubkey"]) is not None), default=None)
+                  if manifest.role_of(m, ev["pubkey"]) is not None and _bound(ev, channels)
+                  and ev["created_at"] <= now + MAX_AHEAD_S), default=None)
     return newest, m.event["created_at"]  # created_at equals issued_at (manifest.load)
 
 
@@ -307,7 +369,7 @@ def stale_since(state: State, now: float | None = None) -> int | None:
     manifest when older than STALE_MANIFEST_S. A frozen or replayed mirror
     verifies on every pull, and this is how a reader notices it."""
     now = time.time() if now is None else now
-    newest, issued = freshness(state)
+    newest, issued = freshness(state, now)
     if issued is None:
         return None
     ref = issued if newest is None else newest
@@ -427,6 +489,8 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
     (``of`` absent or the root id) or a reply that changed the advisory; a
     relay-bot translation never replaces a curator's. The thread's text is
     the root's translation with each change's appended (see _composed).
+    Only events bound to an alert channel take part (``_bound``); a damaged
+    channel spec raises ChannelSpecError.
     Last, a thread is retracted if any id it has carried (the root's id and
     aliases, and aliases a curator patch itself supplied) is in the manifest's
     ``retracted``, whoever posted or retracted it, compared case-folded as
@@ -434,7 +498,10 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
     never read.
     """
     m = effective_manifest(state)
-    return [] if m is None else threads_from(state.events.values(), m, dropped)
+    if m is None:
+        return []
+    channels = channel_ids()
+    return threads_from([ev for ev in state.events.values() if _bound(ev, channels)], m, dropped)
 
 
 def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Thread]:

@@ -117,8 +117,15 @@ def cmd_keygen(a) -> int:
     return cmd_init(a)
 
 
+AHEAD_LINE = ("warning: {n} event(s) dated ahead of this machine's clock were not read; "
+              "if the clock is wrong, alerts are missing until it is set")
+
+
 def _pull(a, st: State, url: str) -> pull.PullResult:
-    return pull.fetch(url, st, root_pubkey=a.root)
+    res = pull.fetch(url, st, root_pubkey=a.root)
+    if res.dropped.get("future-dated"):  # a slow clock refuses genuine news: never silent
+        _err(AHEAD_LINE.format(n=res.dropped["future-dated"]))
+    return res
 
 
 def cmd_pull(a, st: State, s: config.Settings) -> int:
@@ -401,10 +408,12 @@ def main(argv: list[str] | None = None) -> int:
         a.root, a.ignored_env = _root(s)
         if a.cmd == "curator":
             return curator.cmd_curator(a, State.load())
+        pull.channel_ids()  # a damaged package: one error line, before any command half-runs
         st = State.load()
         return {"pull": cmd_pull, "check": cmd_check, "notify": cmd_notify,
                 "plan": cmd_plan, "run": cmd_run}[a.cmd](a, st, s)
-    except (config.ConfigError, StateError, curator.CuratorError, relay.RelayError) as e:
+    except (config.ConfigError, StateError, curator.CuratorError, relay.RelayError,
+            pull.ChannelSpecError) as e:
         _err(str(e))
         return 1
     except OSError as e:  # e.g. the state directory is not writable
