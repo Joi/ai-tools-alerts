@@ -79,10 +79,10 @@ def test_ops_vm_readme_installs_only_from_the_verified_export():
     for want in (f"tag -v {em.RELEASE_TAG}", f"rev-parse '{em.RELEASE_TAG}^{{commit}}'", em.RELEASE_COMMIT,
                  f"archive -o \"$d/release.tar\" {em.RELEASE_COMMIT}"):
         assert want in files, want
-    assert 'scp "${rel:?}/ops/vm/buzz-send"' in OPS and 'shasum -a 256 "${rel:?}/ops/vm/buzz-send"' in OPS
     assert "scp ops/vm/" not in OPS and 'install-mirror.sh "${rel:?}"' in OPS
-    for f in ("aitools-poster-shell", "sudoers-aitools-poster", "sshd-match-aitools-poster.conf"):
-        assert f"${{rel:?}}/ops/vm/{f}" in OPS, f
+    # vzc3 retired the poster's ssh route: nothing of it is installed on the VM any more.
+    for f in ("buzz-send", "aitools-poster-shell", "sudoers-aitools-poster", "sshd-match-aitools-poster.conf"):
+        assert f"${{rel:?}}/ops/vm/{f}" not in OPS, f
     assert not re.search(r'"\$rel[/"]', OPS), "an install step that runs on with $rel unset"
 
 
@@ -98,8 +98,8 @@ def test_ops_vm_release_block_sets_nothing_when_a_check_fails(tmp_path, case):
             pytest.skip(f"{tool} not found")
     repo = tmp_path / "checkout"
     (repo / "trust").mkdir(parents=True)
-    (repo / "ops" / "vm").mkdir(parents=True)
-    (repo / "ops" / "vm" / "buzz-send").write_text("x\n")
+    (repo / "mirror").mkdir(parents=True)
+    (repo / "mirror" / "export_mirror.py").write_text("x\n")
     key = tmp_path / "key"
     subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
     pub = key.with_suffix(".pub").read_text().split()
