@@ -26,7 +26,8 @@ def advisory_page(ghsa, package="@anthropic-ai/claude-code", ecosystem="npm", af
                    f'<h2>Patched versions</h2><div>{html.escape(fix or "None")}</div>')
     out += [f'<h2>Description</h2><div><p>{html.escape(description)}</p></div>',
             f"<h3>Severity</h3><span>{severity}</span>",
-            f'<h3>CVE ID</h3><div>{cve or "No known CVE"}</div><h3>Weaknesses</h3></body></html>']
+            f'<h3 data-view-component="true" class="mb-2 f6">CVE ID</h3> <div class="color-fg-muted"> '
+            f'{cve or "No known CVE"} </div><h3>Weaknesses</h3></body></html>']
     return "\n".join(out)
 
 

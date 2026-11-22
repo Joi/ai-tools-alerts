@@ -422,6 +422,9 @@ def test_fixed_is_the_highest_patched_version_and_the_range_needs_one_block():
                      ("claude code", None, "< 2.1.251", "v2.1.251"),
                      ("Claude Desktop", "anthropic", "< 9.0", "9.0")])  # the third is another product
     assert (two.fixed, two.affected) == ("2.1.251", None)
+    # One of the product's packages fixed in 1.9.0, another (2.x) with no patch: no version is safe for all.
+    mixed = ev(blocks=[("@anthropic-ai/claude-code", "npm", "< 1.9.0", "1.9.0"), ("claude code", None, ">= 2.0.0", "None")])
+    assert (mixed.fixed, mixed.affected) == (None, None)
     for patched in ("None", "none", ""):  # the vendor states no fix
         assert ev(patched=patched).fixed is None, patched
     for patched in ("2.1.x", "see release notes", "2.1.251 or 3.0.0-beta+1", "2.0.0-rc.1", ">= 2.1.251"):
@@ -642,8 +645,9 @@ def test_a_page_without_its_sidebar_is_not_read():
     cut = whole[:whole.index("<h3>Severity</h3><span>High")]  # the first megabyte ended inside the description
     assert "CVE-2026-9999" in cut and rules.read_advisory(cut) is None
     assert rules.read_advisory(cut + "</body></html>") is None or rules.read_advisory(cut + "</body></html>").cve != "CVE-2026-0007"
-    renamed = whole.replace("<h3>CVE ID</h3><div>CVE-2026-0007", "<h3>CVE</h3><div>CVE-2026-0007")
-    assert rules.read_advisory(renamed).cve == "CVE-2026-9999"  # a whole page whose last CVE ID label is the description's
+    # A whole page whose own field was renamed: the description's heading is not GitHub's sidebar heading.
+    renamed = whole.replace('class="mb-2 f6">CVE ID</h3>', 'class="mb-2 f6">CVE</h3>')
+    assert renamed != whole and "CVE-2026-9999" in renamed and rules.read_advisory(renamed) is None
     for value in ("see below", "CVE-2026-0007 and more", ""):
         assert rules.read_advisory(advisory_page(G1).replace("No known CVE", value)) is None, value
     c = ghsa_cand(id="CVE-2026-9999")
@@ -668,3 +672,16 @@ def test_the_run_budget_leaves_what_is_confirmed_standing():
     c = cand(product_text="claude code", sources=(Source(VENDOR, None), Source(VENDOR + "b", None)))
     ev = rules.evidence(c, CLAUDE, one_then_spent)
     assert ev.ok and ev.url == VENDOR and not ev.retry
+
+
+def test_a_redirect_to_a_url_with_a_query_is_refused():
+    seen = []
+
+    def page(url, allow):
+        seen.append(url)
+        return (200, "CVE-2026-0001 claude code") if allow(VENDOR + "?q=CVE-2026-0001+claude+code") else (404, "")
+    c = cand(product_text="claude code", sources=(Source(VENDOR, None),))
+    assert not rules.evidence(c, CLAUDE, page).ok and seen == [VENDOR]  # the fetcher's own rule refuses the hop
+    o = FakeOpener({VENDOR: (302, VENDOR + "?q=x"), VENDOR + "?q=x": (200, b"CVE-2026-0001 claude code")})
+    allow = lambda u: rules.authoritative(u, CLAUDE) and "?" not in u  # noqa: E731
+    assert rules.http_page(VENDOR, allow, opener=o) == (404, "") and o.seen == [VENDOR]

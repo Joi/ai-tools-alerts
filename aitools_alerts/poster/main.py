@@ -978,7 +978,8 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
                     scope = rules.scope_of(c.product_text, log=review)
                     if scope is not None:
                         pairs.append((c, scope))
-                if later:  # a different one first each hour: failing pages ahead of it never starve one
+                if later:  # a different one first each hour, over one stable order: failing pages
+                    later.sort(key=lambda p: (p[1].name, p[0].id.casefold()))  # ahead never starve one
                     k = (now // 3600) % len(later)
                     later = later[k:] + later[:k]
                 pairs += later  # after the fresh ones: merge takes the first member's fix, so a correction wins

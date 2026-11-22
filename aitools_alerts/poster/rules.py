@@ -226,6 +226,7 @@ _GHSA = re.compile(r"GHSA(?:-[0-9a-z]{4}){3}", re.I)
 _CVE = re.compile(r"CVE-\d{4}-\d{4,}", re.I)
 _NOT_TEXT = re.compile(r"(?is)<(script|style|svg)\b.*?</\1\s*>")
 _TAG = re.compile(r"<[^>]*>")
+_SIDEBAR_CVE = re.compile(r"(?is)<h3\b[^>]*\bdata-view-component=[^>]*>\s*CVE ID\s*</h3>\s*<div\b[^>]*>(.*?)</div>")
 _WHOLE = re.compile(r"(?i)</html\s*>\s*$")
 _HTML_TITLE = re.compile(r"(?is)<title[^>]*>(.*?)</title\s*>")
 # Package registries GitHub names beside a package; any other word there is a vendor label.
@@ -273,15 +274,18 @@ def read_advisory(text: str) -> AdvisoryPage | None:
     description can stand in for them; "CVE ID" and "Severity" are the last nodes
     with those labels, which on a whole page is the sidebar after the description. So
     a page that is not whole (no closing ``</html>``: cut short, or not a page), or
-    whose CVE ID field is missing or is neither a CVE id nor "No known CVE", is not
-    read at all: a description cannot supply the id of a page that lost its sidebar.
+    whose sidebar CVE ID field is missing or is neither a CVE id nor "No known CVE", is
+    not read at all: a description cannot supply the id of a page that lost its sidebar.
     Only labels and the text node after each are read."""
     if not isinstance(text, str) or not _WHOLE.search(text):
         return None
     lines = _lines(text)
     if "Description" not in lines:
         return None
-    cve = _after(lines[lines.index("Description"):], "CVE ID")
+    # The CVE ID is read from GitHub's own sidebar heading only: a heading written in a
+    # description is rendered without the component attribute, so it can never stand in.
+    fields = _SIDEBAR_CVE.findall(text)
+    cve = " ".join(html.unescape(_TAG.sub(" ", fields[-1])).split()) if fields else None
     if cve is None or not (_CVE.fullmatch(cve) or cve == "No known CVE"):
         return None
     head = lines[:lines.index("Description")]
@@ -328,14 +332,14 @@ UNEXPRESSED = "unexpressed"  # a fix the vendor states and the schema cannot car
 
 def _highest(patched) -> str | None:
     """The highest version over the blocks' "Patched versions": "upgrade to X or later"
-    is then true for every branch the vendor patched. None when no block states a fix
+    is then true for every branch the vendor patched. None when any block states no fix
     (empty, or "None"). UNEXPRESSED when one states a fix that is not a version the
     schema can express: compose then says a fix is listed and names no version."""
     found = []
     for value in patched:
         tokens = [t for t in re.split(r"[,\s]+", value or "") if t]
         if not tokens or [t.lower() for t in tokens] == ["none"]:
-            continue
+            return None  # one of the product's packages has no fix: no version is safe for all
         fixed = [compose.schema_fixed(t) for t in tokens]
         if None in fixed or any(versions.parse(f) is None for f in fixed):
             return UNEXPRESSED
@@ -412,7 +416,7 @@ def evidence(c: Candidate, scope, page, entries=None) -> Evidence:
             break
         fetched += 1
         try:
-            status, text = page(u, lambda x: authoritative(x, scope))
+            status, text = page(u, lambda x: authoritative(x, scope) and not urlsplit(x).query)
         except PageBudget:
             budget = True
             break
