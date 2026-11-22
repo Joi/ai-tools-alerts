@@ -13,14 +13,14 @@ from pathlib import Path
 import pytest
 
 import aitools_alerts
-from aitools_alerts import TRUST_ROOT_PUBKEY, nostr, schema
+from aitools_alerts import TRUST_ROOT_PUBKEY, nostr, pull, schema
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "mirror" / "export_mirror.py"
 REAL_MANIFEST = ROOT / "trust" / "manifest.json"
 ATOM = "{http://www.w3.org/2005/Atom}"
-FEED_ID = "11111111-2222-4333-8444-555555555555"
-CRIT_ID = "66666666-7777-4888-9999-aaaaaaaaaaaa"
+# the packaged channel ids: the CLI reader, which some tests feed the export to, binds events to them
+FEED_ID, CRIT_ID = (json.loads((ROOT / "spec" / "channels.json").read_text())[k] for k in ("feed", "critical"))
 NAMES = {"manifest.json", "root.pub", "feed.json", "critical.json", "index.html", "feed.atom", "feed.ja.atom"}
 
 spec = importlib.util.spec_from_file_location("export_mirror", SCRIPT)
@@ -45,9 +45,12 @@ def advisory_post(title: str, body: str) -> str:
     return schema.render_post(adv, body)
 
 
-def ev(sec, content, created_at=1793865600, tags=(), kind=9):
+def ev(sec, content, created_at=1793865600, tags=(), kind=9, ch="feed"):
+    tags = [list(t) for t in tags]
+    if not any(t[0] == "h" for t in tags):  # the relay tags every channel message
+        tags.insert(0, ["h", {"feed": FEED_ID, "critical": CRIT_ID}[ch]])
     return nostr.sign_event(sec, {"created_at": created_at, "kind": kind,
-                                  "tags": [list(t) for t in tags], "content": content})
+                                  "tags": tags, "content": content})
 
 
 @pytest.fixture
@@ -83,9 +86,9 @@ def rows_reader(feed, critical=()):
     return read
 
 
-def run_export(env, reader, **kw):
+def run_export(env, reader, now=1793865900, **kw):
     channels, manifest, out = env
-    return em.export(channels, manifest, out, reader, now=1793865900, **kw)
+    return em.export(channels, manifest, out, reader, now=now, **kw)
 
 
 def leftovers(out):
@@ -367,14 +370,35 @@ def test_atom_body_ignores_quoted_block(env):
     assert entry.findtext(f"{ATOM}content") == "Human body."
 
 
-def test_far_future_timestamp_kept_in_json_not_atom(env):
+def test_future_dated_event_is_not_published(env):
+    """ai-tools-alerts#gefy: an event dated ahead of the exporter's clock would be the
+    newest signed event for every released reader and hide a frozen mirror from them."""
+    now = 1793865900
     far = ev(CUR_SEC, "year ten thousand", schema.MAX_TIMESTAMP + 1)
+    ahead = ev(BOT_SEC, "eleven minutes ahead", now + pull.MAX_AHEAD_S + 1)
+    edge = ev(BOT_SEC, "ten minutes ahead", now + pull.MAX_AHEAD_S)
     ok = ev(CUR_SEC, "normal")
-    result = run_export(env, rows_reader([far, ok]))
-    assert result["channels"]["feed"]["kept"] == 2
-    assert len(json.loads((env[2] / "feed.json").read_text())["events"]) == 2
+    result = run_export(env, rows_reader([far, ahead, edge, ok]))
+    assert result["channels"]["feed"]["kept"] == 2 and result["channels"]["feed"]["future"] == 2
+    assert "future=2" in em.summary_line(result)
+    feed = json.loads((env[2] / "feed.json").read_text())["events"]
+    assert [e["content"] for e in feed] == ["ten minutes ahead", "normal"]
     entries = ET.parse(env[2] / "feed.atom").getroot().findall(f"{ATOM}entry")
-    assert [x.findtext(f"{ATOM}title") for x in entries] == ["normal"]
+    assert sorted(x.findtext(f"{ATOM}title") for x in entries) == ["normal", "ten minutes ahead"]
+    run_export(env, rows_reader([ahead]), now=now + 1)  # its date has come: published
+    assert len(json.loads((env[2] / "feed.json").read_text())["events"]) == 1
+
+
+@pytest.mark.parametrize("tags", [[], [("h", "11111111-2222-4333-8444-555555555555")],
+                                  [("h", FEED_ID), ("h", CRIT_ID)], [("h",)]])
+def test_event_not_bound_to_an_alert_channel_is_not_published(env, tags):
+    """The reader drops an event without exactly one h tag naming an alert channel
+    (pull._bound); the exporter publishes nothing the reader would drop."""
+    odd = nostr.sign_event(CUR_SEC, {"created_at": 1793865600, "kind": 9, "tags": [list(t) for t in tags],
+                                     "content": advisory_post("Unbound", "x")})
+    result = run_export(env, rows_reader([odd, ev(CUR_SEC, "normal")]))
+    assert result["channels"]["feed"]["unbound"] == 1 and result["channels"]["feed"]["kept"] == 1
+    assert "Unbound" not in "".join(p.read_text() for p in env[2].iterdir())
 
 
 def test_unit_execstart_runs_from_fresh_checkout(tmp_path):
@@ -542,7 +566,7 @@ def test_index_page_lists_advisories(env):
                                "https://github.com/anthropics/claude-code/security/advisories/GHSA-xxxx"), 1793865600)
     b = ev(BOT_SEC, _adv_post("Beta", "AITA-TEST-0002"), 1793952000)
     gone = ev(CUR_SEC, "retract\nwrong product", 1793952100, tags=[("e", b["id"], "", "root")])
-    run_export(env, rows_reader(admin_rows() + [a, b, gone]))
+    run_export(env, rows_reader(admin_rows() + [a, b, gone]), now=1793952200)  # after the next-day events
     text = page(env)
     assert text.startswith("<!DOCTYPE html>") and '<meta charset="utf-8">' in text
     assert "<script" not in text.lower() and not re.search(r"\son[a-z]+\s*=", text, re.I)
@@ -729,12 +753,15 @@ def test_index_marks_expired(env):
     assert "Expired: Old news" in page(env)
 
 
-def test_index_applies_a_far_future_retraction_as_the_cli_does(env, tmp_path, monkeypatch):
+def test_index_and_cli_agree_on_a_far_future_retraction(env, tmp_path, monkeypatch):
+    """A retraction dated past 9999-12-31 is future-dated: not published, so neither
+    the page nor a reader of this mirror applies it (ai-tools-alerts#gefy)."""
     root = ev(BOT_SEC, _adv_post("Withdrawn", "AITA-TEST-0013"), 1793865600)
     gone = ev(CUR_SEC, "retract", schema.MAX_TIMESTAMP + 1, tags=[("e", root["id"], "", "root")])
-    run_export(env, rows_reader([root, gone]))
-    assert "Retracted: Withdrawn" in page(env)
-    assert _pull(env[2], tmp_path, monkeypatch) == [(root["id"], "Withdrawn", "high", True)]
+    result = run_export(env, rows_reader([root, gone]))
+    assert result["channels"]["feed"]["future"] == 1
+    assert "Retracted: Withdrawn" not in page(env) and "Withdrawn" in page(env)
+    assert _pull(env[2], tmp_path, monkeypatch) == [(root["id"], "Withdrawn", "high", False)]
 
 
 
@@ -933,6 +960,7 @@ def test_ja_atom_translates_a_plain_digest_root(env):
 def test_ja_atom_survives_a_retraction_at_the_last_timestamp(env):
     a = ev(BOT_SEC, advisory_post("Alpha", "x"), 1793865600)
     run_export(env, rows_reader([a, ev(CUR_SEC, "retract", schema.MAX_TIMESTAMP,
-                                       tags=[("e", a["id"], "", "root")])]))
+                                       tags=[("e", a["id"], "", "root")])]),
+               now=schema.MAX_TIMESTAMP)  # a clock that admits the retraction
     entry = ET.parse(env[2] / "feed.ja.atom").getroot().find(f"{ATOM}entry")
     assert entry.findtext(f"{ATOM}title") == "撤回: Alpha"

@@ -10,6 +10,7 @@ from aitools_alerts.schema import Action, Advisory, Product, Source
 FIXTURE_MIRROR = Path(__file__).parent / "fixtures" / "mirror"
 FIXTURE_ROOT = json.loads((FIXTURE_MIRROR / "manifest.json").read_text())["pubkey"]
 T0 = 4070908800  # 2099-01-01T00:00:00Z
+CHANNELS = json.loads((Path(__file__).parents[1] / "spec" / "channels.json").read_text())
 
 
 def iso(ts: int) -> str:
@@ -56,9 +57,16 @@ class Mirror:
         self.raw.pop("manifest.json", None)
         return self.manifest
 
-    def post(self, sec, content, created_at=T0 + 100, tags=(), files=("feed.json",)):
-        ev = nostr.sign_event(sec, {"created_at": created_at, "kind": 9,
-                                    "tags": [list(t) for t in tags], "content": content})
+    def post(self, sec, content, created_at=T0 + 100, tags=(), files=("feed.json",), kind=9, h="auto"):
+        """``h``: the channel tag. "auto" names the first file's channel unless
+        ``tags`` already carries an h tag; None sends no h tag."""
+        tags = [list(t) for t in tags]
+        if h == "auto" and not any(t[0] == "h" for t in tags):
+            h = CHANNELS[files[0].split(".")[0] if files else "feed"]
+        if h not in (None, "auto"):
+            tags.insert(0, ["h", h])
+        ev = nostr.sign_event(sec, {"created_at": created_at, "kind": kind,
+                                    "tags": tags, "content": content})
         for f in files:
             self.events[f].append(ev)
         return ev
@@ -87,4 +95,4 @@ class Mirror:
         return self.body(name)
 
 
-__all__ = ["FIXTURE_MIRROR", "FIXTURE_ROOT", "T0", "Mirror", "advisory", "asdict"]
+__all__ = ["CHANNELS", "FIXTURE_MIRROR", "FIXTURE_ROOT", "T0", "Mirror", "advisory", "asdict"]

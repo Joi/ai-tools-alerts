@@ -1263,9 +1263,10 @@ def test_digest_leaves_out_withdrawn_ledger_posts(env, monkeypatch):
     _, _, ssh = env.run(now=at(5, 9))
     assert [c[2] for c in ssh.calls] == ["Daily digest for 2026-11-05: no advisories."]
     m = env.mirror  # a curator thread, retracted by a reply or expired by its amendment
-    r = m.root_post(m.cur_sec, advisory(aliases=["CVE-2026-7777"]))
-    m.reply(m.cur_sec, r, "retract\nwrong")
-    old = m.root_post(m.cur_sec, advisory(id="AITA-TEST-0002", posted_at=T0 - 9, expires_at=T0 - 1))
+    r = m.root_post(m.cur_sec, advisory(aliases=["CVE-2026-7777"]), created_at=T0 - 300)  # not ahead of the run
+    m.reply(m.cur_sec, r, "retract\nwrong", created_at=T0 - 200)
+    old = m.root_post(m.cur_sec, advisory(id="AITA-TEST-0002", posted_at=T0 - 9, expires_at=T0 - 1),
+                      created_at=T0 - 100)
     with main.Ledger(env.config.ledger) as led:
         ids, roots = main.Run(T0, env.config, led, inputs.load_state(env.config.state, T0, 3),
                               CHANNELS, FakeSSH(), None)._withdrawn(m.root, m.fetch)

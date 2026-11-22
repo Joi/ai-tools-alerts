@@ -1,5 +1,5 @@
 {
-  "pubkey": "089ffb066d0b69300c159a17ccce243b57908f39add1a1f7733db9c102f8aad8",
+  "pubkey": "94d98852088607612f8780d6eca08fba7ff783594c628cfcc1e440f31e3aae9d",
   "created_at": 4070908800,
   "kind": 30078,
   "tags": [
@@ -8,7 +8,7 @@
       "aitools-alerts-manifest"
     ]
   ],
-  "content": "{\"issued_at\":\"2099-01-01T00:00:00Z\",\"posters\":[{\"name\":\"Fixture Curator\",\"pubkey\":\"8637bceab7230daff7dccbffb02207554851e639a0d1f1cb03ba5af7cd12e7cf\",\"role\":\"curator\"},{\"name\":\"fixture-bot\",\"pubkey\":\"511d61e8625113488b4e223a849a6bcc8e3d1e25f58a145b5ad54c9595d7e9e2\",\"role\":\"relay-bot\"}],\"version\":1}",
-  "id": "7209cc3ced13fb3626711dbb76eac98931bace2d9041144382b140fac5306237",
-  "sig": "788f250e6f23aec95b5d484fc1971b5d72b48b76686b084f5b400207c1721a403aa6aab1f6ca0ee613f30416a7dee38deafc9b2372294e212338e9ae7e5e6a6f"
+  "content": "{\"issued_at\":\"2099-01-01T00:00:00Z\",\"posters\":[{\"name\":\"Fixture Curator\",\"pubkey\":\"ad3d8b2fec2741cd72f205fd02a3db948d95f344c8422e9f8c34a2372e101755\",\"role\":\"curator\"},{\"name\":\"fixture-bot\",\"pubkey\":\"af422e5d68d9e92721addaed3bd19160e622959157cd42bcff260affc8c176be\",\"role\":\"relay-bot\"}],\"version\":1}",
+  "id": "fdb8b025374142e673bd1080f25a98086c37c175dd6a9f3db208bf18b6e75488",
+  "sig": "1c2ee94a6e55a242282ba0dd809ee77e5e085f8a9df7a404b591c0b7e7e4346060d06d16533613e0c56f432fda242208566b19b41b8d71a147ae6a8e12836279"
 }

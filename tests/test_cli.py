@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from aitools_alerts import cli, config, inventory, notify
+from aitools_alerts import cli, config, inventory, notify, pull
 from aitools_alerts.check import Match
 from aitools_alerts.config import Settings
 from aitools_alerts.inventory import Installed, Inventory
@@ -686,3 +686,22 @@ def test_check_and_run_json_warn_when_the_mirror_is_stale(monkeypatch, sent, cap
     assert json.loads(raw)["stale_since"] is None and '"stale_since": "' not in raw
     hostile = json.dumps({"stale_since": None, "title": '"stale_since": "x'}, indent=2)
     assert '"stale_since": "' not in hostile  # a quote in a value is escaped
+
+
+@pytest.mark.parametrize("argv", [["pull"], ["check"], ["check", "--json"], ["notify"],
+                                  ["plan", "AITA-FIXTURE-0001"], ["run"], ["run", "--json"]])
+def test_broken_channel_spec_is_one_error_line(tmp_path, monkeypatch, capsys, argv):
+    """ai-tools-alerts#gefy: without the channel ids no event can be bound, so every
+    command stops with one line before it half-runs (run would print a pull error,
+    then fail again reading the stored events)."""
+    cli.main(["pull", "--mirror-url", MIRROR])
+    capsys.readouterr()
+    spec = tmp_path / "spec"
+    spec.mkdir()
+    (spec / "channels.json").write_text('{"feed": "not-a-uuid"}')
+    monkeypatch.setattr(pull.schema, "SPEC_DIR", spec)
+    assert cli.main(argv) == 1
+    out = capsys.readouterr()
+    lines = [x for x in out.err.splitlines() if "trust root overridden" not in x]  # the test root's warning
+    assert out.out == "" and len(lines) == 1 and "Traceback" not in out.err
+    assert lines[0].startswith("aitools-alerts: spec/channels.json does not name the alert channels")

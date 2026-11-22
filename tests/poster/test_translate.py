@@ -306,7 +306,7 @@ def test_recovery_needs_no_key_and_other_languages_do_not_count(cur):
     big = cur.mirror.post(cur.mirror.cur_sec, schema.render_post(advisory(title="Big"), SRC + "\n" + "x" * 7000),
                           created_at=T0 + 700, tags=[h()])
     call = Call()
-    code, summary, _ = cur.trun(call)
+    code, summary, _ = cur.trun(call, now=T0 + 700)  # after the events: the reader admits none dated ahead
     assert len(call.texts) == 1 and " untranslated=1 " in summary  # French is not Japanese; big: no call
     assert json.loads(cur.config.translate_state.read_text())["calls"] == 2 and big
 

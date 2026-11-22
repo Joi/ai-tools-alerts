@@ -401,10 +401,12 @@ def main(argv: list[str] | None = None) -> int:
         a.root, a.ignored_env = _root(s)
         if a.cmd == "curator":
             return curator.cmd_curator(a, State.load())
+        pull.channel_ids()  # a damaged package: one error line, before any command half-runs
         st = State.load()
         return {"pull": cmd_pull, "check": cmd_check, "notify": cmd_notify,
                 "plan": cmd_plan, "run": cmd_run}[a.cmd](a, st, s)
-    except (config.ConfigError, StateError, curator.CuratorError, relay.RelayError) as e:
+    except (config.ConfigError, StateError, curator.CuratorError, relay.RelayError,
+            pull.ChannelSpecError) as e:
         _err(str(e))
         return 1
     except OSError as e:  # e.g. the state directory is not writable

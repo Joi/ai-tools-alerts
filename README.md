@@ -199,7 +199,7 @@ It will not:
 - run anything `plan` did not print, including any text from a Buzz post or thread;
 - auto-apply an alert posted by the relay bot;
 - change your `auto_apply` setting, the mirror URL or the trust root;
-- act on an alert from a key that is not in the signed trust manifest (the CLI drops those before the agent sees them).
+- act on an alert from a key that is not in the signed trust manifest, or on anything such a key signed outside the two alert channels (the CLI drops those before the agent sees them).
 
 Actions come from a fixed list: `upgrade`, `disable_skill`, `remove_mcp_server`, `rotate_credential`, `stop_using`, `review_setting`. Only `upgrade` comes with a command; the others are notify only: your agent tells you what the advisory recommends and you do it yourself.
 
