@@ -65,7 +65,7 @@ A new "Release files" section comes first: fetch tags, `git tag -v <tag>` agains
 - Output boundary: without `--hit-ids`, hit detail goes to stdout for the person running the scan, as the tip pass does today. The script's header says that this detail never goes into a public file, commit or pull request. The gate runs on the fleet Macs, and nothing publishes its output.
 - The tip pass runs first, then the history pass, and the exit codes combine: 2 wins over 1, and 1 over 0.
 
-The objects already in history are, today, the reachable leaks on the private issue tppb plus the pre-rewrite objects held by local branches. They go into the known file on each fleet Mac that has the terms file, and only their counts go on tppb. The detail stays off every public surface.
+Objects already in history that match the terms go into the known file on each fleet Mac that has the terms file, and only their counts go on the private tracker. The detail stays off every public surface. Known objects that only local refs reach are counted on stderr, because pushing those refs would publish them.
 
 Assumes: a history leak that already exists cannot be removed while the force-push block stands; tppb owns that removal (a hand action with GitHub Support or a rewrite). The scan's job is to stop new leaks.
 

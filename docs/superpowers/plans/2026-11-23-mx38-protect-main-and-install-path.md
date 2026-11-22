@@ -9,6 +9,8 @@ Constants used below: previous release `v0.1.4` = `git rev-parse 'v0.1.4^{commit
 - [ ] On each of the three Macs, check `ssh-keygen -lf <release key>.pub` against `ssh-keygen -lf trust/allowed_signers`'s key; they must match.
 - [ ] Set repo-local config in each primary checkout: `gpg.format=ssh`, `user.signingkey=<abs .pub path>`, `commit.gpgsign=true`, `tag.gpgsign=true`, `gpg.ssh.allowedSignersFile=<abs checkout>/trust/allowed_signers`. On the two remote Macs, `git pull --ff-only` on main as well.
 - [ ] Verify: in this worktree, `git commit` then `git log --show-signature -1` shows `Good "git" signature for 19930+Joi@users.noreply.github.com`.
+- [ ] Verify on each remote Mac too: in the primary checkout, sign a dangling commit (`git commit-tree -S HEAD^{tree} -p HEAD -m probe`, which moves no ref) and `git verify-commit` it; exit 0 with the principal line. This proves the private key is usable there, not only that the config is set.
+- [ ] GitHub acceptance: after the branch is pushed, `gh api repos/Joi/ai-tools-alerts/commits/<sha> --jq .commit.verification` reports `verified: true` for EVERY branch commit (`git rev-list origin/main..HEAD`), not only the last. If any reads false (the key not registered as a signing key on the account), stop before the ruleset step.
 - [ ] Record the commands and their results in a kata comment on mx38 (host names go there, not in the repo).
 
 ## Chunk 1: install path
@@ -65,7 +67,7 @@ File: `scripts/public-scan.sh` (python embedded), `tests/test_public_scan.py`.
 - [ ] Exit: max over the passes with 2 > 1 > 0.
 - [ ] Tests (added): a renamed file's old name; a replace ref over a leaking blob; a known tree not covering the same name in a new tree; --hit-ids hiding tip detail; a term spanning directories; a path added by a merge.
 - [ ] Tests: a hit only in an earlier commit's blob (removed at the tip) fails and prints the oid; a hit in a commit message fails; a hit in an author name fails; a hit in an annotated tag message fails; a hit in a branch name fails; a listed oid passes with the summary line and no term in stdout or stderr; a bad known-file line exits 2; `--hit-ids` prints ids only; a repo with no commits still passes (existing tests). The test fixture commits with `-c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false`.
-- [ ] Verify: `python3 -m pytest -q tests/test_public_scan.py`. Then run the real scan on this repo with `--hit-ids`, write the ids into the known file on each Mac (mode 600), and confirm `scripts/test-gate.sh` passes on all three Macs. Put the counts, never the content, on tppb.
+- [ ] Verify: `python3 -m pytest -q tests/test_public_scan.py`. Then build the known file as a BASELINE, never by auto-exempting: on this Mac, `--hit-ids` before any branch commit existed, then check that no listed id is reachable from `origin/main..HEAD` (`git rev-list --objects origin/main..HEAD` ∩ known = ∅). On each remote Mac, after pulling main: `--hit-ids` there; add only the ids that are in this Mac's baseline or reachable only from that Mac's local branches that predate 2026-11-23 (`git for-each-ref --format='%(committerdate:iso) %(refname)'`). Any other id is investigated, not added. Confirm `scripts/test-gate.sh` passes on all three Macs. Put the counts, never the content, on tppb.
 
 Acceptance: spec criterion 7.
 
@@ -73,13 +75,14 @@ Acceptance: spec criterion 7.
 
 - [ ] Gate: `scripts/test-gate.sh` passes on the committed branch.
 - [ ] Review: one fresheyes whole-branch pass (`FRESHEYES_GPT_MODEL=gpt-6-astra` via `DO_IT_REVIEW_GPT_MODEL`), Stage 1 in parallel; record the reviewed HEAD; fix, or rebut; one delta pass `--since <reviewed head>` if a BLOCKER fix changed behaviour.
-- [ ] Push the branch; `gh pr create`; `gh pr merge --merge` (a merge commit keeps the signed release commit's hash).
-- [ ] `git fetch`; tag `git tag -s v0.1.5 -m "v0.1.5" <release commit>`; `git tag -v` passes; push the tag.
+- [ ] Record `R = git rev-parse HEAD` of the final gated, reviewed branch head: the release commit is R (it carries every change; earlier branch commits such as the version bump alone are incomplete).
+- [ ] Push the branch; check every branch commit reads `verified: true` on GitHub (Chunk 0); `gh pr create`; `gh pr merge --merge` (a merge commit keeps R's hash; squash would not).
+- [ ] `git fetch origin`; confirm the PR state is MERGED and `git merge-base --is-ancestor R origin/main`; then `git tag -s v0.1.5 -m "ai-tools-alerts 0.1.5" R`; `git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.5` passes with the principal line; `test "$(git rev-parse 'v0.1.5^{commit}')" = R`; push the tag; read back `git ls-remote origin refs/tags/v0.1.5^{}` = R.
 - [ ] Comment on 8ke5 (landed; rule going on). Comment on each open slice of 9mx8.
-- [ ] PATCH ruleset 27857669 with rules `non_fast_forward`, `deletion`, `required_signatures`, `pull_request` (`required_approving_review_count: 0`, `dismiss_stale_reviews_on_push: false`, `require_code_owner_review: false`, `require_last_push_approval: false`, `required_review_thread_resolution: false`, `allowed_merge_methods: ["merge","squash"]`). Post a `notice:` comment with the result.
-- [ ] Prove it: `git push origin <a signed commit on main's tip>:refs/heads/main` from a throwaway branch must be refused (GH013). Record the refusal.
-- [ ] Pin commit on a new branch: `RELEASE_TAG="v0.1.5"`, `RELEASE_COMMIT=<v0.1.5 commit>` in export_mirror, README, ops/vm/README; gate; PR; merge (doc-only; reviewed sha named in prose).
-- [ ] Remote Macs: `git pull --ff-only` on main. The poster needs no reinstall: `aitools_alerts/` changed only `__version__`.
+- [ ] Read the ruleset (`GET .../rulesets/27857669`), keep its name, target, enforcement, conditions and bypass_actors, and `PUT` it (the update method; PATCH does not exist for rulesets) with rules `non_fast_forward`, `deletion`, `required_signatures`, `pull_request` (`required_approving_review_count: 0`, `dismiss_stale_reviews_on_push: false`, `require_code_owner_review: false`, `require_last_push_approval: false`, `required_review_thread_resolution: false`, `allowed_merge_methods: ["merge","squash"]`). Read it back and check the four rules, zero approvals, the merge methods and an empty bypass list. Post a `notice:` comment with the result.
+- [ ] Prove it: `git fetch origin`; make a NEW signed empty commit whose parent is the current `origin/main` tip (`git commit-tree -S origin/main^{tree} -p origin/main -m probe`); check it differs from the tip and verifies locally; `git push origin <probe>:refs/heads/main` must be refused with a message that names the pull-request rule (GH013 "Changes must be made through a pull request"). Then `git ls-remote origin refs/heads/main` is unchanged. Record both.
+- [ ] Pin commit on a new branch from `origin/main`: `RELEASE_TAG="v0.1.5"`, `RELEASE_COMMIT=R` in export_mirror, README, ops/vm/README; gate; push; PR; merge under the new rules (doc-only; the reviewed sha named in prose); check GitHub's merge commit reads verified.
+- [ ] Remote Macs: `git pull --ff-only` on main, then the known-file step of Chunk 3 and the gate. The poster is reinstalled once (`uv tool install --force --reinstall`) so its version reads 0.1.5; no poster code changed in this branch.
 - [ ] Close-out comment and close mx38 on the merge commit.
 
-Rollback: revert PRs; ruleset PATCH back to the two rules; a tag cannot be removed, so a bad v0.1.5 is superseded by v0.1.6.
+Rollback: revert PRs; `PUT` the ruleset back to the two rules; a tag cannot be removed, so a bad v0.1.5 is superseded by v0.1.6.

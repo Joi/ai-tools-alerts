@@ -47,7 +47,7 @@ Check it on two different hosts: `trust/root.pub` at the pinned release commit o
 
 The pinned release is `v0.1.4`, commit `b33573fb812d78239252b54413949dc87ec85348`. Paste this into your agent chat to set up ai-tools-alerts:
 
-> Set up ai-tools-alerts release v0.1.4, commit b33573fb812d78239252b54413949dc87ec85348. Clone https://github.com/Joi/ai-tools-alerts and, before you read any other file from it or install anything, run `git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.4` and `git rev-parse 'v0.1.4^{commit}'` in the clone. Continue only if the tag check exits 0 and prints `Good "git" signature for 19930+Joi@users.noreply.github.com with ED25519 key SHA256:DS1FNZqf0HglC1QEQ50LS4AJny8P8MxvrHRj4vPEqaA`, that fingerprint also appears on https://buzz.ai-tools.md/alerts/, and the commit is exactly b33573fb812d78239252b54413949dc87ec85348. If any check fails, stop, install nothing, and tell me what failed. Then run `git checkout --detach b33573fb812d78239252b54413949dc87ec85348` and follow that checkout's README from its "Install" section on, not the copy on GitHub: install the CLI from that checkout, initialize it, enable the documented hourly monitoring schedule for this system, and add the supported agent instructions for your harness without weakening their safety rules. Verify that monitoring runs, then tell me what you installed and any remaining manual steps or limitations.
+> Set up ai-tools-alerts release v0.1.4, commit b33573fb812d78239252b54413949dc87ec85348. Clone https://github.com/Joi/ai-tools-alerts and, before you read any other file from it or install anything, run `git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.4`, `git rev-parse 'v0.1.4^{commit}'` and `git tag --list 'v*' --sort=-v:refname` in the clone. Continue only if the tag check exits 0 and prints `Good "git" signature for 19930+Joi@users.noreply.github.com with ED25519 key SHA256:DS1FNZqf0HglC1QEQ50LS4AJny8P8MxvrHRj4vPEqaA`, that fingerprint also appears on https://buzz.ai-tools.md/alerts/, the commit is exactly b33573fb812d78239252b54413949dc87ec85348, and v0.1.4 is the first line of the tag list. If any check fails, stop, install nothing, and tell me what failed. Then, in that clone, run `git checkout --detach b33573fb812d78239252b54413949dc87ec85348` and `pipx install --force .`; never clone again, and never check out or install any other commit, tag or branch. Run `aitools-alerts init`, then, from that checkout and as its README describes, enable the hourly monitoring schedule for this system and add the supported agent instructions for your harness without weakening their safety rules. Verify that monitoring runs, then tell me what you installed and any remaining manual steps or limitations.
 
 ## Detailed install
 
@@ -61,9 +61,10 @@ The pinned release is `v0.1.4`, commit `b33573fb812d78239252b54413949dc87ec85348
 git clone https://github.com/Joi/ai-tools-alerts && cd ai-tools-alerts
 git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.4
 git rev-parse 'v0.1.4^{commit}'
+git tag --list 'v*' --sort=-v:refname
 ```
 
-The tag check passes only if it exits 0 and prints `Good "git" signature for 19930+Joi@users.noreply.github.com with ED25519 key SHA256:DS1FNZqf0HglC1QEQ50LS4AJny8P8MxvrHRj4vPEqaA`. `No principal matched` or `no signature found` is a failure: do not install. The commit check passes only if it prints exactly `b33573fb812d78239252b54413949dc87ec85348`; anything else means the tag is not the release this README pins: do not install.
+The tag check passes only if it exits 0 and prints `Good "git" signature for 19930+Joi@users.noreply.github.com with ED25519 key SHA256:DS1FNZqf0HglC1QEQ50LS4AJny8P8MxvrHRj4vPEqaA`. `No principal matched` or `no signature found` is a failure: do not install. The commit check passes only if it prints exactly `b33573fb812d78239252b54413949dc87ec85348`; anything else means the tag is not the release this README pins: do not install. The tag list must start with `v0.1.4`: a newer tag means this README is out of date, so get the current one from the default branch; an older pin can be a downgrade to a release with known flaws.
 
 `trust/allowed_signers` comes from the same repository as the tag, so the tag check alone shows only that the two agree. Compare the full fingerprint with the copy on the mirror page, `https://buzz.ai-tools.md/alerts/`, which the relay VM serves, not GitHub; a missing copy is not a pass: wait for it. GitHub's tags page shows the tag as Verified, and `https://github.com/Joi.keys` lists the key; both depend on the GitHub account alone.
 
@@ -73,7 +74,7 @@ Only after every check passes, check out the pinned commit:
 git checkout --detach b33573fb812d78239252b54413949dc87ec85348
 ```
 
-Or, after the same checks, install that commit straight from GitHub. pip fetches it by hash, so a moved tag or a push to a branch cannot change what it installs: `pipx install git+https://github.com/Joi/ai-tools-alerts@b33573fb812d78239252b54413949dc87ec85348`, then `aitools-alerts init` and run the template, hook and skill commands below from the verified checkout.
+Then install from this checkout (Install, below). You may instead install the same commit from GitHub, which pip fetches by hash, so a moved tag or a push to a branch cannot change what it installs: `pipx install git+https://github.com/Joi/ai-tools-alerts@b33573fb812d78239252b54413949dc87ec85348`. Either way, check out the commit first: the template, hook and skill files below come from this checkout.
 
 ### Install
 

@@ -10,3 +10,6 @@
 /pyproject.toml  @Joi
 /SECURITY.md     @Joi
 /.github/        @Joi
+/aitools_alerts/  @Joi
+/mirror/         @Joi
+/scripts/        @Joi

@@ -297,3 +297,49 @@ def test_a_path_added_by_a_merge_fails(repo):
     commit(repo, ".")
     r = run(repo)
     assert r.returncode == 1 and f"{m} path {TERM}.md" in r.stdout
+
+
+def test_a_detached_head_with_no_named_ref_is_still_scanned(repo):
+    (repo / "notes.md").write_text(f"{TERM}\n")
+    bad = commit(repo, ".")
+    (repo / "notes.md").write_text("clean\n")
+    commit(repo, ".")
+    subprocess.run(["git", "checkout", "-q", "--detach"], cwd=repo, check=True)
+    for ref in subprocess.run(["git", "for-each-ref", "--format=%(refname)"], cwd=repo, capture_output=True,
+                              text=True, check=True).stdout.split():
+        subprocess.run(["git", "update-ref", "-d", ref], cwd=repo, check=True)
+    r = run(repo)
+    assert r.returncode == 1 and oid(repo, f"{bad}:notes.md") in r.stdout
+
+
+def test_a_path_in_a_tree_a_tag_names_directly_fails(repo):
+    terms = repo.parent / "span"
+    terms.write_text("secretdir/conf\n")
+    (repo / "secretdir").mkdir()
+    (repo / "secretdir" / "conf.txt").write_text("x\n")
+    subprocess.run(["git", "add", "secretdir"], cwd=repo, check=True)
+    tree = subprocess.run(["git", "write-tree"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
+    subprocess.run(["git", "rm", "-rq", "--cached", "secretdir"], cwd=repo, check=True)
+    (repo / "secretdir" / "conf.txt").unlink()
+    commit(repo, ".")
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "tag.gpgsign=false",
+                    "tag", "-a", "treetag", "-m", "a tree", tree], cwd=repo, check=True)
+    r = run(repo, terms=terms)
+    assert r.returncode == 1 and f"{tree} path secretdir/conf.txt" in r.stdout
+
+
+def test_hit_ids_withholds_paths_in_diagnostics(repo):
+    (repo / f"{TERM}.txt").write_text("x\n")
+    subprocess.run(["git", "add", f"{TERM}.txt"], cwd=repo, check=True)
+    (repo / f"{TERM}.txt").unlink()
+    r = run_known(repo, repo.parent / "absent", "--hit-ids")
+    assert r.returncode == 2 and TERM not in r.stdout + r.stderr
+    c = commit(repo, ".", msg=f"see {TERM}")
+    r = run_known(repo, known_file(repo, c), "--hit-ids")
+    assert r.returncode == 0 and str(repo.parent) not in r.stderr and "1 known history hits" in r.stderr
+
+
+def test_known_objects_only_local_refs_reach_are_counted(repo):
+    c = commit(repo, ".", msg=f"see {TERM}")
+    r = run_known(repo, known_file(repo, c))
+    assert r.returncode == 0 and "1 of them are reachable only from local refs" in r.stderr

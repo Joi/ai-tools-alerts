@@ -8,11 +8,15 @@
 #
 # Tip pass: every tracked file, this one included, is read as bytes, binary ones
 # too, and file names are scanned.
-# History pass: every object reachable from every ref (git rev-list --objects
-# --all, plus annotated tags), as stored, ignoring replace refs: each blob's
+# History pass: every object reachable from every ref or HEAD (git rev-list
+# --objects --all, plus annotated tags and the trees a tag names), as stored,
+# ignoring replace refs: each blob's
 # lines, each tree's entry names, each full path where a commit added it,
 # each commit's and tag's raw text (author,
 # committer, tagger, message), and every ref name.
+#
+# It reads only what this clone holds: a shallow or partial clone gives a
+# partial pass, and GitHub's refs/pull/* are not fetched by default.
 #
 # Known hits: a history hit inside an object whose id is listed in
 # $PUBLIC_SCAN_KNOWN or else ~/.config/aitools-alerts/public-scan.known (one
@@ -20,7 +24,8 @@
 # and not printed. Those are leaks already in history and recorded privately;
 # a missing file lists none. A ref name is never known: rename the ref. A
 # name in history is known only through the tree that holds it, so the same
-# name in a new tree fails again.
+# name in a new tree fails again. Known objects that only local refs reach are
+# counted on stderr: pushing those refs would publish them.
 #
 # --hit-ids prints the ids of the objects with unlisted history hits, one per
 # line, and no content, not even for a hit at the tip or in a ref name (those
@@ -41,8 +46,11 @@ if ARGS not in ([], ["--hit-ids"]):
 HIT_IDS = ARGS == ["--hit-ids"]
 TERMS = os.environ.get("PUBLIC_SCAN_TERMS") or os.path.expanduser("~/.config/aitools-alerts/public-scan.terms")
 KNOWN = os.environ.get("PUBLIC_SCAN_KNOWN") or os.path.expanduser("~/.config/aitools-alerts/public-scan.known")
-def fail(why):
-    print(f"public-scan: {why}: {TERMS} (set PUBLIC_SCAN_TERMS to a terms file)", file=sys.stderr)
+def where(path):  # --hit-ids prints ids and nothing else: no file name, not even in a diagnostic
+    return "(path withheld under --hit-ids)" if HIT_IDS else path
+def fail(why, detail=""):
+    print(f"public-scan: {why}{'' if HIT_IDS else detail}: {where(TERMS)} (set PUBLIC_SCAN_TERMS to a terms file)",
+          file=sys.stderr)
     sys.exit(2)
 try:
     with open(TERMS, "rb") as fh:
@@ -59,7 +67,7 @@ try:
     line = None
     PATTERN = re.compile(b"|".join(b"(?:" + t + b")" for _, t in terms), re.I)
 except (re.error, OverflowError, RecursionError, ValueError) as e:
-    fail(f"bad term in terms file{f' at line {line}' if line else ''} ({e})")
+    fail(f"bad term in terms file{f' at line {line}' if line else ''}", f" ({e})")
 
 known = set()
 try:
@@ -69,13 +77,13 @@ try:
             if not t or t.startswith(b"#"):
                 continue
             if not re.fullmatch(rb"[0-9a-f]{40}|[0-9a-f]{64}", t):
-                print(f"public-scan: known file line {n} is not an object id: {KNOWN}", file=sys.stderr)
+                print(f"public-scan: known file line {n} is not an object id: {where(KNOWN)}", file=sys.stderr)
                 sys.exit(2)
             known.add(t)
 except FileNotFoundError:
     pass
 except OSError as e:
-    print(f"public-scan: cannot read known file ({e.strerror}): {KNOWN}", file=sys.stderr)
+    print(f"public-scan: cannot read known file ({e.strerror}): {where(KNOWN)}", file=sys.stderr)
     sys.exit(2)
 
 # A replace ref would show sanitized content in place of the stored object: read what is stored.
@@ -104,7 +112,7 @@ for path in filter(None, listed.split(b"\0")):
         with open(path, "rb") as fh:
             data = fh.read()
     except OSError as e:
-        print(f"public-scan: cannot read {name}: {e.strerror}", file=sys.stderr)
+        print(f"public-scan: cannot read {where(name)}: {e.strerror}", file=sys.stderr)
         errors += 1
         continue
     for n, line in enumerate(data.split(b"\n"), 1):
@@ -116,13 +124,18 @@ for path in filter(None, listed.split(b"\0")):
 # History pass
 paths = {}  # oid -> every path rev-list reports for it
 refs = git("for-each-ref", "--format=%(objectname) %(objecttype) %(refname)")
-ref_names = []
+ref_names, tag_trees = [], set()  # tag_trees: trees a ref or a tag names directly
 for row in refs.splitlines():
     oid, kind, name = row.split(b" ", 2)
     ref_names.append(name)
     if kind == b"tag":
         paths.setdefault(oid, set())
-if ref_names:  # an empty repository has no ref, and rev-list --all then lists nothing
+    elif kind == b"tree":  # a ref straight to a tree: its paths belong to no commit
+        tag_trees.add(oid)
+# rev-list --all also follows HEAD, which can be a detached commit with no named ref.
+head = subprocess.run(["git", "rev-parse", "--verify", "-q", "HEAD"], capture_output=True).returncode == 0
+has_history = bool(ref_names) or head  # an empty repository has neither
+if has_history:
     for row in git("rev-list", "--objects", "--all").splitlines():
         oid, _, path = row.partition(b" ")
         s = paths.setdefault(oid, set())
@@ -181,20 +194,29 @@ if oids:
                     hit(oid, f"{o} tree entry {show(data[sp + 1:nul])}")
                 i = nul + 1 + width
             continue
-        where = f"blob {show(min(paths[oid]))}" if kind == b"blob" and paths[oid] else kind.decode()
+        if kind == b"tag":
+            head_lines = data.split(b"\n\n", 1)[0].split(b"\n")
+            if b"type tree" in head_lines and head_lines[0].startswith(b"object "):
+                tag_trees.add(head_lines[0][7:])
+        label = f"blob {show(min(paths[oid]))}" if kind == b"blob" and paths[oid] else kind.decode()
         for n, line in enumerate(data.split(b"\n"), 1):
             if PATTERN.search(line):
-                hit(oid, f"{o} {where}:{n}: {show(line)}")
+                hit(oid, f"{o} {label}:{n}: {show(line)}")
     writer.join()
     if cat.wait() != 0:
         print("public-scan: git cat-file failed", file=sys.stderr)
         sys.exit(2)
 
 # Full paths: a term can span directories ("a/b"), which no single tree entry holds. Every path
-# that ever existed was added by some commit, so each commit's paths against each parent (the
+# in a commit's tree was added by some commit, so each commit's paths against each parent (the
 # root against nothing, a merge against each side) cover them; a hit is known through the commit
-# that added the path.
-if ref_names:
+# that added the path. A tree that a tag or a ref names directly belongs to no commit: its paths
+# are listed whole, and a hit there is known through that tree.
+for tree in sorted(tag_trees):
+    for p in filter(None, git("ls-tree", "-r", "-z", "--name-only", tree.decode()).split(b"\0")):
+        if PATTERN.search(p):
+            hit(tree, f"{tree.decode()} path {show(p)}")
+if has_history:
     commits = git("rev-list", "--all")
     try:
         out = subprocess.run(["git", "diff-tree", "--stdin", "-r", "-m", "--root", "--no-renames", "--diff-filter=A",
@@ -213,7 +235,14 @@ if HIT_IDS:
     for oid in sorted(hit_ids):
         print(oid.decode())
 if known_hits:
-    print(f"public-scan: {known_hits} known history hits in {len(known_objects)} objects (listed in {KNOWN})", file=sys.stderr)
+    print(f"public-scan: {known_hits} known history hits in {len(known_objects)} objects (listed in {where(KNOWN)})",
+          file=sys.stderr)
+    # Known is not harmless: an object only a local ref reaches is published by pushing that ref.
+    remote = {r.split(b" ", 1)[0] for r in git("rev-list", "--objects", "--remotes").splitlines()}
+    local_only = len(known_objects - remote)
+    if local_only:
+        print(f"public-scan: {local_only} of them are reachable only from local refs; pushing those refs "
+              "would publish them", file=sys.stderr)
 if errors:
     sys.exit(2)
 if hits or history_hits:
