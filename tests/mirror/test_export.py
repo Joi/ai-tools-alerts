@@ -993,3 +993,20 @@ def test_future_event_published_by_an_older_exporter_is_withdrawn(env):
     result = run_export(env, rows_reader([ok, far]), now=now)
     assert result["channels"]["feed"]["future"] == 1
     assert [e["id"] for e in json.loads((env[2] / "feed.json").read_text())["events"]] == [ok["id"]]
+
+def test_index_lists_a_critical_and_its_channel_copy_once(env):  # 6e20
+    """A critical posts a root in each channel: the page shows one row, the copy a curator
+    changed last, Retracted when either copy is."""
+    post = _adv_post("OpenSSH: known exploited vulnerability (CVE-2026-0001)", "CVE-2026-0001", "critical")
+    crit, feed = ev(BOT_SEC, post, 1793865600), ev(BOT_SEC, post, 1793865601)
+    run_export(env, rows_reader(admin_rows() + [feed], [crit]))
+    items = re.findall(r"<li><span class=\"level level-([a-z]+)\">[a-z]+</span> ([^<]*)<br>", page(env))
+    assert items == [("critical", "OpenSSH: known exploited vulnerability (CVE-2026-0001)")]
+    lower = ev(CUR_SEC, "level: high", 1793865700, tags=[("e", crit["id"], "", "root")])
+    run_export(env, rows_reader(admin_rows() + [feed], [crit, lower]))
+    items = re.findall(r"<li><span class=\"level level-([a-z]+)\">[a-z]+</span> ([^<]*)<br>", page(env))
+    assert [i[0] for i in items] == ["high"]
+    gone = ev(CUR_SEC, "retract\nwrong", 1793865800, tags=[("e", feed["id"], "", "root")])
+    run_export(env, rows_reader(admin_rows() + [feed, gone], [crit, lower]))
+    items = re.findall(r"<li><span class=\"level level-([a-z]+)\">[a-z]+</span> ([^<]*)<br>", page(env))
+    assert len(items) == 1 and items[0][1].startswith("Retracted: ")
