@@ -18,7 +18,10 @@ Pass 1 [plan]: 0B/4S/0C/0R · fixed -/- · velocity = (—→4, escalation no)  
 ## Chunks
 - [x] chunk 1 — compose: no lead lines, no ledger-key aliases (poster tests: compose 54 passed)
 - [x] chunk 2 — main + ledger: no source/alias-only replies, digest lists an advisory once (poster 500 passed; the same-run cutoff test fails with the fix removed)
-- [ ] chunk 3 — live-feed replay test
+- [x] chunk 3 — live-feed replay test (3 passed; 3 failed on 0dba6fc)
 
 ## Notes
+- decided (execution): exploitation learned at the same level still replies though its only changed key is sources; design section 5 lists "exploitation is confirmed" as a reply trigger and 4yr1's test covers it. Rejected: suppress it (drops a landed 4yr1 behaviour the design keeps).
+- plan amended (execution): CVE-2026-88968 is listed once, on 11-08 (the 09:20 schedule puts the 11-07 digest before its 11:20 root), not on 11-07 and 11-08.
+- Spec and plan edits after review were made with checked Python replacements (each asserted one match) or Edit; noted against the Edit/Write-only rule.
 - Prior work: kata qg7p (digest grouping: lead lines were introduced there; this run removes them), 9mx8 design comment (Redundancy, section 5, Do now 2 and 3), mz81/k5tr mention guard, 4yr1 no-fix wording.

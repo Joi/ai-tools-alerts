@@ -1,0 +1,183 @@
+{
+ "source": "https://buzz.ai-tools.md/alerts/feed.json",
+ "generated_at": "2026-11-22T19:55:27Z",
+ "channel": "feed",
+ "events": [
+  {
+   "id": "81a0c2f16dc3f83d832cf61df2e00c5b52cbbe8d885a7ce38425b07dbf79310b",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794018008,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: Claude Code: security advisory (CVE-2026-88968:claude-code)\nAffected: Claude Code, versions not stated. No fixed version is known yet.\nAction: no fix is published yet; watch this thread.\nSource: https://github.com/anthropics/claude-code/security/advisories/GHSA-5xjx-9qx6-jcrv\n\n```aitools-alert\n{\n  \"id\": \"CVE-2026-88968:claude-code\",\n  \"aliases\": [\n    \"CVE-2026-88968\",\n    \"GHSA-5xjx-9qx6-jcrv\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"Claude Code: security advisory (CVE-2026-88968:claude-code)\",\n  \"products\": [\n    {\n      \"name\": \"Claude Code\",\n      \"ecosystem\": \"claude-code\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/anthropics/claude-code/security/advisories/GHSA-5xjx-9qx6-jcrv\",\n      \"published_at\": \"2026-10-26T11:43:04Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794018005,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "55cb0b7d5821d8d005d862c6e8bedff4b1ebbe5f79489576dfed1a29e90e9c559701f162adb5bc2e4109f3fdb931046d3a7ca4c05f0c1ab1844ee0c216589bba"
+  },
+  {
+   "id": "c159fa4cff58dbfbab8ce0721221c8965103837f80a47ff05972f83ab51839d9",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794025208,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ],
+    [
+     "e",
+     "81a0c2f16dc3f83d832cf61df2e00c5b52cbbe8d885a7ce38425b07dbf79310b",
+     "",
+     "reply"
+    ]
+   ],
+   "content": "Action: upgrade Claude Code to 2.1.251 or later.\nAffected: Claude Code, versions not stated. Fixed in 2.1.251.\nSource: https://github.com/anthropics/claude-code/security/advisories/GHSA-5xjx-9qx6-jcrv\n\n```aitools-alert\n{\n  \"products\": [\n    {\n      \"name\": \"Claude Code\",\n      \"ecosystem\": \"claude-code\",\n      \"affected\": null,\n      \"fixed\": \"2.1.251\"\n    }\n  ],\n  \"actions\": [\n    {\n      \"verb\": \"upgrade\",\n      \"target\": \"Claude Code\",\n      \"value\": \"2.1.251\"\n    }\n  ]\n}\n```\n",
+   "sig": "2940c7a476efeb9083b490e55f894296e8b93ecdf86187934031a05602b02c6f49f8c557cbe70321d93db9819360907e5d258d09df8d464f7e78b50afaafbfbf"
+  },
+  {
+   "id": "f7dd5ed6c4e60b9f830d3ac78dcf32eebe9caeaaa15f8f9d3384e842e89b0291",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794244810,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "CRITICAL: OpenSSH: known exploited vulnerability (CVE-2026-123158)\nAffected: OpenSSH, versions not stated. No fixed version is known yet.\nAction: no fix is published yet; watch this thread.\nSource: https://www.cisa.gov/known-exploited-vulnerabilities-catalog\n\n```aitools-alert\n{\n  \"id\": \"CVE-2026-123158\",\n  \"aliases\": [],\n  \"level\": \"critical\",\n  \"advisory_severity\": null,\n  \"title\": \"OpenSSH: known exploited vulnerability (CVE-2026-123158)\",\n  \"products\": [\n    {\n      \"name\": \"OpenSSH\",\n      \"ecosystem\": \"openssh\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://www.cisa.gov/known-exploited-vulnerabilities-catalog\",\n      \"published_at\": \"2026-11-09\"\n    },\n    {\n      \"url\": \"https://www.cisa.gov/news-events/directives/bod-26-04-prioritizing-security-updates-based-risk\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://www.cisa.gov/news-events/directives/bod-26-04-implementation-guidance-prioritizing-security-updates-based-risk\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://www.openssh.org/releasenotes.html\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://alpinelinux.org/posts/2026-11-05-openssh-password-authentication-bypass/\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://github.com/openssh/openssh-portable/commit/4353fdc43ef646c43a8dda7025cc1a898caf1482\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://nvd.nist.gov/vuln/detail/CVE-2026-123158\",\n      \"published_at\": null\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794244805,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "2c5f50e44ff879e75cfc68684a6aeaadaed2cd7956f7c27174309b60d066a6107a97fd0f6f5d4b9c5e6fc443fbbdc5ca03190077cb7f84a66f39d9cf271cb74e"
+  },
+  {
+   "id": "ce8b159dff561203325cea9e2a7cbfaf47197024061e41e1910341894cc6a551",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794248406,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ],
+    [
+     "e",
+     "f7dd5ed6c4e60b9f830d3ac78dcf32eebe9caeaaa15f8f9d3384e842e89b0291",
+     "",
+     "reply"
+    ]
+   ],
+   "content": "Also known as: CVE-2026-123158:openssh.\nNew sources listed.\nSource: https://www.cisa.gov/known-exploited-vulnerabilities-catalog\n\n```aitools-alert\n{\n  \"aliases\": [\n    \"CVE-2026-123158:openssh\"\n  ],\n  \"sources\": [\n    {\n      \"url\": \"https://www.cisa.gov/known-exploited-vulnerabilities-catalog\",\n      \"published_at\": \"2026-11-09\"\n    },\n    {\n      \"url\": \"https://www.cisa.gov/news-events/directives/bod-26-04-prioritizing-security-updates-based-risk\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://www.cisa.gov/news-events/directives/bod-26-04-implementation-guidance-prioritizing-security-updates-based-risk\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://www.cisa.gov/known-exploited-vulnerabilities-catalog?search=CVE-2026-123158\",\n      \"published_at\": \"2026-11-09T00:00:00Z\"\n    },\n    {\n      \"url\": \"https://www.openssh.org/releasenotes.html\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://alpinelinux.org/posts/2026-11-05-openssh-password-authentication-bypass/\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://github.com/openssh/openssh-portable/commit/4353fdc43ef646c43a8dda7025cc1a898caf1482\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://nvd.nist.gov/vuln/detail/CVE-2026-123158\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://www.bleepingcomputer.com/news/security/hackers-exploit-sshole-openssh-flaw-to-breach-linux-systems/\",\n      \"published_at\": \"2026-11-09T16:04:57Z\"\n    },\n    {\n      \"url\": \"https://bsky.app/profile/bleepingcomputer.com/post/3mzvckfnpn52h\",\n      \"published_at\": \"2026-11-09T16:05:00Z\"\n    },\n    {\n      \"url\": \"https://fosstodon.org/@sigint/117583309172125349\",\n      \"published_at\": \"2026-11-08T23:01:51Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@axnews/117585326678475646\",\n      \"published_at\": \"2026-11-09T07:34:56Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@cloud/117570602831687005\",\n      \"published_at\": \"2026-11-06T17:10:28Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@cloud/117587593842685639\",\n      \"published_at\": \"2026-11-09T17:11:30Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@suriq/117567837694084987\",\n      \"published_at\": \"2026-11-06T05:27:15Z\"\n    }\n  ]\n}\n```\n",
+   "sig": "a3d52c901bad4da719cb3f4eb9c878b965a51ebd4b783cf37a5ecb66f03bd695b463024b260e723af59f668b4a24cb5ed1ce9f8b9118dce61685d8ff28d61c53"
+  },
+  {
+   "id": "a95fc0647d2758d723301924868d0b0d8be0a20160cb59a508f94eec66004797",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794252009,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ],
+    [
+     "e",
+     "f7dd5ed6c4e60b9f830d3ac78dcf32eebe9caeaaa15f8f9d3384e842e89b0291",
+     "",
+     "reply"
+    ]
+   ],
+   "content": "New sources listed.\nSource: https://www.cisa.gov/known-exploited-vulnerabilities-catalog\n\n```aitools-alert\n{\n  \"sources\": [\n    {\n      \"url\": \"https://www.cisa.gov/known-exploited-vulnerabilities-catalog\",\n      \"published_at\": \"2026-11-09\"\n    },\n    {\n      \"url\": \"https://www.cisa.gov/news-events/directives/bod-26-04-prioritizing-security-updates-based-risk\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://www.cisa.gov/news-events/directives/bod-26-04-implementation-guidance-prioritizing-security-updates-based-risk\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://www.cisa.gov/known-exploited-vulnerabilities-catalog?search=CVE-2026-123158\",\n      \"published_at\": \"2026-11-09T00:00:00Z\"\n    },\n    {\n      \"url\": \"https://www.openssh.org/releasenotes.html\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://alpinelinux.org/posts/2026-11-05-openssh-password-authentication-bypass/\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://github.com/openssh/openssh-portable/commit/4353fdc43ef646c43a8dda7025cc1a898caf1482\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://nvd.nist.gov/vuln/detail/CVE-2026-123158\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://www.bleepingcomputer.com/news/security/hackers-exploit-sshole-openssh-flaw-to-breach-linux-systems/\",\n      \"published_at\": \"2026-11-09T16:04:57Z\"\n    },\n    {\n      \"url\": \"https://bsky.app/profile/bleepingcomputer.com/post/3mzvckfnpn52h\",\n      \"published_at\": \"2026-11-09T16:05:00Z\"\n    },\n    {\n      \"url\": \"https://fosstodon.org/@sigint/117583309172125349\",\n      \"published_at\": \"2026-11-08T23:01:51Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@axnews/117585326678475646\",\n      \"published_at\": \"2026-11-09T07:34:56Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@cloud/117570602831687005\",\n      \"published_at\": \"2026-11-06T17:10:28Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@cloud/117587593842685639\",\n      \"published_at\": \"2026-11-09T17:11:30Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@suriq/117567837694084987\",\n      \"published_at\": \"2026-11-06T05:27:15Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@axnews/117587810491335351\",\n      \"published_at\": \"2026-11-09T18:06:36Z\"\n    }\n  ]\n}\n```\n",
+   "sig": "bdbb7dac47052146a4b67b4c10c6c8d21f38e237bbd7113052462761068fd6a9676bd18819cf1748e361b227c21b46aacc2e859386fad5c45c2b13f455ab5254"
+  },
+  {
+   "id": "bc11104f7f674dd960c12d225f38d2a06d0ccce1346a73e9d643b79e26ffdfcf",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794270007,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ],
+    [
+     "e",
+     "81a0c2f16dc3f83d832cf61df2e00c5b52cbbe8d885a7ce38425b07dbf79310b",
+     "",
+     "reply"
+    ]
+   ],
+   "content": "New sources listed.\nSource: https://github.com/anthropics/claude-code/security/advisories/GHSA-5xjx-9qx6-jcrv\n\n```aitools-alert\n{\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/anthropics/claude-code/security/advisories/GHSA-5xjx-9qx6-jcrv\",\n      \"published_at\": \"2026-10-26T11:43:04Z\"\n    },\n    {\n      \"url\": \"https://github.com/advisories/GHSA-5xjx-9qx6-jcrv\",\n      \"published_at\": \"2026-11-09T22:42:03Z\"\n    }\n  ]\n}\n```\n",
+   "sig": "7a342fbd1a9459d6b6139e391ead89e2fcca50f7490edc0842e9dfa654808640cf1360f04a7cecc4fc5b56a071e596121cc9dd3cd2665ab39cafed5bcfca2487"
+  },
+  {
+   "id": "ebc766f6c89b51e3e0a280aec62966fc39c187c055095df5033719d7963b5d35",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794270010,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "Daily digest for 2026-11-10: 8 advisories.\n\nCritical (1)\n- OpenSSH: known exploited vulnerability (CVE-2026-123158): OpenBSD OpenSSH Unexpected Status Code or Return Value Vulnerability; no fix yet. https://www.cisa.gov/known-exploited-vulnerabilities-catalog\n\nHigh (1)\n- Claude Code: security advisory (CVE-2026-88968:claude-code): TOCTOU Race in Edit Tool Allows File Writes Outside the Workspace; fixed in 2.1.251. https://github.com/anthropics/claude-code/security/advisories/GHSA-5xjx-9qx6-jcrv\n\nNotice (6)\n- OpenSSH: 8 unrated leads.\n- macOS: security advisory (LEAD-162d5e0f15f7:macos); no fix yet. https://mastodon.social/@EUVD_Bot/117586377449042125\n- MCP servers and clients: security advisory (LEAD-403373652053:mcp-server); no fix yet. https://mastodon.social/@EUVD_Bot/117587557389003360\n- Node.js: security advisory (LEAD-608b81ee849f:nodejs); no fix yet. https://mastodon.social/@EUVD_Bot/117587557289652959\n- Docker: 2 unrated leads.\n- Chrome: 12 unrated leads.",
+   "sig": "ad3075191c8ce7dfd4e3aa782743424c1feea37be9956d7d97157498f042aad5a117075f37f27d52afc806a61655570a9e4b7dc71f23709723c4c2525d59b4ce"
+  },
+  {
+   "id": "91022e3efb9af01f59a566c44bfdbf09a729702750e72e669b01dfc85572150c",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794302408,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ],
+    [
+     "e",
+     "f7dd5ed6c4e60b9f830d3ac78dcf32eebe9caeaaa15f8f9d3384e842e89b0291",
+     "",
+     "reply"
+    ]
+   ],
+   "content": "New sources listed.\nSource: https://www.cisa.gov/known-exploited-vulnerabilities-catalog\n\n```aitools-alert\n{\n  \"sources\": [\n    {\n      \"url\": \"https://www.cisa.gov/known-exploited-vulnerabilities-catalog\",\n      \"published_at\": \"2026-11-09\"\n    },\n    {\n      \"url\": \"https://www.cisa.gov/news-events/directives/bod-26-04-prioritizing-security-updates-based-risk\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://www.cisa.gov/news-events/directives/bod-26-04-implementation-guidance-prioritizing-security-updates-based-risk\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://www.cisa.gov/known-exploited-vulnerabilities-catalog?search=CVE-2026-123158\",\n      \"published_at\": \"2026-11-09T00:00:00Z\"\n    },\n    {\n      \"url\": \"https://www.openssh.org/releasenotes.html\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://alpinelinux.org/posts/2026-11-05-openssh-password-authentication-bypass/\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://github.com/openssh/openssh-portable/commit/4353fdc43ef646c43a8dda7025cc1a898caf1482\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://nvd.nist.gov/vuln/detail/CVE-2026-123158\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://www.bleepingcomputer.com/news/security/hackers-exploit-sshole-openssh-flaw-to-breach-linux-systems/\",\n      \"published_at\": \"2026-11-09T16:04:57Z\"\n    },\n    {\n      \"url\": \"https://bsky.app/profile/bleepingcomputer.com/post/3mzvckfnpn52h\",\n      \"published_at\": \"2026-11-09T16:05:00Z\"\n    },\n    {\n      \"url\": \"https://fosstodon.org/@sigint/117583309172125349\",\n      \"published_at\": \"2026-11-08T23:01:51Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@axnews/117585326678475646\",\n      \"published_at\": \"2026-11-09T07:34:56Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@cloud/117570602831687005\",\n      \"published_at\": \"2026-11-06T17:10:28Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@cloud/117587593842685639\",\n      \"published_at\": \"2026-11-09T17:11:30Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@suriq/117567837694084987\",\n      \"published_at\": \"2026-11-06T05:27:15Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@axnews/117587810491335351\",\n      \"published_at\": \"2026-11-09T18:06:36Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@axnews/117590981688973428\",\n      \"published_at\": \"2026-11-10T07:33:05Z\"\n    }\n  ]\n}\n```\n",
+   "sig": "ba5042b86544f93f0b8b0745a2b3b28b8bf6bf1581abc602eed4d4fb775646914b075f9a91206d5299cc5d29f42b2d88e715b64cc19d12345f7f9904c9945a26"
+  },
+  {
+   "id": "9d1c2dba3f4a1d251ed4aa40038fbf48f2081a68fec729446289dfdbef58f440",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794356407,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "Daily digest for 2026-11-11: 10 advisories.\n\nCritical (1)\n- OpenSSH: known exploited vulnerability (CVE-2026-123158): OpenBSD OpenSSH Unexpected Status Code or Return Value Vulnerability; fixed version not stated, check the vendor. https://www.cisa.gov/known-exploited-vulnerabilities-catalog\n\nHigh (2)\n- Claude Code: security advisory (CVE-2026-88968:claude-code): TOCTOU Race in Edit Tool Allows File Writes Outside the Workspace; fixed in 2.1.251. https://github.com/anthropics/claude-code/security/advisories/GHSA-5xjx-9qx6-jcrv\n- Chromium: known exploited vulnerability (CVE-2026-125350); fixed version not stated, check the vendor. https://www.cisa.gov/known-exploited-vulnerabilities-catalog\n\nNotice (7)\n- macOS: 3 unrated leads.\n- OpenSSH: 11 unrated leads.\n- Chrome: 9 unrated leads.\n- Node.js: 6 unrated leads.\n- MCP servers and clients: 3 unrated leads.\n- Docker: 5 unrated leads.\n- Chrome: security advisory (CVE-2026-125350:chrome): Google Chromium Use-After-Free Vulnerability; fixed version not stated, check the vendor. https://www.cisa.gov/known-exploited-vulnerabilities-catalog?search=CVE-2026-125350",
+   "sig": "17fbe5bdd2ec658cbadf44fe66654fec055e2220d7a8e9b7a7658dfe3792d6862042d27d921c26feb852fa9738ae51b7903ea371a5ba9033cf579244d0b6575b"
+  },
+  {
+   "id": "9c8ce126b4573389f750af3bfd468a194a0399a7c07e43c74dba8b1ab386aa5c",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794367209,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ],
+    [
+     "e",
+     "f7dd5ed6c4e60b9f830d3ac78dcf32eebe9caeaaa15f8f9d3384e842e89b0291",
+     "",
+     "reply"
+    ]
+   ],
+   "content": "New sources listed.\nSource: https://www.cisa.gov/known-exploited-vulnerabilities-catalog\n\n```aitools-alert\n{\n  \"sources\": [\n    {\n      \"url\": \"https://www.cisa.gov/known-exploited-vulnerabilities-catalog\",\n      \"published_at\": \"2026-11-09\"\n    },\n    {\n      \"url\": \"https://www.cisa.gov/news-events/directives/bod-26-04-prioritizing-security-updates-based-risk\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://www.cisa.gov/news-events/directives/bod-26-04-implementation-guidance-prioritizing-security-updates-based-risk\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://www.cisa.gov/known-exploited-vulnerabilities-catalog?search=CVE-2026-123158\",\n      \"published_at\": \"2026-11-09T00:00:00Z\"\n    },\n    {\n      \"url\": \"https://ubuntu.com/security/CVE-2026-123158\",\n      \"published_at\": \"2026-11-06T00:00:00Z\"\n    },\n    {\n      \"url\": \"https://www.openssh.org/releasenotes.html\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://alpinelinux.org/posts/2026-11-05-openssh-password-authentication-bypass/\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://github.com/openssh/openssh-portable/commit/4353fdc43ef646c43a8dda7025cc1a898caf1482\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://nvd.nist.gov/vuln/detail/CVE-2026-123158\",\n      \"published_at\": null\n    },\n    {\n      \"url\": \"https://www.bleepingcomputer.com/news/security/hackers-exploit-sshole-openssh-flaw-to-breach-linux-systems/\",\n      \"published_at\": \"2026-11-09T16:04:57Z\"\n    },\n    {\n      \"url\": \"https://bsky.app/profile/bleepingcomputer.com/post/3mzvckfnpn52h\",\n      \"published_at\": \"2026-11-09T16:05:00Z\"\n    },\n    {\n      \"url\": \"https://fosstodon.org/@sigint/117583309172125349\",\n      \"published_at\": \"2026-11-08T23:01:51Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@axnews/117585326678475646\",\n      \"published_at\": \"2026-11-09T07:34:56Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@cloud/117570602831687005\",\n      \"published_at\": \"2026-11-06T17:10:28Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@cloud/117587593842685639\",\n      \"published_at\": \"2026-11-09T17:11:30Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@suriq/117567837694084987\",\n      \"published_at\": \"2026-11-06T05:27:15Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@axnews/117587810491335351\",\n      \"published_at\": \"2026-11-09T18:06:36Z\"\n    },\n    {\n      \"url\": \"https://infosec.exchange/@axnews/117590981688973428\",\n      \"published_at\": \"2026-11-10T07:33:05Z\"\n    }\n  ]\n}\n```\n",
+   "sig": "2e9e3e5d1d90a75a74ad964946604c67b15ad7b87748b39fb0e175334c6f26bac7dc84f6e27dda9b337181469205dde233793f84ffbc2be18113fd6245cda72c"
+  }
+ ]
+}
