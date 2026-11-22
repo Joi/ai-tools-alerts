@@ -534,10 +534,14 @@ class Run:
         for h in self.state["held"]:
             known.update(self._notice_keys(h["scope"], h["adv"]))
         if known & set(self._notice_keys(scope, a)):
-            for h in self.state["held"]:  # a title learned while held reaches the digest
-                if title and not h.get("source_title") and h["scope"] == scope \
-                        and set(self._notice_keys(scope, h["adv"])) & set(self._notice_keys(scope, a)):
+            for h in self.state["held"]:
+                if h["scope"] != scope or not set(self._notice_keys(scope, h["adv"])) & set(self._notice_keys(scope, a)):
+                    continue
+                if title and not h.get("source_title"):  # a title learned while held reaches the digest
                     h["source_title"] = title
+                    self.save()
+                if compose.listable(adv) and not compose.listable(schema.validate(h["adv"])):
+                    h["adv"] = a  # 8ke5: a primary source learned while held: the digest lists that
                     self.save()
             return
         self.state["held"].append({"scope": scope, "adv": a, **({"source_title": title} if title else {})})
@@ -591,7 +595,7 @@ class Run:
             # are learned above, the sources here, and the next real reply carries both.
             # Exploitation learned at the same level still replies (design section 5;
             # its Japanese action turns urgent, 4yr1).
-            self.led.learn_sources(entry.root_event_id, extra)
+            self.led.learn_sources(entry.root_event_id, compose._sources(extra))  # publishable ones only
             changes = {}
         copies = [ch for ch in CHANNELS_FOR[level] if ch not in entry.channel_ids]
         ja = self._ja(compose.root_post_ja, new, reason, compose.fix_unexpressed(k), title,
@@ -667,15 +671,25 @@ class Run:
                 led_items.append((adv, None, (e.listed, e.root_event_id)))
                 if adv.products:
                     titles[(adv.id, adv.products[0].name)] = e.source_title
+        unlisted = []
         for h in self.state["held"]:
             if h not in posted:
                 try:
                     a = schema.validate(h["adv"])
+                    if not compose.listable(a):
+                        # 8ke5: a lead, or no primary source. It leaves the held list but is
+                        # never marked digested, so a sighting with a primary source is held
+                        # again and listed.
+                        unlisted.append(h)
+                        continue
                     held_items.append((a, h, None))
                     if a.products:
                         titles.setdefault((a.id, a.products[0].name), h.get("source_title"))
                 except ValueError:
                     self.n["withheld"] += 1
+        if unlisted:
+            self.state["held"] = [h for h in self.state["held"] if h not in unlisted]
+            self.save()
         led_items.sort(key=lambda x: x[2])
         held_items.sort(key=lambda x: (-RANK[x[0].level], -x[0].posted_at))
         items = led_items + held_items

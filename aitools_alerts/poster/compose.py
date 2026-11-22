@@ -472,6 +472,11 @@ _DIGEST = {
 }
 
 
+def listable(a: schema.Advisory) -> bool:
+    """A digest may list it: not a lead, and a primary source says it (8ke5)."""
+    return not a.id.startswith("LEAD-") and any(schema.is_primary(s.url) for s in a.sources)
+
+
 def _single(a: schema.Advisory, t=_DIGEST["en"], title: str | None = None) -> str:
     fixed = t["fixed"](a.products[0].fixed) if a.products[0].fixed else t["nofix"]
     up = t["upstream"](title) if title else ""
@@ -521,8 +526,7 @@ def digest(advs_today, date, lang: str = "en", *, retracted=(), now: int | None 
             latest[key] = adv
     gone = {i.casefold() for i in retracted}
     latest = {k: a for k, a in latest.items() if not (
-        is_synthetic(a.id) or a.id.startswith("LEAD-")
-        or not any(schema.is_primary(s.url) for s in a.sources)
+        is_synthetic(a.id) or not listable(a)
         or not gone.isdisjoint(i.casefold() for i in (a.id, *a.aliases))
         or (now is not None and a.expires_at is not None and a.expires_at < now))}
     day = date.isoformat() if hasattr(date, "isoformat") else str(date)

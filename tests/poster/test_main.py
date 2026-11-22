@@ -1489,3 +1489,32 @@ def test_a_source_only_change_is_not_listed_again(env):  # 8ke5
     assert "replies=0" in summary and ssh.calls == []
     _, _, ssh = env.run(now=at(6, 9))
     assert len(ssh.calls) == 1 and "GHSA-abcd-efgh-ijkl" not in ssh.calls[0][2]
+
+
+SOCIAL = "https://mastodon.social/@bot/1"
+
+
+def test_an_unconfirmed_notice_is_listed_once_a_primary_source_confirms_it(env):  # 8ke5
+    """Left out of a digest for want of a primary source is not the same as listed: a
+    later sighting with one is held again and listed."""
+    env.collector([{**MAC, "sources": [{"url": SOCIAL, "published_at": None}]}])
+    assert "held=1" in env.run()[1]
+    _, _, ssh = env.run(now=at(5, 9))
+    assert "CVE-2026-5000" not in ssh.calls[0][2]
+    st = env.state()
+    assert st["held"] == [] and not [k for k in st["digested"] if "cve-2026-5000" in k]
+    env.collector([{**MAC, "fixed": "27.2"}])  # Apple's own advisory, with its fix
+    assert "held=1" in env.run(now=at(5, 12))[1]
+    _, _, ssh = env.run(now=at(6, 9))
+    assert "CVE-2026-5000" in ssh.calls[0][2] and APPLE in ssh.calls[0][2]
+
+
+def test_a_primary_source_learned_while_held_reaches_the_digest(env):  # 8ke5
+    env.collector([{**MAC, "sources": [{"url": SOCIAL, "published_at": None}]}])
+    env.run()
+    env.collector([MAC])
+    env.run(now=T0 + 3600)
+    (h,) = env.state()["held"]
+    assert [s["url"] for s in h["adv"]["sources"]] == [APPLE]
+    _, _, ssh = env.run(now=at(5, 9))
+    assert "CVE-2026-5000" in ssh.calls[0][2] and APPLE in ssh.calls[0][2]

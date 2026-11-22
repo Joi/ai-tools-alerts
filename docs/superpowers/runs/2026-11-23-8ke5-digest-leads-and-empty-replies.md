@@ -1,6 +1,6 @@
 # Run: 8ke5-digest-leads-and-empty-replies
 Instruction: Read TASK-ai-tools-alerts#8ke5.md in this worktree root, then run `kata show ai-tools-alerts#8ke5` and follow the brief and the dispatch rules (do-it, starting rung floored at medium; not repoman-managed: land by fast-forward to main after the gate and one independent review; reinstall on the poster host).
-Stage: executing
+Stage: code-review:branch (whole-branch review launched at 53f6532f4b78675e2db22567c846340be84960cd; gate 1125 passed)
 Rung: medium (start-floor medium: constraint-lens; evaluator BR1 REV2 NOV1 INT2 FC1 = 7, hard-trigger none; dispatch floor medium as well)
 Lens: "Readers at v0.1.4 are installed on member machines: a post they cannot parse is a regression. Do not change the block's required keys."
 Spec: docs/superpowers/specs/2026-11-23-8ke5-digest-leads-and-empty-replies-design.md   Plan: docs/superpowers/plans/2026-11-23-8ke5-digest-leads-and-empty-replies.md
@@ -14,6 +14,10 @@ Pass 1 [spec]: 0B/5S/0C/1R · fixed -/- · velocity = (—→6, escalation no)  
 
 Pass 1 [plan]: 0B/4S/0C/0R · fixed -/- · velocity = (—→4, escalation no)   (fresheyes gpt-6.1-sol high, snapshot ea70def8, REASON=-)
   plan passes: 1 · fixed 4 (replay runs a 09:20 digest each day and asserts listing on 11-07 and 11-08 only; whole marks-and-kinds test rewritten on primary sources, "see the release" removed; listed_at never null; host name removed from spec and manifest, public scan)
+Pass 1 [code:branch]: 1B/1S/4C/0R · fixed -/- · velocity = (—→6, escalation no)   (Stage 2 fresheyes gpt-6.1-sol high on origin/main...53f6532, REASON=-: 2 major; Stage 1 same-model subagent: 0B/0S/4C)
+  B1 fixed: a held notice left out for no primary source was marked digested, so its later confirmation never listed; now it leaves held unmarked, and a confirmation while held replaces the snapshot (two regression tests, both fail on 53f6532).
+  S1 fixed: spec and plan named no exploitation exception; both now do.
+  C1 fixed: learned sources pass compose._sources first. C2-C4 not changed: an exploitation-only reply does not re-list (matches the issue's level/fix/action rule); an unverified high root is left out of the digest (issue item 1); extra validator tests noted, not added.
 
 ## Chunks
 - [x] chunk 1 — compose: no lead lines, no ledger-key aliases (poster tests: compose 54 passed)

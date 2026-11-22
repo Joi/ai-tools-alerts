@@ -25,9 +25,13 @@ Measured on the live feed from 2026-11-05 to 11-22:
 1. `compose.digest` prints no line for an advisory whose id starts with `LEAD-`, or
    that has no primary source (`schema.is_primary` false for every source), in
    English and Japanese. No "N unrated leads" line exists. Such advisories are not
-   counted in the head line's N.
+   counted in the head line's N. A held notice left out this way leaves the held list
+   but is never marked digested, so a later sighting with a primary source is held
+   again and listed; one confirmed while still held replaces its held snapshot.
 2. `Run.plan_known` plans no reply when the only changed keys are `sources` and/or
-   `aliases`. Copies to a new channel are unaffected. The ledger keeps what was
+   `aliases`, unless the candidate makes the thread newly exploited (KEV learned at
+   the same level: design section 5 replies when "exploitation is confirmed", and
+   4yr1's urgent Japanese action depends on it). Copies to a new channel are unaffected. The ledger keeps what was
    learned: ids by `add_ids` (as now) and sources in a new optional entry field
    `learned_sources`; the next reply with a real change carries both.
 3. A digest lists a ledger advisory on the day it first posted, and again only on a
@@ -81,7 +85,11 @@ Measured on the live feed from 2026-11-05 to 11-22:
   - `plan_known`: candidate aliases to publish come from the candidate's ids and the
     entry's stored ids, filtered for publication; sources from the entry's
     `learned_sources` and the candidate's. If the changed keys are a subset of
-    `{aliases, sources}`, record sources with `learn_sources` and plan no reply.
+    `{aliases, sources}` and the candidate is not newly exploited, record the
+    publishable sources with `learn_sources` and plan no reply.
+  - `hold`: an overlapping held notice with no primary source takes the new snapshot
+    when that one has one. `digest`: a held notice `compose.listable` refuses leaves
+    `held` without entering `digested`.
   - `digest`: use `e.listed` where it used `e.last_change`; when every ledger item
     fit, `roots` holds the roots whose `listed` equals the cutoff.
 

@@ -56,10 +56,18 @@ Files: `aitools_alerts/poster/ledger.py`, `aitools_alerts/poster/main.py`,
 - [ ] `plan_known` (main.py ~547): ids to publish = candidate ids then `entry.aliases`,
       not in `prev_ids`, publishable (`compose._public_id`); `k.sources` = prev's, then
       `entry.learned_sources`, then the candidate's. After `changes` is built: if
-      `changes and set(changes) <= {"aliases", "sources"}`, call `learn_sources` with the
-      new sources and drop `changes` (copies still planned).
+      `changes and set(changes) <= {"aliases", "sources"}` and NOT newly exploited
+      (`c.exploited is True and not entry.exploited` still replies: design section 5,
+      4yr1's `test_kev_learned_at_the_same_level_makes_the_japanese_action_urgent`),
+      call `learn_sources` with the new publishable sources (`compose._sources`) and drop
+      `changes` (copies still planned).
 - [ ] `digest` (main.py ~643): `e.listed` for `e.last_change`; all-taken branch:
       `roots = [r for t, r in led_taken if t == cutoff]`.
+- [ ] (whole-branch review BLOCKER) `compose.listable(adv)`; `digest` takes a held
+      notice it refuses out of `held` without adding it to `digested`; `hold` replaces an
+      overlapping held snapshot with no primary source by a new one that has one. Tests:
+      confirmation after the first digest is held again and listed; confirmation while
+      held reaches the digest.
 - [ ] Tests: update `test_duplicate_alias_becomes_reply`,
       `test_alias_reply_survives_a_stop_after_ids_were_learned` and
       `test_ids_learned_past_the_alias_cap` to the new rule (alias/source-only → no reply;
