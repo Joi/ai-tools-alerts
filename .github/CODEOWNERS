@@ -1,0 +1,15 @@
+# Owner of the files that decide what members trust, install and run.
+# Code-owner review is not required by the ruleset: the repository has one account.
+/trust/          @Joi
+/spec/           @Joi
+/ops/            @Joi
+/hooks/          @Joi
+/skills/         @Joi
+/snippets/       @Joi
+/README.md       @Joi
+/pyproject.toml  @Joi
+/SECURITY.md     @Joi
+/.github/        @Joi
+/aitools_alerts/  @Joi
+/mirror/         @Joi
+/scripts/        @Joi

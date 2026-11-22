@@ -4,6 +4,23 @@ The ai-tools Buzz relay runs on `<relay-vm>` (user `<user>`) and answers at `htt
 
 Created 2026-11-05 under jibot-code#wpbd.
 
+## Release files
+
+Every file this page installs on the VM comes from a verified release, never from a working checkout or a branch. The pinned release is `v0.1.4`, commit `b33573fb812d78239252b54413949dc87ec85348`, the same pin as the top-level README. Export it once and take every file below from `$rel`:
+
+```bash
+unset rel
+c=<ai-tools-alerts checkout>
+git -C "$c" fetch --tags origin &&
+  git -C "$c" -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.4 &&   # the principal and fingerprint in the README
+  test "$(git -C "$c" rev-parse 'v0.1.4^{commit}')" = b33573fb812d78239252b54413949dc87ec85348 &&
+  d="$(mktemp -d)" && git -C "$c" archive -o "$d/release.tar" b33573fb812d78239252b54413949dc87ec85348 && tar -x -C "$d" -f "$d/release.tar" &&
+  rm "$d/release.tar" && test -f "$d/ops/vm/buzz-send" && rel="$d" ||
+  echo 'VERIFICATION FAILED: install nothing'
+```
+
+Every step is chained, so `$rel` is set only when the tag check, the commit check and the export all succeed; if it prints the failure line, or `echo "${rel:?}"` fails, install nothing. The steps below write `${rel:?}`, which stops a command when `$rel` is unset. `$rel` is a plain export with no `.git`, so local edits and untracked files in the checkout cannot reach it.
+
 ## Channels
 
 | key in `spec/channels.json` | name | UUID | type | visibility |
@@ -24,7 +41,7 @@ Buzz cannot restrict posting on a channel by role. A write is accepted from any 
 
 ## `buzz-send`
 
-`~/bin/buzz-send`, mode 700, owner `<user>`. Source: `ops/vm/buzz-send` in this repo; the installed file must be byte-identical.
+`~/bin/buzz-send`, mode 700, owner `<user>`. Source: `${rel:?}/ops/vm/buzz-send` from the verified release (Release files, above); the installed file must be byte-identical to it.
 
 It reads jibot's key from `~/.buzz-keys/agent.nsec`, checks it (regular file, nsec checksum and length or 64 hex, scalar in range), exports it as `BUZZ_PRIVATE_KEY` with `BUZZ_RELAY_URL=https://buzz.ai-tools.md`, clears `BUZZ_AUTH_TAG`, refuses `--private-key` and `--relay`, and execs `~/buzz/target/release/buzz` with the caller's arguments. The key is never on an argv. Message text goes on stdin:
 
@@ -38,9 +55,9 @@ printf '%s' "$text" | ssh <relay-vm> '~/bin/buzz-send' \
 Install or update, then verify:
 
 ```bash
-scp ops/vm/buzz-send '<relay-vm>:bin/buzz-send.new'
+scp "${rel:?}/ops/vm/buzz-send" '<relay-vm>:bin/buzz-send.new'
 ssh <relay-vm> 'chmod 700 ~/bin/buzz-send.new && mv -f ~/bin/buzz-send.new ~/bin/buzz-send && sha256sum ~/bin/buzz-send'
-git show origin/main:ops/vm/buzz-send | shasum -a 256   # must match
+shasum -a 256 "${rel:?}/ops/vm/buzz-send"   # must match the VM's line above
 ssh <relay-vm> '~/bin/buzz-send' channels get --channel 599adb9f-4f9f-4b19-aee3-66667c3293e8
 ```
 
@@ -80,19 +97,17 @@ Do not use `--template`: it resolves desktop-app templates. The wrapper was then
 
 ## The exporter copy
 
-The mirror exporter on the VM runs from a pinned commit of this repo, never a clone the VM pulls. cell-fleet's `ops/buzz/compose-overlays/buzz-aitools/install-mirror.sh <dir>` ships `aitools_alerts/`, `mirror/`, `spec/` and `trust/` from a local directory as they are on disk, unpacks them into a new `~/.ai-tools-alerts.d/<id>`, and points the `~/ai-tools-alerts` symlink at it. It does not check git state, so give it a fresh export of the release, not a working checkout that may hold local edits:
+The mirror exporter on the VM runs from a pinned commit of this repo, never a clone the VM pulls. cell-fleet's `ops/buzz/compose-overlays/buzz-aitools/install-mirror.sh <dir>` ships `aitools_alerts/`, `mirror/`, `spec/` and `trust/` from a local directory as they are on disk, unpacks them into a new `~/.ai-tools-alerts.d/<id>`, and points the `~/ai-tools-alerts` symlink at it. It does not check git state, so give it the verified export from Release files (above), not a working checkout that may hold local edits:
 
 ```bash
-d="$(mktemp -d)" && git -C <ai-tools-alerts checkout> archive v0.1.4 | tar -x -C "$d"
-git -C <ai-tools-alerts checkout> rev-parse 'v0.1.4^{commit}'   # record this sha on the kata issue
-./install-mirror.sh "$d"
+./install-mirror.sh "${rel:?}"   # record b33573fb812d78239252b54413949dc87ec85348 on the kata issue
 ```
 
 The installer's `<id>` is a timestamp, so the recorded sha is the only note of what is deployed. The exporter publishes `trust/root.pub` from the deployed copy as `https://buzz.ai-tools.md/alerts/root.pub`, beside `manifest.json`, so a reader can compare the root with GitHub's.
 
 ## The poster's send-only route
 
-The poster does not use the relay user's ssh key or shell. It logs in as a separate Unix user, `aitools-poster`, whose login shell is a guard that runs one command shape and nothing else, so a compromised poster Mac can post messages as jibot but cannot delete channels, add members or read the key (ai-tools-alerts#w75s). Sources of truth, all in `ops/vm/`:
+The poster does not use the relay user's ssh key or shell. It logs in as a separate Unix user, `aitools-poster`, whose login shell is a guard that runs one command shape and nothing else, so a compromised poster Mac can post messages as jibot but cannot delete channels, add members or read the key (ai-tools-alerts#w75s). Sources of truth, all in `ops/vm/` of the verified release (`${rel:?}/ops/vm/`, Release files, above); copy them to the VM from `$rel`, never from a checkout:
 
 | file | installed at | mode |
 |---|---|---|
@@ -110,9 +125,9 @@ The route is the VM's own OpenSSH on its private network address. The provider's
 On the VM, as root, with `<user>` the relay's login user:
 
 1. `useradd --create-home --shell /usr/local/bin/aitools-poster-shell aitools-poster`; leave the password locked.
-2. Write the relay user file: `install -d -o root -g root -m 755 /etc/aitools-poster`, then `printf '%s\n' <user> > /etc/aitools-poster/relay-user`, `chown root:root` and `chmod 644` it. Root ownership keeps the poster user from naming another sudo target. Install the guard as a plain copy of the tracked file: `install -o root -g root -m 755 aitools-poster-shell /usr/local/bin/`.
-3. Write the sudoers file with every `RELAY_USER` replaced, run `visudo -cf <file>`, then `install -o root -g root -m 440` it into `/etc/sudoers.d/`.
-4. Back up `sshd_config`, append the Match block at the end, run `sshd -t`, and reload sshd only when it passes.
+2. Write the relay user file: `install -d -o root -g root -m 755 /etc/aitools-poster`, then `printf '%s\n' <user> > /etc/aitools-poster/relay-user`, `chown root:root` and `chmod 644` it. Root ownership keeps the poster user from naming another sudo target. Install the guard as a plain copy of the release's file, copied over from `${rel:?}/ops/vm/aitools-poster-shell`: `install -o root -g root -m 755 aitools-poster-shell /usr/local/bin/`, then check that `sha256sum /usr/local/bin/aitools-poster-shell`, run on the VM, matches `shasum -a 256 "${rel:?}/ops/vm/aitools-poster-shell"`, run where `$rel` is.
+3. Write the sudoers file from `${rel:?}/ops/vm/sudoers-aitools-poster` with every `RELAY_USER` replaced, run `visudo -cf <file>`, then `install -o root -g root -m 440` it into `/etc/sudoers.d/`.
+4. Back up `sshd_config`, append the Match block from `${rel:?}/ops/vm/sshd-match-aitools-poster.conf` at the end, run `sshd -t`, and reload sshd only when it passes.
 5. Before any key is authorized, check the effective policy. `sshd -T -C user=aitools-poster,host=<poster>,addr=<poster address>` must print `authorizedkeysfile /home/aitools-poster/.ssh/authorized_keys`, `allowtcpforwarding no`, `allowagentforwarding no`, `x11forwarding no`, `permittty no`, `permittunnel no`, `allowstreamlocalforwarding no`, `disableforwarding yes`, `permituserrc no`, `permituserenvironment no`, `forcecommand none`, an `acceptenv` of `LANG LC_*` at most, and no `subsystem ... internal-sftp` (an in-process subsystem never runs the login shell; an accepted `BASH_ENV` would run code before the guard). `sudo -l -U aitools-poster` must list only the one rule, `sudo -V` must show `env_reset` with no `HOME` or `BUZZ_*` kept, and `grep -r Defaults /etc/sudoers /etc/sudoers.d` must show no line for `aitools-poster`, `<user>` or `buzz-send`. If any of these differs, stop.
 6. `~aitools-poster/.ssh/authorized_keys`, one line: `restrict ssh-ed25519 <poster public key> aitools-alerts-poster`. The file is owned by root, mode 644; `.ssh` and the home directory `/home/aitools-poster` are owned by root, mode 755 (`chown root:root`, then `chmod`). Root ownership means the poster user cannot edit the file to drop `restrict`, and with the home directory root-owned it cannot rename `.ssh` aside and put its own in place: sshd's StrictModes accepts a path owned by root or by the user, so owning the file alone does not stop that swap. The guard writes nothing to the home directory. `restrict` stays required: it and the Match block each close forwarding and `~/.ssh/rc`, so one mistake in either leaves the other.
 
