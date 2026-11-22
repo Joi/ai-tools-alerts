@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from aitools_alerts import config, pull
+from aitools_alerts import config, curator, pull
 from mirror_helpers import T0, Mirror
 
 
@@ -25,6 +25,7 @@ class _Clock:
 def reader_clock(monkeypatch):
     clock = _Clock(pull.time, T0 + 1000)
     monkeypatch.setattr(pull, "time", clock)
+    monkeypatch.setattr(curator, "time", clock)  # the curator dates replies by the same clock
     return clock
 
 

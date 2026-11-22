@@ -117,8 +117,15 @@ def cmd_keygen(a) -> int:
     return cmd_init(a)
 
 
+AHEAD_LINE = ("warning: {n} event(s) dated ahead of this machine's clock were not read; "
+              "if the clock is wrong, alerts are missing until it is set")
+
+
 def _pull(a, st: State, url: str) -> pull.PullResult:
-    return pull.fetch(url, st, root_pubkey=a.root)
+    res = pull.fetch(url, st, root_pubkey=a.root)
+    if res.dropped.get("future-dated"):  # a slow clock refuses genuine news: never silent
+        _err(AHEAD_LINE.format(n=res.dropped["future-dated"]))
+    return res
 
 
 def cmd_pull(a, st: State, s: config.Settings) -> int:

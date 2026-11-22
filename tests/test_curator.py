@@ -427,3 +427,24 @@ def test_amend_pulls_first(mirror, capsys, monkeypatch):
     monkeypatch.setattr(pull, "default_fetch", mirror.fetch)
     assert cli.main(["curator", "retract", root["id"], "--dry-run"]) == 1
     assert "no curator role" in capsys.readouterr().err
+
+
+def test_correction_is_not_dated_after_a_stored_future_event(mirror):
+    """ai-tools-alerts#gefy: a bot reply dated ten years ahead, stored by an older
+    reader, must not drag a curator's retraction or amendment ten years ahead too:
+    every reader would refuse it and the exporter would leave it out."""
+    root = publish(mirror, *post(mirror))
+    far = mirror.post(mirror.bot_sec, "note", created_at=NOW + 3650 * 86400, tags=[("e", root["id"], "", "root")])
+    st = pulled(mirror)
+    st.events[far["id"]] = far  # as v0.1.4 stored it; this reader's pull refuses it
+    t = [t for t in pull.advisories(st) if t.root_id == root["id"]][0]
+    gone = curator.retract_event(mirror.cur_sec, st.manifest, mirror.root, st, t, root, now=NOW + 1)
+    up = curator.amend_event(mirror.cur_sec, st.manifest, mirror.root, st, t, root, now=NOW + 1, level="notice")
+    for ev in (gone, up):
+        assert NOW + 1 <= ev["created_at"] <= NOW + 1 + pull.MAX_AHEAD_S
+    mirror.events["feed.json"].append(gone)
+    st2 = State.load()
+    res = pull.fetch("https://mirror.example.invalid/alerts", st2, fetch=mirror.fetch, root_pubkey=mirror.root,
+                     now=NOW + 2)
+    assert res.dropped == {"future-dated": 1}  # the bot's, never the curator's
+    assert [t.retracted for t in pull.advisories(st2) if t.root_id == root["id"]] == [True]

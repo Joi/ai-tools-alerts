@@ -24,7 +24,7 @@ The issue's last fix item, "list every retraction in the manifest", is not built
 
 ### Channel binding (reader)
 
-`pull.py` gains `channel_ids()`: the two values of `spec/channels.json`, loaded once from the packaged `spec/` directory (`schema.SPEC_DIR`), each required to be a lowercase UUID. A missing or malformed file raises `pull.ChannelSpecError` (a `ValueError`): the package is damaged and no event can be bound. `_fetch` loads the ids before anything else and fails the pull with `bad channel spec` (added to `PULL_ERRORS`), recording the failure without computing freshness. `advisories` raises it; `freshness` returns no newest event. `cli.main` catches `ChannelSpecError` beside `StateError` and prints one line, exit 1.
+`pull.py` gains `channel_ids()`: the two values of `spec/channels.json`, loaded once from the packaged `spec/` directory (`schema.SPEC_DIR`), exactly the keys `feed` and `critical`, each a lowercase UUID, the two distinct, no duplicate key. A file naming one channel would silently drop the other's alerts and retractions; an extra entry would admit a third channel. A missing or malformed file raises `pull.ChannelSpecError` (a `ValueError`): the package is damaged and no event can be bound. `_fetch` loads the ids before anything else and fails the pull with `bad channel spec` (added to `PULL_ERRORS`), recording the failure without computing freshness. `advisories` raises it; `freshness` returns no newest event. `cli.main` catches `ChannelSpecError` beside `StateError` and prints one line, exit 1.
 
 `pull._bound(ev, channels)` is true when `ev["kind"] == 9` and the tags whose first element is `h` and that have a second element are exactly one, and its value is in `channels`. NIP-29 puts the group id in `h`; the relay sets it on every channel message, and the curator command and the poster already write it (`curator._sign`, `poster.main.curator_events` reads it).
 
@@ -47,9 +47,17 @@ Ten minutes: the issue asks for "a few minutes"; the design review (comments on 
 
 A member whose clock is far behind refuses genuine events as future-dated. They are counted in the pull summary (`dropped: future-dated N`) and stored at the first pull after the clock is right. A new alert is delayed on that machine, never lost, and the checkpoint of piece 3 makes the gap an explicit error.
 
+### The curator command
+
+`curator._after` dates a reply after every stored event of its thread. With a stored event dated years ahead (one v0.1.4 admitted), the reply would be dated years ahead too, refused by every reader and left out by the exporter: one old future-dated bot reply would silence every later retraction. `_after` now ignores stored events dated more than `MAX_AHEAD_S` ahead and never returns a time more than `MAX_AHEAD_S` ahead of now. Reply order still holds: the curator's reply sorts before the future-dated bot reply, and once a curator has amended or retracted a thread a bot reply is discussion.
+
+### A slow clock is said out loud
+
+When a pull refuses events as future-dated, `pull` and `run` print one warning line on stderr with the count. A machine whose clock is behind otherwise loses genuine news with exit 0 and nothing printed.
+
 ### Exporter
 
-`clean(rows, m, now)` drops a verified kind 9 poster event dated more than `MAX_AHEAD_S` after `now` and counts it as `future`; the summary line prints the count. The event stays in the relay's database and is published once its date is no longer ahead. The existing test `test_far_future_timestamp_kept_in_json_not_atom` asserts the opposite for dates past 9999-12-31 and is rewritten: such an event is not published. A bot key holder who dates an event ahead then reaches no reader through an honest mirror, including v0.1.4 readers, which have no bound.
+`clean(rows, m, now)` drops a verified kind 9 poster event dated more than `MAX_AHEAD_S` after `now` and counts it as `future`; the summary line prints the count. The event stays in the relay's database and is published once its date is no longer ahead. As in the reader, the bound is an admission check: an event already in the channel files of the output directory is kept whatever the clock says now, so an exporter clock set back never withdraws a published retraction. The exporter also drops (counted `unbound`) an event without exactly one `h` tag naming a channel in its `--channels` file, the reader's rule: it publishes nothing the reader would drop. The existing test `test_far_future_timestamp_kept_in_json_not_atom` asserts the opposite for dates past 9999-12-31 and is rewritten: such an event is not published. A bot key holder who dates an event ahead then reaches no reader through an honest mirror, including v0.1.4 readers, which have no bound.
 
 ## Alternatives considered
 

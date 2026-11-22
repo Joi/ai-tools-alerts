@@ -61,6 +61,7 @@ STALE_EVENT_S = 3 * 86400  # the poster's daily digest is the signed heartbeat
 STALE_MANIFEST_S = 90 * 86400
 MAX_AHEAD_S = 600  # an event dated further ahead of the local clock is not admitted
 CHAT_KIND = 9  # NIP-29 group chat message: the only kind posters and curators send
+CHANNEL_NAMES = ("feed", "critical")  # the keys of spec/channels.json, exactly
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 TIMEOUT = 20
 _RANK = {"notice": 1, "high": 2, "critical": 3}
@@ -104,11 +105,15 @@ class ChannelSpecError(ValueError):
 def channel_ids() -> frozenset:
     """The ids of the alert channels, from the packaged spec/channels.json."""
     try:
-        obj = json.loads((schema.SPEC_DIR / "channels.json").read_text(encoding="utf-8"))
+        obj = json.loads((schema.SPEC_DIR / "channels.json").read_text(encoding="utf-8"),
+                         object_pairs_hook=schema._no_duplicates, parse_constant=schema._reject_constant)
     except (OSError, ValueError, RecursionError):
         raise ChannelSpecError("spec/channels.json is unreadable; reinstall aitools-alerts") from None
-    if (not isinstance(obj, dict) or not obj
-            or not all(isinstance(v, str) and _UUID.fullmatch(v) for v in obj.values())):
+    # Exactly the two channels, distinct: a file naming one would silently drop the
+    # other's alerts and retractions, and an extra entry would admit a third channel.
+    if (not isinstance(obj, dict) or set(obj) != set(CHANNEL_NAMES)
+            or not all(isinstance(v, str) and _UUID.fullmatch(v) for v in obj.values())
+            or len(set(obj.values())) != len(CHANNEL_NAMES)):
         raise ChannelSpecError("spec/channels.json does not name the alert channels; reinstall aitools-alerts")
     return frozenset(obj.values())
 

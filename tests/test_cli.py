@@ -705,3 +705,14 @@ def test_broken_channel_spec_is_one_error_line(tmp_path, monkeypatch, capsys, ar
     lines = [x for x in out.err.splitlines() if "trust root overridden" not in x]  # the test root's warning
     assert out.out == "" and len(lines) == 1 and "Traceback" not in out.err
     assert lines[0].startswith("aitools-alerts: spec/channels.json does not name the alert channels")
+
+
+def test_events_dated_ahead_are_said_out_loud(monkeypatch, capsys, reader_clock):
+    """A machine whose clock is behind refuses genuine new events; pull and run say so."""
+    reader_clock.at = T0 - 86400  # a day before the fixture's events
+    assert cli.main(["pull", "--mirror-url", MIRROR]) == 0
+    assert cli.AHEAD_LINE.format(n=2) in capsys.readouterr().err
+    monkeypatch.setattr(config.Settings, "mirror_url", MIRROR, raising=False)
+    reader_clock.at = T0 + 1000
+    assert cli.main(["pull", "--mirror-url", MIRROR]) == 0
+    assert "dated ahead" not in capsys.readouterr().err

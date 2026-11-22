@@ -186,10 +186,15 @@ def _reply_tags(root_ev: dict) -> list:
 
 def _after(st: State, root_id: str, now: int) -> int:
     """A created_at that sorts after every stored event of the thread, so the
-    readers apply this reply last."""
+    readers apply this reply last. A stored event dated more than
+    pull.MAX_AHEAD_S ahead (one an older reader admitted) is not counted: a
+    reply dated after it would itself be refused by every reader and left out
+    by the exporter, so one such event would silence every later correction.
+    The result is never more than MAX_AHEAD_S ahead of ``now``."""
     last = max([ev["created_at"] for ev in st.events.values()
-                if ev["id"] == root_id or pull._thread_ref(ev) == root_id] or [0])
-    return max(now, last + 1)
+                if (ev["id"] == root_id or pull._thread_ref(ev) == root_id)
+                and ev["created_at"] <= now + pull.MAX_AHEAD_S] or [0])
+    return min(max(now, last + 1), now + pull.MAX_AHEAD_S)
 
 
 def _replayed(st: State, ev: dict, root_id: str):

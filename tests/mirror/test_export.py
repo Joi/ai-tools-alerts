@@ -964,3 +964,20 @@ def test_ja_atom_survives_a_retraction_at_the_last_timestamp(env):
                now=schema.MAX_TIMESTAMP)  # a clock that admits the retraction
     entry = ET.parse(env[2] / "feed.ja.atom").getroot().find(f"{ATOM}entry")
     assert entry.findtext(f"{ATOM}title") == "撤回: Alpha"
+
+
+def test_exporter_clock_set_back_keeps_a_published_retraction(env):
+    """The date bound is an admission check: a retraction already published stays
+    published when the exporter's clock is set back behind it."""
+    now = 1793865900
+    root = ev(BOT_SEC, _adv_post("Withdrawn", "AITA-TEST-0020"), now - 7200)
+    gone = ev(CUR_SEC, "retract", now, tags=[("e", root["id"], "", "root")])
+    run_export(env, rows_reader([root, gone]), now=now)
+    assert "Retracted: Withdrawn" in page(env)
+    result = run_export(env, rows_reader([root, gone]), now=now - 3600)
+    assert result["channels"]["feed"]["future"] == 0
+    assert [e["id"] for e in json.loads((env[2] / "feed.json").read_text())["events"]] == [root["id"], gone["id"]]
+    assert "Retracted: Withdrawn" in page(env)
+    fresh = ev(BOT_SEC, "never published, dated ahead", now)  # still refused at admission
+    result = run_export(env, rows_reader([root, gone, fresh]), now=now - 3600)
+    assert result["channels"]["feed"]["future"] == 1

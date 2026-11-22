@@ -803,7 +803,8 @@ def test_events_of_keys_the_manifest_does_not_trust_do_not_count(mirror):
     mirror.post(mirror.cur_sec, "old", created_at=T0 + 100)
     _, st = do_pull(mirror)
     sec, pub = nostr.keygen()  # cached under no current key, as after a bundled revocation
-    ev = nostr.sign_event(sec, {"created_at": T0 + 900, "kind": 9, "tags": [], "content": "x"})
+    ev = nostr.sign_event(sec, {"created_at": T0 + 900, "kind": 9, "tags": [["h", CHANNELS["feed"]]],
+                                "content": "x"})  # channel-bound: only its key keeps it out
     st.events[ev["id"]] = ev
     assert pull.freshness(st) == (T0 + 100, T0 + 1)
     assert pull.stale_since(st, T0 + 900 + 3 * DAY) == T0 + 100
@@ -860,13 +861,17 @@ def test_unbound_reply_cannot_retract_lower_or_patch(mirror):
 
 
 def test_stored_unbound_event_is_ignored_then_removed(mirror):
-    odd = mirror.root_post(mirror.cur_sec, kind=1, files=())
     good = mirror.root_post(mirror.cur_sec, advisory(id="AITA-TEST-0002"), created_at=T0 + 101)
-    st = _store(mirror, odd, good)
-    assert [t.root_id for t in threads(st)] == [good["id"]]  # before any pull by this reader
-    assert pull.freshness(st, T0 + 1000)[0] == T0 + 101
+    odd = mirror.root_post(mirror.cur_sec, kind=1, files=(), created_at=T0 + 900)  # newer, inside the date bound
+    bare = mirror.post(mirror.cur_sec, "retract", created_at=T0 + 950, files=(), h=None,
+                       tags=[("e", good["id"], "", "root")])
+    st = _store(mirror, odd, bare, good)
+    (t,) = threads(st)  # before any pull by this reader
+    assert t.root_id == good["id"] and not t.retracted
+    assert pull.freshness(st, T0 + 1000)[0] == T0 + 101  # the unbound ones are not news
+    assert pull.stale_since(st, T0 + 101 + 3 * DAY + 1) == T0 + 101
     res, st = do_pull(mirror)
-    assert res.dropped == {"not-channel-post": 1} and set(State.load().events) == {good["id"]}
+    assert res.dropped == {"not-channel-post": 2} and set(State.load().events) == {good["id"]}
 
 
 def test_future_dated_event_is_refused(mirror):
@@ -906,6 +911,7 @@ def test_stored_future_event_only_leaves_the_stale_check(mirror):
     mirror.events["feed.json"].remove(far)
     do_pull(mirror)
     assert far["id"] in State.load().events and threads()[0].retracted
+    assert State.load().last_pull["newest_event_at"] == T0 + 500  # the pull records by its own clock
 
 
 def test_clock_set_back_keeps_a_stored_retraction(mirror):
@@ -922,7 +928,15 @@ def test_clock_set_back_keeps_a_stored_retraction(mirror):
     assert gone["id"] in State.load().events and threads()[0].retracted
 
 
-@pytest.mark.parametrize("damage", ["missing", "not json", '["a"]', "{}", '{"feed": "not-a-uuid"}'])
+ONE, TWO = CHANNELS["feed"], CHANNELS["critical"]
+
+
+@pytest.mark.parametrize("damage", [
+    "missing", "not json", '["a"]', "{}", '{"feed": "not-a-uuid", "critical": "%s"}' % TWO,
+    '{"feed": "%s"}' % ONE,  # one channel only: the other's alerts and retractions would vanish
+    '{"feed": "%s", "critical": "%s"}' % (ONE, ONE),  # not distinct
+    '{"feed": "%s", "critical": "%s", "extra": "%s"}' % (ONE, TWO, OTHER_CHANNEL),  # a third channel
+    '{"feed": "%s", "critical": "%s", "feed": "%s"}' % (OTHER_CHANNEL, TWO, ONE)])  # a duplicate key
 def test_broken_channel_spec_is_a_pull_error(mirror, tmp_path, monkeypatch, damage):
     root = mirror.root_post(mirror.cur_sec)
     do_pull(mirror)

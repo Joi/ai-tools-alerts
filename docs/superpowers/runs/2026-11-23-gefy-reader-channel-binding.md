@@ -1,6 +1,6 @@
 # Run: gefy-reader-channel-binding
 Instruction: Piece 1 of ai-tools-alerts#ek5q (brief TASK-ai-tools-alerts#ek5q.md, /do-it, starting rung floored at medium): the reader accepts only kind 9 events with an h tag naming a channel in spec/channels.json (report M3), refuses an event dated more than a few minutes ahead of the local clock, and each manifest lists every retraction.
-Stage: code-review:branch
+Stage: code-review:branch delta
 Rung: medium (dispatch floor medium; start-floor evaluator not run: its rubric file is outside the paths the seat rules let this session read; no hard trigger in this piece: no key or credential handling changes)
 Lens: "Readers at v0.1.4 are on member machines. A change they cannot parse must fail safe (they ignore it), never crash them."
 Last reviewed: spec 5dcb8f3b0fffa8c0e0e148abe3d1ce893706e528
@@ -15,6 +15,11 @@ Pass 1 [spec]: 2B/4S/0C/1R · fixed -/- · velocity = (—→7, escalation no)  
   spec passes: 1 · fixed 6: the --retract-from sweep is dropped (B: it widened a thread retraction into a global one; S: incomplete input; S: --unretract undone by the next sweep), see the notice on gefy; the date bound is an admission check, stored events are never re-judged (B: clock rollback undid a stored retraction); ChannelSpecError handled in pull and cli (S); test migration named: helper tags, fixture dates, clock, the far-future exporter test (S) · rebutted 1 (snapshot commit message: a dangling review snapshot, never landed).
 Pass 1 [plan]: 0B/5S/0C/0R · fixed -/- · velocity = (—→5, escalation no)   (fresheyes gpt-6-astra high, snapshot 60fa6387, REASON=-)
   plan passes: 1 · fixed 5: one fatal path for a broken channel spec in cli.main (run printed twice); record passes the pull's clock to freshness; the four existing tests whose dates contradict the bound are named and re-clocked; the live signed fixture goes through the reader; a release-pinned v0.1.4 reader test over the regenerated fixture.
+Pass 1 [code:branch]: 1B/5S/4C/0R · fixed -/- · velocity = (—→10, escalation no)   (Stage 2 fresheyes gpt-6-astra high on origin/main...61519d8, REASON=-: 1 critical, 3 major; Stage 1 same-model subagent: 0B/2S/4C, one S the same as the critical)
+  B1 fixed: curator._after dated a correction after a stored future-dated reply, so the correction itself was refused everywhere; it now ignores stored events dated ahead and caps its result (regression test).
+  S fixed: the exporter's date bound is an admission check too (a clock set back withdrew a published retraction); channel_ids requires exactly feed and critical, distinct, no duplicate key; the freshness tests now tell a broken filter from a working one (unbound event dated newer, revoked-key event channel-bound); a pull that refuses future-dated events warns on stderr (a slow clock lost news silently); last_pull's newest_event_at asserted for a stored future event.
+  C fixed: stale exporter comment. C not changed: _bound on a hand-edited state file (the same input already breaks _thread_ref; State.load is the place, not this piece); no real-clock test of the fixture README's claim.
+  Medium does not loop: the BLOCKER fix changed behaviour, so it gets the one delta pass of the Review Cycle (fresheyes --since 61519d8), no rebuttals file (nothing left unfixed that was B or S).
 
 ## Chunks
 - [x] chunk 1 — reader: channel binding and the future-date bound (pull.py, cli.py, tests, fixtures)
