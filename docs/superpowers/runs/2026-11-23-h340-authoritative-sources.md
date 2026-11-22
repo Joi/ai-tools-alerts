@@ -1,9 +1,10 @@
 # Run: h340-authoritative-sources
 Instruction: ai-tools-alerts#h340 (starting rung floored at medium; repoman lane). Brief: `TASK-ai-tools-alerts#h340.md` — the poster signs only what an authoritative source says; do every item of the issue's fix list.
-Stage: plan-review
+Stage: executing
 Rung: medium (start-floor medium: constraint-lens, BR2 REV1 NOV1 INT2 FC2 = 8; the dispatch brief floors it there too; security-shaped, so the review model is gpt-6-astra)
 Lens: "A change they cannot parse must fail safe (they ignore it), never crash them." · "Nothing you build may wait for a person." · "a third-party package can never resolve to a tier-1 product name or produce an upgrade action for it" · "Any new text field that reaches the relay passes compose._inline (the mention guard)." · "no host, tailnet, VM or home-path name and no personal email in any commit, message, file or PR text."
 Last reviewed: spec 8c3b2b64b26afaba0992a8b5ac770832b225639c
+Last reviewed: plan f99e9eacbb8497a3692c8dcb7ae8442f24464a1e
 Spec: docs/superpowers/specs/2026-11-23-h340-authoritative-sources-design.md   Plan: docs/superpowers/plans/2026-11-23-h340-authoritative-sources.md
 Agency project: — (no agency tools in this session; the plan is executed directly)
 Kata: ai-tools-alerts#h340
@@ -12,6 +13,17 @@ Wall-clock limit: 6 h. Review shape: one independent pass per artifact, one delt
 ## Scorecards
 Pass 1 [spec]: 5B/5S/0C/0R · fixed -/- · velocity = (—→10, escalation no)
 spec: passes: 1 · elapsed: 14 min · reviewer fresheyes gpt-6-astra · all 10 fixed in the spec, none rebutted, so no escalation
+Pass 1 [plan]: 0B/7S/0C/0R · fixed -/- · velocity = (—→7, escalation no)
+plan: passes: 1 · elapsed: 12 min · reviewer fresheyes gpt-6-astra · all 7 fixed in the plan, none rebutted, so no escalation
+
+Plan findings and what the plan now says:
+- purity lost when the adapter filters or truncates sources → `from_collector` clears the three level inputs itself when any source entry was not kept.
+- step 1 not green before step 2 → merged into one step with one verify line.
+- three integration tests contradict the gate → named, with what each now asserts.
+- `test_live_digests_leads_recomposed` composes leads directly → rewritten, named.
+- loader does not refuse owner-level or off-list authority → loader validation and negative tests.
+- compose fixtures rely on word matching → moved to exact identities in step 2.
+- the grep acceptance line matched `level_for`'s parameter → narrowed.
 
 Spec findings and what the spec now says:
 - B1 version tokens prove no role → the poster reads the labelled Patched and Affected fields of the vendor page; the record's `fixed` and `affected` are never used.
