@@ -1,6 +1,6 @@
 # Run: zb8b-checkpoint-format
 Instruction: Piece 2 of ai-tools-alerts#ek5q (brief TASK-ai-tools-alerts#ek5q.md, /do-it, starting rung floored at medium): the root-signed checkpoint key certificate and the signed checkpoint, their parsers, verifiers and builders, and the script that signs the certificate. No reader behaviour change.
-Stage: code-review:branch delta
+Stage: committing (pull request left open: no merge until ai-tools-alerts#xrx2 closes)
 Rung: heavy (dispatch floor medium; hard trigger in the diff: scripts/sign-checkpoint-key.py reads the trust root key and signs with it. Heavy is the medium pass plus one delta when a BLOCKER fix changes behaviour. Start-floor evaluator not run: its rubric file is outside the paths the seat rules let this session read.)
 Lens: "Readers at v0.1.4 are on member machines. A change they cannot parse must fail safe (they ignore it), never crash them."
 Spec: docs/superpowers/specs/2026-11-23-zb8b-checkpoint-format-design.md   Plan: docs/superpowers/plans/2026-11-23-zb8b-checkpoint-format.md
@@ -19,6 +19,8 @@ Pass 1 [code:branch]: 2B/5S/5C/0R · fixed -/- · velocity = (—→12, escalati
   S rebutted (1): "the branch exceeds the plan's 600-line gate; split it". The code is about 430 lines; the rest is the refusal matrix of two signed formats. Module and script are one deliverable (the script is the module's only caller), and a split would buy a second review cycle of the same design. The plan's acceptance line is corrected.
   C not changed: verify_* on hand-built objects with hostile __eq__ (as manifest.verify); the temp file name and error prefix inherited from sign-manifest; an unwritable --out directory found after the key is read (no secret in the traceback).
   Heavy: the BLOCKER fixes changed behaviour, so one delta pass follows (fresheyes --since a3d4e8a --rebuttals).
+Pass 2 [code:branch delta]: 0B/1S/0C/0R · fixed 11/12 prior (1 rebutted, not overturned) · velocity ↓ (12→1, escalation no)   (fresheyes --since a3d4e8a --rebuttals, reviewed 555e4f9, gpt-6-astra high, REASON=-)
+  S fixed: the duplicate-key and constant tests inside content replaced the whole content, so they failed for other reasons; they now keep the content valid, add only the repeated key or the constant, and match the specific error. No further pass (ruling jibot-code#41e2).
 
 ## Chunks
 - [x] chunk 1 — aitools_alerts/checkpoint.py and its tests

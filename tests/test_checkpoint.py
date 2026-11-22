@@ -260,11 +260,18 @@ def test_loaders_copy_the_event_and_refuse_odd_json_inside_it(w):
     assert twice != body
     with pytest.raises(cp.CheckpointError, match="duplicate key"):
         cp.load_cert(twice.encode())
-    for content in ('{"v": 1, "v": 1}', '{"v": NaN}', "[" * 600 + "]" * 600):
-        for sec, src, load in ((w.m.root_sec, w.cert_ev, cp.load_cert),
-                               (w.ck_sec, w.checkpoint().event, cp.load_checkpoint)):
+    # Content that is valid but for one thing, so only the check named can refuse it: a
+    # repeated key (the second copy could differ from what a looser parser kept) and a
+    # non-standard constant in a field the parser otherwise ignores.
+    for sec, src, load in ((w.m.root_sec, w.cert_ev, cp.load_cert),
+                           (w.ck_sec, w.checkpoint().event, cp.load_checkpoint)):
+        good = src["content"]
+        assert good.endswith("}") and load(raw(src))
+        cases = ((good[:-1] + ',"v":1}', "duplicate key"), (good[:-1] + ',"note":NaN}', "non-standard JSON constant"),
+                 (good[:-1] + ',"note":Infinity}', "non-standard JSON constant"))
+        for content, why in cases:
             odd = nostr.sign_event(sec, {**{k: src[k] for k in ("created_at", "kind", "tags")}, "content": content})
-            with pytest.raises(cp.CheckpointError):
+            with pytest.raises(cp.CheckpointError, match=why):
                 load(raw(odd))
 
 
