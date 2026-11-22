@@ -463,10 +463,10 @@ def test_amendment_is_written_against_the_thread_without_future_patches(mirror):
     mirror.events["feed.json"][:] = [root]
     st = pulled(mirror)
     st.events.update({far["id"]: far, edge["id"]: edge})  # as an older reader stored them
-    (t,) = [t for t in pull.advisories(st) if t.root_id == root["id"]]
+    (t,) = [t for t in pull.advisories(st, checkpointed=False) if t.root_id == root["id"]]  # the curator's view
     assert t.adv.title == "Updated"
     up = curator.amend_event(mirror.cur_sec, st.manifest, mirror.root, st, t, root, now=NOW + 1, level="notice")
     assert NOW + 1 <= up["created_at"] <= NOW + 1 + pull.MAX_AHEAD_S
     st.events[up["id"]] = up
-    (after,) = [t for t in pull.advisories(st) if t.root_id == root["id"]]
+    (after,) = [t for t in pull.advisories(st, checkpointed=False) if t.root_id == root["id"]]
     assert after.adv.level == "notice" and after.adv.title == "Original"  # the bot's later patches are discussion

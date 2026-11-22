@@ -781,22 +781,33 @@ def test_pull_records_newest_trusted_event_and_manifest_time(mirror):
     _, st = do_pull(mirror)
     assert State.load().last_pull["newest_event_at"] == T0 + 500
     assert State.load().last_pull["manifest_issued_at"] == T0 + 1
-    assert pull.stale_since(st, T0 + 1000) is None
-    assert pull.stale_since(st, T0 + 500 + 3 * DAY) is None
-    assert pull.stale_since(st, T0 + 500 + 3 * DAY + 1) == T0 + 500
+    # fresh for the checkpoint's validity (a day from T0 + 500, when it was signed), then stale
+    assert pull.stale_since(st, T0 + 1000) is None and pull.unverified(st, T0 + 1000) is None
+    assert pull.stale_since(st, T0 + 500 + DAY) is None
+    assert pull.stale_since(st, T0 + 500 + DAY + 1) == T0 + 500
+    assert pull.unverified(st, T0 + 500 + DAY + 1) == "checkpoint out of date"
     mirror.raw["manifest.json"] = b"{"  # a failed pull still records the stored state
     res, st = do_pull(mirror)
     assert res.error == "bad manifest"
     assert State.load().last_pull["newest_event_at"] == T0 + 500
+    assert pull.unverified(st, T0 + 1000) == "the last pull failed (bad manifest)"
+    assert pull.stale_since(st, T0 + 1000) == T0 + 500  # the accepted checkpoint's time
 
 
-def test_old_manifest_is_stale_even_with_fresh_events(mirror):
-    mirror.post(mirror.cur_sec, "digest", created_at=T0 + 90 * DAY)
+def test_expired_certificate_is_unverified_even_with_a_fresh_checkpoint(mirror):
+    """What replaced the 90-day manifest rule: the certificate that names the
+    checkpoint key expires, and a checkpoint by that key no longer counts."""
+    mirror.publish_cert(days=2)  # issued with the manifest at T0 + 1
+    mirror.post(mirror.cur_sec, "digest", created_at=T0 + 100)
+    _, st = do_pull(mirror)
+    mirror.post(mirror.cur_sec, "digest", created_at=T0 + 2 * DAY - 100)
+    mirror.checkpoint(now=T0 + 2 * DAY - 100)
     st = State.load()
     pull.fetch("https://mirror.example.invalid/alerts", st, fetch=mirror.fetch, root_pubkey=mirror.root,
-               now=T0 + 90 * DAY)  # a clock that admits the event
-    assert pull.stale_since(st, T0 + 90 * DAY + 1) is None
-    assert pull.stale_since(st, T0 + 1 + 90 * DAY + 1) == T0 + 1  # the manifest's issued time
+               now=T0 + 2 * DAY - 50)
+    assert pull.unverified(st, T0 + 1 + 2 * DAY) is None  # the certificate's last second
+    assert pull.unverified(st, T0 + 1 + 2 * DAY + 1) == "checkpoint key certificate expired"
+    assert pull.stale_since(st, T0 + 1 + 2 * DAY + 1) == T0 + 2 * DAY - 100
 
 
 def test_events_of_keys_the_manifest_does_not_trust_do_not_count(mirror):
@@ -810,11 +821,14 @@ def test_events_of_keys_the_manifest_does_not_trust_do_not_count(mirror):
     assert pull.stale_since(st, T0 + 900 + 3 * DAY) == T0 + 100
 
 
-def test_no_events_measures_from_the_manifest_and_never_pulled_is_not_stale(mirror):
-    assert pull.stale_since(State.load(), T0 + 100 * DAY) is None
+def test_never_pulled_is_unverified_and_no_events_measures_from_the_checkpoint(mirror):
+    fresh = State.load()
+    assert pull.unverified(fresh, T0 + 100 * DAY) == "no pull yet"
+    assert pull.stale_since(fresh, T0 + 100 * DAY) == T0 + 100 * DAY  # nothing signed to date it by
     _, st = do_pull(mirror)
     assert pull.freshness(st) == (None, T0 + 1)
-    assert pull.stale_since(st, T0 + 1 + 3 * DAY + 1) == T0 + 1
+    assert pull.stale_since(st, T0 + 1000) is None  # an empty feed with a fresh checkpoint is verified
+    assert pull.stale_since(st, T0 + 1 + DAY + 1) == T0 + 1  # the checkpoint was signed at the certificate's time
 
 
 # ------------------------------- channel binding and the date bound (ai-tools-alerts#gefy)
@@ -924,8 +938,10 @@ def test_clock_set_back_keeps_a_stored_retraction(mirror):
     st = State.load()
     res = pull.fetch("https://mirror.example.invalid/alerts", st, fetch=mirror.fetch, root_pubkey=mirror.root,
                      now=T0 + 1000 - 3600)
-    assert res.error is None and not res.dropped
+    # the certificate (issued at T0 + 1) is itself ahead of this clock, so the pull is refused; either way
+    assert res.error == "no checkpoint key certificate" and not res.dropped
     assert gone["id"] in State.load().events and threads()[0].retracted
+    assert pull.unverified(State.load(), T0 + 1000 - 3600) is not None
 
 
 ONE, TWO = CHANNELS["feed"], CHANNELS["critical"]
@@ -973,7 +989,7 @@ def test_live_feed_fixture_is_read_whole(monkeypatch):
     st = State.load()
     now = max(e["created_at"] for e in doc["events"]) + 60
     res = pull.fetch("https://mirror.example.invalid/alerts", st, fetch=lambda u: files[u.rsplit("/", 1)[1]],
-                     now=now)
+                     now=now, checkpoint=False)  # the real keys cannot sign a test checkpoint: the writers' pull
     assert res.error is None and not res.dropped
     assert set(st.events) == {e["id"] for e in doc["events"]} and len(doc["events"]) == 10
     assert all(e["kind"] == 9 and [t[0] for t in e["tags"]].count("h") == 1 for e in doc["events"])

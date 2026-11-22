@@ -531,9 +531,11 @@ def _pull(out, tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_STATE_HOME", str(home / "state"))
     st = State.load()
-    res = pull.fetch(out.as_uri() + "/", st, root_pubkey=ROOT_PUB, now=1793866000)
+    # The exporter publishes no checkpoint until ai-tools-alerts#nfm3: read its output
+    # as the poster does, every verified event.
+    res = pull.fetch(out.as_uri() + "/", st, root_pubkey=ROOT_PUB, now=1793866000, checkpoint=False)
     assert res.error is None, res.error
-    return [(t.root_id, t.adv.title, t.adv.level, t.retracted) for t in pull.advisories(State.load())]
+    return [(t.root_id, t.adv.title, t.adv.level, t.retracted) for t in pull.advisories(State.load(), checkpointed=False)]
 
 
 def test_filtered_mirror_is_accepted_by_the_cli_reader(env, tmp_path, monkeypatch):
@@ -845,13 +847,13 @@ def test_retraction_reaches_a_cli_that_cached_an_outgrown_thread(env, tmp_path, 
     talk = [ev(BOT_SEC, f"note {i}", 1793865010 + i, tags=[("e", root["id"], "", "root")]) for i in range(2)]
     monkeypatch.setattr(em, "MAX_CHANNEL_EVENTS", 3)
     run_export(env, rows_reader([root] + talk, [root]))
-    assert pull.fetch(env[2].as_uri() + "/", State.load(), root_pubkey=ROOT_PUB, now=1793866000).error is None
+    assert pull.fetch(env[2].as_uri() + "/", State.load(), root_pubkey=ROOT_PUB, now=1793866000, checkpoint=False).error is None
     gone = ev(CUR_SEC, "retract", 1793865100, tags=[("e", root["id"], "", "root")])
     result = run_export(env, rows_reader([root] + talk + [gone], [root]))
     feed = [e["id"] for e in json.loads((env[2] / "feed.json").read_text())["events"]]
     assert feed == [gone["id"]] and result["channels"]["feed"]["capped"] == 3
-    assert pull.fetch(env[2].as_uri() + "/", State.load(), root_pubkey=ROOT_PUB, now=1793866000).error is None
-    [t] = pull.advisories(State.load())
+    assert pull.fetch(env[2].as_uri() + "/", State.load(), root_pubkey=ROOT_PUB, now=1793866000, checkpoint=False).error is None
+    [t] = pull.advisories(State.load(), checkpointed=False)
     assert t.root_id == root["id"] and t.retracted
 
     # The same under the byte cap.

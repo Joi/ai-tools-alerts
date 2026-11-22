@@ -3,7 +3,7 @@
   "channel": "feed",
   "events": [
     {
-      "pubkey": "af422e5d68d9e92721addaed3bd19160e622959157cd42bcff260affc8c176be",
+      "pubkey": "bd1588bc41bb35c4fad4fbe35e3710739cad447ef317856b48ea01a4737cdd38",
       "created_at": 4070908860,
       "kind": 9,
       "tags": [
@@ -13,11 +13,11 @@
         ]
       ],
       "content": "CRITICAL: Claude Code fixture critical (synthetic)\nAffected: Claude Code below 99.0.0. Fixed in 99.0.0.\nAction: upgrade Claude Code to 99.0.0 or later.\nSource: https://github.com/anthropics/claude-code/security/advisories/GHSA-fixt-fixt-fixt\n\n```aitools-alert\n{\n  \"id\": \"AITA-FIXTURE-0001\",\n  \"aliases\": [\n    \"CVE-2099-0001\"\n  ],\n  \"level\": \"critical\",\n  \"advisory_severity\": \"CVSS 9.8\",\n  \"title\": \"Claude Code fixture critical (synthetic, not a real advisory)\",\n  \"products\": [\n    {\n      \"name\": \"Claude Code\",\n      \"ecosystem\": \"claude-code\",\n      \"affected\": \"<99.0.0\",\n      \"fixed\": \"99.0.0\"\n    }\n  ],\n  \"actions\": [\n    {\n      \"verb\": \"upgrade\",\n      \"target\": \"Claude Code\",\n      \"value\": \"99.0.0\"\n    }\n  ],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/anthropics/claude-code/security/advisories/GHSA-fixt-fixt-fixt\",\n      \"published_at\": \"2099-01-01\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 4070908860,\n  \"expires_at\": null\n}\n```\n",
-      "id": "eee781f29954ed72b087b472db7e919b7b411fa3f84f2f4daad17aa030014c3d",
-      "sig": "903a4c4bd772ab16af10fe69241fe2741fda7a70ce9d22304e3ae9ccad8bfeea566794ac3168f4e02137cfb0f0ca09e07fc214a974f30775f0d62f9fd50abd3c"
+      "id": "f0861ef8364e58cc9ccc5f184f5453515597a715c99a497a8b863b8b63f8134e",
+      "sig": "112ca120b2588cf2c37364a689e905a930b23c89c8ec0501b2e4656520842e8a2b36a0a48351e6118f8625c61ec84ef8f1fc6b71965ccd534574924f3f4a3c96"
     },
     {
-      "pubkey": "ad3d8b2fec2741cd72f205fd02a3db948d95f344c8422e9f8c34a2372e101755",
+      "pubkey": "16f3e685aab84be11f5c3b4084dd99b73a0b1e8db81cd1b2fdc75eb5a51e8a69",
       "created_at": 4070908920,
       "kind": 9,
       "tags": [
@@ -27,8 +27,8 @@
         ]
       ],
       "content": "HIGH: git fixture high (synthetic)\nAffected: git below 1.0.0. Fixed in 1.0.0.\nAction: upgrade git to 1.0.0 or later.\nSource: https://github.com/git/git/security/advisories/GHSA-fixt-fixt-0002\n\n```aitools-alert\n{\n  \"id\": \"AITA-FIXTURE-0002\",\n  \"aliases\": [],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"git fixture high (synthetic, not a real advisory)\",\n  \"products\": [\n    {\n      \"name\": \"git\",\n      \"ecosystem\": \"git\",\n      \"affected\": \"<1.0.0\",\n      \"fixed\": \"1.0.0\"\n    }\n  ],\n  \"actions\": [\n    {\n      \"verb\": \"upgrade\",\n      \"target\": \"git\",\n      \"value\": \"1.0.0\"\n    }\n  ],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/git/git/security/advisories/GHSA-fixt-fixt-0002\",\n      \"published_at\": null\n    }\n  ],\n  \"posted_by\": \"curator\",\n  \"posted_at\": 4070908920,\n  \"expires_at\": null\n}\n```\n",
-      "id": "97eec6c8b67f357524d467565f2b9a58eb40272d37d3b65fb5501ce9bd6aa1ae",
-      "sig": "96cf6f6f5b598f3c8b340e44a05b0174905bd960ad5ae73e68dce0dfcefcbdb254e128159c22ba6bfed2e022ff45f3f05fd6327a1e0cde50c56137bbb076b22f"
+      "id": "6c7c23cffc5cdbcedb038cf98fe6eba1582dc9ef78b527da74b5631e615482b5",
+      "sig": "71cd3a349fcf6452a26372acae15b39aad6e2480d21e4d79c0ff3b6886bdc5cea6e2db78e5e0bad1102ddbcfb9e0e6d63812000d78773a34471719f83da44cba"
     }
   ]
 }

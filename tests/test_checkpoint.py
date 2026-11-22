@@ -401,13 +401,6 @@ def test_no_document_passes_for_another(w):
         cp.load_cert(raw(swapped))
 
 
-def test_nothing_in_the_package_uses_the_module_yet():
-    """This piece changes no reader behaviour: the reader starts using it in ai-tools-alerts#6whv."""
-    users = [p.name for d in ("aitools_alerts", "mirror") for p in (ROOT / d).rglob("*.py")
-             if p.name != "checkpoint.py" and "checkpoint" in p.read_text(encoding="utf-8")]
-    assert users == []
-
-
 # ---------------------------------------------------------------- scripts/sign-checkpoint-key.py
 
 @pytest.fixture

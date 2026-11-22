@@ -24,6 +24,19 @@ made anywhere else is never an alert, a patch or a retraction. An event not
 yet stored and dated more than MAX_AHEAD_S after the reader's clock is
 refused. A stored event is never re-judged by its date: a clock set back must
 not undo a stored retraction. It only leaves the stale check while ahead.
+
+Each event is signed; the set is not, so a member pull also needs the signed
+checkpoint (``checkpoint``): a certificate from the trust root naming the
+checkpoint key, and a checkpoint from that key listing the events that exist.
+A new event is admitted only when an accepted checkpoint lists it; a pull
+whose mirror lacks a listed event is refused; a certificate or checkpoint
+older than the accepted one is refused; an event once applied stays applied
+while it is stored, so no checkpoint can take a retraction away. The manifest
+and the certificate are also fetched from a second origin, and the higher
+manifest wins. ``unverified`` says whether what the reader shows may be
+trusted to be complete right now; the CLI auto-applies nothing when it may
+not. The poster and the curator command, which write the feed, pull with
+``checkpoint=False``: every verified event, as before, never a verified state.
 """
 
 from __future__ import annotations
@@ -41,6 +54,7 @@ from dataclasses import asdict, dataclass, field, replace
 from urllib.parse import urlsplit
 
 from . import TRUST_DIR, TRUST_ROOT_PUBKEY, manifest, nostr, schema
+from . import checkpoint as cpt
 from .manifest import Manifest
 from .schema import Advisory
 from .state import EVENT_KEYS, State
@@ -49,7 +63,8 @@ __all__ = ["FILES", "FetchError", "PULL_ERRORS", "MAX_FETCH_BYTES", "MAX_EVENTS"
            "fetch", "default_fetch", "advisories", "active", "bundled_manifest",
            "parse_translation", "translation_title", "threads_from",
            "STALE_EVENT_S", "STALE_MANIFEST_S", "freshness", "stale_since",
-           "MAX_AHEAD_S", "CHAT_KIND", "ChannelSpecError", "channel_ids"]
+           "MAX_AHEAD_S", "CHAT_KIND", "ChannelSpecError", "channel_ids", "unverified",
+           "bundled_cert", "SECOND_TIMEOUT"]
 
 FILES = ("feed.json", "critical.json")
 MAX_FETCH_BYTES = 8 << 20
@@ -57,13 +72,14 @@ MAX_EVENTS = 10000
 MAX_STORED_EVENTS = 20000
 MAX_STORED_BYTES = 32 << 20  # serialized, all roots; half state.MAX_STATE_BYTES
 RETENTION_S = 400 * 86400
-STALE_EVENT_S = 3 * 86400  # the poster's daily digest is the signed heartbeat
+STALE_EVENT_S = 3 * 86400  # kept for importers; freshness is the checkpoint's validity now
 STALE_MANIFEST_S = 90 * 86400
 MAX_AHEAD_S = 600  # an event dated further ahead of the local clock is not admitted
 CHAT_KIND = 9  # NIP-29 group chat message: the only kind posters and curators send
 CHANNEL_NAMES = ("feed", "critical")  # the keys of spec/channels.json, exactly
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 TIMEOUT = 20
+SECOND_TIMEOUT = 5  # the second origin must not hold up a session-start hook
 _RANK = {"notice": 1, "high": 2, "critical": 3}
 _PATCH_KEYS = frozenset(f for f in Advisory.__dataclass_fields__)
 _DELETION_KINDS = frozenset({5, 9005})  # NIP-09 deletion, NIP-29 relay delete-event
@@ -95,7 +111,9 @@ class Thread:
 # PullResult.error is None, "http <status>" or one of these: never server text.
 PULL_ERRORS = ("timeout", "unreachable", "too large", "bad manifest", "bad event file",
                "manifest not signed by the trust root", "state limit reached: new events not stored",
-               "bad channel spec")
+               "bad channel spec", "interrupted", "no checkpoint key certificate", "no checkpoint",
+               "bad checkpoint", "checkpoint dated ahead of this clock", "older checkpoint",
+               "conflicting checkpoint", "mirror incomplete")
 
 
 class ChannelSpecError(ValueError):
@@ -146,14 +164,14 @@ class _HttpsOnlyRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_HttpsOnlyRedirect)
 
 
-def default_fetch(url: str) -> bytes:
+def default_fetch(url: str, timeout: float = TIMEOUT) -> bytes:
     """GET an https:// or file:// URL; at most MAX_FETCH_BYTES. Raises OSError."""
     scheme = urlsplit(url).scheme
     if scheme not in ("https", "file"):
         raise FetchError("unreachable")
     req = urllib.request.Request(url, headers={"User-Agent": "aitools-alerts"})
     try:
-        with _OPENER.open(req, timeout=TIMEOUT) as r:
+        with _OPENER.open(req, timeout=timeout) as r:
             data = r.read(MAX_FETCH_BYTES + 1)
     except urllib.error.HTTPError as e:
         e.close()
@@ -174,6 +192,16 @@ def bundled_manifest() -> Manifest | None:
     except manifest.ManifestError:
         return None
     return m if manifest.verify(m, TRUST_ROOT_PUBKEY) else None
+
+
+def bundled_cert():
+    """The checkpoint key certificate shipped in trust/, if there is one and
+    it verifies under the pinned root."""
+    try:
+        c = cpt.load_cert(TRUST_DIR / "checkpoint-key.json")
+    except cpt.CheckpointError:
+        return None
+    return c if cpt.verify_cert(c, TRUST_ROOT_PUBKEY) else None
 
 
 def _floor(state: State, root: str) -> Manifest | None:
@@ -200,11 +228,19 @@ def _events_file(data: bytes, name: str) -> list:
 
 
 def fetch(base_url: str, state: State, fetch=None, root_pubkey: str = TRUST_ROOT_PUBKEY,
-          now: float | None = None) -> PullResult:
-    """Pull the mirror at ``base_url`` into ``state`` under the state lock."""
+          now: float | None = None, second_origin: str | None = None,
+          checkpoint: bool = True) -> PullResult:
+    """Pull the mirror at ``base_url`` into ``state`` under the state lock.
+
+    ``second_origin``: a URL prefix ending in "/" that also serves
+    manifest.json and checkpoint-key.json (another operator than the mirror);
+    None skips it. ``checkpoint=False`` is the pull of the feed's writers (the
+    poster, the curator command): every verified event is stored, no
+    checkpoint is asked for, and the pull never counts as a checked one."""
+    get2 = fetch or (lambda url: default_fetch(url, SECOND_TIMEOUT))
     with state.locked():
         return _fetch(base_url, state, fetch or default_fetch, root_pubkey,
-                      time.time() if now is None else now)
+                      time.time() if now is None else now, second_origin, get2, checkpoint)
 
 
 def _filter(stored: dict, fetched: list, m: Manifest, floor: Manifest | None,
@@ -242,31 +278,46 @@ def _filter(stored: dict, fetched: list, m: Manifest, floor: Manifest | None,
     return kept
 
 
-def _retain(kept: dict, now: float, res: PullResult) -> dict:
+def _retain(kept: dict, now: float, res: PullResult, counted=None) -> dict:
     """Drop whole threads (a root and every reply to it) whose newest event
     is older than RETENTION_S. A thread is kept or dropped as a unit, so a
     retraction, a patch or a curator amendment never outlives or predeceases
-    its thread."""
+    its thread. With ``counted`` (the applied ids of a checked pull), a
+    thread that has applied events takes its age from those alone: an event
+    no checkpoint lists cannot keep alive an old thread whose applied events
+    have all aged out, or a recent unlisted reply would revive an old root
+    without its retraction. A thread with no applied event yet (waiting for
+    the checkpoint that lists it) takes its age from all its events."""
     cutoff = now - RETENTION_S
     newest: dict[str, int] = {}
+    applied_newest: dict[str, int] = {}
     for eid, ev in kept.items():
         key = _thread_ref(ev) or eid
         newest[key] = max(newest.get(key, 0), ev["created_at"])
+        if counted is not None and eid in counted:
+            applied_newest[key] = max(applied_newest.get(key, 0), ev["created_at"])
+    newest.update(applied_newest)
     out = {eid: ev for eid, ev in kept.items() if newest[_thread_ref(ev) or eid] >= cutoff}
     if len(out) < len(kept):
         res.dropped["aged-out"] += len(kept) - len(out)
     return out
 
 
-def _fetch(base_url, state: State, get, root_pubkey: str, now: float) -> PullResult:
+def _fetch(base_url, state: State, get, root_pubkey: str, now: float, second: str | None,
+           get2, check: bool) -> PullResult:
     base = base_url if base_url.endswith("/") else base_url + "/"
     floor = _floor(state, root_pubkey)
     res = PullResult(manifest=state.accepted(root_pubkey) or floor)
     before = state.events_for(root_pubkey)
+    channels = None
+    extra: dict = {"second_origin": None}
 
     def record(ok: bool, error: str | None) -> None:
         last = {"at": int(now), "mirror_url": base, "ok": ok, "error": error,
-                "last_ok_at": int(now) if ok else state.last_pull.get("last_ok_at")}
+                "last_ok_at": int(now) if ok else state.last_pull.get("last_ok_at"),
+                # True only for a checked pull that finished: what ``unverified`` reads
+                "checkpoint_ok": bool(ok and check)}
+        last.update(extra)
         if ok:
             last.update(new=len(res.new_events), dropped=dict(res.dropped))
         same_root = state.manifest_root == root_pubkey  # else the times are another root's
@@ -280,52 +331,195 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float) -> PullRes
         state.save_last_pull()
         return res
 
+    if check:
+        # 0. The pull has begun and nothing is verified yet. Written before any
+        # fetch, so a crash, or a failed write of the final record, never
+        # leaves the previous pull's success standing.
+        state.last_pull = {**state.last_pull, "at": int(now), "mirror_url": base, "ok": False,
+                           "error": "interrupted", "checkpoint_ok": False}
+        state.save_last_pull()
     try:
         channels = channel_ids()
     except ChannelSpecError:
-        channels = None
         return fail("bad channel spec")
-    # 1. manifest: well formed, not older than the floor
-    try:
-        m = manifest.load(get(base + "manifest.json"), previous=floor)
-    except manifest.ManifestError:
-        return fail("bad manifest")
-    except Exception as e:
-        return fail(_kind(e))
-    if floor is not None and m.issued_at < floor.issued_at:
-        return fail("bad manifest")
-    # 2. signed by the trust root
-    if not manifest.verify(m, root_pubkey):
-        return fail("manifest not signed by the trust root")
-    # 3. both event files, whole
-    fetched, error = [], None
-    for name in FILES:
+    # 1. manifest: from the mirror and the second origin; each well formed, not
+    # older than the floor, signed by the trust root. The higher version wins;
+    # at equal versions the second origin's (the repository is the source).
+    cands, first_error = [], None
+    for is_second, url, getter in ((False, base, get), (True, second, get2)):
+        if url is None:
+            continue
         try:
-            fetched += _events_file(get(base + name), name)
-        except ValueError:
-            error = "bad event file"
+            m = manifest.load(getter(url + "manifest.json"), previous=floor)
+        except manifest.ManifestError:
+            err = "bad manifest"
         except Exception as e:
-            error = _kind(e)
-        if error:
-            break
-    # 4. stored events first, then fetched, under the current manifest only.
-    # A verified manifest is accepted even when an event file is unreadable
-    # or the store is full: its revocations apply to the stored events at
-    # once, while the previous events of keys it still trusts are kept.
+            err = _kind(e)
+        else:
+            if floor is not None and m.issued_at < floor.issued_at:
+                err = "bad manifest"
+            elif not manifest.verify(m, root_pubkey):
+                err = "manifest not signed by the trust root"
+            else:
+                err = None
+                cands.append((m.version, is_second, m))
+        if is_second:
+            extra["second_origin"] = err or "ok"  # never by itself a pull error
+        elif err:
+            first_error = err
+    if not cands:
+        return fail(first_error or "unreachable")
+    m = max(cands, key=lambda c: c[:2])[2]
     res.manifest = m
-    kept = _retain(_filter(before, [] if error else fetched, m, floor, res, channels, now), now, res)
-    if (len(kept) > MAX_STORED_EVENTS
-            or state.size_with(root_pubkey, m, kept) > MAX_STORED_BYTES):
-        res.dropped.clear()
-        kept = _retain(_filter(before, [], m, floor, res, channels, now), now, res)
-        error = error or "state limit reached: new events not stored"
-    res.new_events = sorted((ev for eid, ev in kept.items() if eid not in before),
-                            key=lambda e: (e["created_at"], e["id"]))
-    state.accept(root_pubkey, m, kept)
-    res.error = error
-    record(error is None, error)
-    state.save_pull()
-    return res
+
+    def settle(fetched: list, error: str | None, keep=None, counted=None) -> PullResult:
+        """Accept the manifest with the stored events it still trusts plus
+        ``fetched``, and record the outcome. A verified manifest is accepted
+        even when the pull fails later: its revocations apply to the stored
+        events at once."""
+        dropped = Counter()
+        box = PullResult(dropped=dropped)
+        kept = _retain(_filter(before, fetched, m, floor, box, channels, now), now, box, counted)
+        if keep is not None:
+            kept = keep(kept)
+        if (kept is None or len(kept) > MAX_STORED_EVENTS
+                or state.size_with(root_pubkey, m, kept) > MAX_STORED_BYTES):
+            dropped.clear()
+            kept = _retain(_filter(before, [], m, floor, box, channels, now), now, box)
+            error = error or "state limit reached: new events not stored"
+        if not res.dropped:  # a failed step may already have counted what it refused
+            res.dropped = dropped
+        res.new_events = sorted((ev for eid, ev in kept.items() if eid not in before),
+                                key=lambda e: (e["created_at"], e["id"]))
+        state.accept(root_pubkey, m, kept)
+        res.error = error
+        return res
+
+    def done() -> PullResult:
+        record(res.error is None, res.error)
+        state.save_pull()
+        return res
+
+    def events_files() -> tuple[list, str | None]:
+        fetched = []
+        for name in FILES:
+            try:
+                fetched += _events_file(get(base + name), name)
+            except ValueError:
+                return [], "bad event file"
+            except Exception as e:
+                return [], _kind(e)
+        return fetched, None
+
+    if not check:
+        # The writers' pull: every verified event, as before the checkpoint.
+        # A verified manifest is accepted even when an event file is
+        # unreadable or the store is full; nothing here touches state.trust.
+        fetched, error = events_files()
+        settle(fetched, error)
+        return done()
+
+    # 2. the checkpoint key certificate: the root's word on which key signs
+    # checkpoints for this manifest. Saved at once, before any checkpoint is
+    # judged: a mirror must not be able to keep a key rotation from being
+    # recorded by answering it with a bad checkpoint.
+    old_cert, old_cp = state.cert_for(root_pubkey), state.checkpoint_for(root_pubkey)
+    old_applied = state.applied_for(root_pubkey)
+    cert = _choose_cert(m, root_pubkey, now, old_cert,
+                        [(get, base)] + ([(get2, second)] if second is not None else []))
+    if cert is None:
+        settle([], "no checkpoint key certificate")
+        return done()
+    if old_cert is None or cert.event["id"] != old_cert.event["id"]:
+        state.set_trust(root_pubkey, cert, old_cp, state.trust.get(root_pubkey, {}).get("applied", ()))
+        state.save_trust()
+    # 3. the checkpoint
+    cp, error = _load_checkpoint(get, base, cert, m, now, old_cp)
+    if cp is None:
+        settle([], error)
+        return done()
+    # 4. events; then completeness: every listed event must be here
+    fetched, error = events_files()
+    if error:
+        settle([], error)
+        return done()
+    probe = PullResult()
+    have = _filter(before, fetched, m, floor, probe, channels, now)
+    if not cp.events <= set(have):
+        res.dropped = probe.dropped  # what was refused (a future-dated event names a slow clock)
+        settle([], "mirror incomplete")
+        return done()
+    # The applied set only grows here. Ids whose events left the store on disk
+    # (as it was when this pull began) are dropped now, a pull later than the
+    # save that removed them: an interrupted save never un-applies a stored event.
+    if old_applied is None:  # the first checkpoint: what the older reader held stays applied
+        old_applied = {eid for eid, ev in before.items() if _bound(ev, channels)}
+    applied = (set(old_applied) & set(before)) | set(cp.events)
+
+    def fit(kept: dict):
+        """Listed and applied events first; the rest newest first while the
+        store's limits allow. None when even the first do not fit."""
+        if len(kept) <= MAX_STORED_EVENTS and state.size_with(root_pubkey, m, kept) <= MAX_STORED_BYTES:
+            return kept
+        out = {eid: ev for eid, ev in kept.items() if eid in applied}
+        size = state.size_with(root_pubkey, m, out)
+        if len(out) > MAX_STORED_EVENTS or size > MAX_STORED_BYTES:
+            return None
+        for ev in sorted((ev for eid, ev in kept.items() if eid not in applied),
+                         key=lambda e: (e["created_at"], e["id"]), reverse=True):
+            size += len(json.dumps(ev, ensure_ascii=False, sort_keys=True).encode("utf-8")) + 72
+            if len(out) >= MAX_STORED_EVENTS or size > MAX_STORED_BYTES:
+                break
+            out[ev["id"]] = ev
+        return out
+
+    settle(fetched, None, keep=fit, counted=applied)
+    if res.error is not None:  # even the listed events do not fit: nothing new is trusted
+        return done()
+    # 5. save: the checkpoint file first, then the events, then the record.
+    state.set_trust(root_pubkey, cert, cp, applied)
+    state.save_trust()
+    extra.update(checkpoint_seq=cp.seq, checkpoint_events=len(cp.events))
+    return done()
+
+
+def _choose_cert(m: Manifest, root: str, now: float, stored, sources):
+    """The newest usable certificate among the fetched ones, the bundled one
+    and the stored one: signed by the root, for manifest ``m``, inside its
+    dates, and not older than the stored one (cpt.cert_order). None if none."""
+    found = [stored] if stored is not None else []
+    if root == TRUST_ROOT_PUBKEY and bundled_cert() is not None:
+        found.append(bundled_cert())
+    for getter, url in sources:
+        try:
+            found.append(cpt.load_cert(getter(url + "checkpoint-key.json")))
+        except Exception:  # missing, unreachable, malformed: this source has none
+            continue
+    usable = [c for c in found if cpt.verify_cert(c, root) and cpt.cert_problem(c, m, now) is None
+              and cpt.cert_order(c, stored) is None]
+    return max(usable, key=lambda c: (c.issued_at, c.event["id"]), default=None)
+
+
+def _load_checkpoint(get, base: str, cert, m: Manifest, now: float, stored):
+    """(the mirror's checkpoint, None) when it may be accepted, else (None, the
+    pull error)."""
+    try:
+        data = get(base + "checkpoint.json")
+    except Exception:
+        return None, "no checkpoint"
+    try:
+        cp = cpt.load_checkpoint(data)
+    except cpt.CheckpointError:
+        return None, "bad checkpoint"
+    if not cpt.verify_checkpoint(cp, cert):
+        return None, "bad checkpoint"
+    problem = cpt.checkpoint_problem(cp, m, now)
+    if problem == "dated ahead":
+        return None, "checkpoint dated ahead of this clock"
+    if problem is not None:
+        return None, "bad checkpoint"
+    order = cpt.checkpoint_order(cp, stored)
+    return (cp, None) if order is None else (None, order)
 
 
 def effective_manifest(state: State) -> Manifest | None:
@@ -362,20 +556,77 @@ def freshness(state: State, now: float | None = None, channels=None) -> tuple[in
     return newest, m.event["created_at"]  # created_at equals issued_at (manifest.load)
 
 
-def stale_since(state: State, now: float | None = None) -> int | None:
-    """None while the mirror is fresh or was never pulled; else the signed
-    time since which nothing new arrived: the newest trusted event (the
-    manifest when there is none) when older than STALE_EVENT_S, else the
-    manifest when older than STALE_MANIFEST_S. A frozen or replayed mirror
-    verifies on every pull, and this is how a reader notices it."""
+_CERT_REASON = {"other manifest": "checkpoint key certificate is for another manifest",
+                "dated ahead": "checkpoint key certificate dated ahead of this clock",
+                "expired": "checkpoint key certificate expired"}
+_CP_REASON = {"other manifest": "checkpoint is for another manifest",
+              "dated ahead": "checkpoint dated ahead of this clock"}
+
+
+def unverified(state: State, now: float | None = None) -> str | None:
+    """Why what this reader shows may not be trusted to be complete right now,
+    or None. The CLI auto-applies nothing while this is not None.
+
+    In order: the last pull was not a finished, checked one (it failed, was
+    interrupted, checked no checkpoint, or there was none: a refused pull
+    must stop auto-apply even while the earlier checkpoint is still fresh);
+    no certificate or checkpoint is stored; the certificate does not fit the
+    effective manifest or the clock; the stored checkpoint is not the
+    certified key's (the certificate was replaced); it does not fit the
+    manifest or the clock (a clock set back lands here); an event it lists
+    is not stored (an interrupted save); it is past its validity."""
     now = time.time() if now is None else now
-    newest, issued = freshness(state, now)
-    if issued is None:
+    last, root = state.last_pull, state.manifest_root
+    if last.get("checkpoint_ok") is not True:
+        if not last:
+            return "no pull yet"
+        if last.get("error") == "interrupted":
+            return "the last pull was interrupted"
+        if last.get("error"):
+            return f"the last pull failed ({last['error']})"
+        return "the last pull checked no checkpoint"
+    m = effective_manifest(state)
+    if m is None:
+        return "no pull yet"
+    cert, cp = state.cert_for(root), state.checkpoint_for(root)
+    if cert is None:
+        return "no checkpoint key certificate"
+    problem = cpt.cert_problem(cert, m, now)
+    if problem is not None:
+        return _CERT_REASON[problem]
+    if cp is None:
+        return "no checkpoint"
+    if not cpt.verify_checkpoint(cp, cert):
+        return "checkpoint is not signed by the certified key"
+    problem = cpt.checkpoint_problem(cp, m, now)
+    if problem is not None:
+        return _CP_REASON[problem]
+    if not cp.events <= set(state.events):
+        return "stored events do not match the checkpoint"
+    if now > cpt.fresh_until(cp):
+        return "checkpoint out of date"
+    return None
+
+
+def stale_since(state: State, now: float | None = None) -> int | None:
+    """None while the reader is verified (``unverified`` is None); else the
+    signed time since which nothing was verified complete: the accepted
+    checkpoint's, else the newest trusted event's, else the manifest's, else
+    (no manifest at all) the time of the last pull attempt. Non-null in every
+    unverified state on purpose: the session-start hook members installed
+    looks for exactly this field. A frozen or replayed mirror verifies on
+    every pull, and its checkpoint running out is how a reader notices."""
+    now = time.time() if now is None else now
+    if unverified(state, now) is None:
         return None
-    ref = issued if newest is None else newest
-    if ref < now - STALE_EVENT_S:
-        return ref
-    return issued if issued < now - STALE_MANIFEST_S else None
+    cp = state.checkpoint_for(state.manifest_root)
+    if cp is not None:
+        return cp.created_at
+    newest, issued = freshness(state, now)
+    for t in (newest, issued, state.last_pull.get("at")):
+        if isinstance(t, int):
+            return t
+    return int(now)
 
 
 # ---------------------------------------------------------------- advisories
@@ -473,8 +724,14 @@ def _is_root(ev: dict) -> bool:
     return not any(t and t[0] == "e" for t in ev["tags"])
 
 
-def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
-    """Every thread built from the stored events under the current manifest.
+def advisories(state: State, dropped: Counter | None = None, checkpointed: bool = True) -> list[Thread]:
+    """Every thread built from the applied events under the current manifest.
+
+    Applied: the stored events an accepted checkpoint has listed (the applied
+    set, which only grows: see the module text). Before a first checkpoint
+    was ever accepted, every stored event, as the older reader showed them.
+    ``checkpointed=False`` is the writers' view (the curator command): every
+    stored event, so a thread posted a minute ago can be amended.
 
     Replies apply to their root in (created_at, id) order. A curator reply
     whose first line is ``retract`` retracts the thread for good; one whose
@@ -501,7 +758,9 @@ def advisories(state: State, dropped: Counter | None = None) -> list[Thread]:
     if m is None:
         return []
     channels = channel_ids()
-    return threads_from([ev for ev in state.events.values() if _bound(ev, channels)], m, dropped)
+    applied = state.applied_for(state.manifest_root) if checkpointed else None
+    return threads_from([ev for ev in state.events.values() if _bound(ev, channels)
+                         and (applied is None or ev["id"] in applied)], m, dropped)
 
 
 def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Thread]:
