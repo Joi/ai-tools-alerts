@@ -88,9 +88,11 @@ from the live feed: the CVE-2026-88968 thread, the CVE-2026-123158 feed thread, 
       11-11, as the live hourly schedule had, so each day's digest is sent.
 - [ ] Assert: the OpenSSH thread gets zero replies; the 88968 fix reply (11-07 04:20 UTC)
       posts with "Fixed in 2.1.251"; the 11-10 and 11-11 digests contain no `LEAD-` and no
-      "unrated leads"; CVE-2026-88968 is listed on the day it posted (the 11-07 digest,
-      sent in the run that posted it) and on the day of its fix (the 11-08 digest: its fix
-      came after the 11-07 cutoff), and in no later digest (not 11-09, 11-10, 11-11).
+      "unrated leads"; CVE-2026-88968 is listed in the first digest after it posted and
+      after its fix (both at 11:20 and 13:20 Tokyo on 11-07, after that day's 09:20
+      digest, so the 11-08 digest, with "fixed in 2.1.251"), and in no later digest (not
+      11-09, 11-10, 11-11). (Amended during execution: the plan first said 11-07 and
+      11-08; the 09:20 schedule puts the 11-07 digest before the root.)
 - [ ] Verify the test fails on main's code (run it before chunks 1-2 land, or against
       `git stash`-free checkout of 0dba6fc in a scratch worktree) and passes after.
 

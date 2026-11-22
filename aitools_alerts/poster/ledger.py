@@ -25,6 +25,7 @@ DEFAULT_PATH = Path.home() / ".local" / "state" / "aitools-alerts-poster" / "led
 PENDING_EXPIRY = 24 * 3600
 MAX_REVIEW = 500
 MAX_REVIEW_TEXT = 300
+MAX_LEARNED = 20  # the schema's source cap
 _LISTS = ("entries", "pending", "expired", "review")
 log = logging.getLogger(__name__)
 
@@ -46,6 +47,17 @@ class Entry:
     advisory: dict
     replies: list
     source_title: str | None = None  # r7hr: the digest line's upstream title; never identity
+    # 8ke5: when a digest lists the thread: its root, then a reply that changed the level,
+    # the fixed version or the actions. Absent on entries written before; see ``listed``.
+    listed_at: int | None = None
+    # 8ke5: sources learned with no reply (a source-only change posts nothing); the next
+    # reply with a real change publishes them. [{"url", "published_at"}].
+    learned_sources: list | None = None
+
+    @property
+    def listed(self) -> int:
+        """When a digest last had something new to list for this thread."""
+        return self.listed_at if self.listed_at is not None else self.last_change
 
 
 def _keys(ids) -> set[str]:
@@ -71,7 +83,11 @@ def _entry_ok(e) -> bool:
             and isinstance(e["scope"], str) and type(e["exploited"]) is bool
             and isinstance(e["advisory"], dict)
             and isinstance(e["replies"], list) and all(_ids_map(r) for r in e["replies"])
-            and (e.get("source_title") is None or isinstance(e["source_title"], str)))
+            and (e.get("source_title") is None or isinstance(e["source_title"], str))
+            and ("listed_at" not in e or type(e["listed_at"]) is int)
+            and ("learned_sources" not in e or (
+                isinstance(e["learned_sources"], list) and len(e["learned_sources"]) <= MAX_LEARNED
+                and all(isinstance(x, dict) and isinstance(x.get("url"), str) for x in e["learned_sources"]))))
 
 
 def _pending_ok(p) -> bool:
@@ -183,9 +199,9 @@ class Ledger:
         return None
 
     def entries_since(self, t: int) -> list[Entry]:
-        """Every entry whose last change is after ``t``, oldest change first (the digest)."""
-        hits = [e for e in self._state()["entries"] if e["last_change"] > t]
-        return [Entry(**e) for e in sorted(hits, key=lambda e: e["last_change"])]
+        """Every entry listed after ``t`` (``Entry.listed``), oldest first (the digest)."""
+        hits = [x for x in (Entry(**e) for e in self._state()["entries"]) if x.listed > t]
+        return sorted(hits, key=lambda x: x.listed)
 
     def lookup(self, aliases, scope: str | None = None) -> Entry | None:
         """The oldest entry sharing any id, optionally for one scope."""
@@ -208,7 +224,7 @@ class Ledger:
         if self.lookup(ids, scope) is not None:
             raise LedgerError(f"{adv.id} already has a thread; post a reply instead")
         e = dict(root_event_id=root_event_id, channel_ids=dict(channel_ids), level=adv.level,
-                 aliases=ids, posted_at=now, last_change=now, scope=scope,
+                 aliases=ids, posted_at=now, last_change=now, listed_at=now, scope=scope,
                  exploited=exploited is True, advisory=asdict(adv), replies=[],
                  **({"source_title": source_title} if source_title else {}))
         self._state()["entries"].append(e)
@@ -240,11 +256,34 @@ class Ledger:
             e["source_title"] = title
             self._save()
 
+    def learn_sources(self, root_event_id: str, sources) -> None:
+        """Sources a run saw and did not post (8ke5): kept for the next real reply."""
+        e = self._entry(root_event_id)
+        have = {s.get("url") for s in e["advisory"].get("sources", []) if isinstance(s, dict)}
+        learned = list(e.get("learned_sources", []))
+        have.update(x["url"] for x in learned)
+        for s in sources:
+            url = getattr(s, "url", None)
+            if isinstance(url, str) and url not in have and len(learned) < MAX_LEARNED:
+                have.add(url)
+                learned.append({"url": url, "published_at": getattr(s, "published_at", None)})
+        if learned != e.get("learned_sources", []):
+            e["learned_sources"] = learned
+            self._save()
+
     def record_reply(self, root_event_id: str, adv: schema.Advisory, reply_ids: dict, *,
                      now: int, exploited: bool = False, ids=()) -> Entry:
         if not _ids_map(reply_ids):
             raise LedgerError("reply_ids must map channel to event id")
         e = self._entry(root_event_id)
+        was, new = e["advisory"], asdict(adv)
+        if _listed_fields(was) != _listed_fields(new):
+            e["listed_at"] = now  # a digest lists it again
+        else:  # frozen, a legacy entry's too, before last_change moves
+            e["listed_at"] = Entry(**e).listed
+        urls = {s["url"] for s in new["sources"]}
+        if any(x["url"] in urls for x in e.get("learned_sources", [])):
+            e["learned_sources"] = [x for x in e["learned_sources"] if x["url"] not in urls]
         e["aliases"] = _union(e["aliases"], [adv.id, *adv.aliases, *ids])
         e.update(level=adv.level, advisory=asdict(adv), last_change=now,
                  exploited=e["exploited"] or exploited is True)
@@ -331,6 +370,12 @@ class Ledger:
             r["last_seen"] = max(r["last_seen"], now)
         del review[:-MAX_REVIEW]
         self._save()
+
+
+def _listed_fields(adv: dict):
+    """What a digest re-lists a thread for: its level, fixed version and actions (8ke5)."""
+    prods = adv.get("products") or [{}]
+    return adv.get("level"), prods[0].get("fixed"), adv.get("actions")
 
 
 # ---------------------------------------------------------------- alias merge

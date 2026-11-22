@@ -559,12 +559,21 @@ class Run:
         own_fix = compose.schema_fixed(c.fixed) is not None
         prev_ids = _fold([prev.id, *prev.aliases])
         prev_urls = {s.url for s in prev.sources}
+        # Ids and sources learned by earlier runs that posted nothing (8ke5) come along.
+        learned = [schema.Source(x["url"], x.get("published_at")) for x in entry.learned_sources or ()]
+        seen_urls = set(prev_urls)
+        extra = []
+        for s in [*learned, *c.sources]:
+            if s.url not in seen_urls:
+                seen_urls.add(s.url)
+                extra.append(s)
+        unpublished = [i for i in dict.fromkeys([*ids, *entry.aliases])
+                       if i.casefold() not in prev_ids and compose.public_id(i)]
         k = replace(  # the thread's identity and everything already known, plus what is new
-            c, id=prev.id,
-            aliases=tuple(prev.aliases) + tuple(i for i in dict.fromkeys(ids) if i.casefold() not in prev_ids),
+            c, id=prev.id, aliases=tuple(prev.aliases) + tuple(unpublished),
             fixed=c.fixed if own_fix else was.fixed,
             affected=c.affected if compose.schema_affected(c.affected) else was.affected,
-            sources=tuple(prev.sources) + tuple(s for s in c.sources if s.url not in prev_urls))
+            sources=tuple(prev.sources) + tuple(extra))
         text, new = compose.root_post(k, (level, reason), scope, posted_at=prev.posted_at)
         changes = {}
         if RANK[level] > RANK[prev.level]:
@@ -573,11 +582,17 @@ class Run:
             changes["products"] = new.products
         # Published aliases are compared with prev's, not with the ledger's full set, which
         # add_ids may already hold from a run that stopped before journaling the reply.
-        unpublished = [i for i in dict.fromkeys(ids) if i.casefold() not in prev_ids]
         if unpublished and len(prev.aliases) < 50:
             changes["aliases"] = unpublished
         if any(s.url not in prev_urls for s in new.sources) and len(prev.sources) < 20:
             changes["sources"] = new.sources
+        if changes and set(changes) <= {"aliases", "sources"} and not (c.exploited is True and not entry.exploited):
+            # 8ke5: no reply says only "New sources listed." or "Also known as": the ids
+            # are learned above, the sources here, and the next real reply carries both.
+            # Exploitation learned at the same level still replies (design section 5;
+            # its Japanese action turns urgent, 4yr1).
+            self.led.learn_sources(entry.root_event_id, extra)
+            changes = {}
         copies = [ch for ch in CHANNELS_FOR[level] if ch not in entry.channel_ids]
         ja = self._ja(compose.root_post_ja, new, reason, compose.fix_unexpressed(k), title,
                       exploited=k.exploited is True) if copies else None
@@ -635,13 +650,13 @@ class Run:
             self.n["digest_held"] += 1
             return
         # Ledger posts oldest change first (so a backlog larger than one post moves forward
-        # day by day), then held notices loudest first: (advisory, held entry, last_change).
+        # day by day), then held notices loudest first: (advisory, held entry, (listed, root)).
         posted = [h for h in self.state["held"]  # a notice that has since posted is listed once, as posted
                   if self.led.lookup([h["adv"]["id"], *h["adv"]["aliases"]], scope=h["scope"]) is not None]
         led_items, held_items, titles = [], [], {}
         at, done = self.state["digest_at"], set(self.state["digest_roots"])
         for e in self.led.entries_since(at - 1):
-            if e.last_change == at and e.root_event_id in done:
+            if e.listed == at and e.root_event_id in done:
                 continue  # listed by the last digest
             try:
                 adv = schema.validate(e.advisory)
@@ -649,7 +664,7 @@ class Run:
                 self.n["withheld"] += 1
                 continue
             if gone_roots.isdisjoint({e.root_event_id, *e.channel_ids.values()}):  # else its thread is withdrawn
-                led_items.append((adv, None, (e.last_change, e.root_event_id)))
+                led_items.append((adv, None, (e.listed, e.root_event_id)))
                 if adv.products:
                     titles[(adv.id, adv.products[0].name)] = e.source_title
         for h in self.state["held"]:
@@ -677,8 +692,9 @@ class Run:
             keep //= 2
         taken = items[:keep]
         led_taken = [x[2] for x in taken if x[2] is not None]
-        if len(led_taken) == len(led_items):
-            cutoff, roots = self.now, []
+        if len(led_taken) == len(led_items):  # the roots at the cutoff are listed: never again (8ke5)
+            cutoff = self.now
+            roots = [r for t, r in led_taken if t == cutoff]
         elif led_taken:  # acknowledged: every change up to the last one listed, by root at that time
             cutoff = led_taken[-1][0]
             roots = [r for t, r in led_taken if t == cutoff] + (sorted(done) if cutoff == at else [])

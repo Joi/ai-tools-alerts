@@ -240,3 +240,64 @@ def test_merge_keeps_a_source_title_whichever_member_comes_first():
     for order in ([beat, col], [col, beat]):
         (m, _), = ledger.merge([pair(c) for c in order])
         assert m.source_title == "Race in Edit Tool"
+
+
+# ---------------------------------------------------------------- listing (8ke5)
+
+def test_a_reply_lists_the_thread_again_only_for_level_fix_or_action(tmp_path):
+    import dataclasses
+    from aitools_alerts import schema
+    with Ledger(tmp_path / "l.json") as led:
+        adv = adv_for(cand(), "high")
+        led.record_root(adv, "r1", {"feed": "r1"}, scope="Claude Code", exploited=False, now=T0)
+        more = dataclasses.replace(adv, sources=[*adv.sources, schema.Source(GHSA, None)])
+        led.record_reply("r1", more, {"feed": "a1"}, now=T0 + 10)  # sources only
+        ranged = dataclasses.replace(more, products=[dataclasses.replace(more.products[0], affected="<2.0.0")])
+        led.record_reply("r1", ranged, {"feed": "a2"}, now=T0 + 20)  # a range, no fix
+        e = led.thread("r1")
+        assert e.last_change == T0 + 20 and e.listed == T0 and led.entries_since(T0) == []
+        fixed = adv_for(cand(fixed="2.1.0"), "high")
+        led.record_reply("r1", fixed, {"feed": "a3"}, now=T0 + 30)  # fixed version and action
+        assert led.thread("r1").listed == T0 + 30 and len(led.entries_since(T0)) == 1
+        led.record_reply("r1", dataclasses.replace(fixed, level="critical"), {"feed": "a4"}, now=T0 + 40)
+        assert led.thread("r1").listed == T0 + 40  # the level
+
+
+def test_a_legacy_entry_keeps_its_listing_time(tmp_path):
+    """An entry written before 8ke5 has no listed_at: its last change counts, once."""
+    import dataclasses
+    p = tmp_path / "l.json"
+    with Ledger(p) as led:
+        adv = adv_for(cand(), "high")
+        led.record_root(adv, "r1", {"feed": "r1"}, scope="Claude Code", exploited=False, now=T0)
+    data = json.loads(p.read_text())
+    e = data["entries"][0]
+    del e["listed_at"]
+    e["last_change"] = T0 + 5  # an old source-only reply moved it
+    p.write_text(json.dumps(data))
+    with Ledger(p) as led:
+        assert led.thread("r1").listed == T0 + 5
+        ranged = dataclasses.replace(adv, products=[dataclasses.replace(adv.products[0], affected="<2.0.0")])
+        led.record_reply("r1", ranged, {"feed": "a1"}, now=T0 + 99)
+        assert led.thread("r1").listed == T0 + 5 and led.thread("r1").last_change == T0 + 99
+    e["listed_at"] = None  # never written: refused like any other malformed entry
+    p.write_text(json.dumps(data))
+    with pytest.raises(LedgerError, match="malformed"):
+        with Ledger(p):
+            pass
+
+
+def test_learned_sources_wait_for_the_next_reply(tmp_path):
+    import dataclasses
+    from aitools_alerts import schema
+    with Ledger(tmp_path / "l.json") as led:
+        adv = adv_for(cand(), "high")
+        led.record_root(adv, "r1", {"feed": "r1"}, scope="Claude Code", exploited=False, now=T0)
+        led.learn_sources("r1", [schema.Source(KEV, None), schema.Source(GHSA, "2026-11-01")])
+        led.learn_sources("r1", [schema.Source(GHSA, None)])  # once each, never the advisory's own
+        assert led.thread("r1").learned_sources == [{"url": GHSA, "published_at": "2026-11-01"}]
+        led.learn_sources("r1", [schema.Source(f"{GHSA}{i}", None) for i in range(40)])
+        assert len(led.thread("r1").learned_sources) == ledger.MAX_LEARNED
+        posted = dataclasses.replace(adv, sources=[*adv.sources, schema.Source(GHSA, None)])
+        led.record_reply("r1", posted, {"feed": "a1"}, now=T0 + 10)
+        assert GHSA not in [x["url"] for x in led.thread("r1").learned_sources]

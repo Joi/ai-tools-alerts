@@ -17,7 +17,7 @@ Pass 1 [plan]: 0B/4S/0C/0R · fixed -/- · velocity = (—→4, escalation no)  
 
 ## Chunks
 - [x] chunk 1 — compose: no lead lines, no ledger-key aliases (poster tests: compose 54 passed)
-- [ ] chunk 2 — main + ledger: no source/alias-only replies, digest lists an advisory once
+- [x] chunk 2 — main + ledger: no source/alias-only replies, digest lists an advisory once (poster 500 passed; the same-run cutoff test fails with the fix removed)
 - [ ] chunk 3 — live-feed replay test
 
 ## Notes

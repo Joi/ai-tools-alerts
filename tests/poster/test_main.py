@@ -188,21 +188,33 @@ def test_notice_waits_for_digest(env):
     assert len(ssh.calls) == 1 and "CVE-2026-5000" not in ssh.calls[0][2]
 
 
-def test_duplicate_alias_becomes_reply(env):
+def replace_fixed(f, fixed):
+    return {**f, "fixed": fixed}
+
+
+def test_duplicate_alias_is_learned_and_rides_the_next_real_reply(env):  # 8ke5
     env.collector([finding()])
     env.run()
     (e,), _ = env.ledger()
     root = e["channel_ids"]["feed"]
     twin = finding(fid="CVE-2026-0002", aliases=("GHSA-abcd-efgh-ijkl",), sources=(GHSA, GHSA2))
     env.collector([twin])
-    code, summary, ssh = env.run(now=T0 + 3600)
-    assert code == 0 and "replies=1" in summary and "roots=0" in summary
-    assert chans(ssh) == [("feed", root)]
-    assert "CVE-2026-0002" in ssh.calls[0][2] and "```aitools-alert" in ssh.calls[0][2]
+    code, summary, ssh = env.run(now=T0 + 3600)  # only an alias and a source are new: no post
+    assert code == 0 and "replies=0" in summary and "roots=0" in summary and ssh.calls == []
     (e,), _ = env.ledger()
-    assert len(e["replies"]) == 1 and "CVE-2026-0002" in e["aliases"]
-    env.collector([twin])
-    _, _, ssh = env.run(now=T0 + 7200)
+    assert e["replies"] == [] and "CVE-2026-0002" in e["aliases"]  # the identity is learned
+    assert [x["url"] for x in e["learned_sources"]] == [GHSA2] and e["listed_at"] == e["posted_at"]
+    env.collector([finding(fixed="2.1.1")])  # a real change, from a record without the twin
+    code, summary, ssh = env.run(now=T0 + 7200)
+    assert code == 0 and "replies=1" in summary and chans(ssh) == [("feed", root)]
+    text = ssh.calls[0][2]
+    assert "Fixed in 2.1.1" in text and "Also known as: CVE-2026-0002." in text and "New sources listed." in text
+    block = json.loads(text.split("```aitools-alert\n")[1].split("```")[0])
+    assert block["aliases"] == ["CVE-2026-0002"] and GHSA2 in [x["url"] for x in block["sources"]]
+    (e,), _ = env.ledger()
+    assert len(e["replies"]) == 1 and e["learned_sources"] == [] and e["listed_at"] == T0 + 7200
+    env.collector([replace_fixed(twin, "2.1.1")])
+    _, _, ssh = env.run(now=T0 + 9000)
     assert ssh.calls == []
 
 
@@ -622,11 +634,11 @@ def test_range_correction_without_a_fix_posts_a_reply(env):
 def test_ids_learned_past_the_alias_cap(env):
     env.collector([finding(aliases=[f"A-{i:03d}" for i in range(32)])])  # the adapter keeps 32
     env.run()
-    env.collector([finding(aliases=[f"B-{i:03d}" for i in range(32)])])
+    env.collector([finding(aliases=[f"B-{i:03d}" for i in range(32)], fixed="2.1.1")])  # a real reply
     env.run(now=T0 + 3600)
     (e,), _ = env.ledger()
     assert len(e["advisory"]["aliases"]) == 50  # the published list is full
-    env.collector([finding(aliases=("CVE-2026-0777",))])
+    env.collector([finding(aliases=("CVE-2026-0777",), fixed="2.1.1")])
     _, _, ssh = env.run(now=T0 + 7200)
     assert ssh.calls == []  # nothing to publish
     (e,), _ = env.ledger()
@@ -639,7 +651,7 @@ def test_ids_learned_past_the_alias_cap(env):
 def test_alias_reply_survives_a_stop_after_ids_were_learned(env, monkeypatch):
     env.collector([finding()])
     env.run()
-    twin = finding(fid="CVE-2026-0002", aliases=("GHSA-abcd-efgh-ijkl",))
+    twin = finding(fid="CVE-2026-0002", aliases=("GHSA-abcd-efgh-ijkl",), fixed="2.1.1")  # 8ke5: a real change
     env.collector([twin])
     real = main.Run.enqueue
 
@@ -1134,7 +1146,7 @@ def test_unknown_japanese_send_never_holds_english_work(env):
     assert p["key"].endswith(":ja") and p["aliases"] == []  # matches no advisory id
     # A new alias arrives (one spelled like the journal's id too): the English reply still posts.
     env.collector([finding(fid="CVE-2026-0002", aliases=("GHSA-abcd-efgh-ijkl", f"ja {p['key']}"),
-                           sources=(GHSA, GHSA2))])
+                           sources=(GHSA, GHSA2), fixed="2.1.1")])  # 8ke5: a reply needs a real change
     code, summary, ssh = env.run(now=T0 + 3600)
     assert code == 0 and "replies=1" in summary and "busy=1" in summary  # the unknown ja waits
     assert [c[2].startswith("lang: ja\nof: ") for c in ssh.ja] == [True]
@@ -1153,9 +1165,10 @@ def test_journal_item_from_before_rd8t_loads_and_sends(env):
 def test_each_english_reply_keeps_its_own_japanese_reply(env):
     env.collector([finding()])
     env.run()
-    env.collector([finding(fid="CVE-2026-0002", aliases=("GHSA-abcd-efgh-ijkl",), sources=(GHSA, GHSA2))])
+    env.collector([finding(fid="CVE-2026-0002", aliases=("GHSA-abcd-efgh-ijkl",), sources=(GHSA, GHSA2),
+                           fixed="2.1.1")])  # 8ke5: a reply needs a real change
     _, _, ssh1 = env.run(now=T0 + 3600, ssh=FakeSSH(ja=["fail"]))
-    env.collector([finding(fid="CVE-2026-0003", aliases=("GHSA-abcd-efgh-ijkl",))])
+    env.collector([finding(fid="CVE-2026-0003", aliases=("GHSA-abcd-efgh-ijkl",), fixed="2.1.2")])
     _, summary, ssh2 = env.run(now=T0 + 7200, ssh=FakeSSH(ja=["fail"]))  # the older one fails again
     ja = [o for o in env.state()["outbox"] if o["kind"] == "ja"]  # a refused one goes last in line
     assert [o["text"].split("\n")[1] for o in ja] == [f"of: {ssh2.ids[0]}", f"of: {ssh1.ids[0]}"]
@@ -1180,12 +1193,13 @@ def test_japanese_backlog_is_bounded(env, monkeypatch):
     monkeypatch.setattr(main, "MAX_JA", 1)
     env.collector([finding()])
     env.run(ssh=FakeSSH(ja=["fail"]))
-    env.collector([finding(fid="CVE-2026-0002", aliases=("GHSA-abcd-efgh-ijkl",), sources=(GHSA, GHSA2))])
+    env.collector([finding(fid="CVE-2026-0002", aliases=("GHSA-abcd-efgh-ijkl",), sources=(GHSA, GHSA2),
+                           fixed="2.1.1")])  # 8ke5: a reply needs a real change
     _, summary, _ = env.run(now=T0 + 3600, ssh=FakeSSH(ja=["fail"]))
     assert [o["kind"] for o in env.state()["outbox"]] == ["ja"]
     assert env.state()["outbox"][0]["key"].startswith("reply:")  # the older root one was dropped
     monkeypatch.setattr(main, "MAX_JA_BYTES", 10)  # over the byte budget, all in flight: not journaled
-    env.collector([finding(fid="CVE-2026-0003", aliases=("GHSA-abcd-efgh-ijkl",))])
+    env.collector([finding(fid="CVE-2026-0003", aliases=("GHSA-abcd-efgh-ijkl",), fixed="2.1.2")])
     _, summary, ssh = env.run(now=T0 + 7200, ssh=FakeSSH(ja=["unknown"]))
     assert "ja_failed=2" in summary and env.ledger()[1] == []  # the waiting one dropped, the new one declined
     assert env.state()["outbox"] == [] and ssh.ja == []
@@ -1450,3 +1464,28 @@ def test_a_level_rise_copy_gets_the_exploited_flag(env, monkeypatch):  # 4yr1
     env.kev.catalog = {"vulnerabilities": [kev_item()]}
     _, summary, _ = env.run(now=T0 + 3600)
     assert "copies=1" in summary and seen[1:] == [True, True]  # the copy, then the reply
+
+
+def test_a_change_in_the_digest_run_is_listed_that_day_only(env):  # 8ke5
+    """Live 11-10/11-11: a reply recorded in the digest's own run was listed again the
+    next day, because a digest that took everything recorded no roots at its cutoff."""
+    env.collector([finding(fixed=None, severity="high")])
+    assert "roots=1" in env.run()[1]
+    env.collector([finding(fixed="2.1.0", severity="high")])  # the fix, in the 09:20 run
+    _, summary, ssh = env.run(now=at(5, 9))
+    assert "replies=1" in summary and [c[2].startswith("Daily digest") for c in ssh.calls] == [False, True]
+    assert "GHSA-abcd-efgh-ijkl" in ssh.calls[1][2]
+    _, _, ssh = env.run(now=at(6, 9))
+    assert len(ssh.calls) == 1 and "GHSA-abcd-efgh-ijkl" not in ssh.calls[0][2]
+
+
+def test_a_source_only_change_is_not_listed_again(env):  # 8ke5
+    env.collector([finding()])
+    env.run()
+    _, _, ssh = env.run(now=at(5, 9))
+    assert "GHSA-abcd-efgh-ijkl" in ssh.calls[0][2]
+    env.collector([finding(sources=(GHSA, GHSA2))])
+    _, summary, ssh = env.run(now=at(5, 12))
+    assert "replies=0" in summary and ssh.calls == []
+    _, _, ssh = env.run(now=at(6, 9))
+    assert len(ssh.calls) == 1 and "GHSA-abcd-efgh-ijkl" not in ssh.calls[0][2]
