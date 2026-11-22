@@ -134,8 +134,10 @@ def classify(status: int, body: bytes, event_id: str) -> tuple[str, str]:
                 return "ok", ""
             return "unknown", "200 naming another event id"
         if out.get("accepted") is False:
-            if msg.lower().startswith("duplicate"):  # the relay already holds this exact event
-                return "ok", ""
+            if msg.lower().startswith("duplicate"):
+                if out.get("event_id") in (None, event_id):
+                    return "ok", ""  # the relay already holds this exact event (its id is its hash)
+                return "unknown", "duplicate naming another event id"
             return "failed", "not accepted: " + _printable(msg)
         return "unknown", "200 without an accepted field"
     if status == 413:

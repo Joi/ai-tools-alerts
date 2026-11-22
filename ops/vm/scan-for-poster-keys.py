@@ -21,21 +21,29 @@ sits in (ops/vm/ -> repository root), so copy the repository, not this file alon
 from __future__ import annotations
 
 import argparse
+import bz2
 import gzip
 import io
 import json
+import lzma
 import os
 import re
 import sys
 import tarfile
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from aitools_alerts import nostr  # noqa: E402
 
-MAX_DEPTH = 4  # archives inside archives
-MAX_MEMBER = 512 * 1024 * 1024  # a member larger than this is read but not unpacked further
-_CANDIDATE = re.compile(rb"nsec1[02-9ac-hj-np-z]{58}|(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])")
+MAX_DEPTH = 6  # archives inside archives; an archive deeper than this is UNREAD (a failure)
+MAX_BLOB = 512 * 1024 * 1024  # a file or member larger than this is UNREAD (a failure), never skipped
+# bech32 is single-case: all lowercase or all uppercase (nostr.nsec_to_hex accepts both).
+_CANDIDATE = re.compile(rb"nsec1[02-9ac-hj-np-z]{58}|NSEC1[02-9AC-HJ-NP-Z]{58}"
+                        rb"|(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])")
+# Compressed or container formats the scan cannot open: present means UNREAD.
+_UNSUPPORTED = ((b"\x28\xb5\x2f\xfd", "zstd"), (b"7z\xbc\xaf\x27\x1c", "7z"), (b"Rar!", "rar"))
+_SAFE = re.compile(r"[^\x20-\x7e]")
 
 
 def poster_pubkeys(manifest_path: Path) -> set[str]:
@@ -58,8 +66,8 @@ class Scan:
     def _is_poster(self, cand: bytes) -> bool:
         if cand not in self.seen:
             try:
-                s = cand.decode("ascii")
-                hexkey = nostr.nsec_to_hex(s) if s.startswith("nsec1") else s.lower()
+                s = cand.decode("ascii").lower()
+                hexkey = nostr.nsec_to_hex(s) if s.startswith("nsec1") else s
                 pub = nostr.pubkey_gen(bytes.fromhex(hexkey)).hex()
                 self.seen[cand] = pub in self.targets
             except (ValueError, TypeError, ZeroDivisionError):
@@ -67,17 +75,44 @@ class Scan:
         return self.seen[cand]
 
     def data(self, label: str, blob: bytes, depth: int) -> None:
+        label = _SAFE.sub("?", label)  # member names come from the archive: print no control bytes
         if any(self._is_poster(m.group(0)) for m in _CANDIDATE.finditer(blob)):
             self.hits.append(label)
-        if depth >= MAX_DEPTH or len(blob) > MAX_MEMBER:
-            return
-        if blob[:2] == b"\x1f\x8b":
-            try:
-                inner = gzip.decompress(blob)
-            except (OSError, EOFError, ValueError):
-                self.unread.append(label + " (gzip)")
+        for magic, name in _UNSUPPORTED:
+            if blob.startswith(magic):
+                self.unread.append(f"{label} ({name}: cannot open)")
                 return
-            self.data(label + "!gunzip", inner, depth + 1)
+        packed = (blob[:2] == b"\x1f\x8b" or blob[:3] == b"BZh" or blob[:6] == b"\xfd7zXZ\x00"
+                  or blob[:4] == b"PK\x03\x04" or (len(blob) >= 512 and blob[257:262] == b"ustar"))
+        if packed and depth >= MAX_DEPTH:
+            self.unread.append(f"{label} (nested deeper than {MAX_DEPTH})")
+            return
+        for magic, name, fn in ((b"\x1f\x8b", "gzip", gzip.decompress), (b"BZh", "bzip2", bz2.decompress),
+                                (b"\xfd7zXZ\x00", "xz", lzma.decompress)):
+            if blob.startswith(magic):
+                try:
+                    inner = fn(blob)
+                except (OSError, EOFError, ValueError, lzma.LZMAError):
+                    self.unread.append(f"{label} ({name})")
+                    return
+                if len(inner) > MAX_BLOB:
+                    self.unread.append(f"{label} ({name}: larger than {MAX_BLOB} bytes unpacked)")
+                    return
+                self.data(f"{label}!{name}", inner, depth + 1)
+                return
+        if blob[:4] == b"PK\x03\x04":
+            try:
+                with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+                    for zi in zf.infolist():
+                        if zi.is_dir():
+                            continue
+                        self.members += 1
+                        if zi.file_size > MAX_BLOB:
+                            self.unread.append(_SAFE.sub("?", f"{label}!{zi.filename} (too large)"))
+                            continue
+                        self.data(f"{label}!{zi.filename}", zf.read(zi), depth + 1)
+            except (zipfile.BadZipFile, OSError, RuntimeError, ValueError) as e:
+                self.unread.append(f"{label} (zip: {type(e).__name__})")
             return
         if len(blob) >= 512 and blob[257:262] == b"ustar":
             try:
@@ -86,6 +121,9 @@ class Scan:
                         if not m.isfile():
                             continue
                         self.members += 1
+                        if m.size > MAX_BLOB:
+                            self.unread.append(_SAFE.sub("?", f"{label}!{m.name} (too large)"))
+                            continue
                         f = tf.extractfile(m)
                         if f is None:
                             self.unread.append(f"{label}!{m.name}")
@@ -97,6 +135,9 @@ class Scan:
     def path(self, p: str) -> None:
         self.files += 1
         try:
+            if os.path.getsize(p) > MAX_BLOB:
+                self.unread.append(f"{p} (larger than {MAX_BLOB} bytes)")
+                return
             with open(p, "rb") as fh:
                 blob = fh.read()
         except OSError:

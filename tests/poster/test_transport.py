@@ -121,6 +121,8 @@ def test_the_nip98_header_binds_url_method_and_body():
     (200, {"accepted": True, "event_id": "SAME", "message": ""}, "ok"),
     (200, {"accepted": True, "event_id": "SAME", "message": "duplicate:"}, "ok"),
     (200, {"accepted": False, "event_id": "SAME", "message": "duplicate: already have it"}, "ok"),
+    (200, {"accepted": False, "message": "duplicate:"}, "ok"),
+    (200, {"accepted": False, "event_id": "cd" * 32, "message": "duplicate:"}, "unknown"),
     (200, {"accepted": True, "event_id": "cd" * 32, "message": ""}, "unknown"),
     (200, {"accepted": False, "message": "rate-limited: slow down"}, "failed"),
     (200, {"event_id": "SAME"}, "unknown"),

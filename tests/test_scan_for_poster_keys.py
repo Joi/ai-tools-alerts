@@ -1,9 +1,12 @@
 """ops/vm/scan-for-poster-keys.py: finds a manifest poster's secret key in files and
 nested archives by its derived public key, and prints no key (ai-tools-alerts#vzc3)."""
 
+import bz2
 import gzip
 import importlib.util
 import io
+import lzma
+import zipfile
 import json
 import os
 import tarfile
@@ -40,6 +43,14 @@ def tar_bytes(files: dict, gz=False) -> bytes:
     return buf.getvalue()
 
 
+def zip_bytes(files: dict) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, data in files.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
 def run(manifest, root, capsys):
     code = scan.main(["--manifest", str(manifest), str(root)])
     out = capsys.readouterr()
@@ -55,6 +66,10 @@ def run(manifest, root, capsys):
     lambda d: (d / "b.tar.gz").write_bytes(tar_bytes({"MANIFEST.txt": b"x", "scaffolding.tar.gz": tar_bytes(
         {"home/.buzz-keys/agent.sec.hex": POSTER_SEC.encode()}, gz=True)}, gz=True)),
     lambda d: (d / "k.gz").write_bytes(gzip.compress(POSTER_SEC.encode())),
+    lambda d: (d / "UPPER.nsec").write_text(nostr.nsec(POSTER_SEC).upper()),
+    lambda d: (d / "k.xz").write_bytes(lzma.compress(nostr.nsec(POSTER_SEC).encode())),
+    lambda d: (d / "k.bz2").write_bytes(bz2.compress(POSTER_SEC.encode())),
+    lambda d: (d / "k.zip").write_bytes(zip_bytes({"keys/agent.sec.hex": POSTER_SEC.encode()})),
 ])
 def test_a_planted_poster_key_fails(tmp_path, manifest, capsys, plant):
     root = tmp_path / "root"
@@ -117,3 +132,50 @@ def test_symlinks_are_not_followed(tmp_path, manifest, capsys):
 def test_the_repo_manifest_loads():
     keys = scan.poster_pubkeys(REPO / "trust" / "manifest.json")
     assert len(keys) == 2
+
+
+def test_an_archive_past_the_depth_limit_fails_closed(tmp_path, manifest, capsys, monkeypatch):
+    monkeypatch.setattr(scan, "MAX_DEPTH", 2)
+    root = tmp_path / "root"
+    root.mkdir()
+    inner = gzip.compress(gzip.compress(gzip.compress(b"nothing here")))
+    (root / "deep.gz").write_bytes(inner)
+    code, out = run(manifest, root, capsys)
+    assert code == 1 and "nested deeper" in out
+
+
+@pytest.mark.parametrize("big", ["file", "unpacked"])
+def test_anything_past_the_size_limit_fails_closed(tmp_path, manifest, capsys, monkeypatch, big):
+    root = tmp_path / "root"
+    root.mkdir()
+    if big == "file":
+        (root / "f").write_bytes(b"x" * 200)
+    else:
+        (root / "z.gz").write_bytes(gzip.compress(b"x" * 200))  # small packed, large unpacked
+    monkeypatch.setattr(scan, "MAX_BLOB", 150)
+    code, out = run(manifest, root, capsys)
+    assert code == 1 and "UNREAD: " in out
+
+
+def test_a_tar_member_past_the_size_limit_fails_closed(monkeypatch):
+    blob = tar_bytes({"m": b"x" * 200})
+    monkeypatch.setattr(scan, "MAX_BLOB", 199)
+    s = scan.Scan({POSTER_PUB})
+    s.data("t.tar", blob, 0)  # the member alone is over the limit
+    assert any("!m (too large)" in u for u in s.unread)
+
+
+def test_a_format_it_cannot_open_fails_closed(tmp_path, manifest, capsys):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "b.tar.zst").write_bytes(b"\x28\xb5\x2f\xfd" + b"\x00" * 40)
+    code, out = run(manifest, root, capsys)
+    assert code == 1 and "zstd: cannot open" in out
+
+
+def test_member_names_print_without_control_bytes(tmp_path, manifest, capsys):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "t.tar").write_bytes(tar_bytes({"evil\x1b[2Jname": POSTER_SEC.encode()}))
+    code, out = run(manifest, root, capsys)
+    assert code == 1 and "\x1b" not in out and "evil?[2Jname" in out
