@@ -111,3 +111,160 @@ def test_default_terms_path_is_under_home(repo, tmp_path):
     (home / ".config" / "aitools-alerts" / "public-scan.terms").write_text(TERM + "\n")
     (repo / "notes.md").write_text(f"{TERM}\n")
     assert run(repo, "notes.md", terms=False, home=home).returncode == 1
+
+
+# History pass: every object reachable from every ref.
+
+def commit(repo, *paths, msg="c", name="t", tag=None):
+    git = ["git", "-c", f"user.name={name}", "-c", "user.email=t@example.invalid",
+           "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"]
+    subprocess.run(["git", "add", "-A", "--", *paths], cwd=repo, check=True)
+    subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", msg], cwd=repo, check=True)
+    if tag:
+        subprocess.run(git + ["tag", "-a", "t1", "-m", tag], cwd=repo, check=True)
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True,
+                          check=True).stdout.strip()
+
+
+def oid(repo, spec):
+    return subprocess.run(["git", "rev-parse", spec], cwd=repo, capture_output=True, text=True,
+                          check=True).stdout.strip()
+
+
+def test_a_hit_removed_at_the_tip_still_fails_from_history(repo):
+    (repo / "notes.md").write_text(f"{TERM}\n")
+    commit(repo, ".")
+    blob = oid(repo, "HEAD:notes.md")
+    (repo / "notes.md").write_text("clean now\n")
+    commit(repo, ".")
+    r = run(repo)
+    assert r.returncode == 1 and blob in r.stdout and "notes.md:1" in r.stdout
+
+
+@pytest.mark.parametrize("where", ["message", "author", "tag"])
+def test_a_hit_in_a_commit_or_tag_object_fails(repo, where):
+    c = commit(repo, ".", msg=f"see {TERM}" if where == "message" else "c",
+               name=TERM if where == "author" else "t",
+               tag=f"tag says {TERM}" if where == "tag" else None)
+    r = run(repo)
+    want = oid(repo, "t1") if where == "tag" else c
+    assert r.returncode == 1 and want in r.stdout, r.stdout
+
+
+def test_a_hit_in_a_ref_name_fails(repo):
+    commit(repo, ".")
+    subprocess.run(["git", "branch", f"x-{TERM}"], cwd=repo, check=True)
+    r = run(repo)
+    assert r.returncode == 1 and f"ref refs/heads/x-{TERM}" in r.stdout
+
+
+def test_a_hit_on_a_branch_other_than_the_checkout_fails(repo):
+    commit(repo, ".")
+    subprocess.run(["git", "checkout", "-q", "-b", "side"], cwd=repo, check=True)
+    (repo / "side.md").write_text(f"{TERM}\n")
+    commit(repo, ".")
+    subprocess.run(["git", "checkout", "-q", "-"], cwd=repo, check=True)
+    assert run(repo).returncode == 1
+
+
+def test_a_hit_in_an_old_path_fails(repo):
+    (repo / f"{TERM}.txt").write_text("x\n")
+    commit(repo, ".")
+    (repo / f"{TERM}.txt").rename(repo / "renamed.txt")
+    commit(repo, ".")
+    r = run(repo)
+    assert r.returncode == 1 and f"tree entry {TERM}.txt" in r.stdout
+
+
+def known_file(repo, *ids):
+    k = repo.parent / "known"
+    k.write_text("# recorded privately\n\n" + "".join(i + "\n" for i in ids))
+    return k
+
+
+def run_known(repo, known, *args):
+    env = {k: v for k, v in os.environ.items() if k not in ("PUBLIC_SCAN_TERMS", "PUBLIC_SCAN_KNOWN")}
+    env.update(HOME=str(repo.parent / "nohome"), PUBLIC_SCAN_TERMS=str(repo.parent / "terms"),
+               PUBLIC_SCAN_KNOWN=str(known))
+    return subprocess.run(["sh", "scripts/public-scan.sh", *args], cwd=repo, capture_output=True,
+                          text=True, env=env)
+
+
+def test_listed_objects_pass_and_print_no_detail(repo):
+    (repo / "notes.md").write_text(f"{TERM}\n")
+    c = commit(repo, ".", msg=f"see {TERM}")
+    blob = oid(repo, "HEAD:notes.md")
+    (repo / "notes.md").write_text("clean\n")
+    commit(repo, ".")
+    r = run_known(repo, known_file(repo, c, blob))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert TERM not in r.stdout + r.stderr and "2 known history hits in 2 objects" in r.stderr
+
+
+def test_a_new_hit_beside_listed_ones_still_fails(repo):
+    c = commit(repo, ".", msg=f"see {TERM}")
+    c2 = commit(repo, ".", msg=f"again {TERM}")
+    r = run_known(repo, known_file(repo, c))
+    assert r.returncode == 1 and c2 in r.stdout and c not in r.stdout
+
+
+def test_hit_ids_prints_ids_only(repo):
+    c = commit(repo, ".", msg=f"see {TERM}")
+    r = run_known(repo, repo.parent / "absent", "--hit-ids")
+    assert r.returncode == 1 and r.stdout == c + "\n" and TERM not in r.stderr
+    r = run_known(repo, known_file(repo, *r.stdout.split()), "--hit-ids")
+    assert r.returncode == 0 and r.stdout == ""
+
+
+@pytest.mark.parametrize("content", ["not-an-id\n", "abc123\n", "A" * 40 + "\n"])
+def test_bad_known_file_cannot_run(repo, content):
+    k = repo.parent / "known"
+    k.write_text(content)
+    r = run_known(repo, k)
+    assert r.returncode == 2 and str(k) in r.stderr
+
+
+def test_unknown_argument_cannot_run(repo):
+    assert run_known(repo, repo.parent / "absent", "--all").returncode == 2
+
+
+def test_clean_history_passes(repo):
+    commit(repo, ".")
+    commit(repo, ".", tag="release")
+    assert run(repo).returncode == 0
+
+
+def test_a_replace_ref_does_not_hide_the_stored_object(repo):
+    (repo / "notes.md").write_text(f"{TERM}\n")
+    commit(repo, ".")
+    bad = oid(repo, "HEAD:notes.md")
+    (repo / "notes.md").write_text("clean\n")
+    commit(repo, ".")
+    good = oid(repo, "HEAD:notes.md")
+    subprocess.run(["git", "replace", bad, good], cwd=repo, check=True)
+    r = run(repo)
+    assert r.returncode == 1 and bad in r.stdout
+
+
+def test_a_known_tree_does_not_cover_the_same_name_in_a_new_tree(repo):
+    (repo / f"{TERM}.txt").write_text("x\n")
+    commit(repo, ".")
+    tree = oid(repo, "HEAD^{tree}")
+    (repo / f"{TERM}.txt").unlink()
+    commit(repo, ".")
+    assert run_known(repo, known_file(repo, tree)).returncode == 0
+    (repo / f"{TERM}.txt").write_text("y\n")
+    (repo / "other.txt").write_text("z\n")
+    commit(repo, ".")
+    (repo / f"{TERM}.txt").unlink()
+    commit(repo, ".")
+    r = run_known(repo, known_file(repo, tree))
+    assert r.returncode == 1 and tree not in r.stdout
+
+
+def test_hit_ids_hides_tip_detail_too(repo):
+    (repo / "notes.md").write_text(f"{TERM}\n")
+    commit(repo, ".")
+    r = run_known(repo, repo.parent / "absent", "--hit-ids")
+    assert r.returncode == 1 and TERM not in r.stdout + r.stderr
+    assert all(len(l) == 40 for l in r.stdout.split())
