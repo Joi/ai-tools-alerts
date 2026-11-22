@@ -2,14 +2,13 @@
 # aitools-poster-shell: the login shell of the relay VM's `aitools-poster` Unix
 # user, which the ai-tools-alerts poster logs in as with its own ssh key. sshd
 # runs the login shell as `<shell> -c "<client command>"`; interactive logins
-# get no -c and are refused. Two command shapes are allowed:
-#   /home/<relay user>/bin/buzz-send messages send --channel <uuid> --content - [--reply-to <64 hex>]
+# get no -c and are refused. One command shape is allowed:
 #   /home/<relay user>/bin/mirror-put checkpoint
-# (aitools_alerts.poster.transport.remote_argv and .put). The first posts as
-# the relay bot; the second stores the signed feed checkpoint for the mirror
-# exporter, which verifies it before publishing (ops/vm/mirror-put). Each runs
-# as the relay user through one sudoers rule, so the key file stays that
-# user's alone. The
+# (aitools_alerts.poster.transport.put). It stores the signed feed checkpoint
+# for the mirror exporter, which verifies it before publishing (ops/vm/mirror-put),
+# and runs as the relay user through one sudoers rule. The route holds no key:
+# the poster signs posts and checkpoints on its own machine and sends posts to
+# the relay over HTTPS (ai-tools-alerts#vzc3 retired the buzz-send shape). The
 # relay user's name is the one line of /etc/aitools-poster/relay-user, written
 # on the VM and not tracked (the public repo does not name it).
 # Source of truth: ops/vm/aitools-poster-shell in the alerts repo. The hex
@@ -32,9 +31,8 @@ RELAY_USER=""
   && RELAY_USER="${RELAY_USER%$'\n'}" \
   && [[ "$RELAY_USER" =~ ^[abcdefghijklmnopqrstuvwxyz_][abcdefghijklmnopqrstuvwxyz0123456789_-]{0,31}$ ]] \
   || fail "refused: relay user file is not one user name ($RELAY_USER_FILE)"
-WRAPPER="/home/$RELAY_USER/bin/buzz-send"
 PUT="/home/$RELAY_USER/bin/mirror-put"
-[ "$#" -eq 2 ] && [ "$1" = "-c" ] || fail "refused: interactive login (this user runs two command shapes only)"
+[ "$#" -eq 2 ] && [ "$1" = "-c" ] || fail "refused: interactive login (this user runs one command shape only)"
 cmd="$2"
 [ -n "$cmd" ] || fail "refused: empty command"
 # python3 splits; a pipeline (pipefail, lastpipe) so its exit status decides, and
@@ -43,18 +41,8 @@ shopt -s lastpipe 2>/dev/null || fail "refused: unparsable command (needs bash 4
 python3 -I -c 'import shlex,sys; [print(a, end="\0") for a in shlex.split(sys.argv[1])]' "$cmd" 2>/dev/null \
   | mapfile -d '' -t argv || fail "refused: unparsable command"
 n=${#argv[@]}
-# The second shape: exactly these two words, compared whole.
-if [ "$n" -eq 2 ] && [ "${argv[0]}" = "$PUT" ] && [ "${argv[1]}" = "checkpoint" ]; then
-  exec sudo -n -u "$RELAY_USER" -- "$PUT" checkpoint
-fi
-[ "$n" -eq 7 ] || [ "$n" -eq 9 ] || fail "refused: argument count $n"
-[ "${argv[0]}" = "$WRAPPER" ] || fail "refused: program ${argv[0]}"
-[ "${argv[1]}" = "messages" ] && [ "${argv[2]}" = "send" ] || fail "refused: subcommand"
-[ "${argv[3]}" = "--channel" ] || fail "refused: argument 4"
-[[ "${argv[4]}" =~ ^[0123456789abcdef]{8}-[0123456789abcdef]{4}-[0123456789abcdef]{4}-[0123456789abcdef]{4}-[0123456789abcdef]{12}$ ]] || fail "refused: channel id"
-[ "${argv[5]}" = "--content" ] && [ "${argv[6]}" = "-" ] || fail "refused: content must come from stdin"
-if [ "$n" -eq 9 ]; then
-  [ "${argv[7]}" = "--reply-to" ] || fail "refused: argument 8"
-  [[ "${argv[8]}" =~ ^[0123456789abcdef]{64}$ ]] || fail "refused: reply-to id"
-fi
-exec sudo -n -u "$RELAY_USER" -- "$WRAPPER" "${argv[@]:1}"
+# The one shape: exactly these two words, compared whole.
+[ "$n" -eq 2 ] || fail "refused: argument count $n"
+[ "${argv[0]}" = "$PUT" ] || fail "refused: program ${argv[0]}"
+[ "${argv[1]}" = "checkpoint" ] || fail "refused: argument 2"
+exec sudo -n -u "$RELAY_USER" -- "$PUT" checkpoint

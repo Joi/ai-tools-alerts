@@ -1,6 +1,6 @@
 # The relay VM: what this service keeps there
 
-The ai-tools Buzz relay runs on `<relay-vm>` (user `<user>`) and answers at `https://buzz.ai-tools.md`. This repo owns the VM-side pieces of the alert service; the relay itself (image, Caddy, compose) belongs to cell-fleet `ops/buzz/` and this service changes none of it.
+The ai-tools Buzz relay runs on `<relay-vm>` (user `<user>`) and answers at `https://buzz.ai-tools.md`. This repo owns the alert service's one VM-side piece, the mirror exporter; the relay itself (image, Caddy, compose) belongs to cell-fleet `ops/buzz/` and this service changes none of it.
 
 Created 2026-11-05 under jibot-code#wpbd.
 
@@ -15,7 +15,7 @@ git -C "$c" fetch --tags origin &&
   git -C "$c" -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.5 &&   # the principal and fingerprint in the README
   test "$(git -C "$c" rev-parse 'v0.1.5^{commit}')" = 3ed4427ef3b252098d019067c6701d145d210bba &&
   d="$(mktemp -d)" && git -C "$c" archive -o "$d/release.tar" 3ed4427ef3b252098d019067c6701d145d210bba && tar -x -C "$d" -f "$d/release.tar" &&
-  rm "$d/release.tar" && test -f "$d/ops/vm/buzz-send" && rel="$d" ||
+  rm "$d/release.tar" && test -f "$d/mirror/export_mirror.py" && rel="$d" ||
   echo 'VERIFICATION FAILED: install nothing'
 ```
 
@@ -39,61 +39,58 @@ Owners of both: jibot (`d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55
 
 Buzz cannot restrict posting on a channel by role. A write is accepted from any channel member, or from any relay member on an `open` channel (`crates/buzz-auth/src/access.rs` `check_write_access`, `crates/buzz-relay/src/handlers/ingest.rs` `check_channel_membership`, buzz at `a5dbdf5e6`); no role gates posting, and the `guest` role is not checked on ingest. Every key must first be a relay member: the relay refuses AUTH from any other key (`restricted: not a relay member`), even one added to a channel (jibot-code#gs18, 2026-11-05). A new poster's key is added with `buzz-npub-add` and removed with `buzz-admin remove-member`. Making `security-critical` private would stop members from joining it. So both channels are open, anyone may reply, and trust comes from the CLI: it accepts an alert only when its signing key is in the trust manifest.
 
-## `buzz-send`
+## No poster key on the VM
 
-`~/bin/buzz-send`, mode 700, owner `<user>`. Source: `${rel:?}/ops/vm/buzz-send` from the verified release (Release files, above); the installed file must be byte-identical to it.
+The poster signs every post on the poster machine and sends it to `https://buzz.ai-tools.md/events` itself (`aitools_alerts/poster/transport.py`); it does not log in to the VM. No key of the trust manifest (`trust/manifest.json`) is kept on the VM, in any file or backup (ai-tools-alerts#vzc3). The relay's own administration (member intake, invite links) uses a separate relay-admin key that is not in the manifest and so cannot sign an alert the CLI accepts.
 
-It reads jibot's key from `~/.buzz-keys/agent.nsec`, checks it (regular file, nsec checksum and length or 64 hex, scalar in range), exports it as `BUZZ_PRIVATE_KEY` with `BUZZ_RELAY_URL=https://buzz.ai-tools.md`, clears `BUZZ_AUTH_TAG`, refuses `--private-key` and `--relay`, and execs `~/buzz/target/release/buzz` with the caller's arguments. The key is never on an argv. Message text goes on stdin:
-
-```bash
-printf '%s' "$text" | ssh <relay-vm> '~/bin/buzz-send' \
-  messages send --channel <uuid> --content - [--reply-to <event id>]
-```
-
-`messages send` prints JSON; the new event's id is the `event_id` field, for example `{"accepted":true,"event_id":"<64 hex>","mention_pubkeys":[],"message":""}`.
-
-Install or update, then verify:
+To check, copy this repository to the VM and run, as a user that can read every path named:
 
 ```bash
-scp "${rel:?}/ops/vm/buzz-send" '<relay-vm>:bin/buzz-send.new'
-ssh <relay-vm> 'chmod 700 ~/bin/buzz-send.new && mv -f ~/bin/buzz-send.new ~/bin/buzz-send && sha256sum ~/bin/buzz-send'
-shasum -a 256 "${rel:?}/ops/vm/buzz-send"   # must match the VM's line above
-ssh <relay-vm> '~/bin/buzz-send' channels get --channel 599adb9f-4f9f-4b19-aee3-66667c3293e8
+python3 ops/vm/scan-for-poster-keys.py --manifest trust/manifest.json <relay user home> /etc /root /usr/local
 ```
+
+It looks inside every file and every tar or gzip archive under those paths, archives inside archives included, for strings shaped like a Nostr secret key, derives each one's public key in memory and compares it with the manifest's posters. It prints paths and counts only. Exit 0 means no poster key was found and every path was read; exit 1 means a key was found or a path could not be read. The database volume holds only signed public events and is not scanned.
+
+## Channel administration
+
+Channel changes (create, add a member, delete) are signed by a channel owner. jibot's key is held on the poster machine, not the VM, so run the Buzz CLI on that machine, with the key exported from the secrets helper in that shell only and never on a command line:
+
+```bash
+BUZZ_PRIVATE_KEY="$(get_secret <relay key secret name>)" BUZZ_RELAY_URL=https://buzz.ai-tools.md \
+  buzz channels get --channel 599adb9f-4f9f-4b19-aee3-66667c3293e8
+```
+
+Joi's curator key is the other owner of both channels.
 
 ## How the channels were made
 
-Each block ran on the VM through `ssh <relay-vm> 'bash -s' < script`, so the key was read and exported on the remote side only:
+On 2026-11-05, with jibot's key (the record is on jibot-code#wpbd):
 
 ```bash
-B=~/buzz/target/release/buzz
-BUZZ_PRIVATE_KEY="$(cat ~/.buzz-keys/agent.nsec)"; export BUZZ_PRIVATE_KEY
-export BUZZ_RELAY_URL=https://buzz.ai-tools.md
-$B channels create --name security-feed --type stream --visibility open \
+buzz channels create --name security-feed --type stream --visibility open \
   --description "Security alerts for people running AI agents: a daily digest and real-time highs. Agents: parse the aitools-alert block."
-$B channels create --name security-critical --type stream --visibility open \
+buzz channels create --name security-critical --type stream --visibility open \
   --description "Fix-now alerts only. A post here also interrupts your agent."
-$B channels add-member --channel <uuid> --pubkey 18eafd07cca9f24eac1a62d8155f5e9cdabc7552357abca8a1fcced45d05fe29 --role owner   # each channel
-$B channels members --channel <uuid>
+buzz channels add-member --channel <uuid> --pubkey 18eafd07cca9f24eac1a62d8155f5e9cdabc7552357abca8a1fcced45d05fe29 --role owner   # each channel
+buzz channels members --channel <uuid>
 ```
 
-Do not use `--template`: it resolves desktop-app templates. The wrapper was then proved with one setup message to `security-feed` (event `8041594b112353003521718654d253ad787bf49465b932348086481b1d4881d4`), deleted with `buzz-send messages delete --event <id>`; the record is on jibot-code#wpbd.
+Do not use `--template`: it resolves desktop-app templates.
 
 ## Recreating
 
-1. Install `buzz-send` as above.
-2. Check neither name exists. The listing must succeed and parse before its absence means anything; a failed listing is not permission to create:
+1. Check neither name exists. The listing must succeed and parse before its absence means anything; a failed listing is not permission to create:
 
    ```bash
-   list="$(~/bin/buzz-send channels list --limit 500)" || { echo "listing failed; stop"; exit 1; }
+   list="$(buzz channels list --limit 500)" || { echo "listing failed; stop"; exit 1; }
    echo "$list" | jq -e 'type == "array"' >/dev/null || { echo "listing not a JSON array; stop"; exit 1; }
    echo "$list" | jq -e 'length < 500' >/dev/null || { echo "listing hit the 500 cap and may be truncated; stop"; exit 1; }
    echo "$list" | jq -e 'map(.name) | (index("security-feed") or index("security-critical")) | not' >/dev/null \
      || { echo "a security channel already exists; stop"; exit 1; }
    ```
-3. Run the create and add-member commands above (through `buzz-send`, or with the remote-side key export).
-4. New channels get new UUIDs: update `spec/channels.json`, this table, and tell the readers of `spec/channels.json` (the poster, the mirror exporter, the member CLI). Members must re-join.
-5. To remove: `buzz-send channels delete --channel <uuid>` for each, and delete `~/bin/buzz-send`.
+2. Run the create and add-member commands above.
+3. New channels get new UUIDs: update `spec/channels.json`, this table, and tell the readers of `spec/channels.json` (the poster, the mirror exporter, the member CLI). Members must re-join.
+4. To remove: `buzz channels delete --channel <uuid>` for each.
 
 ## The exporter copy
 
@@ -105,18 +102,24 @@ The mirror exporter on the VM runs from a pinned commit of this repo, never a cl
 
 The installer's `<id>` is a timestamp, so the recorded sha is the only note of what is deployed. The exporter publishes `trust/root.pub` from the deployed copy as `https://buzz.ai-tools.md/alerts/root.pub`, beside `manifest.json`, so a reader can compare the root with GitHub's.
 
-## The poster's send-only route
+## The poster's ssh route: the checkpoint only
 
-The poster does not use the relay user's ssh key or shell. It logs in as a separate Unix user, `aitools-poster`, whose login shell is a guard that runs one command shape and nothing else, so a compromised poster Mac can post messages as jibot but cannot delete channels, add members or read the key (ai-tools-alerts#w75s). Sources of truth, all in `ops/vm/` of the verified release (`${rel:?}/ops/vm/`, Release files, above); copy them to the VM from `$rel`, never from a checkout:
+Until ai-tools-alerts#vzc3 the poster also sent each post through this route, as `~/bin/buzz-send messages send ...`, and `buzz-send` read jibot's key from a file in the relay user's home: whoever held the VM could read that key and sign alerts. Posts now go to the relay over HTTPS, signed on the poster machine (No poster key on the VM, above), and the send shape, `buzz-send` and the key files were removed from the VM after the HTTPS path had sent from a scheduled hourly run. Their files are in this repository's history before vzc3 (`ops/vm/buzz-send`).
+
+What remains is a put-only route for the feed checkpoint (ai-tools-alerts#nfm3), a signed document the relay does not store. It holds no key. The vzc3 removal took the whole route off the VM; the checkpoint's rollout installs it again, from the release that carries this page, with the steps below.
+
+The poster logs in as a separate Unix user, `aitools-poster`, whose login shell is a guard that runs one command shape and nothing else, so a compromised poster machine can replace the stored checkpoint (which the exporter publishes only when the checkpoint key signed it) but cannot post, delete channels, add members or read any key (ai-tools-alerts#w75s). Sources of truth, all in `ops/vm/` of the verified release (`${rel:?}/ops/vm/`, Release files, above); copy them to the VM from `$rel`, never from a checkout:
 
 | file | installed at | mode |
 |---|---|---|
 | `aitools-poster-shell` | `/usr/local/bin/aitools-poster-shell` | 755, root |
 | `sudoers-aitools-poster` | `/etc/sudoers.d/aitools-poster` | 440, root |
+| `mirror-put` | `/home/<user>/bin/mirror-put` | 700, `<user>` |
 | — (not tracked) | `/etc/aitools-poster/relay-user` | 644, root; directory 755, root |
-| `sshd-match-aitools-poster.conf` | appended to `/etc/ssh/sshd_config` | — |
+| — (made by `mirror-put`) | `/home/<user>/alerts-inbox/` | 700, `<user>`; `checkpoint.json` 600 |
+| `sshd-match-aitools-poster.conf` | appended to the sshd config the VM's listener reads | — |
 
-sshd runs a login shell as `<shell> -c "<client command>"`. The guard refuses a login with no `-c` (interactive), splits the command with `shlex`, allows only `/home/<user>/bin/buzz-send messages send --channel <uuid> --content - [--reply-to <64 hex>]` (the argv `aitools_alerts.poster.transport.remote_argv` builds), and runs it as `<user>` through `sudo -n`. `<user>` is the one line of `/etc/aitools-poster/relay-user`, which the VM's operator writes and the repo does not track, because this public repo does not name the relay's login user; the guard refuses every command when that file is missing, empty, longer than one line, or not a plain user name (`^[a-z_][a-z0-9_-]{0,31}$`), and reads no environment variable for it. The key file stays readable by `<user>` alone. The guard refuses when python3's split fails at any point, and reads the arguments NUL-delimited so a quoted newline cannot rebuild an allowed shape; it needs bash 4.4 or later (`lastpipe`, `mapfile -d`).
+sshd runs a login shell as `<shell> -c "<client command>"`. The guard refuses a login with no `-c` (interactive), splits the command with `shlex`, allows only `/home/<user>/bin/mirror-put checkpoint` (the argv `aitools_alerts.poster.transport.put` builds), and runs it as `<user>` through `sudo -n`. `<user>` is the one line of `/etc/aitools-poster/relay-user`, which the VM's operator writes and the repo does not track, because this public repo does not name the relay's login user; the guard refuses every command when that file is missing, empty, longer than one line, or not a plain user name (`^[a-z_][a-z0-9_-]{0,31}$`), and reads no environment variable for it. The guard refuses when python3's split fails at any point, and reads the arguments NUL-delimited so a quoted newline cannot rebuild an allowed shape; it needs bash 4.4 or later (`lastpipe`, `mapfile -d`).
 
 The route is the VM's own OpenSSH on its private network address. The provider's public ssh name is an edge that admits keys from the account's key list and ignores per-VM `authorized_keys` options, so it is not this route.
 
@@ -127,11 +130,13 @@ On the VM, as root, with `<user>` the relay's login user:
 1. `useradd --create-home --shell /usr/local/bin/aitools-poster-shell aitools-poster`; leave the password locked.
 2. Write the relay user file: `install -d -o root -g root -m 755 /etc/aitools-poster`, then `printf '%s\n' <user> > /etc/aitools-poster/relay-user`, `chown root:root` and `chmod 644` it. Root ownership keeps the poster user from naming another sudo target. Install the guard as a plain copy of the release's file, copied over from `${rel:?}/ops/vm/aitools-poster-shell`: `install -o root -g root -m 755 aitools-poster-shell /usr/local/bin/`, then check that `sha256sum /usr/local/bin/aitools-poster-shell`, run on the VM, matches `shasum -a 256 "${rel:?}/ops/vm/aitools-poster-shell"`, run where `$rel` is.
 3. Write the sudoers file from `${rel:?}/ops/vm/sudoers-aitools-poster` with every `RELAY_USER` replaced, run `visudo -cf <file>`, then `install -o root -g root -m 440` it into `/etc/sudoers.d/`.
-4. Back up `sshd_config`, append the Match block from `${rel:?}/ops/vm/sshd-match-aitools-poster.conf` at the end, run `sshd -t`, and reload sshd only when it passes.
-5. Before any key is authorized, check the effective policy. `sshd -T -C user=aitools-poster,host=<poster>,addr=<poster address>` must print `authorizedkeysfile /home/aitools-poster/.ssh/authorized_keys`, `allowtcpforwarding no`, `allowagentforwarding no`, `x11forwarding no`, `permittty no`, `permittunnel no`, `allowstreamlocalforwarding no`, `disableforwarding yes`, `permituserrc no`, `permituserenvironment no`, `forcecommand none`, an `acceptenv` of `LANG LC_*` at most, and no `subsystem ... internal-sftp` (an in-process subsystem never runs the login shell; an accepted `BASH_ENV` would run code before the guard). `sudo -l -U aitools-poster` must list only the one rule, `sudo -V` must show `env_reset` with no `HOME` or `BUZZ_*` kept, and `grep -r Defaults /etc/sudoers /etc/sudoers.d` must show no line for `aitools-poster`, `<user>` or `buzz-send`. If any of these differs, stop.
+4. Back up the sshd config, append the Match block from `${rel:?}/ops/vm/sshd-match-aitools-poster.conf` at the end, run `sshd -t`, and reload sshd only when it passes.
+5. Before any key is authorized, check the effective policy. `sshd -T -C user=aitools-poster,host=<poster>,addr=<poster address>` must print `authorizedkeysfile /home/aitools-poster/.ssh/authorized_keys`, `allowtcpforwarding no`, `allowagentforwarding no`, `x11forwarding no`, `permittty no`, `permittunnel no`, `allowstreamlocalforwarding no`, `disableforwarding yes`, `permituserrc no`, `permituserenvironment no`, `forcecommand none`, an `acceptenv` of `LANG LC_*` at most, and no `subsystem ... internal-sftp` (an in-process subsystem never runs the login shell; an accepted `BASH_ENV` would run code before the guard). `sudo -l -U aitools-poster` must list only the one rule, `sudo -V` must show `env_reset` with no `HOME` or `BUZZ_*` kept, and `grep -r Defaults /etc/sudoers /etc/sudoers.d` must show no line for `aitools-poster`, `<user>` or `mirror-put`. If any of these differs, stop.
 6. `~aitools-poster/.ssh/authorized_keys`, one line: `restrict ssh-ed25519 <poster public key> aitools-alerts-poster`. The file is owned by root, mode 644; `.ssh` and the home directory `/home/aitools-poster` are owned by root, mode 755 (`chown root:root`, then `chmod`). Root ownership means the poster user cannot edit the file to drop `restrict`, and with the home directory root-owned it cannot rename `.ssh` aside and put its own in place: sshd's StrictModes accepts a path owned by root or by the user, so owning the file alone does not stop that swap. The guard writes nothing to the home directory. `restrict` stays required: it and the Match block each close forwarding and `~/.ssh/rc`, so one mistake in either leaves the other.
+7. Install `mirror-put` from `${rel:?}/ops/vm/mirror-put`: `install -o <user> -g <user> -m 700 mirror-put /home/<user>/bin/`, and compare its `sha256sum` with the release's.
+8. Install the exporter copy from the same release ("The exporter copy"), whose unit passes `--checkpoint-key %h/ai-tools-alerts/trust/checkpoint-key.json --inbox %h/alerts-inbox`. Until `trust/checkpoint-key.json` exists in the deployed copy, the exporter publishes neither new file and behaves as before.
 
-On the poster Mac, a key of its own (`ssh-keygen -t ed25519 -N '' -f ~/.ssh/aitools_alerts_poster`, no passphrase because launchd runs the poster) and an ssh alias:
+On the poster machine, a key of its own (`ssh-keygen -t ed25519 -N '' -f ~/.ssh/aitools_alerts_poster`, no passphrase because launchd runs the poster) and an ssh alias:
 
 ```
 Host <poster-alias>
@@ -141,23 +146,9 @@ Host <poster-alias>
     IdentitiesOnly yes
 ```
 
-The poster config then sets `relay_ssh_host = "<poster-alias>"` and `relay_send_wrapper = "/home/<user>/bin/buzz-send"`, the absolute path, since the guard compares the program exactly.
+The poster config then sets three keys together (any one without the others is a config error and the poster does not run): `checkpoint_key_file = "<absolute path>"`, `relay_ssh_host = "<poster-alias>"` and `relay_put_wrapper = "/home/<user>/bin/mirror-put"`, the absolute path, since the guard compares the program exactly. Then run `aitools-alerts-poster checkpoint-keygen --config <toml>`, which creates the key file and the poster's record of owed posts and prints the npub; the trust root then signs the certificate for that npub (`scripts/sign-checkpoint-key.py`), and it is landed as `trust/checkpoint-key.json` and deployed with the exporter copy. Until the certificate is served the poster's summary line ends `checkpoint=no-certificate`. The full order, with the release steps around it, is in the rollout issue for this feature.
 
-### The feed checkpoint: `mirror-put` and the exporter's inbox
-
-From the release that contains `ops/vm/mirror-put` (later than the `v0.1.4` pinned above; take every file from that release's verified export, as above).
-
-The poster signs a checkpoint on its own machine each run: a list of the posts that exist, so that this VM cannot leave one out of the mirror unnoticed. The signing key never comes here. The poster hands the signed checkpoint to `mirror-put`, which stores it; the exporter publishes it only after checking its signature against the certificate the trust root signed (`trust/checkpoint-key.json` in the deployed copy), and only together with every post it lists.
-
-| file | installed at | mode |
-|---|---|---|
-| `mirror-put` | `/home/<user>/bin/mirror-put` | 700, `<user>` |
-| — (made by `mirror-put`) | `/home/<user>/alerts-inbox/` | 700, `<user>`; `checkpoint.json` 600 |
-
-1. Install `mirror-put` from `${rel:?}/ops/vm/mirror-put` as `buzz-send` is installed, and compare its `sha256sum` with the release's.
-2. Install the guard and the sudoers file from the same release (steps 3 of "Install" above for the sudoers file; the guard is `install -o root -g root -m 755`). The guard then allows a second command, exactly `/home/<user>/bin/mirror-put checkpoint`, and the sudoers rule names it without a wildcard.
-3. Install the exporter copy from the same release ("The exporter copy"), whose unit passes `--checkpoint-key %h/ai-tools-alerts/trust/checkpoint-key.json --inbox %h/alerts-inbox`. Until `trust/checkpoint-key.json` exists in the deployed copy, the exporter publishes neither new file and behaves as before.
-4. On the poster machine the config needs two keys together, `checkpoint_key_file = "<absolute path>"` and `relay_put_wrapper = "/home/<user>/bin/mirror-put"` (one without the other is a config error and the poster does not run). Set both, then run `aitools-alerts-poster checkpoint-keygen --config <toml>`, which creates the key file and the poster's record of owed posts and prints the npub; the trust root then signs the certificate for that npub (`scripts/sign-checkpoint-key.py`), and it is landed as `trust/checkpoint-key.json` and deployed with the exporter copy. Until the certificate is served the poster's summary line ends `checkpoint=no-certificate`. The full order, with the release steps around it, is in the rollout issue for this feature.
+### Checkpoint checks
 
 Checks, from the poster machine, after the install:
 
@@ -165,7 +156,7 @@ Checks, from the poster machine, after the install:
 - `ssh <poster-alias> /home/<user>/bin/mirror-put manifest` prints `refused: argument count 2`: the guard allows the one word only.
 - After the poster's next run, the exporter's journal line ends `checkpoint=published seq <n>`, and the mirror serves `checkpoint-key.json` and `checkpoint.json`.
 
-What the poster's ssh key can now do on the VM that it could not before: replace `~/alerts-inbox/checkpoint.json` with other bytes. The exporter publishes those bytes only if the checkpoint key signed them.
+What the poster's ssh key can do on the VM: replace `~/alerts-inbox/checkpoint.json` with other bytes. The exporter publishes those bytes only if the checkpoint key signed them.
 
 ### Test after every install
 
@@ -173,7 +164,7 @@ From the poster Mac, each with `-v` and `-o ConnectTimeout=20`. Tests 1 to 5 cou
 
 1. A shell command is refused: `ssh <poster-alias> ls` prints `refused: argument count 1`.
 2. An interactive login is refused: `ssh <poster-alias>` prints `PTY allocation request failed` and `refused: interactive login`.
-3. The allowed shape reaches the relay: `printf x | ssh <poster-alias> /home/<user>/bin/buzz-send messages send --channel 00000000-0000-0000-0000-000000000000 --content -` returns the relay's `not a channel member` error, which shows the guard, sudo, the wrapper and the key all ran.
+3. The retired send shape is refused: `printf x | ssh <poster-alias> /home/<user>/bin/buzz-send messages send --channel 00000000-0000-0000-0000-000000000000 --content -` prints `refused: argument count 7`.
 4. Forwarding is denied in both directions: with `ssh -N -L 9999:127.0.0.1:22 <poster-alias>` running, `nc 127.0.0.1 9999` makes ssh print `administratively prohibited`; `ssh -N -o ExitOnForwardFailure=yes -R 9999:127.0.0.1:22 <poster-alias>` exits with `remote port forwarding failed`, and so does a remote Unix-socket forward, `-R /tmp/aitools-poster-test.sock:127.0.0.1:22`.
 5. sftp is refused: `sftp <poster-alias>` ends with `Connection closed`: sshd ran the sftp-server command through the guard, which refused it (`refused: argument count 1`).
 6. Other users are denied the key (the one test with no login): `ssh -F /dev/null -o IdentitiesOnly=yes -o BatchMode=yes -o PreferredAuthentications=publickey -i ~/.ssh/aitools_alerts_poster <user>@<VM private address> true` fails with `Permission denied (publickey)`, and `-v` shows the key offered and no `Authenticated to`.
