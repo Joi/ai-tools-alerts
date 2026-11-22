@@ -17,168 +17,259 @@ source describes" beside a URL the attacker chose.
 Operating assumption (ruled 2026-11-23): nobody is watching. Nothing here
 waits for a person.
 
+## Principle
+
+The collector record is a pointer, not a statement. It says "look at this id,
+for this product, at these URLs". Everything a post states (which product,
+which ids, the fixed version, the range, the title, the severity word) is read
+by the poster from the vendor's own page or from the CISA KEV catalog it
+fetched itself. A field the poster cannot read from such a source is not
+published.
+
 ## Success criteria
 
 1. The `claude-code-router` advisory of the issue body yields no post, no held
    notice and no digest line naming Claude Code.
-2. A product is resolved only by exact identity: the whole normalised product
-   text equals an identity listed for the product, or the finding's package
-   (`ecosystem:name`) equals one. No word, substring or prefix match exists in
-   the code.
-3. A candidate with no authoritative source for its product is dropped before
-   it is merged, rated or held. This covers notice, high and critical.
-4. A fixed version or an affected range is published only when every version
-   in it appears on an authoritative page that also names the advisory.
-5. A signed post carries: ids of the CVE or GHSA shape only; a source title
-   only from the authoritative page that confirmed the advisory; sources that
-   are authoritative for the product only; no action sentence when the fixed
+2. A product is resolved only by exact identity. No word, substring or prefix
+   match exists in the code.
+3. A candidate with no authoritative confirmation is not merged, rated, held
+   or posted, at any level.
+4. A fixed version, an affected range, a title and a severity word are
+   published or used only when the poster read them from a labelled field of
+   the authoritative source. The collector's `fixed`, `affected`, source
+   titles and `advisory_severity` never reach a post.
+5. A candidate's ids are cut to those the authoritative source itself assigns
+   to the advisory before any merge or ledger lookup.
+6. A signed post carries ids of the CVE or GHSA shape only, sources that are
+   authoritative for the product only, and no action sentence when the fixed
    version cannot be expressed.
-6. The advisory block format is unchanged, so a v0.1.4 reader parses every
-   post this poster signs.
-7. A transient fetch failure defers the candidate; it never drops it and
-   never posts it.
-8. `scripts/test-gate.sh` is green.
+7. The advisory block format is unchanged: a v0.1.4 reader parses every post.
+8. A fetch that failed, or a vendor page the poster could not parse, defers
+   the candidate. It is never dropped for that and never posted.
+9. Nothing composed before the gate existed is sent after it.
+10. `scripts/test-gate.sh` is green, with the verification matrix below.
 
 ## Approach
 
 ### 1. Exact scope identity (`spec/scope.json` version 5, `schema.load_scope`, `rules.scope_of`)
 
-- `match` becomes a list of exact identities: lowercase, trimmed, each owned
-  by exactly one entry or component across the file (the loader refuses a
-  duplicate). `match_mode`, `not_match`, the word rule and the substring rule
-  are deleted, with their code.
+- `match` is a list of exact identities: lowercase, single-spaced, each owned
+  by one entry or component in the whole file (the loader refuses a
+  duplicate). `match_mode`, `not_match` and the word and substring rules are
+  deleted, with their code.
 - `scope_of(text)`: NFKC, lowercase, Unicode dashes to `-`, whitespace runs to
-  one space (today's `_norm`), then dictionary lookup. A component resolves to
-  the component, as today. Text that does not resolve but holds a tier-1 vendor
-  word is still logged for review; the log changes nothing.
-- A collector finding may carry `package: {"ecosystem": "npm", "name":
-  "@anthropic-ai/claude-code"}`. When the key is present the candidate's
-  product text is `ecosystem:name` and the free-text `product` is not read; a
-  malformed `package` skips the finding. Identities such as
-  `npm:@anthropic-ai/claude-code` sit in `match`.
-- KEV: the text is CISA's `vendorProject` and `product` joined by a space, as
-  today, compared whole (h29n D2). `anthropic claude code` and
-  `openbsd openssh` are listed identities.
-- Version 5 is the only version the loader reads, so an old poster cannot
-  word-match the new file. Member CLIs read the copy installed with them
-  (`inventory.py` uses names and ecosystems only).
+  one space, trim, then dictionary lookup. A component resolves to itself.
+  Unmatched text holding a tier-1 vendor word is still logged; the log
+  decides nothing.
+- Identity kinds: a product name (`claude code`), a repository slug
+  (`anthropics/claude-code`), a package key (`npm:@anthropic-ai/claude-code`)
+  and CISA KEV's `vendorProject product` (`anthropic claude code`).
+- KEV coverage is listed, not assumed. The file carries the KEV form of every
+  entry and component, including the ones today's word rule reached:
+  `node.js node.js`, `containerd containerd`, `google chrome`,
+  `google chromium v8`, `apple macos`, `apple safari`, `mozilla firefox`,
+  `linux kernel`, `git git`, `docker desktop`, `openbsd openssh`,
+  `tailscale tailscale`. A test pins each as resolving.
+- A collector finding may carry `package: {"ecosystem", "name"}`. When the key
+  is present the product text is `ecosystem:name` and the free-text `product`
+  is not read; a malformed `package` skips the finding.
+- Version 5 is the only version the loader reads. Member CLIs read the copy
+  installed with them and use names and ecosystems only.
 
-### 2. Authority (`authority` in `spec/scope.json`, `rules.authoritative`, `rules.evidence`)
+### 2. Authority (`authority` in `spec/scope.json`)
 
-- Each entry (and, optionally, a component, replacing the entry's) lists
-  `authority`: URL prefixes `host/path/` that are that product's own advisory
-  locations, such as `github.com/anthropics/` and `anthropic.com/`. A test
-  pins that every prefix is inside `spec/primary-domains.json` (host listed;
-  a GitHub owner listed in `owners`).
-- `authoritative(url, scope)`: `schema.is_primary(url)`, not a root page, and
-  host plus path starts with one of the scope's prefixes. So
-  `github.com/advisories/…` (anyone's advisory lands there), another owner's
-  repository and a distribution's tracker are authoritative for nobody else's
-  product.
-- `evidence(c, scope, page)`, run on every in-scope candidate before the
-  merge:
-  - `c.exploited is True` (set only by `from_kev`, from the catalog this run
-    fetched from CISA): authoritative by KEV. No fetch.
-  - Otherwise each authoritative source URL is fetched (at most 3 per
-    candidate, 40 pages per run, 1 MiB per page, redirects only to URLs
-    authoritative for the same scope). A page confirms the advisory when it
-    answers 200 and its body holds one of the candidate's advisory ids (CVE or
-    GHSA, bounded so `CVE-2026-1234` is not found in `CVE-2026-12345`). For a
-    `github.com/<owner>/<repo>/security/advisories/<GHSA>` URL the GHSA in the
-    path must also be one of the candidate's own ids: the vendor's page for
-    another advisory confirms nothing.
-  - The same bodies are searched for the candidate's fixed version and every
-    version in its affected range (bounded tokens).
-- Applied by `main` before `ledger.merge`:
-  - no KEV and no confirming page: dropped, counted in the `skipped:` stderr
-    line as `no authoritative source`;
-  - a fetch that failed (status 0, 429, 5xx) with nothing confirming: deferred
-    to the next run while `observed_at` is under 7 days old, else dropped;
-  - past the page budget: deferred;
-  - `fixed` kept only if found on a confirming page; `affected` kept only if
-    every version in it is found (`*` is never kept); `source_title` kept only
-    when it came from the confirming URL (new `Candidate.title_url`);
-    `sources` cut to those authoritative for the scope (plus cisa.gov sources
-    of a KEV candidate), the confirming URL first.
-- `level_for` is unchanged in shape. Its `source_ok` argument is now "a page
-  confirmed this advisory", so the trojanized and injection clauses need a
-  vendor page that names the id, and severity-tier1 and fix-rce-tier1 can only
-  be reached by a candidate that passed the gate. `rules.http_status` and
-  `rules.source_ok` are replaced by `rules.http_page`.
-- `from_kev` takes CISA's `vulnerabilityName` as the source title (title URL:
-  the catalog), since the collector's twin of a KEV entry no longer survives
-  on a cisa.gov source alone.
+- Each entry (and optionally a component, replacing the entry's; `[]` means
+  none) lists `authority`: lowercase URL prefixes `host/path/`. A GitHub
+  prefix names one repository (`github.com/anthropics/claude-code/`), never an
+  owner. A test pins that every prefix is inside `spec/primary-domains.json`
+  and that every GitHub prefix has two path segments.
+- `authoritative(url, scope)`: `schema.is_primary(url)`, not a root page, host
+  plus path under one of the scope's prefixes. `github.com/advisories/…`,
+  another repository and a distribution's tracker are authoritative for
+  nobody else's product.
 
-### 3. Signed wording (`compose`)
+### 3. Evidence (`rules.evidence`, run by `Run.admit` on each candidate alone, before `ledger.merge`)
 
-- `compose.BOT_ID`: `CVE-\d{4}-\d{4,}` or `GHSA-xxxx-xxxx-xxxx`, optionally
-  followed by `:` and a scope slug `[a-z0-9][a-z0-9.-]{0,31}` (the collector's
-  thread key, live today as `CVE-2026-88968:claude-code`). `root_post` refuses
-  any other primary id; `main` drops such a candidate first (`id shape`).
-  Published aliases are bare CVE or GHSA ids only.
-- A fixed version the schema cannot express: the body keeps "A fix is listed
-  upstream; see the source." and has no Action line, in English and Japanese.
-- The Source line and the block's sources are the authoritative ones (2).
+The candidate's primary id must match `BOT_ID` (a CVE or GHSA id, optionally
+followed by `:` and a slug `[a-z0-9][a-z0-9.-]{0,31}`, the collector's thread
+key); its base is the id without the slug. Three kinds of confirmation:
+
+**KEV.** The candidate carries `exploited`, which only `from_kev` sets on a
+fresh candidate, from the catalog this run fetched from CISA. A stored
+candidate can be trusted to carry it because the migration (6) empties the
+deferred list once, and from then on that list holds only candidates these
+rules admitted or will re-admit. Confirmed ids: its CVE. Title: CISA's
+`vulnerabilityName`. No fixed version, no range. Pages are still read for a
+KEV candidate that cites one, for the fields only a page gives.
+
+**A repository advisory page**, `github.com/<owner>/<repo>/security/advisories/<GHSA>`
+under the scope's authority. The poster fetches the page and reads, from the
+text before its "Description" heading, the labelled fields GitHub renders:
+the GHSA id, "CVE ID", each "Package" or "Software" block (name, ecosystem,
+"Affected versions", "Patched versions"), "Severity", and the page title. The
+page confirms the candidate when all hold:
+- it answers 200 and the fields parse (the GHSA of the URL is shown on it);
+- the candidate's base id is the page's GHSA or its CVE ID;
+- a block's package is this product: `scope_of("<ecosystem>:<name>")`
+  resolves to the candidate's scope, or, where the block names no package
+  registry (the "Software" label, or an ecosystem outside npm, pip, pypi, go,
+  rust, cargo, maven, nuget, rubygems, composer, pub, swift, erlang, actions),
+  `scope_of("<name>")` does. So an advisory for Claude Desktop in the
+  `anthropics/claude-code` repository does not confirm a Claude Code candidate.
+
+From a confirming page the poster takes: ids (the GHSA and the CVE ID);
+`fixed`, the highest patched version over the matching blocks when every
+patched value is a version the schema can express, else none; `affected`, the
+range when exactly one block matches and the schema can express it, else
+none; the title; the severity word.
+
+**A vendor site page**: any other authoritative URL. It confirms when it
+answers 200 and its text holds the candidate's base id and the product's name
+(`scope.name`), each as a whole token. Confirmed ids: the base id only. It
+yields no fixed version, range, title or severity, with one exception: on
+`support.apple.com` for the product macOS, the version in the page title
+("About the security content of macOS … 26.1") is the fixed version.
+
+At most 3 pages a candidate and 40 a run are fetched (1 MiB each, one fetch
+per URL per run, redirects only to URLs authoritative for the same scope).
+
+### 4. What `Run.admit` passes on
+
+- Not confirmed: dropped (`no authoritative source` in the `skipped:` stderr
+  line). Primary id not of the shape: dropped (`id shape`).
+- A fetch failed (no answer, 403, 408, 429, 5xx), a repository page answered
+  200 but did not parse, or the page budget ran out, and nothing confirmed:
+  deferred to the next run, with no age limit of its own (ai-tools-alerts#0dvh
+  adds the age limit to the deferred list; the list is keyed by scope and id,
+  so it does not grow with retries).
+- Confirmed: the candidate goes on with
+  - `aliases`: only those whose base is a confirmed id, plus the page's own
+    GHSA and CVE ID. An alias the source does not assign is not kept, so it
+    cannot merge threads, attach another advisory's fix or inherit KEV status;
+  - `fixed`, `affected`, `source_title`: the page's, or CISA's title, or none;
+  - `advisory_severity`: the page's severity word and title;
+  - `sources`: those authoritative for the scope (confirming page first), the
+    cisa.gov sources of a KEV candidate, and `github.com/advisories/<GHSA>`
+    for a confirmed GHSA;
+  - the collector's `advisory_severity`, `trojanized` and `injection_exec`
+    only when the record is pure: every one of its sources is in the list
+    above. A record that mixes in any other source keeps none of the three.
+- `level_for` is unchanged in shape; its `source_ok` argument is "a page
+  confirmed this advisory this run". `rules.http_status` and `rules.source_ok`
+  are replaced by `rules.http_page`. `candidates._source_title` and
+  `_apple_fixed` are deleted: `from_collector` sets no title and `fixed` and
+  `affected` from a record are never used.
+
+### 5. Signed wording (`compose`)
+
+- `root_post` refuses a primary id that is not `BOT_ID`. Published aliases
+  are bare CVE or GHSA ids.
+- A fixed version the schema cannot express: "A fix is listed upstream; see
+  the source." stays, the Action line is omitted, English and Japanese.
+- The Source line and the block's sources are the authoritative ones (4).
+
+### 6. State written before the gate
+
+- The state file gains one key, `gate: 1`. A state without it is migrated on
+  load, once: `deferred`, `held` and `withheld` are emptied and every outbox
+  item of kind root, copy or reply that was not yet sent is removed (a sent
+  one is only being recorded). A stderr line gives the counts. So an old
+  malicious candidate, an old held notice and an old composed post cannot be
+  sent by the new poster, and every deferred candidate from then on was
+  admitted, or will be re-admitted, under these rules.
+- `plan_known`: sources a thread learned without publishing
+  (`learned_sources`) are filtered through `authoritative` before a reply can
+  list them. Values a thread already published stay as published; a
+  page-read fixed version replaces a stored one.
+
+### 7. Verification matrix (tests)
+
+| Case | Expect |
+|---|---|
+| H4: `claude-code-router`, high, fixed 99.0.0, own repository advisory | no root, no held notice, no digest line, nothing in the ledger |
+| Same with product text `claude-code` | dropped: no authoritative source |
+| Same with `package: npm:claude-code-router` | out of scope |
+| Same, citing the vendor's page for another GHSA | dropped: the id is not the page's |
+| Attacker GHSA A with alias vendor GHSA B, citing B's page | dropped: A is not the page's id |
+| Record with primary id = the vendor's CVE, fixed 99.0.0, range `<99.0.0`, own title, an extra unrelated CVE alias, severity critical, `trojanized` | posts the vendor's advisory: fixed, range, title and severity are the page's; the extra alias is gone; `trojanized` ignored (the record is not pure) |
+| Vendor page: "affects 1.0 to 2.0, fixed in 3.0"; record says fixed 2.0 | fixed is 3.0 |
+| Advisory in the product's repository for another package (Claude Desktop) | dropped |
+| Vendor GHSA page, candidate carries the CVE only | confirmed; the GHSA becomes an alias |
+| Genuine vendor GHSA record (the live CVE-2026-88968 thread) | high, fix 2.1.251 from the page |
+| KEV entries: Anthropic Claude Code, OpenBSD OpenSSH, Node.js Node.js, containerd containerd, Google Chrome, Apple macOS | resolve; tier 1 critical, tier 2 high, titled by CISA |
+| KEV entry for vendor `musistudio`, product `claude-code-router` | out of scope |
+| Vendor site page naming the id and the product | notice; with a pure record carrying severity `high`, high |
+| Page answers 503, then 200 | deferred, then posts; an 8-day-old candidate too |
+| Repository page answers 200 with unknown markup | deferred, counted `advisory page not parsed` |
+| 41st page of a run | deferred |
+| Old state: a deferred candidate, a held notice, an unsent root, a withheld item, a sent-unrecorded root | the first four removed, the last recorded |
+| Old ledger thread with learned non-authoritative sources gets a fix | the reply lists none of them |
+| 128-character id; alias of another shape | root refused; alias not published |
+| Unexpressible fixed version | no Action line (en, ja) |
+| Every post composed in the suite | `schema.parse_post` reads it (the block has no new key) |
+| Scope file: version 4, unknown key, duplicate identity, owner-level GitHub prefix, prefix outside primary-domains | refused |
+
+Existing tests of word matching, `match_mode`, `not_match`, `http_status`,
+`source_ok`, collector source titles and `_apple_fixed` are replaced by these.
 
 ## Alternatives considered
 
-- Keep word matching and add a deny list of third-party names: the attacker
-  picks the name; a deny list never ends.
-- Keep free-text matching for KEV because CISA wrote it: a KEV entry for
-  `claude-code-router` would still resolve to Claude Code (h29n D2).
-- Trust the collector's `fixed` when the source URL is the vendor's: the
-  collector record has one `fixed` per finding, not per source, and an
-  attacker advisory can cite the vendor's page as a reference. Reading the
-  version off the vendor's page is the only check the poster can make alone.
-- Hold an unsourced notice instead of dropping it (8ke5's shape): it would sit
-  in state under a product name with no authoritative page and reach nothing;
-  dropping is the same outcome with less state.
+- A deny list of third-party names over word matching: the attacker picks the
+  name.
+- Checking that the record's version tokens appear on the vendor page (this
+  spec's first draft): a token's presence says nothing of its role; a record
+  could pick a vulnerable version off the page as "fixed". Rejected by the
+  spec review; the poster now reads labelled fields.
+- The GitHub REST API for repository advisories: structured, but unauthenticated
+  calls are limited to 60 an hour per address, measured at zero remaining on
+  this network on 2026-11-23; a token is a credential the poster does not
+  hold. The public page answers.
+- Owner-wide GitHub authority: an owner's other repositories and other
+  packages would confirm the wrong product.
 - A new block field naming the confirming source: v0.1.4 refuses unknown keys
   (h29n D12); left to s6mt and h29n.
 
 ## Blast radius and rollback
 
-- Fewer posts. Text that used to word-match ("Docker Desktop on Ubuntu",
-  "openssh/openssh-portable 9.8") now resolves only if listed. Misses that hold
-  a tier-1 vendor word land in the review log; the rollout issue names the log
-  as the place to harvest identities from.
+- Fewer posts. Text that used to word-match resolves only if listed; misses
+  holding a tier-1 vendor word land in the review log.
 - Advisories whose only source is a global GitHub advisory, NVD, a
   distribution tracker or news no longer post. That is the finding's fix.
-- Chrome, Chromium, Firefox, Fedora, the Linux kernel, skills.sh and
-  mcp-remote have no authority listed (no allowlisted vendor host): they post
-  from KEV only.
-- State compatibility: `Candidate.title_url` is optional when a deferred
-  candidate is loaded; threads and held notices are untouched. Leads already
-  held are dropped by the next digest as today.
-- Poster-side only; no reader change. Rollback is reverting the merge commit
-  and reinstalling the poster.
+- Products with no authority listed (Chrome, Chromium, Firefox, Fedora, the
+  Linux kernel, skills.sh, mcp-remote) post from KEV only. Products whose
+  vendor publishes on its own site only (Cursor) post a notice unless the
+  record is pure.
+- The repository-page reader depends on GitHub's labels ("Package",
+  "Affected versions", "Patched versions", "CVE ID", "Severity"). If GitHub
+  renames one, GitHub advisories defer and `advisory page not parsed` shows in
+  every run's stderr; nothing false is posted. A fixture of a real page pins
+  today's markup.
+- Rollback: revert the merge commit, reinstall the poster, and remove the
+  `gate` key from the state file. Until the key is removed the old poster
+  refuses the state and sends nothing. The candidate shape is unchanged.
 
 ## Residual risk, stated
 
-- An attacker advisory that claims a real vendor CVE as an alias, and whose
-  collector record cites the vendor's own page for that CVE, passes the gate:
-  the page names the id. The post then describes a real advisory of that
-  product; the attacker's fixed version and range are dropped (not on the
-  page), their title is dropped, their sources are dropped. What they can
-  still move is the severity word and the model-read flags, so the level.
-  Closing that needs the level computed from structured vendor fields (s6mt).
+- A pure record (vendor sources only) can still carry a model's reading
+  (`trojanized`, `injection_exec`) of the vendor's text. Computing a critical
+  from structured fields alone is ai-tools-alerts#s6mt.
+- A vendor site page confirms by naming the id and the product; a vendor page
+  that lists another product's CVE beside this product's name would confirm.
+  It yields a notice with no version.
 - The slug after `:` in an id is up to 32 characters of `[a-z0-9.-]` chosen
   upstream of the poster.
 - Whether the private collector sends `package` is unknown from this
-  repository (the review's open question 4). Without it a registry advisory
-  resolves only when its product text is a listed identity.
+  repository.
 
 ## Overlap
 
 - ai-tools-alerts#s6mt will build `spec/ruleset.json` with the
-  authoritative-source table; it moves or replaces the `authority` lists added
-  here.
-- ai-tools-alerts#8ke5 (landed): `compose.listable` stays; leads now never
-  reach `hold`.
-- ai-tools-alerts#0dvh (holds and age limit, in flight): touches the deferred
-  list; rebase before review.
+  authoritative-source table and the level function over structured fields;
+  it replaces the `authority` lists and the page reader's place in the rule.
+- ai-tools-alerts#8ke5 (landed): `compose.listable` stays.
+- ai-tools-alerts#0dvh (in flight): the deferred list's age limit; rebase
+  before review.
 
 ## Open questions
 
-None that block. The rollout issue carries: reinstall the poster, ask the
-collector for `package`, harvest the review log for identities.
+None that block.
