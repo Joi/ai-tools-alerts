@@ -892,9 +892,11 @@ def test_future_dated_event_is_refused(mirror):
     now = T0 + 1000
     mirror.post(mirror.bot_sec, "at the bound", created_at=now + pull.MAX_AHEAD_S)
     ahead = mirror.post(mirror.bot_sec, "past the bound", created_at=now + pull.MAX_AHEAD_S + 1)
+    mirror.checkpoint(ids=mirror.honest_ids(now + pull.MAX_AHEAD_S), now=now)  # the signer lists the one at the bound
     res, st = do_pull(mirror)
     assert res.error is None and res.dropped == {"future-dated": 1}
     assert len(st.events) == 1 and ahead["id"] not in State.load().events
+    mirror.checkpoint(ids=mirror.honest_ids(now + pull.MAX_AHEAD_S + 1), now=now + 1)
     st = State.load()
     pull.fetch("https://mirror.example.invalid/alerts", st, fetch=mirror.fetch, root_pubkey=mirror.root,
                now=now + 1)  # its date has come: admitted

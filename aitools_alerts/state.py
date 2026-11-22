@@ -92,9 +92,8 @@ def _load_trust(where: Path) -> dict:
                 or not isinstance(r["applied"], list) or not all(nostr._is_hex(i, 32) for i in r["applied"])):
             raise StateError(f"{where}: bad record for root {root!r}")
         try:
-            cert = checkpoint.load_cert(json.dumps(r["cert"]).encode("utf-8"))
-            cp = (None if r["checkpoint"] is None
-                  else checkpoint.load_checkpoint(json.dumps(r["checkpoint"]).encode("utf-8")))
+            cert = checkpoint.cert_from_event(r["cert"])
+            cp = None if r["checkpoint"] is None else checkpoint.checkpoint_from_event(r["checkpoint"])
         except checkpoint.CheckpointError as e:
             raise StateError(f"{where}: {e}") from None
         if not checkpoint.verify_cert(cert, root):
@@ -220,10 +219,17 @@ class State:
         return t["checkpoint"] if t else None
 
     def applied_for(self, root: str):
-        """The ids of the events the reader applies under ``root``; None until
-        a first checkpoint was accepted (the stored events then all apply)."""
+        """The ids of the events the reader applies under ``root``. None (the
+        stored events then all apply) until a first checkpoint was accepted,
+        and whenever the last pull was made by a reader that knows no
+        checkpoint (last_pull has no ``checkpoint_ok``): what that reader
+        stored, a retraction for one, must not disappear from view. The same
+        after a writer's pull (the curator command on this machine)."""
         t = self.trust.get(root)
-        return t["applied"] if t and t["checkpoint"] is not None else None
+        if (not t or t["checkpoint"] is None or "checkpoint_ok" not in self.last_pull
+                or self.last_pull.get("writer") is True):
+            return None
+        return t["applied"]
 
     def set_trust(self, root: str, cert, cp, applied) -> None:
         self.trust[root] = {"cert": cert, "checkpoint": cp, "applied": set(applied)}

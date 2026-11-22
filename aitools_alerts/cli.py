@@ -146,6 +146,8 @@ def cmd_pull(a, st: State, s: config.Settings) -> int:
         return 1
     dropped = ", ".join(f"{k} {v}" for k, v in sorted(res.dropped.items())) or "none"
     cp = st.checkpoint_for(a.root)
+    if reason := _unverified(a, st):  # the pull went through, but e.g. the mirror's checkpoint is out of date
+        _err(UNVERIFIED_LINE.format(reason=reason))
     print(f"pulled manifest v{res.manifest.version}: {len(res.new_events)} new events, "
           f"{len(st.events)} stored, dropped: {dropped}; checkpoint {cp.seq} lists {len(cp.events)} events")
     return 0

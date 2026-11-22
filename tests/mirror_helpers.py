@@ -167,6 +167,30 @@ class Mirror:
         return self.body(name)
 
 
+class Boom(OSError):
+    """The write a test made fail."""
+
+
+def break_write(monkeypatch, name: str, nth: int = 1):
+    """Make the ``nth`` write of the state file ``name`` in the coming pull
+    raise Boom, as a crash at that point would leave things; returns a
+    function that mends it. A checked pull writes last_pull.json twice (the
+    step 0 record, the final record) and events.json twice (with the manifest,
+    as soon as it is chosen; then the final save)."""
+    from aitools_alerts import state as state_mod
+    real = state_mod.write_json
+    seen = {"n": 0}
+
+    def write(path, obj):
+        if path.name == name:
+            seen["n"] += 1
+            if seen["n"] == nth:
+                raise Boom(f"{name} #{nth}")
+        return real(path, obj)
+    monkeypatch.setattr(state_mod, "write_json", write)
+    return lambda: monkeypatch.setattr(state_mod, "write_json", real)
+
+
 def released_reader(tmp_path, home=None, tag="v0.1.4"):
     """A function running the released reader (unpacked from its tag) as
     ``run(*argv) -> CompletedProcess`` with ``home`` as its home directory
@@ -204,4 +228,4 @@ def released_reader(tmp_path, home=None, tag="v0.1.4"):
     return run
 
 
-__all__ = ["released_reader", "CHANNELS", "FIXTURE_MIRROR", "FIXTURE_ROOT", "SECOND", "T0", "Mirror", "advisory", "asdict"]
+__all__ = ["released_reader", "break_write", "Boom", "CHANNELS", "FIXTURE_MIRROR", "FIXTURE_ROOT", "SECOND", "T0", "Mirror", "advisory", "asdict"]

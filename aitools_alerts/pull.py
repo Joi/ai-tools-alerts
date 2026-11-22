@@ -31,7 +31,9 @@ checkpoint key, and a checkpoint from that key listing the events that exist.
 A new event is admitted only when an accepted checkpoint lists it; a pull
 whose mirror lacks a listed event is refused; a certificate or checkpoint
 older than the accepted one is refused; an event once applied stays applied
-while it is stored, so no checkpoint can take a retraction away. The manifest
+while it is stored, so no checkpoint can take a retraction away. Only applied
+events are stored (events.json holds nothing the released reader, run on the
+same state, should not show). The manifest
 and the certificate are also fetched from a second origin, and the higher
 manifest wins. ``unverified`` says whether what the reader shows may be
 trusted to be complete right now; the CLI auto-applies nothing when it may
@@ -278,25 +280,17 @@ def _filter(stored: dict, fetched: list, m: Manifest, floor: Manifest | None,
     return kept
 
 
-def _retain(kept: dict, now: float, res: PullResult, counted=None) -> dict:
+def _retain(kept: dict, now: float, res: PullResult) -> dict:
     """Drop whole threads (a root and every reply to it) whose newest event
     is older than RETENTION_S. A thread is kept or dropped as a unit, so a
     retraction, a patch or a curator amendment never outlives or predeceases
-    its thread. With ``counted`` (the applied ids of a checked pull), a
-    thread that has applied events takes its age from those alone: an event
-    no checkpoint lists cannot keep alive an old thread whose applied events
-    have all aged out, or a recent unlisted reply would revive an old root
-    without its retraction. A thread with no applied event yet (waiting for
-    the checkpoint that lists it) takes its age from all its events."""
+    its thread. A checkpoint that lists an aged-out thread does not bring it
+    back."""
     cutoff = now - RETENTION_S
     newest: dict[str, int] = {}
-    applied_newest: dict[str, int] = {}
     for eid, ev in kept.items():
         key = _thread_ref(ev) or eid
         newest[key] = max(newest.get(key, 0), ev["created_at"])
-        if counted is not None and eid in counted:
-            applied_newest[key] = max(applied_newest.get(key, 0), ev["created_at"])
-    newest.update(applied_newest)
     out = {eid: ev for eid, ev in kept.items() if newest[_thread_ref(ev) or eid] >= cutoff}
     if len(out) < len(kept):
         res.dropped["aged-out"] += len(kept) - len(out)
@@ -316,7 +310,9 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float, second: st
         last = {"at": int(now), "mirror_url": base, "ok": ok, "error": error,
                 "last_ok_at": int(now) if ok else state.last_pull.get("last_ok_at"),
                 # True only for a checked pull that finished: what ``unverified`` reads
-                "checkpoint_ok": bool(ok and check)}
+                "checkpoint_ok": bool(ok and check),
+                # this pull stored events without a checkpoint: the next checked pull keeps them applied
+                "writer": not check}
         last.update(extra)
         if ok:
             last.update(new=len(res.new_events), dropped=dict(res.dropped))
@@ -331,13 +327,30 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float, second: st
         state.save_last_pull()
         return res
 
-    if check:
-        # 0. The pull has begun and nothing is verified yet. Written before any
-        # fetch, so a crash, or a failed write of the final record, never
-        # leaves the previous pull's success standing.
-        state.last_pull = {**state.last_pull, "at": int(now), "mirror_url": base, "ok": False,
-                           "error": "interrupted", "checkpoint_ok": False}
-        state.save_last_pull()
+    # What the reader held applied before this pull. If the last pull was made
+    # by a reader that knows no checkpoint (the released one, run on this state
+    # directory: last_pull has no checkpoint_ok) or was a writer's pull (the
+    # curator command on this machine), everything it stored joins the applied
+    # set now and is saved before step 0 stamps last_pull: a retraction that
+    # pull fetched must not be un-applied by the next member pull. Only a
+    # machine whose owner ran such a pull is affected, and it reads unverified
+    # until a checked pull succeeds.
+    t = state.trust.get(root_pubkey)
+    old_cert = t["cert"] if t else None
+    old_cp = t["checkpoint"] if t else None
+    old_applied = set(t["applied"]) if t and old_cp is not None else None
+    unchecked = "checkpoint_ok" not in state.last_pull or state.last_pull.get("writer") is True
+    if old_applied is not None and unchecked and not set(before) <= old_applied:
+        old_applied |= set(before)
+        state.set_trust(root_pubkey, old_cert, old_cp, old_applied)
+        state.save_trust()
+    # 0. The pull has begun and nothing is verified yet. Written before any
+    # fetch, in every mode, so a crash, or a failed write of the final record,
+    # never leaves an earlier pull's success standing.
+    state.last_pull = {**state.last_pull, "at": int(now), "mirror_url": base, "ok": False,
+                       "error": "interrupted", "checkpoint_ok": False,
+                       "writer": (not check) or (unchecked and bool(before))}
+    state.save_last_pull()
     try:
         channels = channel_ids()
     except ChannelSpecError:
@@ -345,8 +358,12 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float, second: st
     # 1. manifest: from the mirror and the second origin; each well formed, not
     # older than the floor, signed by the trust root. The higher version wins;
     # at equal versions the second origin's (the repository is the source).
-    cands, first_error = [], None
-    for is_second, url, getter in ((False, base, get), (True, second, get2)):
+    # The second origin is asked first, and each candidate that beats what is
+    # held is saved at once, with the stored events it still trusts: a mirror
+    # that stalls the pull cannot keep a revocation published there from
+    # being recorded.
+    cands, first_error, best = [], None, None
+    for is_second, url, getter in ((True, second, get2), (False, base, get)):
         if url is None:
             continue
         try:
@@ -363,6 +380,12 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float, second: st
             else:
                 err = None
                 cands.append((m.version, is_second, m))
+                if best is None or (m.version, is_second) > best:
+                    best = (m.version, is_second)
+                    early = PullResult()
+                    state.accept(root_pubkey, m,
+                                 _retain(_filter(before, [], m, floor, early, channels, now), now, early))
+                    state.save_events()
         if is_second:
             extra["second_origin"] = err or "ok"  # never by itself a pull error
         elif err:
@@ -372,17 +395,18 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float, second: st
     m = max(cands, key=lambda c: c[:2])[2]
     res.manifest = m
 
-    def settle(fetched: list, error: str | None, keep=None, counted=None) -> PullResult:
+    def settle(fetched: list, error: str | None, keep=None) -> PullResult:
         """Accept the manifest with the stored events it still trusts plus
         ``fetched``, and record the outcome. A verified manifest is accepted
         even when the pull fails later: its revocations apply to the stored
         events at once."""
         dropped = Counter()
         box = PullResult(dropped=dropped)
-        kept = _retain(_filter(before, fetched, m, floor, box, channels, now), now, box, counted)
+        kept = _filter(before, fetched, m, floor, box, channels, now)
         if keep is not None:
-            kept = keep(kept)
-        if (kept is None or len(kept) > MAX_STORED_EVENTS
+            kept = {eid: ev for eid, ev in kept.items() if eid in keep}
+        kept = _retain(kept, now, box)
+        if (len(kept) > MAX_STORED_EVENTS
                 or state.size_with(root_pubkey, m, kept) > MAX_STORED_BYTES):
             dropped.clear()
             kept = _retain(_filter(before, [], m, floor, box, channels, now), now, box)
@@ -420,19 +444,18 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float, second: st
         return done()
 
     # 2. the checkpoint key certificate: the root's word on which key signs
-    # checkpoints for this manifest. Saved at once, before any checkpoint is
-    # judged: a mirror must not be able to keep a key rotation from being
-    # recorded by answering it with a bad checkpoint.
-    old_cert, old_cp = state.cert_for(root_pubkey), state.checkpoint_for(root_pubkey)
-    old_applied = state.applied_for(root_pubkey)
+    # checkpoints for this manifest. The newest one the root signed is saved
+    # at once, before any checkpoint is judged and even when it is itself
+    # expired: a mirror must not be able to keep a key rotation from being
+    # recorded, and an expired replacement must never revive its predecessor.
     cert = _choose_cert(m, root_pubkey, now, old_cert,
                         [(get, base)] + ([(get2, second)] if second is not None else []))
-    if cert is None:
+    if cert is not None and (old_cert is None or cert.event["id"] != old_cert.event["id"]):
+        state.set_trust(root_pubkey, cert, old_cp, old_applied if old_applied is not None else ())
+        state.save_trust()
+    if cert is None or cpt.cert_problem(cert, m, now) is not None:
         settle([], "no checkpoint key certificate")
         return done()
-    if old_cert is None or cert.event["id"] != old_cert.event["id"]:
-        state.set_trust(root_pubkey, cert, old_cp, state.trust.get(root_pubkey, {}).get("applied", ()))
-        state.save_trust()
     # 3. the checkpoint
     cp, error = _load_checkpoint(get, base, cert, m, now, old_cp)
     if cp is None:
@@ -455,26 +478,12 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float, second: st
     if old_applied is None:  # the first checkpoint: what the older reader held stays applied
         old_applied = {eid for eid, ev in before.items() if _bound(ev, channels)}
     applied = (set(old_applied) & set(before)) | set(cp.events)
-
-    def fit(kept: dict):
-        """Listed and applied events first; the rest newest first while the
-        store's limits allow. None when even the first do not fit."""
-        if len(kept) <= MAX_STORED_EVENTS and state.size_with(root_pubkey, m, kept) <= MAX_STORED_BYTES:
-            return kept
-        out = {eid: ev for eid, ev in kept.items() if eid in applied}
-        size = state.size_with(root_pubkey, m, out)
-        if len(out) > MAX_STORED_EVENTS or size > MAX_STORED_BYTES:
-            return None
-        for ev in sorted((ev for eid, ev in kept.items() if eid not in applied),
-                         key=lambda e: (e["created_at"], e["id"]), reverse=True):
-            size += len(json.dumps(ev, ensure_ascii=False, sort_keys=True).encode("utf-8")) + 72
-            if len(out) >= MAX_STORED_EVENTS or size > MAX_STORED_BYTES:
-                break
-            out[ev["id"]] = ev
-        return out
-
-    settle(fetched, None, keep=fit, counted=applied)
-    if res.error is not None:  # even the listed events do not fit: nothing new is trusted
+    # Only applied events are stored. An event no checkpoint lists yet is
+    # fetched again by the pull that follows its checkpoint; kept here it
+    # would be shown by the released reader if it were run on this state, and
+    # it would let whoever can post crowd the store.
+    settle(fetched, None, keep=applied)
+    if res.error is not None:  # the applied events do not fit: nothing new is trusted
         return done()
     # 5. save: the checkpoint file first, then the events, then the record.
     state.set_trust(root_pubkey, cert, cp, applied)
@@ -484,9 +493,12 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float, second: st
 
 
 def _choose_cert(m: Manifest, root: str, now: float, stored, sources):
-    """The newest usable certificate among the fetched ones, the bundled one
-    and the stored one: signed by the root, for manifest ``m``, inside its
-    dates, and not older than the stored one (cpt.cert_order). None if none."""
+    """The newest certificate the root signed for manifest ``m`` among the
+    fetched ones, the bundled one and the stored one, not dated ahead of the
+    clock and not older than the stored one (cpt.cert_order). Expiry is NOT
+    a filter here: the newest certificate is the floor even when it has
+    expired, so an expired replacement never hands authority back to the
+    certificate it replaced. The caller checks cert_problem. None if none."""
     found = [stored] if stored is not None else []
     if root == TRUST_ROOT_PUBKEY and bundled_cert() is not None:
         found.append(bundled_cert())
@@ -495,8 +507,8 @@ def _choose_cert(m: Manifest, root: str, now: float, stored, sources):
             found.append(cpt.load_cert(getter(url + "checkpoint-key.json")))
         except Exception:  # missing, unreachable, malformed: this source has none
             continue
-    usable = [c for c in found if cpt.verify_cert(c, root) and cpt.cert_problem(c, m, now) is None
-              and cpt.cert_order(c, stored) is None]
+    usable = [c for c in found if cpt.verify_cert(c, root)
+              and cpt.cert_problem(c, m, now) in (None, "expired") and cpt.cert_order(c, stored) is None]
     return max(usable, key=lambda c: (c.issued_at, c.event["id"]), default=None)
 
 

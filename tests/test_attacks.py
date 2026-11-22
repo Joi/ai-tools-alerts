@@ -10,7 +10,8 @@ import pytest
 from aitools_alerts import cli, config, inventory, pull
 from aitools_alerts.inventory import Installed, Inventory
 from aitools_alerts.state import State
-from mirror_helpers import FIXTURE_MIRROR, FIXTURE_ROOT, SECOND, T0, Mirror, advisory, released_reader
+from mirror_helpers import (FIXTURE_MIRROR, FIXTURE_ROOT, SECOND, T0, Boom, Mirror, advisory, break_write,
+                            released_reader)
 
 DAY = 86400
 HOOK = FIXTURE_MIRROR.parents[2] / "hooks" / "claude-code" / "session-start.sh"
@@ -219,7 +220,6 @@ def test_released_reader_reads_state_this_reader_wrote(home, tmp_path, monkeypat
     """A member who goes back to v0.1.4 keeps working: the new state file is ignored and
     events.json has no key that release refuses. Covered: a finished pull, a state with
     a certificate and no checkpoint, and a save interrupted after the checkpoint file."""
-    from aitools_alerts import state as state_mod
     monkeypatch.setattr(pull, "TRUST_ROOT_PUBKEY", FIXTURE_ROOT)
     url = FIXTURE_MIRROR.as_uri() + "/"
     old = released_reader(tmp_path, home=home)
@@ -239,16 +239,10 @@ def test_released_reader_reads_state_this_reader_wrote(home, tmp_path, monkeypat
     assert "0 advisories" in old_check()
     # 2. interrupted after the checkpoint file
     files["checkpoint.json"] = (FIXTURE_MIRROR / "checkpoint.json").read_bytes()
-    real = state_mod.write_json
-
-    def write(path, obj):
-        if path.name == "events.json":
-            raise OSError("interrupted")
-        return real(path, obj)
-    monkeypatch.setattr(state_mod, "write_json", write)
-    with pytest.raises(OSError):
+    mend = break_write(monkeypatch, "events.json", 2)  # the final save's second file
+    with pytest.raises(Boom):
         pull.fetch(url, State.load(), fetch=serve, root_pubkey=FIXTURE_ROOT)
-    monkeypatch.setattr(state_mod, "write_json", real)
+    mend()
     assert State.load().checkpoint_for(FIXTURE_ROOT) is not None
     old_check()
     # 3. a finished pull

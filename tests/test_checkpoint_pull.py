@@ -7,7 +7,7 @@ import pytest
 from aitools_alerts import checkpoint as cp
 from aitools_alerts import config, manifest, nostr, pull
 from aitools_alerts.state import State, StateError
-from mirror_helpers import SECOND, T0, Mirror, advisory
+from mirror_helpers import SECOND, T0, Boom, Mirror, advisory, break_write
 
 DAY = 86400
 URL = "https://mirror.example.invalid/alerts"
@@ -67,9 +67,10 @@ def test_an_unlisted_event_waits_for_the_checkpoint_that_lists_it(mirror):
     new = mirror.root_post(mirror.bot_sec, advisory(id="AITA-TEST-0002", title="Second", posted_by="relay-bot"),
                            created_at=T0 + 300)
     res, st = do_pull(mirror)
-    assert res.error is None and set(st.events) == {old["id"], new["id"]}  # stored
-    assert titles(st) == [(advisory().title, False)]  # not applied
-    assert titles(st, checkpointed=False) == [(advisory().title, False), ("Second", False)]  # the writers' view
+    # Not applied, and not stored either: events.json holds only what a checkpoint
+    # listed, so the released reader run on this state would not show it.
+    assert res.error is None and set(st.events) == {old["id"]} and new["id"] not in events_file().decode()
+    assert titles(st) == [(advisory().title, False)] == titles(st, checkpointed=False)
     mirror.checkpoint()
     res, st = do_pull(mirror)
     assert res.error is None and titles(st) == [(advisory().title, False), ("Second", False)]
@@ -364,11 +365,8 @@ def test_a_flood_of_unlisted_events_cannot_crowd_listed_ones_out(mirror, monkeyp
         mirror.post(mirror.bot_sec, f"flood {i}", created_at=T0 + 200 + i)
     monkeypatch.setattr(pull, "MAX_STORED_EVENTS", 10)
     res, st = do_pull(mirror)
-    assert res.error is None and len(st.events) == 10
-    assert {e["id"] for e in listed} <= set(st.events) and len(titles(st)) == 5
-    kept_flood = sorted(e["content"] for e in st.events.values() if e["content"].startswith("flood"))
-    assert kept_flood == [f"flood {i}" for i in range(25, 30)]  # the newest of the rest
-    monkeypatch.setattr(pull, "MAX_STORED_EVENTS", 3)  # even the listed ones do not fit
+    assert res.error is None and set(st.events) == {e["id"] for e in listed} and len(titles(st)) == 5
+    monkeypatch.setattr(pull, "MAX_STORED_EVENTS", 3)  # the listed events themselves do not fit
     before = events_file(), trust_file()
     mirror.root_post(mirror.cur_sec, advisory(id="AITA-TEST-0099", title="One more"), created_at=T0 + 400)
     mirror.checkpoint()
@@ -407,53 +405,41 @@ def test_a_listed_event_the_reader_refuses_counts_as_missing(mirror):
 
 # ---------------------------------------------------------------- interruptions
 
-class Boom(OSError):
-    pass
-
-
-def _break(monkeypatch, what: str):
-    """Make one write of the save fail, as a crash at that point would leave things."""
-    from aitools_alerts import state as state_mod
-    real = state_mod.write_json
-    seen = {"last_pull": 0}
-
-    def write(path, obj):
-        if path.name == "last_pull.json":
-            seen["last_pull"] += 1
-        if (what == path.name and path.name != "last_pull.json") or \
-                (what == "last_pull.json" and path.name == what and seen["last_pull"] == 2):
-            raise Boom(what)
-        return real(path, obj)
-    monkeypatch.setattr(state_mod, "write_json", write)
-    return lambda: monkeypatch.setattr(state_mod, "write_json", real)
-
-
-@pytest.mark.parametrize("what, reason", [
-    ("checkpoint.json", "the last pull was interrupted"),
-    ("events.json", "the last pull was interrupted"),
-    ("last_pull.json", "the last pull was interrupted"),
+@pytest.mark.parametrize("what, nth", [
+    ("last_pull.json", 1),   # before anything: the step 0 record itself
+    ("events.json", 1),      # the manifest's early save
+    ("checkpoint.json", 1),  # the final save, first file
+    ("events.json", 2),      # ... second file: the new checkpoint is on disk with the old events
+    ("last_pull.json", 2),   # ... the final record
 ])
-def test_a_save_interrupted_anywhere_reads_unverified(mirror, monkeypatch, what, reason):
+def test_a_save_interrupted_anywhere_reads_unverified(mirror, monkeypatch, what, nth):
     root = mirror.root_post(mirror.cur_sec)
     do_pull(mirror)
     assert pull.unverified(State.load(), T0 + 1000) is None
     new = mirror.root_post(mirror.bot_sec, advisory(id="AITA-TEST-0002", title="New", posted_by="relay-bot"),
                            created_at=T0 + 300)
     mirror.checkpoint()
-    mirror.post(mirror.bot_sec, "unlisted", created_at=T0 + 400)
-    mend = _break(monkeypatch, what)
+    # after the signer ran: a curator-signed retraction of the first alert that no checkpoint lists
+    unlisted = mirror.reply(mirror.cur_sec, root, "retract", created_at=T0 + 400)
+    mend = break_write(monkeypatch, what, nth)
     with pytest.raises(Boom):
         do_pull(mirror)
     mend()
     st = State.load()
-    assert pull.unverified(st, T0 + 1000) == reason
-    shown = {t.root_id for t in pull.advisories(st)}
-    assert root["id"] in shown and shown <= {root["id"], new["id"]}  # never the unlisted one
-    if what == "events.json":  # the new checkpoint is on disk with the old events
-        st.last_pull["checkpoint_ok"] = True
+    if (what, nth) == ("last_pull.json", 1):  # nothing was touched: the earlier verified state stands
+        assert pull.unverified(st, T0 + 1000) is None and st.checkpoint_for(mirror.root).seq == 1
+    else:
+        assert pull.unverified(st, T0 + 1000) == "the last pull was interrupted"
+    assert unlisted["id"] not in st.events
+    shown = {(t.root_id, t.retracted) for t in pull.advisories(st)}
+    assert (root["id"], False) in shown and shown <= {(root["id"], False), (new["id"], False)}
+    if (what, nth) == ("events.json", 2):
+        assert st.checkpoint_for(mirror.root).seq == 2 and new["id"] not in st.events
+        st.last_pull["checkpoint_ok"] = True  # even with a clean record, the listed event is not stored
         assert pull.unverified(st, T0 + 1000) == "stored events do not match the checkpoint"
     res, st = do_pull(mirror)
     assert res.error is None and pull.unverified(st, T0 + 1000) is None and len(pull.advisories(st)) == 2
+    assert not any(t.retracted for t in pull.advisories(st))  # the unlisted retraction waits for its checkpoint
 
 
 def test_a_refused_pull_whose_record_cannot_be_written_is_still_unverified(mirror, monkeypatch):
@@ -464,7 +450,7 @@ def test_a_refused_pull_whose_record_cannot_be_written_is_still_unverified(mirro
     gone = mirror.reply(mirror.cur_sec, root, "retract", created_at=T0 + 300)
     mirror.checkpoint()
     mirror.events["feed.json"].remove(gone)
-    mend = _break(monkeypatch, "last_pull.json")
+    mend = break_write(monkeypatch, "last_pull.json", 2)
     with pytest.raises(Boom):
         do_pull(mirror)
     mend()
@@ -481,12 +467,12 @@ def test_first_checkpoint_interrupted_does_not_fall_back_to_showing_staged_event
     mirror.checkpoint()
     staged = mirror.root_post(mirror.bot_sec, advisory(id="AITA-TEST-0002", title="Staged", posted_by="relay-bot"),
                               created_at=T0 + 300)
-    mend = _break(monkeypatch, "last_pull.json")
+    mend = break_write(monkeypatch, "last_pull.json", 2)
     with pytest.raises(Boom):
         do_pull(mirror)
     mend()
     st = State.load()
-    assert staged["id"] in st.events and titles(st) == [(advisory().title, False)]
+    assert staged["id"] not in st.events and titles(st) == [(advisory().title, False)]
 
 
 def test_interrupted_pruning_never_forgets_a_stored_retraction(mirror, monkeypatch):
@@ -501,12 +487,15 @@ def test_interrupted_pruning_never_forgets_a_stored_retraction(mirror, monkeypat
     assert titles() == [(advisory().title, True)]
     later = now + 2 * 3600  # both events are now older than the reader keeps
     mirror.checkpoint(ids=[], now=later - 60)
-    mend = _break(monkeypatch, "events.json")
+    mend = break_write(monkeypatch, "events.json", 2)
     with pytest.raises(Boom):
         do_pull(mirror, now=later)
     mend()
     st = State.load()
-    assert {root["id"], gone["id"]} <= set(st.events) and titles(st) == [(advisory().title, True)]
+    # Retention ran with the manifest's early save: the thread left the store whole. Had it
+    # not, it would still be retracted. Never the root alone.
+    assert titles(st) in ([], [(advisory().title, True)])
+    assert (root["id"] in st.events) == (gone["id"] in st.events)
     mirror.reply(mirror.bot_sec, root, "note", created_at=later - 30)  # unlisted, recent
     mirror.checkpoint(ids=[root["id"]], now=later - 20)
     mirror.events["feed.json"].remove(gone)
@@ -678,3 +667,220 @@ def test_a_stale_state_object_cannot_overwrite_a_newer_certificate(mirror):
     mirror.cert = first.event  # and the mirror now serves the old one
     res = pull.fetch(URL, stale, fetch=mirror.fetch, root_pubkey=mirror.root, now=T0 + 1000)
     assert res.error is None and State.load().cert_for(mirror.root).issued_at == T0 + 500
+
+
+# ---------------------------------------------------------------- findings of the code review
+
+def test_a_checkpoint_with_long_unicode_in_an_ignored_field_reloads(mirror):
+    """A stored document is not held to the network byte limit again: re-encoded with
+    escapes, a checkpoint that fit on the wire could grow past it, and state would never
+    load again (a holder of the checkpoint key could lock every reader out)."""
+    mirror.root_post(mirror.cur_sec)
+    good = mirror.checkpoint()
+    content = {**json.loads(good["content"]), "note": "\U0001F512" * 50000}  # about 200 KB as UTF-8
+    fat = nostr.sign_event(mirror.ck_sec, {**{k: good[k] for k in ("created_at", "kind", "tags")},
+                                           "content": json.dumps(content, ensure_ascii=False)})
+    wire = json.dumps(fat, ensure_ascii=False).encode()
+    assert len(wire) < cp.MAX_CHECKPOINT_BYTES < len(json.dumps(fat).encode())
+    mirror.raw["checkpoint.json"] = wire
+    res, st = do_pull(mirror)
+    assert res.error is None and pull.unverified(State.load(), T0 + 1000) is None
+    res, st = do_pull(mirror)  # and again, through a reload under the lock
+    assert res.error is None
+
+
+def _as_the_released_reader_pulled(mirror, *events):
+    """What v0.1.4 leaves when run on this state directory: more events in events.json,
+    a last_pull.json it wrote (no checkpoint_ok), checkpoint.json untouched."""
+    st = State.load()
+    st.accept(mirror.root, st.manifest, {**st.events, **{e["id"]: e for e in events}})
+    st.last_pull = {"at": T0 + 1000, "mirror_url": URL + "/", "ok": True, "error": None, "last_ok_at": T0 + 1000}
+    st.save_pull()
+
+
+def test_going_back_to_the_released_reader_and_returning_keeps_its_retraction(mirror):
+    root = mirror.root_post(mirror.cur_sec)
+    c1 = mirror.checkpoint()
+    do_pull(mirror)
+    gone = mirror.reply(mirror.cur_sec, root, "retract", created_at=T0 + 300)
+    _as_the_released_reader_pulled(mirror, gone)
+    st = State.load()
+    assert titles(st) == [(advisory().title, True)]  # shown as that reader showed it
+    assert pull.unverified(st, T0 + 1000) == "the last pull checked no checkpoint"
+    mirror.stored_checkpoint = c1  # the mirror replays the still-fresh checkpoint without the retraction
+    mirror.events["feed.json"].remove(gone)
+    res, st = do_pull(mirror)
+    assert res.error is None and pull.unverified(st, T0 + 1000) is None
+    assert gone["id"] in st.applied_for(mirror.root) and titles(st) == [(advisory().title, True)]
+
+
+def test_legacy_merge_survives_a_pull_cut_off_right_after_step_0(mirror, monkeypatch):
+    root = mirror.root_post(mirror.cur_sec)
+    do_pull(mirror)
+    gone = mirror.reply(mirror.cur_sec, root, "retract", created_at=T0 + 300)
+    _as_the_released_reader_pulled(mirror, gone)
+    mend = break_write(monkeypatch, "events.json", 1)  # step 0 has stamped last_pull by then
+    with pytest.raises(Boom):
+        do_pull(mirror)
+    mend()
+    st = State.load()
+    assert "checkpoint_ok" in st.last_pull and titles(st) == [(advisory().title, True)]
+
+
+def test_an_interrupted_writers_pull_does_not_leave_the_member_side_verified(mirror, monkeypatch):
+    mirror.root_post(mirror.cur_sec)
+    do_pull(mirror)
+    assert pull.unverified(State.load(), T0 + 1000) is None
+    for name, nth in (("events.json", 1), ("events.json", 2), ("last_pull.json", 2)):
+        mend = break_write(monkeypatch, name, nth)
+        with pytest.raises(Boom):
+            do_pull(mirror, checkpoint=False)
+        mend()
+        assert pull.unverified(State.load(), T0 + 1000) == "the last pull was interrupted", (name, nth)
+        do_pull(mirror)
+        assert pull.unverified(State.load(), T0 + 1000) is None
+
+
+def test_an_expired_replacement_certificate_does_not_revive_the_one_it_replaced(mirror):
+    """The root rotated the checkpoint key with a certificate that has since expired. A
+    reader that meets it only now must not go back to the earlier, longer-lived one."""
+    mirror.root_post(mirror.cur_sec)
+    c1 = mirror.cert  # names the old key, 120 days
+    _, new_pub = nostr.keygen()
+    c2 = mirror.publish_cert(key=new_pub, issued=T0 + 100, days=1)
+    mirror.cert = c1
+    mirror.second["checkpoint-key.json"] = json.dumps(c2).encode()
+    late = T0 + 10 * DAY  # c2 expired; c1 would still be inside its dates
+    mirror.clock = late
+    mirror.checkpoint(now=late - 60)  # the old key keeps signing fresh checkpoints
+    res, st = do_pull(mirror, now=late, second=SECOND)
+    assert res.error == "no checkpoint key certificate"
+    assert st.cert_for(mirror.root).checkpoint_key == new_pub and st.events == {}
+    res, st = do_pull(mirror, now=late)  # and without the second origin the floor holds
+    assert res.error == "no checkpoint key certificate" and st.cert_for(mirror.root).checkpoint_key == new_pub
+    st.last_pull["checkpoint_ok"] = True
+    assert pull.unverified(st, late) == "checkpoint key certificate expired"
+
+
+class Crash(BaseException):
+    """The process dies: nothing catches it."""
+
+
+def test_a_new_manifest_is_on_disk_before_anything_else_is_fetched(mirror):
+    """Cut off while fetching the certificate: the revocation already holds, so a later
+    pull that cannot reach the second origin does not go back to the old manifest."""
+    mirror.root_post(mirror.cur_sec)
+    bot = mirror.root_post(mirror.bot_sec, advisory(id="AITA-TEST-0002", title="Bot", posted_by="relay-bot"))
+    old_manifest = json.dumps(mirror.manifest).encode()
+    do_pull(mirror)
+    mirror.publish_manifest(posters=[{"pubkey": mirror.cur, "role": "curator", "name": "cur"}])
+
+    def dies(url, timeout=None):
+        if url.endswith("checkpoint-key.json"):
+            raise Crash
+        return mirror.fetch(url)
+    with pytest.raises(Crash):
+        pull.fetch(URL, State.load(), fetch=dies, root_pubkey=mirror.root, now=T0 + 1000)
+    st = State.load()
+    assert st.manifest.version == 2 and bot["id"] not in st.events
+    assert pull.unverified(st, T0 + 1000) == "the last pull was interrupted"
+    mirror.raw["manifest.json"] = old_manifest
+    res, st = do_pull(mirror)
+    assert res.error == "bad manifest" and st.manifest.version == 2
+
+
+def test_an_older_certificate_is_not_chosen_when_the_stored_one_is_unusable(mirror):
+    """cert_order in the choice itself: the stored certificate has expired, the mirror
+    offers an older one that is still inside its dates."""
+    mirror.root_post(mirror.cur_sec)
+    older = mirror.cert  # issued T0 + 1, 120 days
+    mirror.publish_cert(issued=T0 + 100, days=1)
+    do_pull(mirror)
+    mirror.cert = older
+    late = T0 + 10 * DAY
+    mirror.clock = late
+    mirror.checkpoint(now=late - 60)
+    res, st = do_pull(mirror, now=late)
+    assert res.error == "no checkpoint key certificate" and st.cert_for(mirror.root).issued_at == T0 + 100
+
+
+def test_an_aged_out_id_does_not_let_its_event_back_in_unlisted(mirror):
+    """Applied ids are pruned of events that left the store, one pull later: otherwise an
+    event that aged out could be served again and be stored without any checkpoint listing it."""
+    now = T0 + 1000
+    old = mirror.root_post(mirror.cur_sec, created_at=now - pull.RETENTION_S + 600)
+    keep = mirror.root_post(mirror.cur_sec, advisory(id="AITA-TEST-0002", title="Recent"), created_at=T0 + 100)
+    mirror.checkpoint(now=T0 + 900)
+    do_pull(mirror, now=now)
+    later = now + 3600  # the old thread has aged out
+    mirror.checkpoint(ids=[keep["id"]], now=later - 60)
+    _, st = do_pull(mirror, now=later)
+    assert old["id"] not in st.events
+    _, st = do_pull(mirror, now=later)  # the mirror still serves it; no checkpoint lists it
+    assert old["id"] not in st.applied_for(mirror.root) and old["id"] not in st.events
+    mirror.reply(mirror.cur_sec, old, "a recent reply", created_at=later - 30)  # even with a reason to keep the thread
+    mirror.checkpoint(ids=[keep["id"]], now=later - 10)
+    _, st = do_pull(mirror, now=later)
+    assert old["id"] not in st.events and titles(st) == [("Recent", False)]
+
+
+def test_at_equal_versions_the_second_origins_manifest_is_taken(mirror):
+    mirror.root_post(mirror.cur_sec)
+    at_mirror = mirror.manifest
+    twin = mirror.publish_manifest(version=1, issued=T0 + 1, retracted=["AITA-TEST-0001"])  # same version, other content
+    mirror.second["manifest.json"] = json.dumps(twin).encode()
+    mirror.second["checkpoint-key.json"] = json.dumps(mirror.cert).encode()
+    twin_cert = mirror.cert
+    mirror.manifest = at_mirror
+    mirror.publish_cert()
+    mirror.cert, mirror_cert = twin_cert, mirror.cert
+    mirror.raw["checkpoint-key.json"] = json.dumps(mirror_cert).encode()
+    res, st = do_pull(mirror, second=SECOND)
+    assert st.manifest.event["id"] == twin["id"] and st.manifest.retracted == ("AITA-TEST-0001",)
+
+
+def test_the_second_origin_cannot_roll_the_manifest_back(mirror):
+    mirror.root_post(mirror.cur_sec)
+    v1 = json.dumps(mirror.manifest).encode()
+    mirror.publish_manifest()
+    do_pull(mirror)  # v2 accepted
+    mirror.second["manifest.json"] = v1
+    mirror.raw["manifest.json"] = None  # and the mirror's own is unreachable
+    res, st = do_pull(mirror, second=SECOND)
+    assert res.error == "unreachable" and st.manifest.version == 2
+    assert st.last_pull["second_origin"] == "bad manifest"
+
+
+def test_a_stalling_mirror_cannot_keep_a_second_origin_revocation_from_being_saved(mirror):
+    """The second origin is asked first and its manifest saved before the mirror is contacted."""
+    mirror.root_post(mirror.cur_sec)
+    bot = mirror.root_post(mirror.bot_sec, advisory(id="AITA-TEST-0002", title="Bot", posted_by="relay-bot"))
+    v1 = json.dumps(mirror.manifest).encode()
+    do_pull(mirror)
+    mirror.publish_manifest(posters=[{"pubkey": mirror.cur, "role": "curator", "name": "cur"}])
+    mirror.second["manifest.json"] = json.dumps(mirror.manifest).encode()
+
+    def stalls(url, timeout=None):
+        if url.startswith(SECOND):
+            return mirror.fetch(url)
+        raise Crash  # the hook's timeout kills the process while the mirror drips bytes
+    with pytest.raises(Crash):
+        pull.fetch(URL, State.load(), fetch=stalls, root_pubkey=mirror.root, now=T0 + 1000, second_origin=SECOND)
+    st = State.load()
+    assert st.manifest.version == 2 and bot["id"] not in st.events
+    mirror.raw["manifest.json"] = v1
+    res, st = do_pull(mirror)
+    assert res.error == "bad manifest" and st.manifest.version == 2
+
+
+def test_cli_pull_says_when_the_accepted_checkpoint_is_already_out_of_date(mirror, monkeypatch, capsys, reader_clock):
+    from aitools_alerts import cli
+    mirror.root_post(mirror.cur_sec)
+    mirror.checkpoint()
+    monkeypatch.setenv(cli.TRUST_ROOT_ENV, mirror.root)
+    monkeypatch.setattr(pull, "default_fetch", mirror.fetch)
+    config.write_default(force=True)
+    config.config_path().write_text('trust_root_override = true\nmirror_url = "https://mirror.invalid/"\n')
+    reader_clock.at = T0 + 3 * DAY  # the mirror is frozen: the same checkpoint, days later
+    assert cli.main(["pull"]) == 0
+    assert cli.UNVERIFIED_LINE.format(reason="checkpoint out of date") in capsys.readouterr().err

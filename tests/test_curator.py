@@ -475,7 +475,8 @@ def test_amendment_is_written_against_the_thread_without_future_patches(mirror):
 def test_curator_amends_and_retracts_a_thread_no_checkpoint_lists_yet(mirror, capsys, monkeypatch):
     """ai-tools-alerts#6whv: the curator command reads every verified event (the writers'
     view), so a thread posted a minute ago can be corrected before the signer's next
-    checkpoint lists it, while the member view of the same state still leaves it out."""
+    checkpoint lists it. On that machine the member commands then show what the curator
+    pull stored, unverified; a member machine, which never pulls as a writer, does not."""
     first = publish(mirror, *post(mirror))
     st = State.load()
     assert pull.fetch("https://mirror.example.invalid/alerts", st, fetch=mirror.fetch, root_pubkey=mirror.root).error is None
@@ -492,7 +493,16 @@ def test_curator_amends_and_retracts_a_thread_no_checkpoint_lists_yet(mirror, ca
     out = capsys.readouterr().out
     assert '"content": "level: notice' in out and '"content": "retract"' in out
     st = State.load()
-    assert late["id"] in st.events
-    assert [t.root_id for t in pull.advisories(st)] == [first["id"]]  # the member view: listed events only
-    assert {t.root_id for t in pull.advisories(st, checkpointed=False)} == {first["id"], late["id"]}
+    assert late["id"] in st.events and st.last_pull["writer"] is True
+    assert {t.root_id for t in pull.advisories(st)} == {first["id"], late["id"]}  # this machine pulled as a writer
     assert pull.unverified(st) == "the last pull checked no checkpoint"
+    # a member pull afterwards keeps what the curator pull stored (its own retraction, say) applied
+    assert pull.fetch("https://mirror.example.invalid/alerts", st, fetch=mirror.fetch, root_pubkey=mirror.root).error is None
+    st = State.load()
+    assert late["id"] in st.applied_for(mirror.root) and st.last_pull["writer"] is False
+    # while a machine that only ever pulled as a member does not see the unlisted thread
+    import shutil
+    shutil.rmtree(config.state_dir())
+    st = State.load()
+    assert pull.fetch("https://mirror.example.invalid/alerts", st, fetch=mirror.fetch, root_pubkey=mirror.root).error is None
+    assert [t.root_id for t in pull.advisories(State.load())] == [first["id"]] and late["id"] not in State.load().events

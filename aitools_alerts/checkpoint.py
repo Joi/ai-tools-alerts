@@ -43,7 +43,7 @@ from .manifest import Manifest
 
 __all__ = ["KIND", "CERT_D_TAG", "CHECKPOINT_D_TAG", "VERSION", "MAX_CERT_BYTES", "MAX_CHECKPOINT_BYTES",
            "MAX_EVENT_IDS", "MAX_AHEAD_S", "MAX_VALID_S", "DEFAULT_VALID_S", "CheckpointError",
-           "Cert", "Checkpoint", "load_cert", "verify_cert", "cert_problem", "cert_order",
+           "Cert", "Checkpoint", "cert_from_event", "checkpoint_from_event", "load_cert", "verify_cert", "cert_problem", "cert_order",
            "load_checkpoint", "verify_checkpoint", "checkpoint_problem", "checkpoint_order",
            "fresh_until", "build_cert", "build_checkpoint"]
 
@@ -213,6 +213,17 @@ def load_cert(src) -> Cert:
     return Cert(copy.deepcopy(ev), *fields)
 
 
+def cert_from_event(ev) -> Cert:
+    """A certificate from its decoded event (as stored state holds it). The
+    byte limit is for documents taken from the network; a stored one passed
+    it then, and re-encoding it here could make it longer than it was."""
+    try:
+        fields = _parse_cert(ev)
+        return Cert(copy.deepcopy(ev), *fields)
+    except RecursionError:
+        raise CheckpointError("certificate nested too deeply") from None
+
+
 def verify_cert(cert: Cert, root_pubkey: str) -> bool:
     """True only if the certificate's event is signed by ``root_pubkey`` and
     says exactly what ``cert`` says. Never raises."""
@@ -291,6 +302,15 @@ def load_checkpoint(src) -> Checkpoint:
     ev = _json(_read(src, MAX_CHECKPOINT_BYTES, "checkpoint"))
     fields = _parse_checkpoint(ev)
     return Checkpoint(copy.deepcopy(ev), *fields)
+
+
+def checkpoint_from_event(ev) -> Checkpoint:
+    """A checkpoint from its decoded event (as stored state holds it); see cert_from_event."""
+    try:
+        fields = _parse_checkpoint(ev)
+        return Checkpoint(copy.deepcopy(ev), *fields)
+    except RecursionError:
+        raise CheckpointError("checkpoint nested too deeply") from None
 
 
 def verify_checkpoint(cp: Checkpoint, cert: Cert) -> bool:
