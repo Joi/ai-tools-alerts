@@ -546,7 +546,9 @@ def test_a_package_identity_is_the_product_and_the_free_text_is_not_read():
     assert c.product_text == "npm:claude-code-router"  # the text "Claude Code" beside it is ignored
     (c,) = _one(package={"ecosystem": " NPM ", "name": "@anthropic-ai/claude-code"}, product=None)
     assert c.product_text == "npm:@anthropic-ai/claude-code"
-    for bad in (None, "npm:x", [], {}, {"ecosystem": "npm"}, {"name": "x"}, {"ecosystem": "n p m", "name": "x"},
+    (c,) = _one(package=None)  # a collector that writes an absent package as null
+    assert c.product_text == "Claude Code"
+    for bad in ("npm:x", [], {}, {"ecosystem": "npm"}, {"name": "x"}, {"ecosystem": "n p m", "name": "x"},
                 {"ecosystem": "npm", "name": "a b"}, {"ecosystem": "npm", "name": ""},
                 {"ecosystem": "npm", "name": "x" * 215}, {"ecosystem": 7, "name": "x"}):
         out = _one(package=bad)

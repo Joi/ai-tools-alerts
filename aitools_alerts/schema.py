@@ -361,6 +361,7 @@ def _load_json(path: Path):
 SCOPE_VERSION = 5  # the only version load_scope reads
 _SCOPE_KEYS = frozenset({"version", "description", "entries"})
 _SCOPE_OPTIONAL = frozenset({"match", "authority", "components"})
+_UNICODE_DASH = re.compile("[\u2010-\u2015\u2212]")  # the lookup reads these as "-"
 _AUTHORITY = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?/(?:[a-z0-9][a-z0-9._-]*/)*")
 
 
@@ -382,8 +383,8 @@ def _scope_identities(v, at: str, seen: set) -> list[str]:
     out = _list(v, at, 1, 100)
     for j, m in enumerate(out):
         _text(m, f"{at}[{j}]", 1, 200)
-        if m != " ".join(unicodedata.normalize("NFKC", m).lower().split()):
-            _fail(f"{at}[{j}]", "not normalised: lowercase, trimmed, single spaces")
+        if m != " ".join(unicodedata.normalize("NFKC", m).lower().split()) or _UNICODE_DASH.search(m):
+            _fail(f"{at}[{j}]", "not normalised: lowercase, trimmed, single spaces, ASCII hyphens")
         if m in seen:
             _fail(f"{at}[{j}]", "listed twice: an identity belongs to one product")
         seen.add(m)

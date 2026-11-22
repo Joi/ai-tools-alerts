@@ -123,15 +123,29 @@ patched value is a version the schema can express, else none; `affected`, the
 range when exactly one block matches and the schema can express it, else
 none; the title; the severity word.
 
-**A vendor site page**: any other authoritative URL. It confirms when it
-answers 200 and its text holds the candidate's base id and the product's name
-(`scope.name`), each as a whole token. Confirmed ids: the base id only. It
-yields no fixed version, range, title or severity, with one exception: on
-`support.apple.com` for the product macOS, the version in the page title
-("About the security content of macOS … 26.1") is the fixed version.
+**A vendor site page**: any other authoritative URL that has no query string
+(a site can echo a query back) and is not on github.com. It confirms when it
+answers 200 and its visible text (tags, attributes and scripts removed) holds
+the candidate's base id and the product's name (`scope.name`), each as a
+whole token. Confirmed ids: the base id only. It yields no fixed version,
+range, title or severity, and the candidate it confirms is a notice whatever
+the record says: a site page binds nothing by a field. (The first draft read
+a fixed version from an Apple page title; the code review showed a record
+could then pick an older branch's page, so no version is read from a site
+page.)
 
-At most 3 pages a candidate and 40 a run are fetched (1 MiB each, one fetch
-per URL per run, redirects only to URLs authoritative for the same scope).
+A repository page is read only when it is whole: it ends with `</html>`, and
+its CVE ID field holds a CVE id or "No known CVE". A page cut short, or one
+that lost its sidebar, is not read, so text in a description cannot supply
+the page's id. A 200 body over 1 MiB is a failed fetch, never a truncated
+page.
+
+Every source an adapter keeps is read (8 a candidate), 40 pages a run, one
+fetch per URL per run, redirects only to URLs authoritative for the same
+scope. When the run's budget ends, what is already confirmed stands (a KEV
+entry never waits on a vendor page) and an unconfirmed candidate is deferred.
+Deferred candidates take turns going first, by the hour, so pages that fail
+on every run cannot starve one behind them.
 
 ### 4. What `Run.admit` passes on
 
@@ -146,14 +160,23 @@ per URL per run, redirects only to URLs authoritative for the same scope).
   - `aliases`: only those whose base is a confirmed id, plus the page's own
     GHSA and CVE ID. An alias the source does not assign is not kept, so it
     cannot merge threads, attach another advisory's fix or inherit KEV status;
-  - `fixed`, `affected`, `source_title`: the page's, or CISA's title, or none;
+  - `fixed`, `affected`, `source_title`: the page's, or CISA's title, or none.
+    A patched value the schema cannot express is carried as "a fix exists,
+    no version", so the post says a fix is listed and has no action line;
   - `advisory_severity`: the page's severity word and title;
-  - `sources`: those authoritative for the scope (confirming page first), the
-    cisa.gov sources of a KEV candidate, and `github.com/advisories/<GHSA>`
-    for a confirmed GHSA;
+  - `sources`: the page that confirmed it, the cisa.gov sources of a KEV
+    candidate, and `github.com/advisories/<GHSA>` for a confirmed GHSA. No
+    other URL is kept, the vendor's host included: nobody read it, and its
+    path or query is text the record chose;
   - the collector's `advisory_severity`, `trojanized` and `injection_exec`
-    only when the record is pure: every one of its sources is in the list
-    above. A record that mixes in any other source keeps none of the three.
+    only when a repository advisory page confirmed the candidate and the
+    record is pure: every one of its sources is in the list above. A record
+    that mixes in any other source, or one confirmed by a site page alone,
+    keeps none of the three.
+- The vendor's page carries the candidate's id and names only other packages:
+  dropped, counted apart as `vendor page names another package` (an advisory
+  for another product of that repository, or a package key the scope file
+  lacks; the rollout issue says to read that count).
 - `level_for` is unchanged in shape; its `source_ok` argument is "a page
   confirmed this advisory this run". `rules.http_status` and `rules.source_ok`
   are replaced by `rules.http_page`. `candidates._source_title` and
@@ -178,9 +201,12 @@ per URL per run, redirects only to URLs authoritative for the same scope).
   sent by the new poster, and every deferred candidate from then on was
   admitted, or will be re-admitted, under these rules.
 - The migration reaches the ledger too: each thread forgets the ids it
-  learned without publishing them (anything not in its published advisory)
-  and all of its `learned_sources`, since both came from records nobody
-  confirmed and a later reply would publish them or join threads by them. A
+  learned without publishing them (anything not in its published advisory),
+  all of its `learned_sources` and its source title (a digest line prints it,
+  and it came from the record), since a later reply or digest would publish
+  them or join threads by them. The input watermarks are reset, so the inputs
+  are read again from the backfill floor and a genuine notice that was held
+  or deferred comes back through the gate. A
   send whose outcome is unknown keeps its journal item: `pending` and
   `resolve` settle it as before.
 - `plan_known`: sources a thread learned without publishing
@@ -204,7 +230,11 @@ per URL per run, redirects only to URLs authoritative for the same scope).
 | Genuine vendor GHSA record (the live CVE-2026-88968 thread) | high, fix 2.1.251 from the page |
 | KEV entries: Anthropic Claude Code, OpenBSD OpenSSH, Node.js Node.js, containerd containerd, Google Chrome, Apple macOS | resolve; tier 1 critical, tier 2 high, titled by CISA |
 | KEV entry for vendor `musistudio`, product `claude-code-router` | out of scope |
-| Vendor site page naming the id and the product | notice; with a pure record carrying severity `high`, high |
+| Vendor site page naming the id and the product | notice, whatever the record's severity and flags |
+| Vendor-host URL nobody read, in the record's sources; a URL with a query that echoes it | not in the post; never fetched, confirms nothing |
+| Repository URL spelled `github.com.`; a page cut short or without its CVE ID field | read as the same advisory page; not read |
+| Vendor patched value `2.0.0-rc.1`, whole run | "A fix is listed upstream", no Action line (en, ja) |
+| Two pages failing every run ahead of a healthy one, budget 2; KEV with the budget spent | the healthy one posts; the KEV entry posts |
 | Page answers 503, then 200 | deferred, then posts; an 8-day-old candidate too |
 | Repository page answers 200 with unknown markup | deferred, counted `advisory page not parsed` |
 | 41st page of a run | deferred |
@@ -242,9 +272,9 @@ Existing tests of word matching, `match_mode`, `not_match`, `http_status`,
 - Advisories whose only source is a global GitHub advisory, NVD, a
   distribution tracker or news no longer post. That is the finding's fix.
 - Products with no authority listed (Chrome, Chromium, Firefox, Fedora, the
-  Linux kernel, skills.sh, mcp-remote) post from KEV only. Products whose
-  vendor publishes on its own site only (Cursor) post a notice unless the
-  record is pure.
+  Linux kernel, skills.sh, mcp-remote) post from KEV only. An advisory a
+  vendor publishes on its own site only (Cursor, Apple, an OpenSSH release
+  note) posts as a notice in the digest, with no version.
 - The repository-page reader depends on GitHub's labels ("Package",
   "Affected versions", "Patched versions", "CVE ID", "Severity"). If GitHub
   renames one, GitHub advisories defer and `advisory page not parsed` shows in
@@ -256,12 +286,13 @@ Existing tests of word matching, `match_mode`, `not_match`, `http_status`,
 
 ## Residual risk, stated
 
-- A pure record (vendor sources only) can still carry a model's reading
-  (`trojanized`, `injection_exec`) of the vendor's text. Computing a critical
-  from structured fields alone is ai-tools-alerts#s6mt.
-- A vendor site page confirms by naming the id and the product; a vendor page
-  that lists another product's CVE beside this product's name would confirm.
-  It yields a notice with no version.
+- A pure record confirmed by the vendor's repository advisory can still
+  carry a model's reading (`trojanized`, `injection_exec`) of that advisory.
+  Computing a critical from structured fields alone is ai-tools-alerts#s6mt.
+- A vendor site page confirms by naming the id and the product. A page that
+  lists another product's CVE beside this product's name, says the product is
+  not affected, or echoes its own path with status 200 would confirm. The
+  result is a digest notice with no version, never a high or a critical.
 - The slug after `:` in an id is up to 32 characters of `[a-z0-9.-]` chosen
   upstream of the poster.
 - Whether the private collector sends `package` is unknown from this

@@ -30,7 +30,7 @@ from aitools_alerts.poster.candidates import ADVISORY_ID, BOT_ID, Candidate
 
 FETCH_TIMEOUT = 10
 MAX_REDIRECTS = 5
-MAX_PAGES = 3  # authoritative pages fetched for one candidate
+MAX_PAGES = 8  # authoritative pages fetched for one candidate: every source an adapter keeps
 MAX_PAGE_BYTES = 1024 * 1024
 USER_AGENT = "aitools-alerts-poster"
 _REDIRECTS = frozenset({301, 302, 303, 307, 308})
@@ -192,12 +192,21 @@ def authoritative(url, scope) -> bool:
     are authoritative for nobody else's product."""
     if scope is None or not _countable(url):
         return False
-    parts = urlsplit(url)
-    host = (parts.hostname or "").rstrip(".")
-    host = host[4:] if host.startswith("www.") else host
-    loc = (host + parts.path).lower()
+    loc = (host_of(url) + urlsplit(url).path).lower()
     loc += "" if loc.endswith("/") else "/"
     return any(loc.startswith(p) for p in getattr(scope, "authority", ()))
+
+
+def host_of(url) -> str:
+    """The URL's host as the primary-source list reads it: lowercase, without one
+    trailing dot or a leading "www."; "" when there is none. Every rule that asks
+    which site a URL is on uses this one reading."""
+    try:
+        host = urlsplit(url).hostname or ""
+    except (ValueError, TypeError, AttributeError):
+        return ""
+    host = host[:-1] if host.endswith(".") else host
+    return host[4:] if host.startswith("www.") else host
 
 
 def advisory_ids(c) -> set[str]:
@@ -217,13 +226,13 @@ _GHSA = re.compile(r"GHSA(?:-[0-9a-z]{4}){3}", re.I)
 _CVE = re.compile(r"CVE-\d{4}-\d{4,}", re.I)
 _NOT_TEXT = re.compile(r"(?is)<(script|style|svg)\b.*?</\1\s*>")
 _TAG = re.compile(r"<[^>]*>")
+_WHOLE = re.compile(r"(?i)</html\s*>\s*$")
 _HTML_TITLE = re.compile(r"(?is)<title[^>]*>(.*?)</title\s*>")
 # Package registries GitHub names beside a package; any other word there is a vendor label.
 _REGISTRIES = frozenset({"npm", "pip", "pypi", "go", "rust", "cargo", "maven", "nuget", "rubygems",
                          "composer", "pub", "swift", "erlang", "actions"})
 _SEVERITIES = frozenset({"low", "moderate", "medium", "high", "critical"})
 _LABELS = frozenset({"Package", "Software", "Affected versions", "Patched versions"})
-_APPLE_RELEASE = re.compile(r"about the security content of macos\b[a-z ]{0,40}?(\d{1,3}(?:\.\d{1,4}){0,3})(?![\d.])", re.I)
 
 
 @dataclass(frozen=True)
@@ -252,11 +261,9 @@ def _lines(text: str) -> list[str]:
 
 def _after(lines, label, want: re.Pattern | None = None) -> str | None:
     """The text node after the LAST node that is exactly ``label`` (the page's own
-    field sits after any text of the description)."""
+    field sits after any text of the description); None when there is no such node."""
     i = next((k for k in range(len(lines) - 2, -1, -1) if lines[k] == label), None)
-    if i is None:
-        return None
-    return lines[i + 1] if want is None or want.fullmatch(lines[i + 1]) else None
+    return None if i is None else lines[i + 1]
 
 
 def read_advisory(text: str) -> AdvisoryPage | None:
@@ -264,11 +271,18 @@ def read_advisory(text: str) -> AdvisoryPage | None:
     when the page does not have that shape. The id and the package blocks are read
     from the text before the "Description" heading only, so nothing written in a
     description can stand in for them; "CVE ID" and "Severity" are the last nodes
-    with those labels. Only labels and the text node after each are read."""
-    if not isinstance(text, str):
+    with those labels, which on a whole page is the sidebar after the description. So
+    a page that is not whole (no closing ``</html>``: cut short, or not a page), or
+    whose CVE ID field is missing or is neither a CVE id nor "No known CVE", is not
+    read at all: a description cannot supply the id of a page that lost its sidebar.
+    Only labels and the text node after each are read."""
+    if not isinstance(text, str) or not _WHOLE.search(text):
         return None
     lines = _lines(text)
     if "Description" not in lines:
+        return None
+    cve = _after(lines[lines.index("Description"):], "CVE ID")
+    if cve is None or not (_CVE.fullmatch(cve) or cve == "No known CVE"):
         return None
     head = lines[:lines.index("Description")]
     ghsa = next((x for x in head if _GHSA.fullmatch(x)), None)
@@ -292,7 +306,7 @@ def read_advisory(text: str) -> AdvisoryPage | None:
     m = _HTML_TITLE.search(text)
     title = " ".join(html.unescape(m.group(1)).split()) if m else ""
     title = title.rsplit(" · Advisory · ", 1)[0] if " · Advisory · " in title else ""
-    return AdvisoryPage(ghsa=ghsa, cve=_after(lines, "CVE ID", _CVE), blocks=tuple(blocks),
+    return AdvisoryPage(ghsa=ghsa, cve=cve if _CVE.fullmatch(cve) else None, blocks=tuple(blocks),
                         severity=severity if severity in _SEVERITIES else None, title=title or None)
 
 
@@ -309,16 +323,22 @@ def _is_product(block: Block, scope, entries=None) -> bool:
     return hit is not None and hit.name == scope.name
 
 
+UNEXPRESSED = "unexpressed"  # a fix the vendor states and the schema cannot carry; never published
+
+
 def _highest(patched) -> str | None:
-    """The highest version over the blocks' "Patched versions", or None unless every
-    value there is a version the schema can express: "upgrade to X or later" is then
-    true for every branch the vendor patched."""
+    """The highest version over the blocks' "Patched versions": "upgrade to X or later"
+    is then true for every branch the vendor patched. None when no block states a fix
+    (empty, or "None"). UNEXPRESSED when one states a fix that is not a version the
+    schema can express: compose then says a fix is listed and names no version."""
     found = []
     for value in patched:
         tokens = [t for t in re.split(r"[,\s]+", value or "") if t]
+        if not tokens or [t.lower() for t in tokens] == ["none"]:
+            continue
         fixed = [compose.schema_fixed(t) for t in tokens]
-        if not tokens or None in fixed or any(versions.parse(f) is None for f in fixed):
-            return None
+        if None in fixed or any(versions.parse(f) is None for f in fixed):
+            return UNEXPRESSED
         found += fixed
     return max(found, key=versions.parse) if found else None
 
@@ -333,8 +353,9 @@ class Evidence:
     exploited. ``url``: the page that confirmed it, or None. ``ids``: the advisory's
     ids as that source assigns them (lowercase). ``fixed``, ``affected``, ``title``,
     ``severity``: read from the page, never from the candidate. ``retry``: nothing
-    confirmed it, and a fetch failed in a way that can pass or a repository page did
-    not parse (``unparsed``)."""
+    confirmed it, and a fetch failed in a way that can pass, a repository page did
+    not parse (``unparsed``) or the run's page budget ran out before every source was
+    read (``budget``)."""
     kev: bool = False
     url: str | None = None
     ids: frozenset = frozenset()
@@ -344,6 +365,9 @@ class Evidence:
     severity: str | None = None
     retry: bool = False
     unparsed: bool = False
+    budget: bool = False
+    structured: bool = False  # confirmed by a repository advisory page's own fields
+    other_package: bool = False  # the vendor's page for this id names only packages that are not this product
 
     @property
     def ok(self) -> bool:
@@ -354,7 +378,8 @@ def evidence(c: Candidate, scope, page, entries=None) -> Evidence:
     """The authoritative statement behind c, read by fetching c's own sources (h340).
 
     ``page(url, allow) -> (status, text)``; the production one is ``http_page``
-    behind main's per-run cache, and it may raise PageBudget. The candidate is a
+    behind main's per-run cache. When it raises PageBudget the sources not yet read
+    stay unread: what is already confirmed stands, and nothing confirmed is a retry. The candidate is a
     pointer: its id (``BOT_ID``; the base is the id without a thread key's slug),
     its product (``scope``) and its URLs. Only a source ``authoritative`` for the
     scope is fetched, at most MAX_PAGES a candidate.
@@ -364,9 +389,9 @@ def evidence(c: Candidate, scope, page, entries=None) -> Evidence:
     c's base id is that advisory's GHSA or CVE ID, and one of its package blocks is
     this product; it then gives the ids, the highest patched version, the range (one
     matching block only), the title and the severity word. Any other authoritative
-    page confirms c when its text names c's base id and the product's name; it gives
-    the base id alone (and, for macOS on support.apple.com, the release its title
-    names as the fixed version). A repository page wins over another page.
+    page (never one with a query string, which a site can echo back) confirms c when
+    its visible text names c's base id and the product's name; it gives the base id
+    alone, and main rates it a notice. A repository page wins over another page.
     """
     m = BOT_ID.fullmatch(c.id) if isinstance(c.id, str) else None
     if m is None or scope is None:
@@ -374,22 +399,30 @@ def evidence(c: Candidate, scope, page, entries=None) -> Evidence:
     base = m.group(1).lower()
     kev = c.exploited is True and base.startswith("cve-")
     found: dict = {}
-    retry = unparsed = False
+    retry = unparsed = budget = other = False
     rank = fetched = 0
     for s in c.sources:
         u = getattr(s, "url", None)
-        if not authoritative(u, scope):
+        if not authoritative(u, scope) or urlsplit(u).query:
             continue
-        if fetched >= MAX_PAGES or rank == 2:
+        if rank == 2:
+            break
+        if fetched >= MAX_PAGES:
+            budget = True  # an unread source is not a "no"
             break
         fetched += 1
-        status, text = page(u, lambda x: authoritative(x, scope))
+        try:
+            status, text = page(u, lambda x: authoritative(x, scope))
+        except PageBudget:
+            budget = True
+            break
         if type(status) is not int or status != 200 or not isinstance(text, str):
             retry |= type(status) is not int or status in (0, 403, 408, 429) or status >= 500
             continue
-        parts = urlsplit(u)
-        host = (parts.hostname or "").removeprefix("www.")
-        repo = _REPO_ADVISORY.fullmatch(parts.path) if host == "github.com" else None
+        host = host_of(u)
+        repo = _REPO_ADVISORY.fullmatch(urlsplit(u).path) if host == "github.com" else None
+        if host == "github.com" and repo is None:
+            continue  # on github.com only a repository advisory page is read
         if repo:
             p = read_advisory(text)
             if p is None or p.ghsa.lower() != repo.group(1).lower():
@@ -398,23 +431,23 @@ def evidence(c: Candidate, scope, page, entries=None) -> Evidence:
             own = {p.ghsa.lower()} | ({p.cve.lower()} if p.cve else set())
             mine = [b for b in p.blocks if _is_product(b, scope, entries)]
             if base not in own or not mine:
+                other |= base in own
                 continue
             affected = compose.schema_affected(mine[0].affected) if len(mine) == 1 else None
             rank, found = 2, dict(url=u, ids=own, fixed=_highest(b.patched for b in mine),
                                   affected=None if affected == "*" else affected, title=p.title,
                                   severity=p.severity)
         elif rank == 0:
-            low = text.lower()
+            low = " ".join(_lines(text)).lower()  # what a reader sees: no tag, attribute or script
             if not (_names(low, base) and _names(low, scope.name)):
                 continue
-            title = _HTML_TITLE.search(text)
-            apple = _APPLE_RELEASE.search(html.unescape(title.group(1))) if (
-                title and host == "support.apple.com" and scope.name == "macOS") else None
-            rank, found = 1, dict(url=u, ids={base}, fixed=compose.schema_fixed(apple.group(1)) if apple else None)
+            rank, found = 1, dict(url=u, ids={base})
     ids = frozenset(found.get("ids", set()) | ({base} if kev else set()))
     return Evidence(kev=kev, url=found.get("url"), ids=ids, fixed=found.get("fixed"),
                     affected=found.get("affected"), title=found.get("title"), severity=found.get("severity"),
-                    retry=(retry or unparsed) and not found, unparsed=unparsed and not found)
+                    retry=(retry or unparsed or budget) and not found and not kev,
+                    unparsed=unparsed and not found, budget=budget and not found,
+                    structured=rank == 2, other_package=other and not found)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -463,9 +496,11 @@ def _request(opener, url: str, deadline: float, allow) -> tuple[int, str]:
             return 0, ""
         status = getattr(resp, "status", 0)
         try:
-            raw = resp.read(MAX_PAGE_BYTES) if status == 200 else b""
+            raw = resp.read(MAX_PAGE_BYTES + 1) if status == 200 else b""
         except Exception:
             status, raw = 0, b""
+        if isinstance(raw, bytes) and len(raw) > MAX_PAGE_BYTES:
+            status, raw = 0, b""  # a page cut short is never read as a page
         _close(resp)
         if time.monotonic() > deadline:
             return 0, ""  # an answer after the deadline does not count
@@ -481,8 +516,8 @@ def http_page(url: str, allow=_countable, timeout: float = FETCH_TIMEOUT, opener
     One wall-clock deadline of ``timeout`` seconds covers DNS, the request, every
     redirect and the read: the fetch runs in a daemon thread and its answer counts
     only if it arrives in time. Refuses (404) a URL ``allow`` does not accept and any
-    redirect to one; past MAX_REDIRECTS hops is a failure. At most MAX_PAGE_BYTES of
-    a 200 body are read; no other body is read.
+    redirect to one; past MAX_REDIRECTS hops is a failure. A 200 body over
+    MAX_PAGE_BYTES is a failure, never a page cut short; no other body is read.
     """
     if not allow(url):
         return 404, ""

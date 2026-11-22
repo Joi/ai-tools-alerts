@@ -484,26 +484,23 @@ class Run:
         pointer (an id, a product, URLs); what goes on to the merge, a level, the held
         list and a post is what ``rules.evidence`` read from CISA's catalog or from the
         vendor's own page: the ids that source assigns, its fixed version, range, title
-        and severity word, and only sources authoritative for the product. A record's
-        own severity text and model-read flags count only when every one of its sources
-        is such a source. Nothing confirmed and a fetch failed, a page did not parse or
+        and severity word, and as sources only the page that confirmed it, CISA's for a
+        KEV entry and the global page of the vendor's own GHSA. A record's own severity
+        text and model-read flags count only when a repository advisory page confirmed
+        it and the record cites nothing else; a vendor site page alone makes a notice. Nothing confirmed and a fetch failed, a page did not parse or
         the page budget ran out: deferred to the next run, never dropped for that."""
         if not candidates.BOT_ID.fullmatch(c.id):
             self.skipped["id shape"] += 1
             return None
-        try:
-            ev = rules.evidence(c, scope, self.page)
-        except rules.PageBudget:
-            self.skipped["page budget, deferred"] += 1
-            self.defer([(c, scope)])
-            return None
+        ev = rules.evidence(c, scope, self.page)
         if not ev.ok:
             if ev.retry:
                 self.skipped["advisory page not parsed, deferred" if ev.unparsed
-                             else "source fetch failed, deferred"] += 1
+                             else "page budget, deferred" if ev.budget else "source fetch failed, deferred"] += 1
                 self.defer([(c, scope)])
-            else:
-                self.skipped["no authoritative source"] += 1
+            else:  # the second: harvest it for a package key the scope file lacks
+                self.skipped["vendor page names another package" if ev.other_package
+                             else "no authoritative source"] += 1
             return None
         if ev.url is not None:
             self.confirmed.setdefault(ev.url, set()).update(ev.ids)
@@ -517,10 +514,9 @@ class Run:
                 aliases.append(a)
 
         def kind(url):
-            parts = urlsplit(url)
-            host = (parts.hostname or "").removeprefix("www.")
-            if rules.authoritative(url, scope):
-                return 0 if url == ev.url else 1
+            parts, host = urlsplit(url), rules.host_of(url)
+            if url == ev.url:  # the page that confirmed it: no other vendor-host URL is taken on trust
+                return 0
             if ev.kev and host == "cisa.gov" and schema.is_primary(url):
                 return 2
             if host == "github.com" and schema.is_primary(url) and parts.path.lower().rstrip("/") in {
@@ -529,14 +525,16 @@ class Run:
             return None
 
         kept = sorted((s for s in c.sources if kind(s.url) is not None), key=lambda s: kind(s.url))
-        pure = len(kept) == len(c.sources)
+        # A record's own level inputs count only when the vendor's advisory page bound the id
+        # to the product by its fields and the record cites nothing but what is kept here.
+        trusted = ev.structured and len(kept) == len(c.sources)
         title = candidates._title(ev.title, candidates._Hosts(candidates.FLEET_HOSTS)) if ev.title \
             else c.source_title if ev.kev else None
         severity = "; ".join(x for x in (ev.severity, title if ev.url else None) if x) or None
         return replace(c, aliases=tuple(aliases), fixed=ev.fixed, affected=ev.affected, sources=tuple(kept),
                        source_title=title,
-                       advisory_severity=severity or (c.advisory_severity if pure else None),
-                       trojanized=c.trojanized is True and pure, injection_exec=c.injection_exec is True and pure)
+                       advisory_severity=severity or (c.advisory_severity if trusted else None),
+                       trojanized=c.trojanized is True and trusted, injection_exec=c.injection_exec is True and trusted)
 
     def level(self, c, scope):
         """``source_ok`` is "a page confirmed this advisory this run": KEV alone never
@@ -838,15 +836,17 @@ def _gate(state: dict, led: Ledger) -> None:
     sent after it. The deferred, held and withheld lists are emptied, and every journal
     item not yet sent is removed unless it is a Japanese reply (its original is public)
     or a send whose outcome is unknown (``pending`` / ``resolve`` still settle it). Threads
-    forget the ids and sources they learned without publishing (``forget_unpublished``)."""
+    forget the ids, sources and title they learned without publishing (``forget_unpublished``)."""
     if state["gate"] == inputs.GATE:
         return
     drop = [it for it in state["outbox"] if it["sent"] is None and it["kind"] != "ja"
             and not led.has_pending(it["key"])]
     _say(f"gate: first run under the authoritative-source rule; removed {len(state['deferred'])} deferred, "
          f"{len(state['held'])} held, {len(state['withheld'])} withheld, {len(drop)} unsent; "
-         f"{led.forget_unpublished()} thread(s) forgot unpublished ids and sources")
-    state.update(deferred=[], held=[], withheld=[], gate=inputs.GATE,
+         f"{led.forget_unpublished()} thread(s) forgot unpublished ids, sources and titles")
+    # The inputs are read again from the backfill floor, so a genuine notice that was
+    # held or deferred comes back through the gate (re-reading is idempotent).
+    state.update(deferred=[], held=[], withheld=[], gate=inputs.GATE, collector=None, heartbeat=None, kev_since=None,
                  outbox=[it for it in state["outbox"] if it not in drop])
 
 
@@ -978,6 +978,9 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
                     scope = rules.scope_of(c.product_text, log=review)
                     if scope is not None:
                         pairs.append((c, scope))
+                if later:  # a different one first each hour: failing pages ahead of it never starve one
+                    k = (now // 3600) % len(later)
+                    later = later[k:] + later[:k]
                 pairs += later  # after the fresh ones: merge takes the first member's fix, so a correction wins
                 n["in_scope"] = len(pairs)
                 # h340: only what an authoritative source states goes on, each candidate

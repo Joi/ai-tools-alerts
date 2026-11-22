@@ -494,8 +494,8 @@ def from_kev(kev_json: dict, since_date: str) -> CandidateList:
 
 def _package(f: dict):
     """A finding's package identity as the product text ``ecosystem:name``; None when the
-    finding has no ``package`` key, False when it has one that is not {ecosystem, name}."""
-    if "package" not in f:
+    finding has none (no key, or null), False when it has one that is not {ecosystem, name}."""
+    if f.get("package") is None:  # absent, or serialised as null
         return None
     p = f["package"]
     eco, name = (p.get("ecosystem"), _str(p.get("name"), MAX_PACKAGE + 1)) if isinstance(p, dict) else (None, None)

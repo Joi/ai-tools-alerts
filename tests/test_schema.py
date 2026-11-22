@@ -356,6 +356,7 @@ def test_load_scope_rejects_bad_entries(tmp_path):
     assert load(good)[0].authority == ("anthropic.com/", "github.com/anthropics/claude-code/")  # the control
     for bad in (dict(good, match=["Upper"]), dict(good, match=[]), dict(good, match=["two  spaces"]),
                 dict(good, match=[" x"]), dict(good, match=["x", "x"]),  # an identity listed twice
+                dict(good, match=["tool\u2013code"]),  # the lookup reads a Unicode dash as "-": one spelling only
                 dict(good, tier=3), dict(good, tier=True), dict(good, extra=1),
                 dict(good, match_mode="word"), dict(good, not_match=["y"]),  # the word rule is gone (h340)
                 dict(good, authority=["github.com/anthropics/"]),  # an owner is not a product

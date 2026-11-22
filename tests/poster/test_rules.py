@@ -11,7 +11,7 @@ from dataclasses import replace
 import pytest
 
 from aitools_alerts import schema
-from aitools_alerts.poster import candidates, rules
+from aitools_alerts.poster import candidates, compose, rules
 from pages import advisory_page
 from aitools_alerts.poster.candidates import Candidate, Source
 
@@ -403,9 +403,11 @@ def test_only_the_products_own_sources_are_fetched():
     assert not rules.evidence(ghsa_cand(sources=tuple(Source(u, None) for u in urls)), CLAUDE, page).ok
     assert page.calls == []
     assert not rules.evidence(ghsa_cand(id="LEAD-1"), CLAUDE, page).ok and page.calls == []  # not an advisory id
-    many = tuple(Source(f"https://www.anthropic.com/security/{i}", None) for i in range(6))
-    assert not rules.evidence(ghsa_cand(sources=many), CLAUDE, page).ok
-    assert len(page.calls) == rules.MAX_PAGES  # at most three pages a candidate
+    # Every source an adapter keeps is read; past that, the unread ones make it a retry, never a "no".
+    many = tuple(Source(f"https://www.anthropic.com/security/{i}", None) for i in range(rules.MAX_PAGES + 2))
+    ev = rules.evidence(ghsa_cand(sources=many), CLAUDE, page)
+    assert not ev.ok and ev.retry and ev.budget and len(page.calls) == rules.MAX_PAGES == candidates.MAX_SOURCES
+    assert not rules.evidence(ghsa_cand(sources=many[:3]), CLAUDE, served({})).retry  # all read, all said no
 
 
 def test_fixed_is_the_highest_patched_version_and_the_range_needs_one_block():
@@ -420,8 +422,11 @@ def test_fixed_is_the_highest_patched_version_and_the_range_needs_one_block():
                      ("claude code", None, "< 2.1.251", "v2.1.251"),
                      ("Claude Desktop", "anthropic", "< 9.0", "9.0")])  # the third is another product
     assert (two.fixed, two.affected) == ("2.1.251", None)
-    for patched in ("None", "", "2.1.x", "see release notes", "2.1.251 or 3.0.0-beta+1"):
+    for patched in ("None", "none", ""):  # the vendor states no fix
         assert ev(patched=patched).fixed is None, patched
+    for patched in ("2.1.x", "see release notes", "2.1.251 or 3.0.0-beta+1", "2.0.0-rc.1", ">= 2.1.251"):
+        got = ev(patched=patched).fixed  # a fix the schema cannot carry: said to exist, never named
+        assert got == rules.UNEXPRESSED and compose.schema_fixed(got) is None, patched
     for affected in ("*", "all versions", "", "2.1.0"):
         assert ev(affected=affected).affected is None, affected
 
@@ -441,15 +446,28 @@ def test_a_vendor_site_page_needs_the_id_and_the_product_name_and_gives_no_field
     assert ev.url == REPO + G1 and ev.fixed == "2.1.0"
 
 
-def test_apple_release_title_gives_the_fixed_version_for_macos_only():
+def test_a_site_page_reads_visible_text_only_and_never_a_url_with_a_query():
+    c = cand(product_text="claude code", sources=(Source(VENDOR, None),))
+    for text in ("CVE-2026-0001: <b>Claude</b>\n   Code", "CVE-2026-0001 Claude&nbsp;Code"):
+        assert rules.evidence(c, CLAUDE, served({VENDOR: (200, text)})).ok, text
+    for text in ('<a href="/x/CVE-2026-0001">Claude Code</a>', "<script>var a='CVE-2026-0001 claude code'</script>"):
+        assert not rules.evidence(c, CLAUDE, served({VENDOR: (200, text)})).ok, text
+    q = VENDOR + "?q=CVE-2026-0001+claude+code"
+    page = served({q: (200, "CVE-2026-0001 claude code")})
+    assert not rules.evidence(cand(product_text="claude code", sources=(Source(q, None),)), CLAUDE, page).ok
+    assert page.calls == []
+    # No version is read from a site page: an Apple page names one branch's release, not the fix for all.
     mac, url = rules.scope_of("macos"), "https://support.apple.com/en-us/120001"
-    c = cand(id="CVE-2026-5000", product_text="macOS", sources=(Source(url, None),))
-    page = "<title>About the security content of macOS Tahoe 26.1 - Apple Support</title> CVE-2026-5000 macOS"
-    assert rules.evidence(c, mac, served({url: (200, page)})).fixed == "26.1"
-    assert rules.evidence(c, mac, served({url: (200, page.replace("macOS Tahoe 26.1", "iOS 26.1"))})).fixed is None
-    safari = rules.scope_of("safari")
-    s = cand(id="CVE-2026-5000", product_text="Safari", sources=(Source(url, None),))
-    assert rules.evidence(s, safari, served({url: (200, page + " Safari")})).fixed is None
+    apple = "<title>About the security content of macOS Ventura 13.7.8 - Apple Support</title> CVE-2026-5000 macOS"
+    ev = rules.evidence(cand(id="CVE-2026-5000", product_text="macOS", sources=(Source(url, None),)), mac, served({url: (200, apple)}))
+    assert ev.ok and ev.fixed is None and not ev.structured
+
+
+def test_the_vendors_page_for_the_id_naming_another_package_is_told_apart():
+    page = served({REPO + G1: (200, advisory_page(G1, package="Claude Desktop", ecosystem="anthropic"))})
+    ev = rules.evidence(ghsa_cand(), CLAUDE, page)
+    assert not ev.ok and ev.other_package and not ev.retry
+    assert not rules.evidence(ghsa_cand(id=G2), CLAUDE, page).other_package  # not this page's id at all
 
 
 def test_a_failed_fetch_or_an_unparsed_page_asks_for_a_retry():
@@ -516,7 +534,10 @@ B = "https://www.cisa.gov/b"
 def test_http_page_gets_the_body_of_a_200_only():
     o = FakeOpener({A: (200, "Página CVE-2026-0001".encode())})
     assert rules.http_page(A, opener=o) == (200, "Página CVE-2026-0001")
-    assert o.seen == [A] and o.all_closed() and o.made[0].asked == rules.MAX_PAGE_BYTES
+    assert o.seen == [A] and o.all_closed() and o.made[0].asked == rules.MAX_PAGE_BYTES + 1
+    # A body over the limit is a failure to retry, never a page cut short and read as whole.
+    assert rules.http_page(A, opener=FakeOpener({A: (200, b"x" * (rules.MAX_PAGE_BYTES + 1))})) == (0, "")
+    assert rules.http_page(A, opener=FakeOpener({A: (200, b"x" * rules.MAX_PAGE_BYTES)}))[0] == 200
     o = FakeOpener({A: (200, b"\xff\xfe broken utf-8")})
     assert rules.http_page(A, opener=o)[0] == 200  # undecodable bytes are replaced, never raised
     for status in (404, 403, 500):
@@ -595,3 +616,55 @@ def test_http_page_without_network_is_a_failure_not_a_raise():
     # The conftest blocks sockets; the production fetch reports failure, never raises.
     assert rules.http_page(KEV_PAGE) == (0, "")
 
+
+
+# ------------------------------------------- the whole-branch review's findings (h340)
+
+def test_a_trailing_dot_host_is_read_as_the_same_site():
+    """github.com. is github.com to every rule: a repository advisory URL spelled with the
+    dot is still read as that advisory, never as a plain page that only has to name things."""
+    dotted = REPO.replace("github.com/", "github.com./") + G1
+    assert rules.host_of(dotted) == rules.host_of("https://WWW.GitHub.com./x") == "github.com"
+    assert rules.host_of(None) == rules.host_of("https://[bad") == ""
+    wrong_pkg = advisory_page(G1, package="claude-code-router", ecosystem="npm", description="CVE-2026-0001 Claude Code")
+    assert not rules.evidence(ghsa_cand(sources=(Source(dotted, None),)), CLAUDE, served({dotted: (200, wrong_pkg)})).ok
+    wrong_id = advisory_page(G2, description=f"{G1} Claude Code")
+    assert not rules.evidence(ghsa_cand(sources=(Source(dotted, None),)), CLAUDE, served({dotted: (200, wrong_id)})).ok
+    assert rules.evidence(ghsa_cand(sources=(Source(dotted, None),)), CLAUDE, served({dotted: (200, advisory_page(G1))})).ok
+
+
+def test_a_page_without_its_sidebar_is_not_read():
+    """A description cannot supply the CVE ID of a page that lost its own: cut short, the
+    field renamed, or its value not an id."""
+    spoof = "</p><h3>CVE ID</h3><div>CVE-2026-9999</div><h3>Severity</h3><span>Critical</span><p>"
+    whole = advisory_page(G1, cve="CVE-2026-0007").replace("Details.", spoof)
+    assert rules.read_advisory(whole).cve == "CVE-2026-0007" and rules.read_advisory(whole).severity == "high"
+    cut = whole[:whole.index("<h3>Severity</h3><span>High")]  # the first megabyte ended inside the description
+    assert "CVE-2026-9999" in cut and rules.read_advisory(cut) is None
+    assert rules.read_advisory(cut + "</body></html>") is None or rules.read_advisory(cut + "</body></html>").cve != "CVE-2026-0007"
+    renamed = whole.replace("<h3>CVE ID</h3><div>CVE-2026-0007", "<h3>CVE</h3><div>CVE-2026-0007")
+    assert rules.read_advisory(renamed).cve == "CVE-2026-9999"  # a whole page whose last CVE ID label is the description's
+    for value in ("see below", "CVE-2026-0007 and more", ""):
+        assert rules.read_advisory(advisory_page(G1).replace("No known CVE", value)) is None, value
+    c = ghsa_cand(id="CVE-2026-9999")
+    assert not rules.evidence(c, CLAUDE, served({REPO + G1: (200, cut)})).ok
+    assert rules.evidence(c, CLAUDE, served({REPO + G1: (200, cut)})).unparsed
+
+
+def test_the_run_budget_leaves_what_is_confirmed_standing():
+    def spent(url, allow):
+        raise rules.PageBudget
+    kev = rules.evidence(cand(exploited=True, sources=(Source(KEV_PAGE, None), Source(VENDOR, None))), CLAUDE, spent)
+    assert kev.ok and kev.kev and not kev.retry  # a KEV entry never waits on an optional vendor page
+    none = rules.evidence(ghsa_cand(), CLAUDE, spent)
+    assert not none.ok and none.retry and none.budget
+    calls = []
+
+    def one_then_spent(url, allow):
+        calls.append(url)
+        if len(calls) > 1:
+            raise rules.PageBudget
+        return 200, "CVE-2026-0001 claude code"
+    c = cand(product_text="claude code", sources=(Source(VENDOR, None), Source(VENDOR + "b", None)))
+    ev = rules.evidence(c, CLAUDE, one_then_spent)
+    assert ev.ok and ev.url == VENDOR and not ev.retry

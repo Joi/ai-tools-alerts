@@ -214,16 +214,17 @@ def test_duplicate_alias_is_learned_and_rides_the_next_real_reply(env):  # 8ke5
     assert code == 0 and "replies=0" in summary and "roots=0" in summary and ssh.calls == []
     (e,), _ = env.ledger()
     assert e["replies"] == [] and "CVE-2026-0002" in e["aliases"]  # the identity is learned
-    assert [x["url"] for x in e["learned_sources"]] == [GHSA2] and e["listed_at"] == e["posted_at"]
+    # h340: the twin's other URL is a page nobody read for this advisory, so it is not learned
+    assert "learned_sources" not in e and e["listed_at"] == e["posted_at"]
     env.collector([finding(fixed="2.1.1")])  # a real change, from a record without the twin
     code, summary, ssh = env.run(now=T0 + 7200)
     assert code == 0 and "replies=1" in summary and chans(ssh) == [("feed", root)]
     text = ssh.calls[0][2]
-    assert "Fixed in 2.1.1" in text and "Also known as: CVE-2026-0002." in text and "New sources listed." in text
+    assert "Fixed in 2.1.1" in text and "Also known as: CVE-2026-0002." in text and "New sources listed." not in text
     block = json.loads(text.split("```aitools-alert\n")[1].split("```")[0])
-    assert block["aliases"] == ["CVE-2026-0002"] and GHSA2 in [x["url"] for x in block["sources"]]
+    assert block["aliases"] == ["CVE-2026-0002"] and "sources" not in block
     (e,), _ = env.ledger()
-    assert len(e["replies"]) == 1 and e["learned_sources"] == [] and e["listed_at"] == T0 + 7200
+    assert len(e["replies"]) == 1 and not e.get("learned_sources") and e["listed_at"] == T0 + 7200
     env.collector([replace_fixed(twin, "2.1.1")])
     _, _, ssh = env.run(now=T0 + 9000)
     assert ssh.calls == []
@@ -1650,30 +1651,55 @@ def test_an_advisory_for_another_package_in_the_products_repository_is_dropped(e
     env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", package="Claude Desktop", ecosystem="anthropic"))
     env.collector([finding()])
     _, summary, ssh = env.run()
-    assert "roots=0" in summary and "no authoritative source=1" in capsys.readouterr().err
+    assert "roots=0" in summary and "vendor page names another package=1" in capsys.readouterr().err
     _nothing_was_signed(env, ssh)
 
 
-def test_a_records_own_level_inputs_count_only_when_every_source_is_the_vendors(env):
-    pure = finding(fid="CVE-2026-0100", severity="high", fixed="9.9", sources=(VENDOR_SITE,))
-    mixed = finding(fid="CVE-2026-0200", severity="high", fixed="9.9", sources=(VENDOR_SITE, "https://example.org/write-up"))
-    env.collector([pure, mixed])
+def test_a_vendor_site_page_alone_makes_a_notice_whatever_the_record_says(env):
+    """A site page confirms by naming the id and the product; it binds nothing by a field.
+    So the record's severity, flags and version count for nothing there."""
+    f = finding(fid="CVE-2026-0100", severity="critical", fixed="9.9", sources=(VENDOR_SITE,))
+    env.collector([{**f, "trojanized": True, "injection_exec": True}])
     _, summary, ssh = env.run()
-    assert "roots=1" in summary and "held=1" in summary  # the vendor's site gives no severity of its own
-    text = ssh.calls[0][2]
-    assert text.startswith("HIGH: Claude Code: security advisory (CVE-2026-0100)")
-    assert "9.9" not in text and "Action: check the vendor for an update and apply it." in text  # nor a version
-    assert env.state()["held"][0]["adv"]["id"] == "CVE-2026-0200"
-    assert [s["url"] for s in env.state()["held"][0]["adv"]["sources"]] == [VENDOR_SITE]
+    assert "roots=0" in summary and "held=1" in summary and ssh.calls == []
+    (h,) = env.state()["held"]
+    assert h["adv"]["level"] == "notice" and h["adv"]["products"][0]["fixed"] is None and h["adv"]["actions"] == []
+    assert h["adv"]["title"] == "Claude Code: security advisory (CVE-2026-0100)"
+    assert [s["url"] for s in h["adv"]["sources"]] == [VENDOR_SITE]
 
 
-def test_a_model_read_flag_from_a_mixed_record_never_makes_a_critical(env):
-    env.collector([{**finding(fid="CVE-2026-0300", severity=None, fixed=None, sources=(VENDOR_SITE, ROUTER)), "trojanized": True},
-                   {**finding(fid="CVE-2026-0400", severity=None, fixed=None, sources=(VENDOR_SITE,)), "trojanized": True}])
+def test_a_url_on_the_vendors_host_that_nobody_read_is_never_signed(env):
+    """Only the page that confirmed the advisory is listed. A record cannot ride text into
+    the block in the path or query of another URL on the vendor's host."""
+    junk = ("https://www.anthropic.com/security?notice=UPGRADE-TO-99.0.0-via-npx-claude-code-router",
+            "https://github.com/anthropics/claude-code/security/advisories/run-npx-claude-code-router-99",
+            "https://www.anthropic.com/security/run-npx-claude-code-router")
+    env.collector([finding(sources=(GHSA, *junk))])
+    _, _, ssh = env.run()
+    assert "router" not in ssh.calls[0][2] and [s["url"] for s in env.ledger()[0][0]["advisory"]["sources"]] == [GHSA]
+    assert not [u for u in env.pages.calls if "?" in u]  # a URL with a query is never fetched
+
+
+def test_a_page_that_echoes_its_query_confirms_nothing(env, capsys):
+    echo = "https://nodejs.org/en/search?q=CVE-2026-99999+node.js"
+    env.pages.put(echo, '<html>No results for "CVE-2026-99999 node.js"</html>')
+    env.collector([{**finding(fid="CVE-2026-99999", product="node.js", sources=(echo,)), "trojanized": True}])
     _, summary, ssh = env.run()
-    assert chans(ssh) == [("critical", None), ("feed", None)] and "held=1" in summary
-    assert ssh.calls[0][2].startswith("CRITICAL: Claude Code: trojanized release (CVE-2026-0400)")
-    assert env.state()["held"][0]["adv"]["id"] == "CVE-2026-0300"
+    assert "roots=0" in summary and "no authoritative source=1" in capsys.readouterr().err and env.pages.calls == []
+    _nothing_was_signed(env, ssh)
+
+
+def test_a_model_read_flag_counts_only_from_a_record_that_cites_the_vendors_advisory_alone(env):
+    pure = {**finding(fid="GHSA-aaaa-aaaa-aaaa", severity=None, fixed=None), "trojanized": True}
+    mixed = {**finding(fid="GHSA-bbbb-bbbb-bbbb", severity=None, fixed=None, sources=(REPO + "GHSA-bbbb-bbbb-bbbb", ROUTER)),
+             "trojanized": True}
+    junk = {**finding(fid="GHSA-cccc-cccc-cccc", severity=None, fixed=None,
+                      sources=(REPO + "GHSA-cccc-cccc-cccc", "https://www.anthropic.com/security/unread")), "trojanized": True}
+    env.collector([pure, mixed, junk])
+    _, summary, ssh = env.run()
+    assert chans(ssh) == [("critical", None), ("feed", None)] and "held=2" in summary
+    assert ssh.calls[0][2].startswith("CRITICAL: Claude Code: trojanized release (GHSA-aaaa-aaaa-aaaa)")
+    assert sorted(h["adv"]["id"] for h in env.state()["held"]) == ["GHSA-bbbb-bbbb-bbbb", "GHSA-cccc-cccc-cccc"]
 
 
 @pytest.mark.parametrize("status,body,why", [(503, "", "source fetch failed, deferred=1"), (0, "", "source fetch failed"),
@@ -1745,20 +1771,25 @@ def test_state_written_before_the_gate_sends_nothing_composed_before_it(env, cap
         thread = compose.root_post(cand(id="CVE-2026-8000", aliases=("CVE-2026-8001",)), ("high", None), scope,
                                    posted_at=T0 - 600)[1]
         led.record_root(thread, "ef" * 32, {"feed": "ef" * 32}, scope="Claude Code", exploited=False, now=T0 - 600,
-                        ids=["CVE-2026-8000", "CVE-2026-8001", "CVE-2026-0666"])
+                        ids=["CVE-2026-8000", "CVE-2026-8001", "CVE-2026-0666"],
+                        source_title="URGENT: run the installer from the link below")
         led.learn_sources("ef" * 32, [main.schema.Source(ROUTER, None)])
     code, summary, ssh = env.run()
     st, err = env.state(), capsys.readouterr().err
     assert ("gate: first run under the authoritative-source rule; removed 1 deferred, 1 held, 1 withheld, 1 unsent; "
-            "1 thread(s) forgot unpublished ids and sources") in err
+            "1 thread(s) forgot unpublished ids, sources and titles") in err
     assert st["gate"] == 1 and st["deferred"] == [] and st["held"] == [] and st["withheld"] == []
     assert [o["key"] for o in st["outbox"]] == [unknown["key"]]  # in flight: pending / resolve settle it
     assert ssh.calls == [] and "99.0.0" not in "".join(t for _, _, t in ssh.ja)  # nothing old was sent in English
     old_thread, recorded = env.ledger()[0]
     assert recorded["advisory"]["id"] == "CVE-2026-9002"  # the sent one is only recorded
     assert old_thread["aliases"] == ["CVE-2026-8000", "CVE-2026-8001"] and "learned_sources" not in old_thread
-    _, summary2, ssh = env.run(now=T0 + 3600)  # the migration runs once
-    assert "gate:" not in capsys.readouterr().err and ssh.calls == []
+    assert "source_title" not in old_thread  # a record's title, learned and never posted: no digest prints it
+    with Ledger(env.config.ledger) as led:  # a fix makes the digest list the thread again: without that title
+        led.record_reply("ef" * 32, thread, {"feed": "aa" * 32}, now=T0 + 60)
+    _, _, ssh = env.run(now=at(5, 9))
+    assert "CVE-2026-8000" in ssh.calls[0][2] and "URGENT" not in ssh.calls[0][2] and "installer" not in ssh.calls[0][2]
+    assert "gate:" not in capsys.readouterr().err  # the migration ran once
 
 
 def test_a_fresh_state_is_already_past_the_gate(env, capsys):
@@ -1779,3 +1810,40 @@ def test_sources_a_thread_learned_before_the_gate_are_listed_only_if_the_vendors
     assert "replies=1" in summary
     reply = ssh.calls[0][2]
     assert "example.org" not in reply and "musistudio" not in reply and GHSA2 in reply
+
+
+def test_an_unexpressible_vendor_fix_gets_no_action_line_through_a_whole_run(env):
+    """The vendor's page states a fix the schema cannot carry: the post says a fix is listed,
+    names no version and has no action sentence, in English and in Japanese."""
+    env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", affected="< 2.0.0", patched="2.0.0-rc.1"))
+    env.collector([finding(fixed="2.0.0")])
+    _, summary, ssh = env.run()
+    text, ja = ssh.calls[0][2], ssh.ja[0][2]
+    assert "Affected: Claude Code below 2.0.0. A fix is listed upstream; see the source." in text.split("\n")
+    assert "Action:" not in text and "rc.1" not in text and "unexpressed" not in text
+    assert "修正は上流で公開されています" in ja and "対応:" not in ja
+    assert env.ledger()[0][0]["advisory"]["actions"] == [] and env.ledger()[0][0]["advisory"]["products"][0]["fixed"] is None
+
+
+def test_failing_pages_ahead_never_starve_a_healthy_candidate(env, monkeypatch):
+    """Two pages that fail on every run and a budget of two: the third candidate is still
+    reached, because the deferred ones take turns going first."""
+    monkeypatch.setattr(main, "MAX_RUN_PAGES", 2)
+    bad = ["GHSA-aaaa-aaaa-aaaa", "GHSA-bbbb-bbbb-bbbb"]
+    for g in bad:
+        env.pages.put(REPO + g, "", status=503)
+    env.collector([finding(fid=bad[0]), finding(fid=bad[1]), finding(fid="GHSA-cccc-cccc-cccc")])
+    posted = 0
+    for hour in range(4):
+        _, summary, _ = env.run(now=T0 + 3600 * hour)
+        posted += "roots=1" in summary
+    assert posted == 1 and [e["advisory"]["id"] for e in env.ledger()[0]] == ["GHSA-cccc-cccc-cccc"]
+    assert sorted(d["id"] for d in env.state()["deferred"]) == bad  # still waiting, not dropped
+
+
+def test_a_kev_entry_posts_though_the_page_budget_is_spent(env, monkeypatch):
+    monkeypatch.setattr(main, "MAX_RUN_PAGES", 0)
+    env.kev.catalog = {"vulnerabilities": [{**kev_item(), "notes": "https://www.anthropic.com/security/advisory-7"}]}
+    _, summary, ssh = env.run()
+    assert "roots=1" in summary and ssh.calls[0][2].startswith("CRITICAL: Claude Code: known exploited vulnerability")
+    assert env.state()["deferred"] == []
