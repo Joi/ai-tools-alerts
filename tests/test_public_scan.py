@@ -248,18 +248,18 @@ def test_a_replace_ref_does_not_hide_the_stored_object(repo):
 
 def test_a_known_tree_does_not_cover_the_same_name_in_a_new_tree(repo):
     (repo / f"{TERM}.txt").write_text("x\n")
-    commit(repo, ".")
+    added = commit(repo, ".")
     tree = oid(repo, "HEAD^{tree}")
     (repo / f"{TERM}.txt").unlink()
     commit(repo, ".")
-    assert run_known(repo, known_file(repo, tree)).returncode == 0
+    assert run_known(repo, known_file(repo, tree, added)).returncode == 0
     (repo / f"{TERM}.txt").write_text("y\n")
     (repo / "other.txt").write_text("z\n")
-    commit(repo, ".")
+    again = commit(repo, ".")
     (repo / f"{TERM}.txt").unlink()
     commit(repo, ".")
-    r = run_known(repo, known_file(repo, tree))
-    assert r.returncode == 1 and tree not in r.stdout
+    r = run_known(repo, known_file(repo, tree, added))
+    assert r.returncode == 1 and tree not in r.stdout and again in r.stdout
 
 
 def test_hit_ids_hides_tip_detail_too(repo):
@@ -268,3 +268,32 @@ def test_hit_ids_hides_tip_detail_too(repo):
     r = run_known(repo, repo.parent / "absent", "--hit-ids")
     assert r.returncode == 1 and TERM not in r.stdout + r.stderr
     assert all(len(l) == 40 for l in r.stdout.split())
+
+
+def test_a_term_spanning_directories_fails_from_history(repo):
+    terms = repo.parent / "span"
+    terms.write_text("secretdir/conf\n")
+    (repo / "secretdir").mkdir()
+    (repo / "secretdir" / "conf.txt").write_text("x\n")
+    c = commit(repo, ".")
+    (repo / "secretdir" / "conf.txt").unlink()
+    commit(repo, ".")
+    r = run(repo, terms=terms)
+    assert r.returncode == 1 and f"{c} path secretdir/conf.txt" in r.stdout
+
+
+def test_a_path_added_by_a_merge_fails(repo):
+    commit(repo, ".")
+    subprocess.run(["git", "checkout", "-q", "-b", "side"], cwd=repo, check=True)
+    commit(repo, ".")
+    subprocess.run(["git", "checkout", "-q", "-"], cwd=repo, check=True)
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"]
+    subprocess.run(git + ["merge", "-q", "--no-ff", "--no-commit", "side"], cwd=repo, check=True)
+    (repo / f"{TERM}.md").write_text("x\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(git + ["commit", "-q", "-m", "merge"], cwd=repo, check=True)
+    m = oid(repo, "HEAD")
+    (repo / f"{TERM}.md").unlink()
+    commit(repo, ".")
+    r = run(repo)
+    assert r.returncode == 1 and f"{m} path {TERM}.md" in r.stdout

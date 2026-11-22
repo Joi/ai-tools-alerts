@@ -10,7 +10,8 @@
 # too, and file names are scanned.
 # History pass: every object reachable from every ref (git rev-list --objects
 # --all, plus annotated tags), as stored, ignoring replace refs: each blob's
-# lines, each tree's entry names, each commit's and tag's raw text (author,
+# lines, each tree's entry names, each full path where a commit added it,
+# each commit's and tag's raw text (author,
 # committer, tagger, message), and every ref name.
 #
 # Known hits: a history hit inside an object whose id is listed in
@@ -188,6 +189,25 @@ if oids:
     if cat.wait() != 0:
         print("public-scan: git cat-file failed", file=sys.stderr)
         sys.exit(2)
+
+# Full paths: a term can span directories ("a/b"), which no single tree entry holds. Every path
+# that ever existed was added by some commit, so each commit's paths against each parent (the
+# root against nothing, a merge against each side) cover them; a hit is known through the commit
+# that added the path.
+if ref_names:
+    commits = git("rev-list", "--all")
+    try:
+        out = subprocess.run(["git", "diff-tree", "--stdin", "-r", "-m", "--root", "--no-renames", "--diff-filter=A",
+                              "--name-only", "-z"], input=commits, capture_output=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError) as e:
+        print(f"public-scan: git diff-tree failed: {e}", file=sys.stderr)
+        sys.exit(2)
+    ids, current = set(commits.split()), None
+    for tok in out.split(b"\0"):
+        if tok in ids:
+            current = tok
+        elif tok and current and PATTERN.search(tok):
+            hit(current, f"{current.decode()} path {show(tok)}")
 
 if HIT_IDS:
     for oid in sorted(hit_ids):
