@@ -1719,3 +1719,14 @@ def test_a_reply_says_a_range_is_in_the_source(env):  # 0dvh
     _, summary, ssh = env.run(now=T0 + 600)
     assert "replies=1" in summary and "affected versions: see the source" in ssh.calls[0][2]
     assert "影響バージョンは出典を参照" in ssh.ja[0][2]
+
+
+def test_a_spaced_timestamp_survives_in_the_held_notice(env):  # 0dvh delta review
+    old = finding(fixed=None, severity="high")
+    old["sources"][0]["published_at"] = "2026-10-01 00:00:00Z"
+    env.collector([old])
+    env.run()
+    assert env.state()["held"][0]["adv"]["sources"][0]["published_at"] == "2026-10-01T00:00:00Z"
+    env.collector([finding(fixed="2.1.0", severity="high")])  # undated this time
+    _, summary, ssh = env.run(now=T0 + 3600)
+    assert "aged=1" in summary and ssh.calls == []

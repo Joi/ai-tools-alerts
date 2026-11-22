@@ -184,6 +184,8 @@ def _sources(raw) -> list[schema.Source]:
             continue
         if url not in seen:
             seen.add(url)
+            if isinstance(pub, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2} \d.*", pub):
+                pub = pub.replace(" ", "T", 1)  # 0dvh: an accepted input form; the date must survive
             pub = pub if isinstance(pub, str) and schema._DATE.fullmatch(pub) else None
             out.append(schema.Source(url, pub))
     out.sort(key=lambda s: not schema.is_primary(s.url))  # stable: primary first

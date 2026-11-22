@@ -67,7 +67,7 @@ The live feed shows three faults this slice removes.
 ## Blast radius and rollback
 
 - The poster on one Mac (uv tool install). A malformed `waiting` key fails state load as LedgerError, which sends nothing: the safe failure.
-- State migration is additive. Rollback: revert on main, reinstall; the older poster refuses a state with the extra `waiting` key, so remove that key from the state file (one `jq 'del(.waiting)'`) before the first run of the old version. The older poster also refuses every reply to a thread rooted after this change (its title templates know only the ledger-key form, and it refuses a set severity): those replies wait in `withheld` for `resolve`. Roll back before such a thread needs a reply, or resolve them by hand.
+- State migration is additive. Rollback: revert on main, reinstall; the older poster refuses a state with the extra `waiting` key, so remove that key from the state file (one `jq 'del(.waiting)'`) before the first run of the old version. The older poster also refuses to compose any reply to a thread rooted after this change (its title templates know only the ledger-key form, and it refuses a set severity). That refusal is a composition failure: the update is counted as withheld and dropped, not queued, so `resolve` cannot recover it (delta review). A rollback therefore keeps this slice's `compose._titles` and `_publishable` (a revert of main.py's hold and age limit only), never a whole revert, once a thread has been rooted under the new titles.
 - Readers: block keys unchanged; `advisory_severity` was already a nullable string in the schema.
 
 ## Assumes
