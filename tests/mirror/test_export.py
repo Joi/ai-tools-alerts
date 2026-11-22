@@ -566,7 +566,8 @@ def test_index_subscribe_block(env):
     sub = page(env).split('<section id="subscribe">')[1].split("</section>")[0]
     assert 'href="https://mirror.example.invalid/alerts/feed.atom"' in sub
     assert em.PIPX_LINE in sub and em.PIPX_LINE in (ROOT / "README.md").read_text()
-    assert em.PIPX_LINE.endswith("@v" + aitools_alerts.__version__)
+    assert em.PIPX_LINE == f"pipx install git+{em.REPO_URL}@{em.RELEASE_COMMIT}"
+    assert em.RELEASE_TAG in sub and em.RELEASE_COMMIT in sub
     assert "#security-feed" in sub and "#security-critical" in sub and "buzz.ai-tools.md" in sub
     assert f'href="{em.REPO_URL}"' in sub
     assert f'href="{em.VERIFY_URL}"' in sub and em.RELEASE_SIGNER_FP in sub
@@ -582,9 +583,10 @@ def test_release_signer_file_matches_mirror_and_readme():
     assert em.RELEASE_SIGNER_FP == "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
     readme = (ROOT / "README.md").read_text()
     assert "### Verify the release" in readme and em.RELEASE_SIGNER_FP in readme
-    tag = "v" + aitools_alerts.__version__  # the README verifies and installs the current release
+    tag = em.RELEASE_TAG  # the README verifies the pinned release, then checks out its commit
     assert f"git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v {tag}" in readme
-    assert f"git checkout --detach 'refs/tags/{tag}^{{commit}}' && pipx install --force ." in readme
+    assert f"git rev-parse '{tag}^{{commit}}'" in readme
+    assert f"git checkout --detach {em.RELEASE_COMMIT}" in readme
 
 
 def test_index_escapes_post_text(env):

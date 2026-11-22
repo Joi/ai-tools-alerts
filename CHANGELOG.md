@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.5 — 2026-11-23
+
+The install path is pinned to a commit. The README and the Quick install prompt name the release tag and its 40-character commit, and both checks (`git tag -v` against `trust/allowed_signers`, and `git rev-parse <tag>^{commit}` compared with that commit) come before any install command; a failed check means install nothing. The lines that installed from a tag name or from the unsigned v0.1.0 are gone, and the README's "Install" section installs whatever verified checkout it runs in. The README on the default branch pins the latest release; the README inside a release pins the one before it, since a commit cannot name its own hash. The mirror page's install line follows the README's.
+
+The build backend is pinned to `setuptools==80.9.0`. `ops/vm/README.md` takes every file it installs on the relay VM from one export of the verified release, never from a checkout or a branch. `SECURITY.md` asks for reports through GitHub's private vulnerability reporting, and `.github/CODEOWNERS` names the owner of the trust, spec, ops, hook, skill and snippet files. `scripts/public-scan.sh` also scans history: every object reachable from every ref, commit messages and identities included.
 
 An alert whose source names no fixed version no longer says that no fix is published. CISA's Known Exploited Vulnerabilities catalogue carries no version data, so on 2026-11-10 the Chromium and OpenSSH alerts said "no fix is published yet" while both vendors had shipped one. Such an alert now says the source does not state a fixed version, tells the reader to check the vendor for an update, and, for a known-exploited item, to update now if a release is out; the Japanese twin and the digest line say the same. A curator post with no fixed version says "No fixed version stated." The "Fixed in" wording and the wording for a fix the schema cannot express are unchanged.
 

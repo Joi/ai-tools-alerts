@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools==80.9.0"]  # exact: the build backend runs at every install (L3)
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "aitools-alerts"
-version = "0.1.4"
+version = "0.1.5"
 description = "Security alerts for people running AI agents: verify, match and act on signed advisories"
 readme = "README.md"
 license = "MIT"

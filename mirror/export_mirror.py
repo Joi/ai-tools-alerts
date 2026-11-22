@@ -61,8 +61,12 @@ _XML_ILLEGAL = re.compile(r"[^\t\n\r\u0020-\ud7ff\ue000-\ufffd\U00010000-\U0010f
 ATOM_NS = "http://www.w3.org/2005/Atom"
 MALFORMED = None  # a psql line that is not JSON
 CHAT_KIND = 9  # NIP-29 group chat message: the only kind posters and curators send
-PIPX_LINE = "pipx install git+https://github.com/Joi/ai-tools-alerts@v0.1.4"  # README's, verbatim
 REPO_URL = "https://github.com/Joi/ai-tools-alerts"
+# The release the README pins: a signed tag and the commit it must resolve to. A release commit
+# cannot name its own hash, so these name the latest release that existed when they were written.
+RELEASE_TAG = "v0.1.4"
+RELEASE_COMMIT = "b33573fb812d78239252b54413949dc87ec85348"
+PIPX_LINE = f"pipx install git+{REPO_URL}@{RELEASE_COMMIT}"  # README's, verbatim
 VERIFY_URL = REPO_URL + "#verify-the-release"
 RELEASE_SIGNER_FP = "SHA256:DS1FNZqf0HglC1QEQ50LS4AJny8P8MxvrHRj4vPEqaA"  # the key in trust/allowed_signers
 RELAY_HOST = "buzz.ai-tools.md"
@@ -531,8 +535,8 @@ def index_doc(events: dict[str, list[dict]], m, channels: dict, now: int,
 <ul>
 <li>Atom feed, for you and your feed reader: <a href="{_esc(atom)}">{_esc(atom)}</a></li>
 <li>The same alerts as signed JSON: <a href="{_esc(feed_json)}">{_esc(feed_json)}</a></li>
-<li>Release tags from v0.1.1 are signed by the SSH key <code>{_esc(RELEASE_SIGNER_FP)}</code>; how to check one before you install: <a href="{_esc(VERIFY_URL)}">{_esc(VERIFY_URL)}</a></li>
-<li>Command-line tool for your agent, which verifies every alert's signature: <code>{_esc(PIPX_LINE)}</code>, then <code>aitools-alerts init</code></li>
+<li>Release tags are signed by the SSH key <code>{_esc(RELEASE_SIGNER_FP)}</code>. The pinned release is <code>{_esc(RELEASE_TAG)}</code>, commit <code>{_esc(RELEASE_COMMIT)}</code>; check both before you install: <a href="{_esc(VERIFY_URL)}">{_esc(VERIFY_URL)}</a></li>
+<li>Command-line tool for your agent, which verifies every alert's signature, after those checks: <code>{_esc(PIPX_LINE)}</code>, then <code>aitools-alerts init</code></li>
 <li>Source and instructions: <a href="{_esc(REPO_URL)}">{_esc(REPO_URL)}</a></li>
 </ul>
 <p>The channels {names} on {_esc(RELAY_HOST)} are for ai-tools community members; reading the relay needs a member's auth token.</p>
@@ -543,8 +547,8 @@ def index_doc(events: dict[str, list[dict]], m, channels: dict, now: int,
 <ul>
 <li>日本語の Atom フィード (フィードリーダー向け): <a href="{_esc(atom_ja)}">{_esc(atom_ja)}</a></li>
 <li>署名付き JSON (英語と同じもの): <a href="{_esc(feed_json)}">{_esc(feed_json)}</a></li>
-<li>v0.1.1 以降のリリースタグは SSH 鍵 <code>{_esc(RELEASE_SIGNER_FP)}</code> で署名されています。インストールの前に確かめる方法: <a href="{_esc(VERIFY_URL)}">{_esc(VERIFY_URL)}</a></li>
-<li>エージェント向けのコマンドラインツール (各アラートの署名を検証します): <code>{_esc(PIPX_LINE)}</code>、続けて <code>aitools-alerts init</code>。設定ファイルに <code>lang = "ja"</code> と書くと日本語で表示します。</li>
+<li>リリースタグは SSH 鍵 <code>{_esc(RELEASE_SIGNER_FP)}</code> で署名されています。固定しているリリースは <code>{_esc(RELEASE_TAG)}</code>、コミット <code>{_esc(RELEASE_COMMIT)}</code> です。インストールの前に両方を確かめてください: <a href="{_esc(VERIFY_URL)}">{_esc(VERIFY_URL)}</a></li>
+<li>エージェント向けのコマンドラインツール (各アラートの署名を検証します)。確認が済んでから: <code>{_esc(PIPX_LINE)}</code>、続けて <code>aitools-alerts init</code>。設定ファイルに <code>lang = "ja"</code> と書くと日本語で表示します。</li>
 <li>ソースと説明: <a href="{_esc(REPO_URL)}">{_esc(REPO_URL)}</a></li>
 </ul>
 <p>{_esc(RELAY_HOST)} の {names} チャンネルは ai-tools コミュニティのメンバー用です。リレーを読むにはメンバーの認証トークンが必要です。</p>

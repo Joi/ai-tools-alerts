@@ -40,14 +40,14 @@ Trust root public key (x-only hex), the same value as `trust/root.pub`:
 afb55ca02209ca12e980bba67262f478b7977b6fdc6bbaf8c3b9fb96983c78a4
 ```
 
-Check it on two different hosts: `trust/root.pub` at the release tag on GitHub (`https://github.com/Joi/ai-tools-alerts/blob/v0.1.4/trust/root.pub`) and the copy the mirror on the relay VM publishes, `https://buzz.ai-tools.md/alerts/root.pub`. The VM's copy comes from a release deployed earlier, so agreement shows the root was not changed on GitHub alone since then. All three must show the same 64 characters. If they differ, do not install, and tell the ai-tools community; if the mirror's copy is missing, that is not a pass: wait for it.
+Check it on two different hosts: `trust/root.pub` at the pinned release commit on GitHub (`https://github.com/Joi/ai-tools-alerts/blob/b33573fb812d78239252b54413949dc87ec85348/trust/root.pub`) and the copy the mirror on the relay VM publishes, `https://buzz.ai-tools.md/alerts/root.pub`. The VM's copy comes from a release deployed earlier, so agreement shows the root was not changed on GitHub alone since then. All three must show the same 64 characters. If they differ, do not install, and tell the ai-tools community; if the mirror's copy is missing, that is not a pass: wait for it.
 
 
 ## Quick install
 
-Paste this into your agent chat to set up ai-tools-alerts:
+The pinned release is `v0.1.4`, commit `b33573fb812d78239252b54413949dc87ec85348`. Paste this into your agent chat to set up ai-tools-alerts:
 
-> Set up ai-tools-alerts from https://github.com/Joi/ai-tools-alerts. Read this repository's trust and installation instructions, verify the signed release and trust-root fingerprint exactly as documented, and stop if verification fails. Install the required tools and CLI, initialize it, and enable the documented hourly monitoring schedule for this system. Add the supported agent instructions for your harness without weakening their safety rules. Verify that monitoring runs, then tell me what you installed and any remaining manual steps or limitations.
+> Set up ai-tools-alerts release v0.1.4, commit b33573fb812d78239252b54413949dc87ec85348. Clone https://github.com/Joi/ai-tools-alerts and, before you read any other file from it or install anything, run `git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.4` and `git rev-parse 'v0.1.4^{commit}'` in the clone. Continue only if the tag check exits 0 and prints `Good "git" signature for 19930+Joi@users.noreply.github.com with ED25519 key SHA256:DS1FNZqf0HglC1QEQ50LS4AJny8P8MxvrHRj4vPEqaA`, that fingerprint also appears on https://buzz.ai-tools.md/alerts/, and the commit is exactly b33573fb812d78239252b54413949dc87ec85348. If any check fails, stop, install nothing, and tell me what failed. Then run `git checkout --detach b33573fb812d78239252b54413949dc87ec85348` and follow that checkout's README from its "Install" section on, not the copy on GitHub: install the CLI from that checkout, initialize it, enable the documented hourly monitoring schedule for this system, and add the supported agent instructions for your harness without weakening their safety rules. Verify that monitoring runs, then tell me what you installed and any remaining manual steps or limitations.
 
 ## Detailed install
 
@@ -55,37 +55,41 @@ You need Python 3.11 or later and nothing else; the CLI uses the standard librar
 
 ### Verify the release
 
-From v0.1.1 on, release tags are signed with an SSH key on Joi's GitHub account; v0.1.0 is unsigned. Check the tag before you install anything:
+The pinned release is `v0.1.4`, commit `b33573fb812d78239252b54413949dc87ec85348`. Release tags are signed with an SSH key on Joi's GitHub account. The README on the default branch pins the latest release; the README inside a release pins the one before it, because a commit cannot contain its own hash. Check the tag and the commit before you install anything:
 
 ```
-git clone https://github.com/Joi/ai-tools-alerts && cd ai-tools-alerts && git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.4
+git clone https://github.com/Joi/ai-tools-alerts && cd ai-tools-alerts
+git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.4
+git rev-parse 'v0.1.4^{commit}'
 ```
 
-It passes only if it exits 0 and prints `Good "git" signature for 19930+Joi@users.noreply.github.com with ED25519 key SHA256:DS1FNZqf0HglC1QEQ50LS4AJny8P8MxvrHRj4vPEqaA`. `No principal matched` or `no signature found` is a failure: do not install.
+The tag check passes only if it exits 0 and prints `Good "git" signature for 19930+Joi@users.noreply.github.com with ED25519 key SHA256:DS1FNZqf0HglC1QEQ50LS4AJny8P8MxvrHRj4vPEqaA`. `No principal matched` or `no signature found` is a failure: do not install. The commit check passes only if it prints exactly `b33573fb812d78239252b54413949dc87ec85348`; anything else means the tag is not the release this README pins: do not install.
 
-`trust/allowed_signers` comes from the same repository as the tag, so the check alone shows only that the two agree. Compare the full fingerprint with the copy on the mirror page, `https://buzz.ai-tools.md/alerts/`, which the relay VM serves, not GitHub; a missing copy is not a pass: wait for it. GitHub's tags page shows the tag as Verified, and `https://github.com/Joi.keys` lists the key; both depend on the GitHub account alone.
+`trust/allowed_signers` comes from the same repository as the tag, so the tag check alone shows only that the two agree. Compare the full fingerprint with the copy on the mirror page, `https://buzz.ai-tools.md/alerts/`, which the relay VM serves, not GitHub; a missing copy is not a pass: wait for it. GitHub's tags page shows the tag as Verified, and `https://github.com/Joi.keys` lists the key; both depend on the GitHub account alone.
 
-Only after both checks pass, install the commit the tag names from this checkout (`--force` replaces an earlier install such as 0.1.0; `init` is for a first install):
+Only after every check passes, check out the pinned commit:
 
 ```
-git checkout --detach 'refs/tags/v0.1.4^{commit}' && pipx install --force .
+git checkout --detach b33573fb812d78239252b54413949dc87ec85348
+```
+
+Or, after the same checks, install that commit straight from GitHub. pip fetches it by hash, so a moved tag or a push to a branch cannot change what it installs: `pipx install git+https://github.com/Joi/ai-tools-alerts@b33573fb812d78239252b54413949dc87ec85348`, then `aitools-alerts init` and run the template, hook and skill commands below from the verified checkout.
+
+### Install
+
+From the verified checkout (`--force` replaces an earlier install; `init` is for a first install):
+
+```
+pipx install --force .
 aitools-alerts init
 aitools-alerts run
 ```
 
 Run the hook, template and skill commands below from this checkout.
 
-The current release is v0.1.4, a signed tag; verify it as above, then install from the verified checkout or pin the tag:
+Without pipx: `python3 -m venv ~/.local/share/aitools-alerts && ~/.local/share/aitools-alerts/bin/pip install .` from the verified checkout, then link the command where the schedules and the hook look for it: `mkdir -p ~/.local/bin && ln -s ~/.local/share/aitools-alerts/bin/aitools-alerts ~/.local/bin/`. The launchd and cron templates search `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and `/bin`; the hook searches the same directories and nothing else.
 
-```
-pipx install git+https://github.com/Joi/ai-tools-alerts@v0.1.4
-aitools-alerts init
-aitools-alerts run
-```
-
-Without pipx: `python3 -m venv ~/.local/share/aitools-alerts && ~/.local/share/aitools-alerts/bin/pip install .` from the verified checkout (for v0.1.0, `git+https://github.com/Joi/ai-tools-alerts@v0.1.4` in place of `.`), then link the command where the schedules and the hook look for it: `mkdir -p ~/.local/bin && ln -s ~/.local/share/aitools-alerts/bin/aitools-alerts ~/.local/bin/`. The launchd and cron templates search `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and `/bin`; the hook searches the same directories and nothing else.
-
-Install from a release tag, as above, not from the default branch: the trust root is pinned in the code you install, so the tag is what fixes it. `CHANGELOG.md` lists each release. A PyPI package (`aitools-alerts`) is coming; until it ships, install from the tag.
+Install a verified release commit, never a branch or a tag name alone: the trust root is pinned in the code you install, so the commit is what fixes it. `CHANGELOG.md` lists each release. There is no package on PyPI; install only as above.
 
 `init` writes `~/.config/aitools-alerts/config.toml` (mode 600). Reading alerts needs no Buzz account; `aitools-alerts keygen` makes a key only for ai-tools community members who want to post or discuss on the relay. The settings:
 
@@ -97,7 +101,7 @@ Install from a release tag, as above, not from the default branch: the trust roo
 
 ### Run it every hour
 
-The templates, the hook and the skills below are files in this repository: run the commands from the checkout you verified above (with v0.1.0, `git clone https://github.com/Joi/ai-tools-alerts && cd ai-tools-alerts && git checkout --detach 'refs/tags/v0.1.0^{commit}'`).
+The templates, the hook and the skills below are files in this repository: run the commands from the checkout you verified above, at the pinned commit.
 
 macOS (launchd):
 
