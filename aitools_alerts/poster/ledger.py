@@ -249,6 +249,24 @@ class Ledger:
             self._save()
         return Entry(**e)
 
+    def forget_unpublished(self) -> int:
+        """Drop what threads learned without publishing it: every id that is not in the
+        thread's published advisory, and every learned source. Run once by main's h340
+        gate, so nothing learned from an unconfirmed record is published or joins
+        threads later. Returns how many threads changed."""
+        changed = 0
+        for e in self._state()["entries"]:
+            adv = e.get("advisory") or {}
+            public = _keys([adv.get("id"), *(adv.get("aliases") or [])])
+            kept = [a for a in e["aliases"] if isinstance(a, str) and a.casefold() in public]
+            if kept != e["aliases"] or e.get("learned_sources"):
+                e["aliases"] = kept
+                e.pop("learned_sources", None)
+                changed += 1
+        if changed:
+            self._save()
+        return changed
+
     def learn_title(self, root_event_id: str, title: str) -> None:
         """A source title learned after the root posted: kept for the digest, never posted."""
         e = self._entry(root_event_id)

@@ -7,7 +7,7 @@ import pytest
 from aitools_alerts import schema
 from aitools_alerts.schema import (
     LEVELS, ROLES, VERBS, Action, Advisory, Product, Source,
-    is_primary, load_scope, parse_post, render_post,
+    is_primary, load_primary_domains, load_scope, parse_post, render_post,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -345,18 +345,58 @@ def test_is_primary_accepts_www_trailing_dot_and_case():
 
 
 def test_load_scope_rejects_bad_entries(tmp_path):
-    good = {"name": "X", "ecosystem": "x", "tier": 1, "match": ["x"]}
-    for bad in (dict(good, match=["Upper"]), dict(good, match=[]),
-                dict(good, tier=3), dict(good, tier=True), dict(good, extra=1)):
-        p = tmp_path / "scope.json"
-        p.write_text(json.dumps({"version": 4, "entries": [bad]}))
+    good = {"name": "X", "ecosystem": "x", "tier": 1, "match": ["x", "npm:@x/y"],
+            "authority": ["anthropic.com/", "github.com/anthropics/claude-code/"]}
+    p = tmp_path / "scope.json"
+
+    def load(*entries, **top):
+        p.write_text(json.dumps({"version": 5, "entries": list(entries), **top}))
+        return load_scope(p)
+
+    assert load(good)[0].authority == ("anthropic.com/", "github.com/anthropics/claude-code/")  # the control
+    for bad in (dict(good, match=["Upper"]), dict(good, match=[]), dict(good, match=["two  spaces"]),
+                dict(good, match=[" x"]), dict(good, match=["x", "x"]),  # an identity listed twice
+                dict(good, tier=3), dict(good, tier=True), dict(good, extra=1),
+                dict(good, match_mode="word"), dict(good, not_match=["y"]),  # the word rule is gone (h340)
+                dict(good, authority=["github.com/anthropics/"]),  # an owner is not a product
+                dict(good, authority=["github.com/attacker/claude-code-router/"]),  # owner not on the primary list
+                dict(good, authority=["github.com/anthropics/claude-code/security/"]),
+                dict(good, authority=["outside.example/"]), dict(good, authority=["Anthropic.com/"]),
+                dict(good, authority=["anthropic.com"]), dict(good, authority=["https://anthropic.com/"]),
+                dict(good, authority="anthropic.com/"),
+                dict(good, components=[{"name": "C", "match": ["c"], "not_match": ["d"]}]),
+                dict(good, components=[{"name": "C", "match": ["x"]}])):  # an identity of its own entry
+        with pytest.raises(ValueError):
+            load(bad)
+    with pytest.raises(ValueError):
+        load(good, good)
+    with pytest.raises(ValueError):  # the same identity under two products
+        load(good, {"name": "Y", "ecosystem": "y", "tier": 1, "match": ["npm:@x/y"]})
+    with pytest.raises(ValueError):
+        load(good, match_mode="word")
+    for version in (4, 6, "5", True):  # version 5 is the only one read: an old poster cannot word-match this file
+        p.write_text(json.dumps({"version": version, "entries": [good]}))
         with pytest.raises(ValueError):
             load_scope(p)
-    p.write_text(json.dumps({"version": 4, "entries": [good]}))
-    assert load_scope(p)[0].name == "X"  # the control: only the defect refuses
-    p.write_text(json.dumps({"version": 4, "entries": [good, good]}))
-    with pytest.raises(ValueError):
-        load_scope(p)
+    comp = load(dict(good, components=[{"name": "C", "match": ["c"], "authority": []}, {"name": "D", "match": ["d"]}]))
+    assert [c.authority for c in comp[0].components] == [(), None]
+
+
+def test_authority_is_inside_primary_domains():
+    """Every authority prefix of the shipped scope file is on the primary-source list,
+    and on github.com names one repository of a listed owner."""
+    domains = load_primary_domains()
+    seen = 0
+    for e in load_scope():
+        for prefix in [*e.authority, *(a for c in e.components for a in c.authority or ())]:
+            host, *segs = prefix[:-1].split("/")
+            assert host in domains, prefix
+            if host == "github.com":
+                assert len(segs) == 2 and segs[0] in domains[host]["owners"], prefix
+            assert is_primary(f"https://{prefix}security/advisories/GHSA-x" if host == "github.com"
+                              else f"https://{prefix}security/x") or domains[host]["paths"], prefix
+            seen += 1
+    assert seen > 20
 
 
 # ------------------------------------------------- stage-1 review fixes
@@ -410,16 +450,14 @@ def test_render_post_type_errors_are_value_errors():
         render_post(parse_post(valid_text()), None)
 
 
-def test_scope_patterns_avoid_common_words():
+def test_scope_identities_and_ecosystems():
     entries = load_scope()
-    def scoped(text):
-        return [e.name for e in entries
-                if any(m in text.lower() for m in [*e.match, *(m for c in e.components for m in c.match)])]
-    for text in ("foo truncate library", "trustcenter portal", "cargo shipping tracker"):
-        assert scoped(text) == [], text
-    for text in ("Rust Cargo", "Rust rustc", "The Rust Programming Language Cargo",
-                 "Opencontainers runc", "Anthropic Claude Code", "Apple macOS"):
-        assert scoped(text), text
+    ids = [m for e in entries for m in [*e.match, *(m for c in e.components for m in c.match)]]
+    assert len(ids) == len(set(ids)) and all(m == m.lower().strip() for m in ids)
+    for text in ("rust cargo", "truncate", "cargo", "python", "go", "git", "rust", "cursor", "anthropic"):
+        assert text not in ids, text  # a bare common word is nobody's identity
+    for text in ("anthropic claude code", "apple macos", "opencontainers runc", "npm:@anthropic-ai/claude-code"):
+        assert text in ids, text
     assert [e.ecosystem for e in entries] == [
         "claude-code", "codex", "cursor", "gemini-cli", "hermes", "openclaw", "mcp", "skill",
         "node", "python", "go", "rust", "docker", "tailscale", "openssh", "git",

@@ -2,8 +2,8 @@
 
 A run drains the journal left by earlier runs, then reads candidates (heartbeat
 run dirs newer than the watermark, the newest validated collector record, the
-CISA KEV catalog this run fetched itself), keeps those in scope, merges them per
-scope, rates them and plans their messages: a new critical posts to ``critical``
+CISA KEV catalog this run fetched itself), keeps those in scope that an authoritative
+source confirms (``Run.admit``), merges them per scope, rates them and plans their messages: a new critical posts to ``critical``
 then ``feed``, a new high to ``feed``, a new notice waits for the daily digest
 (09:00 Asia/Tokyo), and a known advisory with something new gets a reply in each
 of its threads.
@@ -53,6 +53,7 @@ import time
 from collections import Counter
 from dataclasses import asdict, replace
 from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from aitools_alerts import TRUST_ROOT_PUBKEY, check, manifest, pull, schema
@@ -71,6 +72,8 @@ SUMMARY = ("candidates", "in_scope", "old", "roots", "copies", "replies", "held"
            "busy", "digest", "digest_held", "failed", "unknown", "ja", "ja_failed", "untranslated", "translate_failed")
 MAX_TRIES = 3  # failed calls (network, 5xx) before an event counts as untranslated
 PASS_DEADLINE = 300  # seconds of curator translation per run (the ledger lock is held)
+MAX_RUN_PAGES = 40  # authoritative pages fetched per run; a candidate past it waits for the next
+RETRY_DAYS = 7  # a candidate whose source could not be fetched is tried again this long
 _LEVEL_LINE = ("level: high", "level: notice")
 
 
@@ -83,10 +86,13 @@ def _fold(ids) -> set[str]:
 
 
 class Run:
-    def __init__(self, now, config: Config, led: Ledger, state: dict, channels, ssh, http_status,
-                 *, digest_now=False):
+    def __init__(self, now, config: Config, led: Ledger, state: dict, channels, ssh, page,
+                 *, digest_now=False, skipped: Counter | None = None):
         self.now, self.config, self.led, self.state = now, config, led, state
-        self.channels, self.ssh, self.http_status = channels, ssh, http_status
+        self.channels, self.ssh, self.fetch_page = channels, ssh, page
+        self.skipped = Counter() if skipped is None else skipped
+        self.pages: dict[str, tuple] = {}  # url -> (status, body), one fetch a run
+        self.confirmed: dict[str, set] = {}  # url -> the advisory ids its page confirmed
         self.digest_now = digest_now  # run --digest-now: today's digest whatever the hour
         self.n = Counter()
         self.deferred: dict[tuple, dict] = {}  # (scope, id) -> candidate dict, for the next run
@@ -465,11 +471,78 @@ class Run:
 
     # ------------------------------------------------------------ planning
 
+    def page(self, url, allow):
+        """One fetch per URL per run, MAX_RUN_PAGES in all (the ledger lock is held)."""
+        if url not in self.pages:
+            if len(self.pages) >= MAX_RUN_PAGES:
+                raise rules.PageBudget
+            self.pages[url] = self.fetch_page(url, allow, rules.FETCH_TIMEOUT)
+        return self.pages[url]
+
+    def admit(self, c, scope):
+        """c as an authoritative source states it, or None (h340). The candidate is a
+        pointer (an id, a product, URLs); what goes on to the merge, a level, the held
+        list and a post is what ``rules.evidence`` read from CISA's catalog or from the
+        vendor's own page: the ids that source assigns, its fixed version, range, title
+        and severity word, and only sources authoritative for the product. A record's
+        own severity text and model-read flags count only when every one of its sources
+        is such a source. Nothing confirmed and a fetch failed, a page did not parse or
+        the page budget ran out: deferred to the next run, never dropped for that."""
+        if not candidates.BOT_ID.fullmatch(c.id):
+            self.skipped["id shape"] += 1
+            return None
+        try:
+            ev = rules.evidence(c, scope, self.page)
+        except rules.PageBudget:
+            self.skipped["page budget, deferred"] += 1
+            self.defer([(c, scope)])
+            return None
+        if not ev.ok:
+            if ev.retry:
+                self.skipped["advisory page not parsed, deferred" if ev.unparsed
+                             else "source fetch failed, deferred"] += 1
+                self.defer([(c, scope)])
+            else:
+                self.skipped["no authoritative source"] += 1
+            return None
+        if ev.url is not None:
+            self.confirmed.setdefault(ev.url, set()).update(ev.ids)
+        known = _fold([c.id])
+        aliases = []
+        for a in [*c.aliases, *sorted(i.upper() if i.startswith("cve-") else "GHSA" + i[4:] for i in ev.ids)]:
+            m = candidates.BOT_ID.fullmatch(a)
+            if m and m.group(1).lower() in ev.ids and a.casefold() not in known \
+                    and not compose.SYNTHETIC_ID.fullmatch(m.group(1)):  # reserved: never an alias (_real)
+                known.add(a.casefold())
+                aliases.append(a)
+
+        def kind(url):
+            parts = urlsplit(url)
+            host = (parts.hostname or "").removeprefix("www.")
+            if rules.authoritative(url, scope):
+                return 0 if url == ev.url else 1
+            if ev.kev and host == "cisa.gov" and schema.is_primary(url):
+                return 2
+            if host == "github.com" and schema.is_primary(url) and parts.path.lower().rstrip("/") in {
+                    f"/advisories/{i}" for i in ev.ids if i.startswith("ghsa-")}:
+                return 3  # the global page of the vendor's own advisory
+            return None
+
+        kept = sorted((s for s in c.sources if kind(s.url) is not None), key=lambda s: kind(s.url))
+        pure = len(kept) == len(c.sources)
+        title = candidates._title(ev.title, candidates._Hosts(candidates.FLEET_HOSTS)) if ev.title \
+            else c.source_title if ev.kev else None
+        severity = "; ".join(x for x in (ev.severity, title if ev.url else None) if x) or None
+        return replace(c, aliases=tuple(aliases), fixed=ev.fixed, affected=ev.affected, sources=tuple(kept),
+                       source_title=title,
+                       advisory_severity=severity or (c.advisory_severity if pure else None),
+                       trojanized=c.trojanized is True and pure, injection_exec=c.injection_exec is True and pure)
+
     def level(self, c, scope):
-        level, reason = rules.level_for(c, scope, False)
-        if reason == "unverified":  # only the clauses that need a primary source fetch one
-            level, reason = rules.level_for(c, scope, rules.source_ok(c, self.http_status))
-        return level, reason
+        """``source_ok`` is "a page confirmed this advisory this run": KEV alone never
+        verifies the trojanized or injection clause."""
+        ids = rules.advisory_ids(c)
+        return rules.level_for(c, scope, any(self.confirmed.get(s.url, set()) & ids for s in c.sources))
 
     def defer(self, pairs):
         """Keep candidates for the next run: a source record can be replaced before then."""
@@ -567,7 +640,9 @@ class Run:
         prev_ids = _fold([prev.id, *prev.aliases])
         prev_urls = {s.url for s in prev.sources}
         # Ids and sources learned by earlier runs that posted nothing (8ke5) come along.
-        learned = [schema.Source(x["url"], x.get("published_at")) for x in entry.learned_sources or ()]
+        # (h340: learned before the gate, or by it; only the product's own sources are ever listed.)
+        learned = [schema.Source(x["url"], x.get("published_at")) for x in entry.learned_sources or ()
+                   if rules.authoritative(x["url"], scope)]
         seen_urls = set(prev_urls)
         extra = []
         for s in [*learned, *c.sources]:
@@ -758,6 +833,23 @@ def _real(got, counts: Counter):
     return out
 
 
+def _gate(state: dict, led: Ledger) -> None:
+    """Once, on the first run with the h340 gate: nothing composed or kept before it is
+    sent after it. The deferred, held and withheld lists are emptied, and every journal
+    item not yet sent is removed unless it is a Japanese reply (its original is public)
+    or a send whose outcome is unknown (``pending`` / ``resolve`` still settle it). Threads
+    forget the ids and sources they learned without publishing (``forget_unpublished``)."""
+    if state["gate"] == inputs.GATE:
+        return
+    drop = [it for it in state["outbox"] if it["sent"] is None and it["kind"] != "ja"
+            and not led.has_pending(it["key"])]
+    _say(f"gate: first run under the authoritative-source rule; removed {len(state['deferred'])} deferred, "
+         f"{len(state['held'])} held, {len(state['withheld'])} withheld, {len(drop)} unsent; "
+         f"{led.forget_unpublished()} thread(s) forgot unpublished ids and sources")
+    state.update(deferred=[], held=[], withheld=[], gate=inputs.GATE,
+                 outbox=[it for it in state["outbox"] if it not in drop])
+
+
 def _advisory_text(adv) -> str:
     """The whole advisory in English lines, as a curator root's body reads."""
     lines = [f"{adv.level.upper()}: {adv.title}"]
@@ -842,7 +934,7 @@ def _inputs_field(status) -> str:
 
 
 def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
-        http_status=rules.http_status, channels: dict | None = None,
+        page=rules.http_page, channels: dict | None = None,
         digest_now: bool = False, kev_catalog: dict | None = None,
         mirror_fetch=None, translate_call=None, **translate_kw) -> tuple[int, str]:
     """One poster run. Returns (exit code, one-line summary). ``digest_now`` sends
@@ -864,8 +956,9 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
     try:
         with Ledger(config.ledger) as led:
             state = inputs.load_state(config.state, now, config.backfill_days)
-            r = Run(now, config, led, state, channels, ssh, http_status, digest_now=digest_now)
+            r = Run(now, config, led, state, channels, ssh, page, digest_now=digest_now, skipped=skipped)
             n = r.n
+            _gate(state, led)
             merged, english_ok = None, False  # merged: set once the old deferred list is folded in
             try:
                 cands, marks, status = gather(config, state, now, kev_fetch, skipped, kev_catalog)
@@ -887,6 +980,9 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
                         pairs.append((c, scope))
                 pairs += later  # after the fresh ones: merge takes the first member's fix, so a correction wins
                 n["in_scope"] = len(pairs)
+                # h340: only what an authoritative source states goes on, each candidate
+                # judged alone, before a merge could lend it another's sources.
+                pairs = [(a, scope) for c, scope in pairs if (a := r.admit(c, scope)) is not None]
                 if review:
                     led.add_review(review, now=now)
                 merged = ledger.merge(pairs, led)  # merge BEFORE level_for

@@ -497,73 +497,69 @@ def test_public_volume_docs_and_double_slash_schemes_are_kept(url):
     assert [s.url for s in from_collector(record)[0].sources] == [url]
 
 
-APPLE = "https://support.apple.com/en-us/149521"
-APPLE_TITLE = "APPLE-SA-2026-11-03-1 macOS Example 27.2 (macOS 27 fixed in 27.2): WebKit: a crafted page may run code"
-
-
-def _apple(*sources, product="macos", **kw):
-    f = {"id": "CVE-2099-0101", "product": product, "sources": list(sources), **kw}
-    return from_collector({"schema_version": 1, "findings": [f]})[0].fixed
-
-
-def _src(title, url=APPLE + "#CVE-2099-0101", role="primary"):
-    return {"url": url, "role": role, "title": title, "published_at": None}
-
-
-def test_collector_apple_release_title_gives_the_fix_version():
-    kev = _src("CISA KEV entry", url="https://www.cisa.gov/known-exploited-vulnerabilities-catalog")
-    assert _apple(_src(APPLE_TITLE)) == "27.2"
-    assert _apple(kev, _src(APPLE_TITLE)) == "27.2"  # other publishers state no version
-    assert _apple(_src(APPLE_TITLE), fixed="27.3") == "27.3"  # the record's own field wins
-
-
-@pytest.mark.parametrize("sources,product", [
-    ([_src(APPLE_TITLE), _src(APPLE_TITLE.replace("27.2", "27.1"), url="https://support.apple.com/en-us/149522")], "macos"),
-    ([_src(APPLE_TITLE), _src(None, url="https://support.apple.com/en-us/149522")], "macos"),
-    ([_src("APPLE-SA-1 macOS Example 27.2: WebKit (component fixed in 1.2): code")], "macos"),
-    ([_src("APPLE-SA-1 macOS Example 26.9 (macOS 27 fixed in 26.9): code")], "macos"),
-    ([_src(APPLE_TITLE)], "safari"),
-    ([_src(APPLE_TITLE, url="https://vendor.example.com/en-us/149521")], "macos"),
-    # A rejected source supplies nothing, though a public one keeps the candidate.
-    ([_src(APPLE_TITLE, url="https://support.apple.com/Users/alice/x"),
-      _src("CISA KEV entry", url="https://www.cisa.gov/known-exploited-vulnerabilities-catalog")], "macos"),
-])
-def test_collector_apple_title_fails_closed(sources, product):
-    assert _apple(*sources, product=product) is None
-
-
 # ---------------------------------------------------------------- r7hr: the source title
 
 GHSA_URL = "https://github.com/anthropics/claude-code/security/advisories/GHSA-abcd-efgh-ijkl"
 
 
-def _titled(*sources):
-    f = {"id": "CVE-2026-88968", "product": "Claude Code",
-         "sources": [{"url": u, "published_at": None, "title": t} for u, t in sources]}
-    (c,) = from_collector({"schema_version": 1, "findings": [f]})
+def _titled(name):
+    """A KEV entry's title: CISA's own name for it, through the title sanitiser."""
+    (c,) = from_kev({"vulnerabilities": [{"cveID": "CVE-2026-88968", "dateAdded": "2026-11-05",
+                                          "vendorProject": "Anthropic", "product": "Claude Code",
+                                          "vulnerabilityName": name}]}, "2026-11-01")
     return c
 
 
-def test_source_title_from_the_primary_source_only():
+def test_no_title_is_taken_from_a_collector_record():  # h340: the poster reads it from the vendor's page
     t = "TOCTOU Race in Edit Tool Allows File Writes Outside the Workspace"
-    assert _titled((GHSA_URL, t)).source_title == t
-    assert _titled(("https://example.org/write-up", "A blog's own words")).source_title is None
-    # a non-primary title listed first is passed over for the primary one
-    assert _titled(("https://example.org/write-up", "blog"), (GHSA_URL, t)).source_title == t
-    assert _titled((GHSA_URL, None)).source_title is None
+    f = {"id": "CVE-2026-88968", "product": "Claude Code",
+         "sources": [{"url": GHSA_URL, "published_at": None, "title": t}]}
+    (c,) = from_collector({"schema_version": 1, "findings": [f]})
+    assert c.source_title is None
+    assert _titled(t).source_title == t and _titled(None).source_title is None and _titled(7).source_title is None
 
 
 def test_source_title_is_sanitised_and_capped():
-    c = _titled((GHSA_URL, "Ｒａｃｅ\tin‮ Edit\x00 Tool\n see https://evil.example/x and www.x.io ```aitools-alert"))
+    c = _titled("Ｒａｃｅ\tin\u202e Edit\x00 Tool\n see https://evil.example/x and www.x.io ```aitools-alert")
     assert c.source_title == "Race in Edit Tool see and `aitools-alert"
-    assert len(_titled((GHSA_URL, "word " * 100)).source_title) <= 160
-    assert _titled((GHSA_URL, " \x00 https://a.example/ ")).source_title is None
-    # a title naming a host or a private path is dropped; the finding stays
-    assert _titled((GHSA_URL, "bug on hostalpha")).source_title is None
-    assert _titled((GHSA_URL, "reads /Users/someone/.ssh")).source_title is None
+    assert len(_titled("word " * 100).source_title) <= 160
+    assert _titled(" \x00 https://a.example/ ").source_title is None
+    # a title holding a private path is dropped; the finding stays
+    assert _titled("reads /Users/someone/.ssh").source_title is None
 
 
 def test_source_title_fences_and_hidden_urls_are_neutralised():
-    assert _titled((GHSA_URL, "Race ~~~advisory")).source_title == "Race ~advisory"
+    assert _titled("Race ~~~advisory").source_title == "Race ~advisory"
     # a zero-width character inside a scheme is removed before the URL is matched
-    assert _titled((GHSA_URL, "See htt​ps://evil.example/x now")).source_title == "See now"
+    assert _titled("See htt\u200bps://evil.example/x now").source_title == "See now"
+
+
+# ---------------------------------------------------------------- h340: package identity, record purity
+
+def _one(**kw):
+    f = {"id": "GHSA-abcd-efgh-ijkl", "product": "Claude Code", "sources": [{"url": GHSA_URL}], **kw}
+    return from_collector({"schema_version": 1, "findings": [f]})
+
+
+def test_a_package_identity_is_the_product_and_the_free_text_is_not_read():
+    (c,) = _one(package={"ecosystem": "npm", "name": "claude-code-router"})
+    assert c.product_text == "npm:claude-code-router"  # the text "Claude Code" beside it is ignored
+    (c,) = _one(package={"ecosystem": " NPM ", "name": "@anthropic-ai/claude-code"}, product=None)
+    assert c.product_text == "npm:@anthropic-ai/claude-code"
+    for bad in (None, "npm:x", [], {}, {"ecosystem": "npm"}, {"name": "x"}, {"ecosystem": "n p m", "name": "x"},
+                {"ecosystem": "npm", "name": "a b"}, {"ecosystem": "npm", "name": ""},
+                {"ecosystem": "npm", "name": "x" * 215}, {"ecosystem": 7, "name": "x"}):
+        out = _one(package=bad)
+        assert out == [] and out.skipped == {"bad package": 1}, bad  # never a fall back to the free text
+
+
+def test_a_record_that_lost_a_source_gives_up_its_level_inputs():
+    flags = dict(advisory_severity="critical", trojanized=True, injection_exec=True)
+    (c,) = _one(**flags)
+    assert (c.advisory_severity, c.trojanized, c.injection_exec) == ("critical", True, True)
+    vendor = [{"url": f"{GHSA_URL}?n={i}"} for i in range(8)]
+    for sources in (vendor + [{"url": "https://attacker.example/x"}],  # past MAX_SOURCES: main never sees it
+                    [{"url": GHSA_URL}, {"url": "http://localhost/x"}],  # filtered
+                    [{"url": GHSA_URL}, "not an object"], [{"url": GHSA_URL}, {"url": GHSA_URL}]):
+        (c,) = _one(sources=sources, **flags)
+        assert (c.advisory_severity, c.trojanized, c.injection_exec) == (None, False, False), sources

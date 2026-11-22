@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from aitools_alerts.schema import Source, is_primary  # re-exported: candidates.Source is schema.Source
+from aitools_alerts.schema import Source  # re-exported: candidates.Source is schema.Source
 
 KEV_CATALOG_URL = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
 
@@ -47,15 +47,18 @@ MAX_SOURCES = 8
 MAX_TITLE = 160
 
 _CVE = re.compile(r"CVE-\d{4}-\d{4,}")
+# An advisory id, and the only shapes a signed post names (h340): a CVE or GHSA id,
+# as a primary id optionally followed by ":" and the collector's scope slug (its thread key).
+ADVISORY_ID = re.compile(r"CVE-\d{4}-\d{4,}|GHSA(?:-[0-9a-z]{4}){3}", re.I)
+BOT_ID = re.compile(r"(CVE-\d{4}-\d{4,}|GHSA(?:-[0-9a-z]{4}){3})(?::[a-z0-9][a-z0-9.-]{0,31})?", re.I)
+_PKG_ECOSYSTEM = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
+MAX_PACKAGE = 214
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})?)?")
 _BAD_URL_CHARS = re.compile(r"[\s\x00-\x1f\x7f]")
 # A concrete release: digits first, no wildcard component ("1.x", "2.*").
 _VERSION = re.compile(r"v?\d[0-9A-Za-z.+_-]{0,63}")
 _WILDCARD = re.compile(r"(?:^|[.\-+_])[xX*](?:$|[.\-+_])")
-# The collector's Apple source title, up to the impact text: "APPLE-SA-<id> <release>
-# (macOS <major> fixed in <version>): <impact>". Only this prefix may supply a version.
-_APPLE_TITLE = re.compile(r"APPLE-SA-[\w.-]{1,40} [^():]{1,120} \(macOS (\d{1,3}) fixed in (\d{1,3}(?:\.\d{1,4}){0,3})\): ")
 # One token of a version range; ranges are split before matching, so no regex
 # below has nested or adjacent unbounded repeats (no catastrophic backtracking).
 _RANGE_TOKEN = re.compile(r"[<>=!~^]{0,2}v?\d[0-9A-Za-z.+_*-]{0,63}")
@@ -96,7 +99,9 @@ class Candidate:
     affected: str | None
     sources: tuple[Source, ...]
     observed_at: str | None
-    source_title: str | None = None  # the primary source's own title (r7hr); never identity
+    # The advisory's title as the authoritative source words it (CISA's entry name, or
+    # the vendor page's title read by rules.evidence); never a collector's, never identity.
+    source_title: str | None = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -480,39 +485,24 @@ def from_kev(kev_json: dict, since_date: str) -> CandidateList:
         notes = it.get("notes")
         if isinstance(notes, str):
             raw += [(tok, None) for tok in re.split(r"[;\s]+", notes[:5000]) if tok]
+        # CISA's own name for the entry is its title: the catalog is the authority (h340).
         _build(cve, (), f"{vendor} {product}", _sources(raw, hosts), {"observed_at": added},
-               hosts, out, exploited=True)
+               hosts, out, exploited=True, title=_title(it.get("vulnerabilityName"), hosts))
 
     return _each(items, out, one)
 
 
-def _apple_fixed(f: dict, kept: tuple[Source, ...]) -> str | None:
-    """The fix version an Apple security release names, for a macOS finding: read only
-    from the collector's title prefix on retained support.apple.com sources, which must
-    all parse and agree. Any other source or shape gives None, never a guess."""
-    if not isinstance(f.get("product"), str) or f["product"].lower() != "macos":
+def _package(f: dict):
+    """A finding's package identity as the product text ``ecosystem:name``; None when the
+    finding has no ``package`` key, False when it has one that is not {ecosystem, name}."""
+    if "package" not in f:
         return None
-    urls, found = {s.url for s in kept}, set()
-    for s in f.get("sources") if isinstance(f.get("sources"), list) else []:
-        url = _url(s.get("url")) if isinstance(s, dict) else None
-        if url not in urls or urlsplit(url).hostname != "support.apple.com":
-            continue
-        m = _APPLE_TITLE.match(_str(s.get("title"), MAX_TEXT) or "")
-        if not m or m.group(2).split(".")[0] != m.group(1):
-            return None
-        found.add(m.group(2))
-    return _fixed(found.pop()) if len(found) == 1 else None
-
-
-def _source_title(f: dict, kept: tuple[Source, ...], hosts: _Hosts) -> str | None:
-    """The title of the first retained primary source that has one; any other gives None."""
-    urls = {s.url for s in kept if is_primary(s.url)}
-    for s in f["sources"] if isinstance(f.get("sources"), list) else []:
-        if isinstance(s, dict) and _url(s.get("url")) in urls:
-            t = _title(s.get("title"), hosts)
-            if t:
-                return t
-    return None
+    p = f["package"]
+    eco, name = (p.get("ecosystem"), _str(p.get("name"), MAX_PACKAGE + 1)) if isinstance(p, dict) else (None, None)
+    eco = eco.strip().lower() if isinstance(eco, str) else ""
+    if not _PKG_ECOSYSTEM.fullmatch(eco) or name is None or len(name) > MAX_PACKAGE or " " in name:
+        return False
+    return f"{eco}:{name}"
 
 
 def from_collector(record: dict) -> CandidateList:
@@ -540,9 +530,20 @@ def from_collector(record: dict) -> CandidateList:
             raw = [(s.get("url"), s.get("published_at")) for s in f["sources"] if isinstance(s, dict)]
         # exploited is ignored here: only from_kev establishes KEV membership.
         sources = _sources(raw, hosts)
-        _build(cid, _aliases(f.get("aliases"), cid, hosts), _str(f.get("product")),
-               sources, f, hosts, out,
-               fixed=_fixed(f.get("fixed")) or _apple_fixed(f, sources),
-               affected=_affected(f.get("affected")), title=_source_title(f, sources, hosts))
+        # A package identity, when the finding carries one, is the product: the free
+        # text beside it is never read, and a malformed one skips the finding (h340).
+        product = _package(f)
+        if product is False:
+            out.skipped["bad package"] += 1
+            return
+        # A record's own level inputs count only when every one of its sources is the
+        # vendor's (Run.admit). admit sees the kept sources only, so a record that lost
+        # one here (filtered, or past MAX_SOURCES) gives them up now.
+        if not isinstance(f.get("sources"), list) or len(sources) != len(f["sources"]):
+            f = {k: v for k, v in f.items() if k not in ("advisory_severity", "trojanized", "injection_exec")}
+        # No title is taken from the record: main reads it from the page that confirms
+        # the advisory. fixed and affected pass through validated and are replaced there.
+        _build(cid, _aliases(f.get("aliases"), cid, hosts), product or _str(f.get("product")),
+               sources, f, hosts, out, fixed=_fixed(f.get("fixed")), affected=_affected(f.get("affected")))
 
     return _each(findings, out, one)

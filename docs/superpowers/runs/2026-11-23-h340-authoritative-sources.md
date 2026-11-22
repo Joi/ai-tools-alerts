@@ -46,4 +46,7 @@ Spec findings and what the spec now says:
 - Seat rules: only this worktree and the scratchpad are read. The do-it skill's own files and the fresheyes script are run because the brief orders both.
 - A stray fresheyes run (handle 20261123-060548-c089af) was started when `fresheyes.sh --help` was read as scope text; both of its processes were stopped within a minute. It reviewed nothing of this branch and counts as no pass.
 - Measured 2026-11-23: unauthenticated api.github.com answered 403 with 0 of 60 calls left from this network; the public advisory page answered 200 with labelled fields. The design reads the page.
+- The plan-review fixes were applied to the plan and this manifest with a script that asserts each needle occurs once (it fails loudly on a stale needle); later edits use the Edit tool.
+- Found while building, beyond the reviews: `read_advisory` misread a block whose "Affected versions" field is empty (the next label was taken as its value); the migration did not reach ids and sources the ledger's threads had learned before the gate (`Ledger.forget_unpublished`); a reserved synthetic id on a vendor page would have become an alias.
+- Landing (h29n comments xbbcca, wjxmh9, wka9zv, 2026-11-23): main takes pull requests and signed commits only, and no PR on this repo is merged until gate ai-tools-alerts#xrx2 closes. This run ends at: PR open, gate and review passed, issue labelled `pr-open` and blocked by xrx2.
 - Split rule: the diff will pass 600 lines. Kept as one issue: see the `decided:` comment on h340.

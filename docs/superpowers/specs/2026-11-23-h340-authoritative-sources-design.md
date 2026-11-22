@@ -177,9 +177,15 @@ per URL per run, redirects only to URLs authoritative for the same scope).
   malicious candidate, an old held notice and an old composed post cannot be
   sent by the new poster, and every deferred candidate from then on was
   admitted, or will be re-admitted, under these rules.
+- The migration reaches the ledger too: each thread forgets the ids it
+  learned without publishing them (anything not in its published advisory)
+  and all of its `learned_sources`, since both came from records nobody
+  confirmed and a later reply would publish them or join threads by them. A
+  send whose outcome is unknown keeps its journal item: `pending` and
+  `resolve` settle it as before.
 - `plan_known`: sources a thread learned without publishing
-  (`learned_sources`) are filtered through `authoritative` before a reply can
-  list them. Values a thread already published stay as published; a
+  (`learned_sources`) are also filtered through `authoritative` before a
+  reply can list them. Values a thread already published stay as published; a
   page-read fixed version replaces a stored one.
 
 ### 7. Verification matrix (tests)
