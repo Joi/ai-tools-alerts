@@ -1,240 +1,301 @@
-"""The relay transport (Task B4): one ssh call to the VM's buzz-send wrapper per post.
+"""The relay transport (ai-tools-alerts#vzc3): the poster signs the message and its
+NIP-98 header and POSTs them over HTTPS. A fake connection records each request;
+nothing reaches the network."""
 
-Every test passes a fake ``ssh`` callable; no test ever spawns ssh.
-"""
-
+import base64
+import hashlib
 import json
-import shlex
-import subprocess
+import threading
+import time
 
 import pytest
 
+from aitools_alerts import nostr
 from aitools_alerts.poster import transport
 
-HOST = "relay.example.net"
-WRAPPER = "/opt/relay/bin/buzz-send"
-
-
-def send(*args, **kw):
-    kw.setdefault("host", HOST)
-    kw.setdefault("wrapper", WRAPPER)
-    return transport.send(*args, **kw)
-
-
-FEED = "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+SEC, PUB = nostr.keygen()
+OTHER_SEC, OTHER_PUB = nostr.keygen()
+CH = "599adb9f-4f9f-4b19-aee3-66667c3293e8"
 ROOT = "ab" * 32
-EID = "cd" * 32
+URL = "https://relay.example.net"
+NOW = 1795400000
 
 
-class FakeSSH:
-    def __init__(self, rc=0, stdout=b"", stderr=b"", raise_=None):
-        self.calls = []
-        self.rc, self.stdout, self.stderr, self.raise_ = rc, stdout, stderr, raise_
+class FakeResp:
+    def __init__(self, status, body):
+        self.status, self.body = status, body
 
-    def __call__(self, argv, **kw):
-        self.calls.append((argv, kw))
-        if self.raise_ is not None:
-            raise self.raise_
-        return subprocess.CompletedProcess(argv, self.rc, self.stdout, self.stderr)
+    def read(self, n=-1):
+        return self.body if n < 0 else self.body[:n]
 
 
-def accepted(eid=EID, ok=True):
-    return json.dumps({"accepted": ok, "event_id": eid, "mention_pubkeys": [], "message": ""}).encode()
+class FakeSock:
+    timeout = None
+
+    def settimeout(self, t):
+        self.timeout = t
 
 
-def test_argv_is_ssh_host_and_one_joined_remote_command():
-    ssh = FakeSSH(stdout=accepted())
-    send(FEED, "hello $(rm -rf ~) `x`", ssh=ssh)
-    (argv, kw), = ssh.calls
-    assert argv[:-1] == ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
-                         "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
-                         "-o", "RequestTTY=no", "-o", "RemoteCommand=none",
-                         "--", "relay.example.net"]
-    assert shlex.split(argv[-1]) == [WRAPPER, "messages", "send",
-                                     "--channel", FEED, "--content", "-"]
-    assert kw["input"] == "hello $(rm -rf ~) `x`".encode()
-    assert kw["timeout"] == transport.TIMEOUT and kw["capture_output"] is True
+class FakeConn:
+    """An http.client connection that answers from ``answer(body) -> (status, bytes)``
+    or raises ``error`` at ``fail_at`` ("request" or "response")."""
+
+    def __init__(self, answer=None, error=None, fail_at=None):
+        self.answer = answer or (lambda body: (200, json.dumps(
+            {"accepted": True, "event_id": json.loads(body)["id"], "message": ""}).encode()))
+        self.error, self.fail_at = error, fail_at
+        self.sock = FakeSock()
+        self.requests, self.closed = [], False
+
+    def request(self, method, path, body=None, headers=None):
+        if self.fail_at == "request":
+            raise self.error
+        self.requests.append((method, path, body, dict(headers)))
+
+    def getresponse(self):
+        if self.fail_at == "response":
+            raise self.error
+        return FakeResp(*self.answer(self.requests[-1][2]))
+
+    def close(self):
+        self.closed = True
 
 
-def test_reply_to_adds_flag():
-    ssh = FakeSSH(stdout=accepted())
-    send(FEED, "a reply", reply_to=ROOT, ssh=ssh)
-    assert shlex.split(ssh.calls[0][0][-1])[-2:] == ["--reply-to", ROOT]
+def relay(conn=None, key=SEC, expected=PUB, connect=None, **kw):
+    conn = conn or FakeConn()
+    calls = []
+
+    def default_connect(host, timeout):
+        calls.append((host, timeout))
+        return conn
+    r = transport.Relay(URL, (key if callable(key) else lambda: key), expected_pubkey=expected,
+                        connect=connect or default_connect, clock=lambda: NOW, **kw)
+    return r, conn, calls
 
 
-def test_no_key_material_on_argv():
-    ssh = FakeSSH(stdout=accepted())
-    send(FEED, "x", reply_to=ROOT, ssh=ssh)
-    flat = " ".join(ssh.calls[0][0])
-    for bad in ("nsec", "--private-key", "--relay", ".buzz-keys", "PRIVATE_KEY"):
-        assert bad not in flat
+def sent(conn):
+    method, path, body, headers = conn.requests[-1]
+    return method, path, json.loads(body), body, headers
 
 
-@pytest.mark.parametrize("channel, content, reply_to", [
-    ("not-a-uuid", "x", None),
-    (FEED.upper(), "x", None),
-    (FEED, "x", "ab" * 31),
-    (FEED, "x", ROOT.upper()),
-    (FEED, "", None),
-    (FEED, "a\x00b", None),
-    (FEED, b"bytes", None),
-    (FEED, "x" * (transport.MAX_CONTENT + 1), None),
+def nip98(headers):
+    scheme, b64 = headers["Authorization"].split(" ", 1)
+    assert scheme == "Nostr"
+    return json.loads(base64.b64decode(b64))
+
+
+def test_a_root_is_a_signed_kind_9_with_the_channel_tag():
+    r, conn, calls = relay()
+    res = r.send(CH, "CRITICAL: x")
+    method, path, ev, body, headers = sent(conn)
+    assert (method, path, calls) == ("POST", "/events", [("relay.example.net", transport.CONNECT_TIMEOUT)])
+    assert ev["kind"] == 9 and ev["tags"] == [["h", CH]] and ev["content"] == "CRITICAL: x"
+    assert ev["pubkey"] == PUB and ev["created_at"] == NOW and nostr.verify_event(ev)
+    assert (res.ok, res.outcome, res.event_id, res.exit_code) == (True, "ok", ev["id"], 200)
+    assert conn.closed and conn.sock.timeout == transport.IO_TIMEOUT
+    assert headers["Content-Type"] == "application/json" and headers["Content-Length"] == str(len(body))
+
+
+def test_a_reply_is_a_direct_reply_to_its_root():
+    r, conn, _ = relay()
+    r.send(CH, "lang: ja\nx", ROOT)
+    assert sent(conn)[2]["tags"] == [["h", CH], ["e", ROOT, "", "reply"]]
+
+
+def test_the_nip98_header_binds_url_method_and_body():
+    r, conn, _ = relay()
+    r.send(CH, "x")
+    _, _, ev, body, headers = sent(conn)
+    auth = nip98(headers)
+    assert auth["kind"] == 27235 and auth["pubkey"] == PUB and auth["created_at"] == NOW
+    assert nostr.verify_event(auth) and auth["content"] == ""
+    tags = {t[0]: t[1:] for t in auth["tags"]}
+    assert tags["u"] == ["https://relay.example.net/events"] and tags["method"] == ["POST"]
+    assert tags["payload"] == [hashlib.sha256(body).hexdigest()]
+    assert len(tags["nonce"][0]) == 32
+    r.send(CH, "x")
+    assert nip98(conn.requests[-1][3])["id"] != auth["id"]  # a fresh nonce each send: no replay refusal
+
+
+@pytest.mark.parametrize("status, body, outcome", [
+    (200, {"accepted": True, "event_id": "SAME", "message": ""}, "ok"),
+    (200, {"accepted": True, "event_id": "SAME", "message": "duplicate:"}, "ok"),
+    (200, {"accepted": False, "event_id": "SAME", "message": "duplicate: already have it"}, "ok"),
+    (200, {"accepted": True, "event_id": "cd" * 32, "message": ""}, "unknown"),
+    (200, {"accepted": False, "message": "rate-limited: slow down"}, "failed"),
+    (200, {"event_id": "SAME"}, "unknown"),
+    (200, b"<html>proxy</html>", "unknown"),
+    (200, [1], "unknown"),
+    (400, {"error": "invalid: content too long"}, "refused"),
+    (400, {"error": "restricted: relay-only kind"}, "failed"),
+    (400, {"error": "invalid JSON"}, "failed"),
+    (400, b"<html>Bad Request</html>", "failed"),
+    (401, {"error": "NIP-98: created_at too far"}, "failed"),
+    (403, {"error": "not a relay member"}, "failed"),
+    (404, {"error": "no community"}, "failed"),
+    (429, {"error": "slow down"}, "failed"),
+    (413, b"", "refused"),
+    (408, b"", "unknown"),
+    (500, {"error": "internal server error"}, "unknown"),
+    (502, b"Bad Gateway", "unknown"),
 ])
-def test_bad_arguments_raise_before_ssh(channel, content, reply_to):
-    ssh = FakeSSH(stdout=accepted())
+def test_every_answer_has_one_outcome(status, body, outcome):
+    def answer(sent_body):
+        eid = json.loads(sent_body)["id"]
+        if isinstance(body, bytes):
+            return status, body
+        return status, json.dumps(body).replace('"SAME"', json.dumps(eid)).encode()
+    r, conn, _ = relay(FakeConn(answer))
+    res = r.send(CH, "x")
+    assert res.outcome == outcome and res.ok == (outcome == "ok") and res.exit_code == status
+    assert (res.event_id is not None) == (outcome == "ok")
+    if outcome == "refused":
+        assert res.message
+    assert conn.closed
+
+
+def test_a_refusal_message_is_printable_and_bounded():
+    r, _, _ = relay(FakeConn(lambda b: (400, json.dumps({"error": "invalid: \x1b[31mbad\n" + "x" * 900}).encode())))
+    res = r.send(CH, "x")
+    assert res.outcome == "refused" and res.message.startswith("invalid: ?[31mbad x")
+    assert len(res.message) <= 300 and res.message.isprintable()
+
+
+def test_a_body_past_the_cap_is_unknown():
+    r, _, _ = relay(FakeConn(lambda b: (200, b"{" + b" " * transport.MAX_RESPONSE + b"}")))
+    assert r.send(CH, "x").outcome == "unknown"
+
+
+def test_a_connect_failure_is_failed_and_nothing_was_written():
+    def connect(host, timeout):
+        raise ConnectionRefusedError("refused")
+    r, conn, _ = relay(connect=connect)
+    res = r.send(CH, "x")
+    assert res.outcome == "failed" and "connect failed" in res.stderr and conn.requests == []
+
+
+@pytest.mark.parametrize("fail_at", ["request", "response"])
+@pytest.mark.parametrize("error", [TimeoutError("timed out"), ConnectionResetError("reset"), BrokenPipeError("pipe")])
+def test_a_failure_once_the_request_began_is_unknown(fail_at, error):
+    r, conn, _ = relay(FakeConn(error=error, fail_at=fail_at))
+    res = r.send(CH, "x")
+    assert res.outcome == "unknown" and conn.closed
+
+
+def test_a_stalled_response_ends_at_the_deadline_as_unknown():
+    release = threading.Event()
+
+    class Stalled(FakeConn):
+        def getresponse(self):
+            release.wait(5)
+            return super().getresponse()
+    r, conn, _ = relay(Stalled(), deadline=0.2)
+    t0 = time.monotonic()
+    res = r.send(CH, "x")
+    release.set()
+    assert res.outcome == "unknown" and time.monotonic() - t0 < 2
+
+
+def test_a_dripped_response_ends_at_the_deadline_as_unknown():
+    class Drip(FakeResp):
+        def read(self, n=-1):
+            out = b""
+            for ch in b'{"accepted": true}':
+                time.sleep(0.05)
+                out += bytes([ch])
+            return out
+
+    class Conn(FakeConn):
+        def getresponse(self):
+            return Drip(200, b"")
+    r, _, _ = relay(Conn(), deadline=0.2)
+    assert r.send(CH, "x").outcome == "unknown"
+
+
+def test_a_connect_that_finishes_after_the_deadline_never_writes():
+    go = threading.Event()
+    conn = FakeConn()
+
+    def slow_connect(host, timeout):
+        go.wait(5)
+        return conn
+
+    r, _, _ = relay(conn, connect=slow_connect, deadline=0.1)
+    res = r.send(CH, "x")
+    assert res.outcome == "failed"
+    go.set()
+    time.sleep(0.2)  # the worker reaches the gate, finds it cancelled, and closes
+    assert conn.requests == [] and conn.closed
+
+
+def test_the_key_is_read_once_and_never_shown():
+    reads = []
+
+    def source():
+        reads.append(1)
+        return SEC
+    r, conn, _ = relay(key=source)
+    a, b = r.send(CH, "x"), r.send(CH, "y")
+    assert reads == [1] and a.ok and b.ok
+    for res in (a, b):
+        assert SEC not in repr(res)
+    assert all(SEC not in json.dumps(req[3]) and SEC.encode() not in req[2] for req in conn.requests)
+
+
+def test_an_nsec_key_is_accepted():
+    r, _, _ = relay(key=nostr.nsec(SEC))
+    assert r.send(CH, "x").ok
+
+
+@pytest.mark.parametrize("key", ["", "zz", "00" * 32, "nsec1notakey"])
+def test_a_key_that_is_not_a_secret_key_sends_nothing(key):
+    r, conn, calls = relay(key=key)
+    res = r.send(CH, "x")
+    assert res.outcome == "failed" and conn.requests == [] and calls == []
+    assert key not in res.stderr or not key
+
+
+def test_a_key_that_is_not_the_relay_bot_sends_nothing():
+    r, conn, calls = relay(key=OTHER_SEC)
+    res = r.send(CH, "x")
+    assert res.outcome == "failed" and "relay-bot" in res.stderr and calls == [] and OTHER_SEC not in res.stderr
+
+
+def test_an_unavailable_key_is_failed_without_its_text():
+    def source():
+        raise transport.KeyUnavailable("get_secret exit 1")
+    r, _, calls = relay(key=source)
+    res = r.send(CH, "x")
+    assert res.outcome == "failed" and "relay key unavailable: get_secret exit 1" == res.stderr and calls == []
+
+    def leaky():
+        raise RuntimeError(SEC)  # anything else a helper raises is never echoed
+    r, _, _ = relay(key=leaky)
+    res = r.send(CH, "x")
+    assert res.outcome == "failed" and SEC not in res.stderr
+
+
+@pytest.mark.parametrize("args", [("not-a-uuid", "x", None), (CH, "", None), (CH, "a\x00b", None),
+                                  (CH, "x" * (transport.MAX_CONTENT + 1), None), (CH, "x", "AB" * 32),
+                                  (CH, "x", "ab"), (CH, 3, None)])
+def test_malformed_sends_raise_before_anything_runs(args):
+    r, conn, calls = relay()
     with pytest.raises(ValueError):
-        send(channel, content, reply_to=reply_to, ssh=ssh)
-    assert ssh.calls == []
-
-
-def test_success_parses_event_id():
-    r = send(FEED, "x", ssh=FakeSSH(stdout=accepted() + b"\n"))
-    assert (r.ok, r.event_id, r.exit_code, r.outcome) == (True, EID, 0, "ok")
-
-
-def test_exit0_not_accepted_is_failed():
-    r = send(FEED, "x", ssh=FakeSSH(stdout=accepted(ok=False)))
-    assert (r.ok, r.event_id, r.outcome) == (False, None, "failed")
-
-
-@pytest.mark.parametrize("stdout", [b"", b"not json", b"[]", accepted(eid="zz"), accepted(eid="CD" * 32),
-                                    accepted(eid="c" * 63),
-                                    json.dumps({"accepted": True}).encode(), b"\xff\xfe"])
-def test_exit0_garbage_is_unknown(stdout):
-    r = send(FEED, "x", ssh=FakeSSH(stdout=stdout))
-    assert (r.ok, r.event_id, r.outcome) == (False, None, "unknown")
-
-
-@pytest.mark.parametrize("rc", [1, 3, 4, 5, 126, 127])
-def test_cli_exit_codes_are_failed(rc):
-    r = send(FEED, "x", ssh=FakeSSH(rc=rc, stderr=b"auth error: denied"))
-    assert (r.ok, r.exit_code, r.outcome) == (False, rc, "failed")
-
-
-@pytest.mark.parametrize("rc", [-9, -15, 6, 130, 137])
-def test_other_exits_are_unknown(rc):
-    r = send(FEED, "x", ssh=FakeSSH(rc=rc))
-    assert (r.ok, r.exit_code, r.outcome) == (False, rc, "unknown")
-
-
-def cli_error(category, message):
-    return json.dumps({"error": category, "message": message, "retryable": False}).encode() + b"\n"
-
-
-@pytest.mark.parametrize("stderr", [
-    cli_error("delivery_unknown", "delivery unknown: timed out after send"),
-    b"", b"something odd", b"network error: error sending request",  # free text never decides
-    cli_error("relay_error", "relay error 503: unavailable"),
-    cli_error("relay_error", "relay error 503: upstream network error"),
-    cli_error("relay_error", "relay error 408: timeout"),
-    cli_error("network_error", "network error: reset") + cli_error("delivery_unknown", "delivery unknown: x"),
-])
-def test_exit2_delivery_unknown_is_unknown(stderr):
-    assert send(FEED, "x", ssh=FakeSSH(rc=2, stderr=stderr)).outcome == "unknown"
-
-
-@pytest.mark.parametrize("stderr", [
-    cli_error("network_error", "network error: error sending request: connection refused"),
-    b"warning: retrying\n" + cli_error("relay_error", "relay error 400: bad event"),
-])
-def test_exit2_network_or_4xx_is_failed(stderr):
-    assert send(FEED, "x", ssh=FakeSSH(rc=2, stderr=stderr)).outcome == "failed"
-
-
-@pytest.mark.parametrize("stderr", [
-    b"ssh: connect to host relay.example.net port 22: Connection refused",
-    b"ssh: Could not resolve hostname relay.example.net: nodename nor servname provided",
-    b"op@relay.example.net: Permission denied (publickey).",
-    b"Host key verification failed.",
-])
-def test_ssh_connect_failure_is_failed(stderr):
-    assert send(FEED, "x", ssh=FakeSSH(rc=255, stderr=stderr)).outcome == "failed"
-
-
-@pytest.mark.parametrize("stderr", [b"Connection to relay.example.net closed by remote host.",
-                                    b"client_loop: send disconnect: Broken pipe", b""])
-def test_ssh_drop_is_unknown(stderr):
-    assert send(FEED, "x", ssh=FakeSSH(rc=255, stderr=stderr)).outcome == "unknown"
-
-
-def test_timeout_is_unknown():
-    r = send(FEED, "x", ssh=FakeSSH(raise_=subprocess.TimeoutExpired("ssh", 120)))
-    assert (r.ok, r.exit_code, r.outcome) == (False, None, "unknown")
-
-
-def test_oserror_is_failed():
-    r = send(FEED, "x", ssh=FakeSSH(raise_=FileNotFoundError("ssh")))
-    assert (r.ok, r.exit_code, r.outcome) == (False, None, "failed")
-
-
-def test_stderr_is_capped_and_decoded():
-    r = send(FEED, "x", ssh=FakeSSH(rc=4, stderr=b"\xff" + b"e" * 5000))
-    assert len(r.stderr) == transport.MAX_STDERR and r.stderr.endswith("e")
-
-
-def test_duplicate_answer_is_unknown():
-    body = json.dumps({"accepted": False, "event_id": EID, "message": "duplicate: already have this event"})
-    assert send(FEED, "x", ssh=FakeSSH(stdout=body.encode())).outcome == "unknown"
-
-
-def test_remote_connect_text_after_a_drop_is_unknown():
-    stderr = (b"network error: error sending request: connection refused (retrying)\n"
-              b"Connection to relay.example.net closed by remote host.\n")
-    assert send(FEED, "x", ssh=FakeSSH(rc=255, stderr=stderr)).outcome == "unknown"
-
-
-def test_ssh_message_with_remote_output_is_unknown():
-    stderr = b"ssh: connect to host relay.example.net port 22: Connection refused\n"
-    assert send(FEED, "x", ssh=FakeSSH(rc=255, stdout=b"{", stderr=stderr)).outcome == "unknown"
-
-
-def test_classification_reads_the_whole_stderr():
-    # The whole line is a network_error (failed); its last 2000 characters alone are not
-    # JSON (unknown), so a classifier that saw only the stored copy would say unknown.
-    stderr = cli_error("network_error", "network error: connection refused " + "x" * 2100)
-    r = send(FEED, "x", ssh=FakeSSH(rc=2, stderr=stderr))
-    assert r.outcome == "failed" and len(r.stderr) == transport.MAX_STDERR
-    assert transport._classify(2, b"", r.stderr)[0] == "unknown"
-
-
-def test_host_option_injection_refused():
-    ssh = FakeSSH(stdout=accepted())
+        r.send(*args)
     with pytest.raises(ValueError):
-        send(FEED, "x", ssh=ssh, host="-oProxyCommand=evil")
-    assert ssh.calls == []
+        transport.check_send(*args)
+    assert calls == [] and conn.requests == []
 
 
-def test_default_ssh_is_blocked_in_tests():
-    with pytest.raises(RuntimeError, match="real ssh"):
-        send(FEED, "x")
-
-
-def test_route_has_no_default():
-    with pytest.raises(TypeError):
-        transport.send(FEED, "x", ssh=FakeSSH())  # host and wrapper come from the config only
-    with pytest.raises(TypeError):
-        transport.send(FEED, "x", ssh=FakeSSH(), host=HOST)
-
-
-@pytest.mark.parametrize("wrapper", ["", "bin/buzz-send", "~/bin/buzz-send", "/a b", "/a;b", None])
-def test_bad_wrapper_raises_before_ssh(wrapper):
-    ssh = FakeSSH(stdout=accepted())
+@pytest.mark.parametrize("url", ["http://relay.example.net", "https://relay.example.net/", "https://relay.example.net/x",
+                                 "https://u@relay.example.net", "https://relay.example.net:444", "https://RELAY.example.net",
+                                 "https://localhost", "https://relay.example.net?x", "", None])
+def test_the_relay_url_is_https_and_a_host_only(url):
     with pytest.raises(ValueError):
-        send(FEED, "x", ssh=ssh, wrapper=wrapper)
-    assert ssh.calls == []
+        transport.check_url(url)
 
 
-def test_a_non_retryable_user_error_is_refused():  # ai-tools-alerts#8acj
-    err = b"warn\n" + json.dumps({"error": "user_error", "message": "blocked:\n @x\x1b", "retryable": False}).encode()
-    r = send(FEED, "x", ssh=FakeSSH(rc=1, stderr=err))
-    assert (r.ok, r.exit_code, r.outcome, r.message) == (False, 1, "refused", "blocked: @x?")
-
-
-@pytest.mark.parametrize("rc,body,outcome", [
-    (1, {"error": "user_error", "retryable": True}, "failed"), (1, {"error": "user_error"}, "failed"),
-    (1, {"error": "user_error", "retryable": 0}, "failed"), (1, {"error": "auth_error", "retryable": False}, "failed"),
-    (5, {"error": "user_error", "retryable": False}, "failed"), (2, {"error": "user_error", "retryable": False}, "unknown"),
-])
-def test_other_refusals_keep_their_outcome(rc, body, outcome):
-    r = send(FEED, "x", ssh=FakeSSH(rc=rc, stderr=json.dumps({**body, "message": "m"}).encode()))
-    assert (r.outcome, r.message) == (outcome, "")
+def test_the_real_connect_is_blocked_in_tests():
+    r = transport.Relay(URL, lambda: SEC, expected_pubkey=PUB, clock=lambda: NOW)
+    res = r.send(CH, "x")
+    assert res.outcome == "failed" and "connect failed" in res.stderr

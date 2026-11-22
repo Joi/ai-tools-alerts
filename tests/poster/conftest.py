@@ -1,5 +1,5 @@
 """Poster tests never touch the network: any connect or name lookup raises, and the
-transport's real ssh is replaced by one that raises."""
+transport's real HTTPS connect is replaced by one that raises."""
 
 import socket
 
@@ -20,11 +20,11 @@ def no_network(monkeypatch):
     monkeypatch.setattr(socket, "gethostbyname_ex", _no_network)
 
 
-def _no_ssh(*args, **kwargs):
-    raise RuntimeError("real ssh in a poster test")
+def _no_relay(*args, **kwargs):
+    raise RuntimeError("real relay connection in a poster test")
 
 
 @pytest.fixture(autouse=True)
-def no_real_ssh(monkeypatch):
+def no_real_relay(monkeypatch):
     from aitools_alerts.poster import transport
-    monkeypatch.setattr(transport, "_default_ssh", _no_ssh)
+    monkeypatch.setattr(transport, "_connect", _no_relay)

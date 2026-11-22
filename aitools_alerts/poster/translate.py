@@ -5,8 +5,8 @@ returns the model's text or raises ``AuthError`` (HTTP 401/403) or
 ``CallError`` (anything else). The output is used only when every URL,
 version string and id in the source appears unchanged in it (``tokens``).
 
-``read_key`` reads the API key with ``get_secret`` from the deployment's
-secrets helper, in a bash subprocess whose SECRETS_CACHE_DIR is a fresh
+``read_key`` reads a key (the API key by default; the poster's relay key with
+``name=``) with ``get_secret`` from the deployment's secrets helper, in a bash subprocess whose SECRETS_CACHE_DIR is a fresh
 directory with no write permission (the pattern of scripts/sign-manifest.py):
 the key comes back over the subprocess's stdout pipe only, never in argv, a
 file or a log, and no error message carries it. ``api_call(key)`` is the one
@@ -125,8 +125,14 @@ def _refuses_writes(directory: str) -> bool:
     return False
 
 
-def read_key(helper, runner=subprocess.run) -> str:
-    """The API key from the secrets helper at ``helper`` (an absolute path)."""
+_SECRET_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+
+
+def read_key(helper, runner=subprocess.run, *, name: str = KEY_NAME) -> str:
+    """The secret ``name`` (the API key by default) from the secrets helper at ``helper``
+    (an absolute path). Errors say that it failed, never what came back."""
+    if not isinstance(name, str) or not _SECRET_NAME.fullmatch(name):
+        raise CallError("key unavailable: the secret name is not a variable name")
     if os.geteuid() == 0:
         raise CallError("api key unavailable: refusing to read it as root")
     if not os.path.isabs(str(helper)) or not os.path.isfile(helper):
@@ -136,9 +142,11 @@ def read_key(helper, runner=subprocess.run) -> str:
         os.chmod(cache, 0o500)
         if not _refuses_writes(cache):
             raise CallError("api key unavailable: the throwaway cache directory accepts writes")
-        env = {k: v for k, v in os.environ.items() if k not in _DROP_ENV}
+        # A stale copy of the named secret in the environment is dropped too: get_secret
+        # falls back to it.
+        env = {k: v for k, v in os.environ.items() if k not in _DROP_ENV and k != name}
         env.update(SECRETS_CACHE_DIR=cache, AITOOLS_ALERTS_SECRETS_HELPER=str(helper),
-                   AITOOLS_ALERTS_SECRET_NAME=KEY_NAME)
+                   AITOOLS_ALERTS_SECRET_NAME=name)
         try:
             res = runner(["bash", "-c", _HELPER], env=env, stdin=subprocess.DEVNULL,
                          capture_output=True, timeout=60)

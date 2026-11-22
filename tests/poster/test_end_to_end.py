@@ -1,5 +1,6 @@
 """Poster -> guard's command -> mirror-put -> exporter -> member reader, with throwaway
-keys (ai-tools-alerts#nfm3). The relay is a list of rows; ssh is a function."""
+keys (ai-tools-alerts#nfm3). The relay is a list of rows; posts reach it through a send
+function, the checkpoint through an ssh function (the put-only route, vzc3)."""
 
 import json
 import os
@@ -14,7 +15,7 @@ import pytest
 
 from aitools_alerts import checkpoint as cp
 from aitools_alerts import manifest, nostr, pull
-from aitools_alerts.poster import signer
+from aitools_alerts.poster import signer, transport
 from aitools_alerts.state import State
 from mirror_helpers import CHANNELS, advisory, released_reader
 from test_main import T0, env, finding  # noqa: F401 - env is a fixture
@@ -67,19 +68,18 @@ class World:
         self.rows[channel].append(ev)
         return ev
 
+    def send(self, channel_id, text, reply_to=None):
+        """A post as the relay takes it over HTTPS: stored as a bot-signed event."""
+        ev = self.relay_store(self.bot_sec, NAME[channel_id], text, reply_to)
+        return transport.SendResult(True, ev["id"], 200, "", "ok")
+
     def ssh(self, argv, **kw):
-        """The relay VM as the poster reaches it: a send is stored by the relay as a
-        bot-signed event; a put runs the real ops/vm/mirror-put in the VM's home."""
-        remote = shlex.split(argv[-1])
-        if remote == [PUT, "checkpoint"]:
-            self.puts += 1
-            return subprocess.run([BASH, str(ROOT / "ops" / "vm" / "mirror-put"), "checkpoint"], input=kw["input"],
-                                  capture_output=True, timeout=30,
-                                  env={"HOME": str(self.vm_home), "PATH": os.environ["PATH"]})
-        ch = NAME[remote[remote.index("--channel") + 1]]
-        reply = remote[remote.index("--reply-to") + 1] if "--reply-to" in remote else None
-        ev = self.relay_store(self.bot_sec, ch, kw["input"].decode(), reply)
-        return subprocess.CompletedProcess(argv, 0, json.dumps({"accepted": True, "event_id": ev["id"]}).encode(), b"")
+        """The put-only route: runs the real ops/vm/mirror-put in the VM's home."""
+        assert shlex.split(argv[-1]) == [PUT, "checkpoint"], argv
+        self.puts += 1
+        return subprocess.run([BASH, str(ROOT / "ops" / "vm" / "mirror-put"), "checkpoint"], input=kw["input"],
+                              capture_output=True, timeout=30,
+                              env={"HOME": str(self.vm_home), "PATH": os.environ["PATH"]})
 
     def export(self, rows=None):
         rows = rows or self.rows
@@ -103,12 +103,12 @@ def world(env, tmp_path, monkeypatch):  # noqa: F811
     key = tmp_path / "checkpoint.nsec"
     key.write_text(nostr.nsec(w.ck_sec) + "\n")
     key.chmod(0o600)
-    env.config = replace(env.config, checkpoint_key_file=key, relay_put_wrapper=PUT)
+    env.config = replace(env.config, checkpoint_key_file=key, relay_ssh_host="op@relay.example.net", relay_put_wrapper=PUT)
     signer.init_owed(env.config.owed_state)
     w.env = env
 
     def poster_run():
-        return env.run(now=w.now, ssh=w.ssh, mirror_fetch=w.fetch, root=w.root)
+        return env.run(now=w.now, relay=w.send, ssh=w.ssh, mirror_fetch=w.fetch, root=w.root)
     w.poster_run = poster_run
     return w
 

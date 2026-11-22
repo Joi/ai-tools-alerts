@@ -20,7 +20,7 @@ from aitools_alerts.poster import compose, main
 from aitools_alerts.poster.candidates import Candidate
 
 from pages import advisory_page
-from test_main import FakeSSH, env  # noqa: F401  (env is a fixture)
+from test_main import FakeRelay, env  # noqa: F401  (env is a fixture)
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "poster" / "live-feed-2026-11-07-to-11.json"
 EVENTS = json.loads(FIXTURE.read_text())["events"]
@@ -104,9 +104,9 @@ def test_live_feed_replay(env, monkeypatch):  # noqa: F811
                 env.pages.put(c.sources[0].url, advisory_page(
                     "GHSA-5xjx-9qx6-jcrv", cve="CVE-2026-88968", affected=None, patched=c.fixed,
                     title="TOCTOU Race in Edit Tool Allows File Writes Outside the Workspace"))
-        code, summary, ssh = env.run(now=t)
+        code, summary, relay = env.run(now=t)
         assert code == 0, summary
-        sent += [(t, *c) for c in ssh.calls]
+        sent += [(t, *c) for c in relay.calls]
 
     roots = {text.splitlines()[0]: (t, ch) for t, ch, reply, text in sent if reply is None
              and not text.startswith("Daily digest")}

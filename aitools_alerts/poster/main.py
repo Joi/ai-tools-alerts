@@ -86,10 +86,11 @@ def _fold(ids) -> set[str]:
 
 
 class Run:
-    def __init__(self, now, config: Config, led: Ledger, state: dict, channels, ssh, page,
+    def __init__(self, now, config: Config, led: Ledger, state: dict, channels, send, page,
                  *, digest_now=False, skipped: Counter | None = None):
         self.now, self.config, self.led, self.state = now, config, led, state
-        self.channels, self.ssh, self.fetch_page = channels, ssh, page
+        # send(channel_id, text, reply_to) -> transport.SendResult (transport.Relay.send)
+        self.channels, self.send, self.fetch_page = channels, send, page
         self.skipped = Counter() if skipped is None else skipped
         self.pages: dict[str, tuple] = {}  # url -> (status, body), one fetch a run
         self.confirmed: dict[str, set] = {}  # url -> the advisory ids its page confirmed
@@ -158,8 +159,7 @@ class Run:
             if it["kind"] == "reply" and reply_to is None:
                 raise LedgerError(f"{it['key']}: no root in {it['channel']}")
             try:  # every check the transport makes, before anything is marked pending
-                transport.remote_argv(self.channels[it["channel"]], reply_to,
-                                      wrapper=self.config.relay_send_wrapper)
+                transport.check_send(self.channels[it["channel"]], it["text"], reply_to)
             except (ValueError, KeyError):
                 self._drop([it])
                 self.n["ja_failed" if ja else "withheld"] += 1
@@ -169,8 +169,7 @@ class Run:
                     return False
                 raise _Stop from None
             self.led.pending(it["key"], [] if ja else it["ids"], now=self.now)  # ja: matches no advisory
-            r = transport.send(self.channels[it["channel"]], it["text"], reply_to, ssh=self.ssh,
-                               host=self.config.relay_ssh_host, wrapper=self.config.relay_send_wrapper)
+            r = self.send(self.channels[it["channel"]], it["text"], reply_to)
             if r.outcome == "refused":  # never sent again unchanged; the run goes on
                 self._withhold(it, r.message)  # saved before the mark clears: a crash between holds it
                 self.led.clear_pending(it["key"])
@@ -949,7 +948,24 @@ def _inputs_field(status) -> str:
     return ",".join(f"{k}:{status[k]}" for k in ("kev", "collector", "heartbeat"))
 
 
-def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
+def relay_sender(config: Config):
+    """The real ``send``: jibot's key from the secrets helper, read on the first send,
+    and checked against the relay-bot key of the bundled trust manifest. ConfigError
+    when the bundled manifest names no relay-bot key."""
+    m = pull.bundled_manifest()
+    bots = [p.pubkey for p in (m.posters if m else ()) if p.role == "relay-bot"]
+    if len(bots) != 1:
+        raise ConfigError("the bundled trust manifest does not name exactly one relay-bot key")
+
+    def key_source():
+        try:
+            return translate.read_key(config.secrets_helper, name=config.relay_key_secret)
+        except translate.CallError as e:  # its messages never carry the key
+            raise transport.KeyUnavailable(str(e)) from None
+    return transport.Relay(config.relay_url, key_source, expected_pubkey=bots[0]).send
+
+
+def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
         page=rules.http_page, channels: dict | None = None,
         digest_now: bool = False, kev_catalog: dict | None = None,
         mirror_fetch=None, translate_call=None, **translate_kw) -> tuple[int, str]:
@@ -960,6 +976,7 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
         config = inputs.load_config(config)
     try:
         config.check_relay()  # before the ledger opens: a run without a route sends nothing
+        send = send if send is not None else relay_sender(config)
     except ConfigError as e:
         print(f"aitools-alerts-poster: config error: {e}", file=sys.stderr)
         return 2, "aitools-alerts-poster: " + " ".join(f"{k}=0" for k in SUMMARY) \
@@ -972,7 +989,7 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
     try:
         with Ledger(config.ledger) as led:
             state = inputs.load_state(config.state, now, config.backfill_days)
-            r = Run(now, config, led, state, channels, ssh, page, digest_now=digest_now, skipped=skipped)
+            r = Run(now, config, led, state, channels, send, page, digest_now=digest_now, skipped=skipped)
             n = r.n
             _gate(state, led)
             merged, english_ok = None, False  # merged: set once the old deferred list is folded in
