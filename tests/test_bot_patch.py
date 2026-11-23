@@ -225,6 +225,8 @@ def test_a_relay_bot_patch_raising_fixed_applies(mirror):
      "actions", [UPGRADE, Action("stop_using", "Claude Code", None)]),
     ({"actions": [{"verb": "upgrade", "target": "Claude Code", "value": None}]},  # no version: the highest
      "actions", [Action("upgrade", "Claude Code", None)]),
+    ({"actions": [{"verb": "upgrade", "target": "Claude Code", "value": "99.1.0"}]},  # the version alone rises
+     "actions", [Action("upgrade", "Claude Code", "99.1.0")]),
     ({"sources": [{"url": "https://example.invalid/vendor", "published_at": None},
                   {"url": SOURCE, "published_at": "2026-11-01"}]},
      "sources", [Source(SOURCE, None), Source("https://example.invalid/vendor", None)]),
@@ -327,7 +329,56 @@ def test_a_joined_list_past_the_schema_limit_does_not_block_later_patches(mirror
     assert member_sees(t) == [UPGRADE] and dropped == {"narrowing": 2}
 
 
+def test_a_flooded_thread_costs_no_more_than_its_size(monkeypatch):
+    """Delta review: 200 patches of 50 ranges none of which stands for
+    another would cost a pairwise comparison on every read. Past
+    pull._JOIN_SCAN entries the join appends without comparing."""
+    calls = [0]
+    real = versions.covers
+    monkeypatch.setattr(versions, "covers", lambda *a: calls.__setitem__(0, calls[0] + 1) or real(*a))
+    adv, dropped = advisory(posted_by="relay-bot"), Counter()
+    for n in range(200):
+        adv = pull._apply_patch(adv, {"products": [dict(CC, affected=f"={n}.{i}", fixed=None) for i in range(50)]},
+                                "relay-bot", dropped)
+    assert len(adv.products) == 10001 and adv.products[0] == Product(**CC)
+    assert calls[0] < 200_000 and dropped == {"narrowing": 200}
+    again = pull._apply_patch(adv, {"products": [dict(CC, affected="=0.0", fixed=None)]}, "relay-bot")
+    assert len(again.products) == 10001  # an entry already there is not added twice
+
+
 # ------------------------------------------------------ the curator's word
+
+def _amend(mirror, root, **kw):
+    from aitools_alerts import curator
+    st = State.load()
+    res = pull.fetch("https://mirror.example.invalid/alerts", st, fetch=mirror.fetch, root_pubkey=mirror.root,
+                     now=T0 + 1000, checkpoint=False)
+    assert res.error is None, res.error
+    [(t, root_ev)] = curator.find_threads(st, mirror.root, root["id"])
+    ev = curator.amend_event(mirror.cur_sec, st.manifest, mirror.root, st, t, root_ev, now=T0 + 1000, **kw)
+    mirror.events["feed.json"].append(ev)
+    return read(mirror)
+
+
+def test_the_curator_command_amends_a_thread_joined_past_the_limit(mirror):
+    """Delta review: the command validated the whole amended advisory, so 51
+    products made even a title change fail."""
+    root = mirror.root_post(mirror.bot_sec, advisory(posted_by="relay-bot"))
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(products=[dict(JUNK, name=f"junk-{i}") for i in range(50)]))
+    t, _ = _amend(mirror, root, title="A person's title", level="notice")
+    assert t.adv.title == "A person's title" and t.adv.level == "notice" and len(t.adv.products) == 51
+    assert member_sees(t) == [UPGRADE]
+
+
+def test_the_curator_command_sets_fixed_on_a_product_listed_twice(mirror):
+    """Delta review: --fixed wanted exactly one entry of the name, and a
+    bot reply can now leave two."""
+    root = mirror.root_post(mirror.bot_sec, advisory(posted_by="relay-bot"))
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(products=[dict(CC, affected="=2.1.3", fixed=None)]))
+    t, _ = _amend(mirror, root, fixed="Claude Code=100.0.0")
+    assert t.adv.products == [Product("Claude Code", "claude-code", "<99.0.0", "100.0.0"),
+                              Product("Claude Code", "claude-code", "=2.1.3", "100.0.0")]
+    assert t.adv.actions == [Action("upgrade", "Claude Code", "100.0.0")]
 
 def test_a_curator_patch_still_narrows(mirror):
     t, dropped = bot_thread(mirror, patch_sec=mirror.cur_sec, products=[dict(CC, affected="<2.0.0", fixed="2.0.0")],

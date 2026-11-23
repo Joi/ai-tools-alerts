@@ -55,7 +55,7 @@ python3 -m pytest -q tests/test_bot_patch.py
 scripts/test-gate.sh
 ```
 
-Acceptance: both pass; `git diff origin/main --stat` shows no change under `spec/`, `aitools_alerts/schema.py`, `aitools_alerts/check.py`, `aitools_alerts/poster/` or `aitools_alerts/curator.py`, and no existing test file changed.
+Acceptance: both pass; `git diff origin/main --stat` shows no change under `spec/`, `aitools_alerts/schema.py`, `aitools_alerts/check.py`, `aitools_alerts/poster/`, and no existing test file changed; `aitools_alerts/curator.py` changes in `amend_event` only (delta review).
 
 ### Amendment after the code review (tests added)
 
@@ -65,6 +65,13 @@ Acceptance: both pass; `git diff origin/main --stat` shows no change under `spec
 - [ ] A thread joined to 101 products still takes a bot level raise and a curator's title.
 - [ ] `versions.covers` is transitive over a grid.
 - [ ] Earlier tests that asserted a field unchanged after a narrowing now assert the join: nothing removed, additions appended.
+
+### Amendment after the delta review
+
+- [ ] `pull._JOIN_SCAN` (200): past it `_join` appends an entry not already in the list without comparing; `_apply_patch` cuts the lists before `asdict`. Test: 200 patches of 50 ranges cost fewer than 200,000 `versions.covers` calls.
+- [ ] `pull.LIST_LIMITS`; `curator.amend_event` keeps a list longer than its limit whole when the amendment does not name it. Test through `amend_event`: 51 products, a title and level change.
+- [ ] `curator amend --fixed`: every entry of the one named product. Test through `amend_event`.
+- [ ] Acceptance line above amended: `aitools_alerts/curator.py` changes in `amend_event` only.
 
 ### After the merge
 

@@ -75,6 +75,8 @@ A source stands for another with the same URL. A patch may add a URL; it is appe
 ### Limits that stay
 
 - The list sizes are the schema's (50 products, 20 actions, 20 sources) for what one event carries; a patch over them fails validation, as today. A joined list may pass them: capping the join would bring the order back (fill the list from an early date and a later widening no longer fits). A patch that omits a field is validated against the thread's list cut to the limit, then keeps the whole list, so a thread joined past the limit still takes a level raise or a curator's amendment. The store's own limits bound the total.
+- Cost (delta review). Each comparison of a new entry is a scan of the list, so entries none of which stands for another would cost every read the square of their number: 200 patches of 50 equality ranges is 10,000 entries and about 100 million comparisons. Past 200 entries (`pull._JOIN_SCAN`) a list only grows: an entry not already in it is appended without comparison. Nothing is lost by keeping an entry, so the rule holds; only the tidying stops.
+- The `curator` command (delta review). `curator amend` validated the whole amended advisory, so a list joined past the schema's limit made every amendment fail; it now keeps such a list whole when the amendment does not name it, as the reader does. `--fixed NAME=VERSION` required exactly one entry of the name; it now sets every entry of that one product. These two lines are the only change outside the reader.
 - `level` down and `expires_at` stay refused, as today (`bad-patch`); only the three joined fields of such a patch count. Their replacement is ai-tools-alerts#h29n's.
 - A curator's patch is not compared: it replaces each field it names, whole, exactly as today.
 - A field a curator's patch omits stays as the reader holds it. After a relay-bot narrowing that the reader did not apply, that is the wide value, where a released reader would carry the narrowed one into the curator's amendment. This is on purpose (spec review, finding 2, rebutted): the curator signed the fields the patch names, and the omitted field's narrowed value was the bot's word alone. Reading the curator's patch against the narrowed state would let any later curator amendment, a title correction for instance, put a forged narrowing into force. A curator who agrees with a narrowing signs it: the amendment names the field. The `curator` command reads threads through this reader, so a curator sees the held state when amending.
@@ -84,7 +86,8 @@ A source stands for another with the same URL. A patch may add a URL; it is appe
 
 - `aitools_alerts/versions.py`: `covers`, with the bound reading. The module already owns the range grammar.
 - `aitools_alerts/pull.py`: `_apply_patch` gains the join for non-curator roles and an optional `dropped` counter; `threads_from` passes its counter. `threads_from` is also what the mirror exporter and the poster's translation pass call, so the Atom feed and the mirror page hold the same state as the CLI.
-- No change to `schema.py`, `check.py`, `poster/`, `curator.py` or `spec/`.
+- `aitools_alerts/curator.py`: the two adjustments to `amend` named under "Limits that stay".
+- No change to `schema.py`, `check.py`, `poster/` or `spec/`.
 
 ## Alternatives considered
 
@@ -98,7 +101,7 @@ A source stands for another with the same URL. A patch may add a URL; it is appe
 
 - It does not judge a patch against the source. A narrowing that is true (the vendor lowered the fixed version) is left out like a forged one, until ai-tools-alerts#h29n's member check or a curator.
 - A relay-bot patch may add entries: another product, a second entry for a product already listed with a lower `fixed`, an action, a source. A member inside two ranges matches twice and is shown both upgrades, the original among them. Confusing, not silent; a bot can also post a second root. Code that reads `products[0]` or `sources[0]` (a notification with no match, the curator's announcement) reads the thread's oldest surviving entry.
-- A relay-bot patch may still change `title`, `aliases` and `advisory_severity`, and may add a source that a reader shows first. Those are outside finding D1; noted on ai-tools-alerts#h29n.
+- A relay-bot patch may still change `title`, `aliases` and `advisory_severity`, and may add a source on a primary domain, which the CLI shows before an older source that is not primary. It may clear `fixed`, which no later bot patch can undo. Those are outside finding D1; noted on ai-tools-alerts#h29n.
 - Released readers (0.1.6 and earlier) apply a narrowing patch whole. Members get the rule when a release carries it: a rollout issue is filed, no release is cut here.
 - The poster's ledger records what the poster sent, so after a narrowing the reader did not apply the ledger and the readers differ on that field. The poster does not resend (it compares against its ledger). Noted on ai-tools-alerts#ny5g, which owns the poster's lowering rules.
 

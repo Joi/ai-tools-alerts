@@ -705,6 +705,11 @@ def _listed(s, by: list) -> bool:
 
 # field -> (the schema's list limit, "an entry of this list stands for that one")
 _WIDEST = {"products": (50, _covered), "actions": (20, _kept), "sources": (20, _listed)}
+LIST_LIMITS = {k: v[0] for k, v in _WIDEST.items()}  # what one event may carry; a joined list may hold more
+# Past this many entries a list is no longer compared entry by entry: each
+# comparison is a scan, and a key that floods a thread with entries none of
+# which stands for another would otherwise cost every read their square.
+_JOIN_SCAN = 200
 
 
 def _join(cur: list, new: list, stands) -> list:
@@ -712,11 +717,21 @@ def _join(cur: list, new: list, stands) -> list:
     stood for: an entry of ``new`` that ``cur`` already stands for adds
     nothing; any other is appended and replaces the entries it stands for.
     Nothing a member matched or was shown through either list is lost, in
-    whatever order the lists arrive."""
+    whatever order the lists arrive. A list past _JOIN_SCAN entries only
+    grows: an entry not already in it is appended without comparison, which
+    loses nothing either."""
     out = list(cur)
+    have = set(out)
     for q in new:
-        if not stands(q, out):
-            out = [p for p in out if not stands(p, [q])] + [q]
+        if q in have:
+            continue
+        if len(out) <= _JOIN_SCAN:
+            if stands(q, out):
+                continue
+            out = [p for p in out if not stands(p, [q])]
+            have = set(out)
+        out.append(q)
+        have.add(q)
     return out
 
 
@@ -746,9 +761,8 @@ def _apply_patch(adv: Advisory, patch: dict, role: str, dropped: Counter | None 
         lvl = patch.get("level", adv.level)
         if not isinstance(lvl, str) or lvl not in _RANK or _RANK[lvl] < _RANK[adv.level]:
             return None
-    base = asdict(adv)
-    for k, (limit, _) in _WIDEST.items():
-        base[k] = base[k][:limit]  # a joined list past the limit must not fail a patch that omits it
+    # A joined list past the limit must not fail a patch that omits it.
+    base = asdict(replace(adv, **{k: getattr(adv, k)[:limit] for k, limit in LIST_LIMITS.items()}))
     try:
         new = schema.validate({**base, **patch, "posted_by": adv.posted_by})
     except ValueError:
@@ -756,8 +770,9 @@ def _apply_patch(adv: Advisory, patch: dict, role: str, dropped: Counter | None 
     keep = {k: getattr(adv, k) for k in _WIDEST if k not in patch}
     if role != "curator":
         named = [k for k in _WIDEST if k in patch]
-        if dropped is not None and any(not all(_WIDEST[k][1](e, getattr(new, k)) for e in getattr(adv, k))
-                                       for k in named):
+        if dropped is not None and any(
+                len(getattr(adv, k)) > _JOIN_SCAN  # no single event's list stands for a flooded one
+                or not all(_WIDEST[k][1](e, getattr(new, k)) for e in getattr(adv, k)) for k in named):
             dropped["narrowing"] += 1
         keep.update((k, _join(getattr(adv, k), getattr(new, k), _WIDEST[k][1])) for k in named)
     return replace(new, **keep)
