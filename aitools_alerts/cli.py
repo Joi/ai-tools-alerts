@@ -26,7 +26,7 @@ import time
 from dataclasses import asdict, dataclass, replace
 from urllib.parse import quote
 
-from . import TRUST_ROOT_PUBKEY, __version__, check, config, curator, inventory, nostr, notify, pull, relay, schema
+from . import TRUST_ROOT_PUBKEY, __version__, check, config, curator, inventory, nostr, notify, pull, relay, schema, versions
 from .state import State, StateError
 
 TRUST_ROOT_ENV = "AITOOLS_ALERTS_TRUST_ROOT"
@@ -35,6 +35,8 @@ STALE_LINE = ("warning: alerts may be stale since {since}: no fresh signed check
               "the mirror may be frozen, replayed or cut off from its signer")
 UNVERIFIED_LINE = "warning: alerts are unverified ({reason}); nothing is auto-applied"
 OTHER_ROOT = "no pull yet under this trust root"
+UPGRADE_LINE = ("upgrade: this aitools-alerts is {have}; the feed needs {need} or later. "
+                "Newer alerts may be missing or shown at an older level here. See the README to upgrade.")
 
 # ecosystem -> argv template for an upgrade; "{fixed}" is products[].fixed,
 # which the schema restricts to digits, dots and a lowercase suffix.
@@ -263,6 +265,17 @@ def _unverified(a, st: State) -> str | None:
     return pull.unverified(st)
 
 
+def _min_cli(a, st: State) -> str | None:
+    """The release the trust root says this feed needs, when this CLI is older
+    than it; else None. From the stored certificate of the current root, whose
+    signature State.load checked; expired or not, it is the root's newest word.
+    Reported only: nothing is refused or hidden because of it."""
+    cert = st.cert_for(a.root)
+    need = cert.min_cli if cert is not None else None
+    have, want = versions.parse(__version__), versions.parse(need)
+    return need if have is not None and want is not None and have < want else None
+
+
 def _stale_since(a, st: State) -> str | None:
     """pull.stale_since as an ISO time: null only while this root's state is
     verified. With no state under this root, the time of the last attempt."""
@@ -393,6 +406,7 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
     if a.json:
         out = {"pull_error": res.error, "ignored_env": a.ignored_env,
                "stale_since": _stale_since(a, st), "unverified": _unverified(a, st),
+               "min_cli": _min_cli(a, st),
                "matches": [_match_json(t, m) for t, m in pairs],
                "unseen_critical": sorted({r for t, _ in pending for r in t.root_ids})}
     elif not a.quiet:
@@ -446,8 +460,12 @@ def main(argv: list[str] | None = None) -> int:
             return curator.cmd_curator(a, State.load())
         pull.channel_ids()  # a damaged package: one error line, before any command half-runs
         st = State.load()
-        return {"pull": cmd_pull, "check": cmd_check, "notify": cmd_notify,
-                "plan": cmd_plan, "run": cmd_run}[a.cmd](a, st, s)
+        try:
+            return {"pull": cmd_pull, "check": cmd_check, "notify": cmd_notify,
+                    "plan": cmd_plan, "run": cmd_run}[a.cmd](a, st, s)
+        finally:  # every command that reads the feed, whatever it returned: an old CLI never goes quiet
+            if need := _min_cli(a, st):
+                _err(UPGRADE_LINE.format(have=__version__, need=need))
     except (config.ConfigError, StateError, curator.CuratorError, relay.RelayError,
             pull.ChannelSpecError) as e:
         _err(str(e))

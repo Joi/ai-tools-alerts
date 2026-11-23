@@ -531,3 +531,41 @@ def test_script_reuses_the_manifest_script_for_the_root_key():
     """One implementation of the root key handling: this script defines none."""
     text = (ROOT / "scripts" / "sign-checkpoint-key.py").read_text()
     assert "sign-manifest.py" in text and "get_secret" not in text and "subprocess" not in text
+
+
+# ---------------------------------------------------------------- min_cli (ai-tools-alerts#t8jr)
+
+def test_min_cli_is_an_optional_key_of_the_certificate(w):
+    assert w.cert.min_cli is None and "min_cli" not in json.loads(w.cert_ev["content"])
+    ev = cp.build_cert(w.m.root_sec, w.man, w.ck, T0, T0 + DAY, "0.2.0")
+    cert = cp.load_cert(raw(ev))
+    assert cert.min_cli == "0.2.0" and json.loads(ev["content"])["min_cli"] == "0.2.0"
+    assert cp.verify_cert(cert, w.m.root) and cp.cert_problem(cert, w.man, T0) is None
+    assert cp.cert_from_event(ev) == cert
+    # what the object says must be what the root signed
+    assert not cp.verify_cert(replace(cert, min_cli="0.3.0"), w.m.root)
+    assert not cp.verify_cert(replace(cert, min_cli=None), w.m.root)
+    assert not cp.verify_cert(replace(w.cert, min_cli="0.2.0"), w.m.root)
+
+
+@pytest.mark.parametrize("bad", ["1.2", "v1.2.3", "1.2.3 ", "", "1.2.3.4", "1.2.x", "12345.0.0", 7, 1.2, True, [], {},
+                                 "１.２.３"])
+def test_a_malformed_min_cli_is_refused_when_built_and_when_read(w, bad):
+    with pytest.raises(cp.CheckpointError, match="min_cli"):
+        cp.build_cert(w.m.root_sec, w.man, w.ck, T0, T0 + DAY, bad)
+    with pytest.raises(cp.CheckpointError, match="min_cli"):
+        cp.load_cert(raw(w.resign(w.m.root_sec, w.cert_ev, {"min_cli": bad})))
+
+
+def test_min_cli_null_reads_as_absent(w):
+    assert cp.load_cert(raw(w.resign(w.m.root_sec, w.cert_ev, {"min_cli": None}))).min_cli is None
+
+
+def test_script_signs_min_cli_and_checks_it_before_reading_the_root_key(w, script):
+    for bad in ("1.2", "latest", ""):
+        with pytest.raises(SystemExit) as e:
+            script.main(script.argv(nostr.npub(w.ck), "--min-cli", bad))
+        assert e.value.code == 2
+    assert script.calls == [] and not script.out.exists()
+    assert script.main(script.argv(nostr.npub(w.ck), "--min-cli", "0.2.0")) == 0
+    assert cp.load_cert(script.out).min_cli == "0.2.0"
