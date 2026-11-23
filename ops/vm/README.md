@@ -6,15 +6,15 @@ Created 2026-11-05 under jibot-code#wpbd.
 
 ## Release files
 
-Every file this page installs on the VM comes from a verified release, never from a working checkout or a branch. The pinned release is `v0.1.4`, commit `b33573fb812d78239252b54413949dc87ec85348`, the same pin as the top-level README. Export it once and take every file below from `$rel`:
+Every file this page installs on the VM comes from a verified release, never from a working checkout or a branch. The pinned release is `v0.1.5`, commit `3ed4427ef3b252098d019067c6701d145d210bba`, the same pin as the top-level README. Export it once and take every file below from `$rel`:
 
 ```bash
 unset rel
 c=<ai-tools-alerts checkout>
 git -C "$c" fetch --tags origin &&
-  git -C "$c" -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.4 &&   # the principal and fingerprint in the README
-  test "$(git -C "$c" rev-parse 'v0.1.4^{commit}')" = b33573fb812d78239252b54413949dc87ec85348 &&
-  d="$(mktemp -d)" && git -C "$c" archive -o "$d/release.tar" b33573fb812d78239252b54413949dc87ec85348 && tar -x -C "$d" -f "$d/release.tar" &&
+  git -C "$c" -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.5 &&   # the principal and fingerprint in the README
+  test "$(git -C "$c" rev-parse 'v0.1.5^{commit}')" = 3ed4427ef3b252098d019067c6701d145d210bba &&
+  d="$(mktemp -d)" && git -C "$c" archive -o "$d/release.tar" 3ed4427ef3b252098d019067c6701d145d210bba && tar -x -C "$d" -f "$d/release.tar" &&
   rm "$d/release.tar" && test -f "$d/ops/vm/buzz-send" && rel="$d" ||
   echo 'VERIFICATION FAILED: install nothing'
 ```
@@ -100,7 +100,7 @@ Do not use `--template`: it resolves desktop-app templates. The wrapper was then
 The mirror exporter on the VM runs from a pinned commit of this repo, never a clone the VM pulls. cell-fleet's `ops/buzz/compose-overlays/buzz-aitools/install-mirror.sh <dir>` ships `aitools_alerts/`, `mirror/`, `spec/` and `trust/` from a local directory as they are on disk, unpacks them into a new `~/.ai-tools-alerts.d/<id>`, and points the `~/ai-tools-alerts` symlink at it. It does not check git state, so give it the verified export from Release files (above), not a working checkout that may hold local edits:
 
 ```bash
-./install-mirror.sh "${rel:?}"   # record b33573fb812d78239252b54413949dc87ec85348 on the kata issue
+./install-mirror.sh "${rel:?}"   # record 3ed4427ef3b252098d019067c6701d145d210bba on the kata issue
 ```
 
 The installer's `<id>` is a timestamp, so the recorded sha is the only note of what is deployed. The exporter publishes `trust/root.pub` from the deployed copy as `https://buzz.ai-tools.md/alerts/root.pub`, beside `manifest.json`, so a reader can compare the root with GitHub's.
