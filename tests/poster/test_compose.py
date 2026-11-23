@@ -708,6 +708,66 @@ def test_a_published_ledger_key_stays_in_the_list_and_off_the_line():
     assert "別名: CVE-2026-0009。" in ja and key not in ja
 
 
+# ---------------------------------------------------------------- 0dvh
+
+def test_a_title_names_the_public_id_and_the_block_keeps_the_key():
+    text, adv = root(cand(id="CVE-2026-103435:claude-code", aliases=("CVE-2026-103435",), injection_exec=False),
+                     ("high", "severity-tier1"))
+    assert text.split("\n")[0] == "HIGH: Claude Code: security advisory (CVE-2026-103435)"
+    assert adv.id == "CVE-2026-103435:claude-code" and ":claude-code" not in json.dumps(adv.aliases)
+    assert schema.parse_post(text) == adv  # a v0.1.4 reader's parse: same block, same keys
+
+
+def test_a_thread_titled_with_its_ledger_key_still_matches_the_templates():
+    key = "CVE-2026-88968:claude-code"
+    legacy = f"Claude Code: known exploited vulnerability ({key})"
+    assert legacy in compose._titles("Claude Code", key)
+    _, adv = root(cand(id=key, aliases=()), ("high", "severity-tier1"))
+    old = dataclasses.replace(adv, title=legacy)
+    assert compose._exploited(old) and compose._ja_title(old).endswith(f"悪用が確認された脆弱性 ({key})")
+    plain = dataclasses.replace(adv, level="notice", title=f"Claude Code: security advisory ({key})")
+    assert compose._group_key(plain) is not None and compose._group_key(dataclasses.replace(
+        plain, title="Claude Code: security advisory (CVE-2026-88968)")) is not None
+
+
+@pytest.mark.parametrize("affected,words", [
+    (None, "versions not stated"), (">=1.0 || <0.5", "affected versions: see the source"), ("< 2.1.0", "below 2.1.0")])
+def test_versions_not_stated_only_without_a_range(affected, words):
+    c = cand(affected=affected, fixed=None, injection_exec=False)
+    text, adv = root(c, ("high", "severity-tier1"))
+    assert words in text.split("\n")[1]
+    ja = compose.root_post_ja(adv, range_unexpressed=compose.range_unexpressed(c))
+    assert ("影響バージョンは出典を参照" in ja) == (words.startswith("affected"))
+
+
+def test_the_upstream_severity_word_is_published_and_nothing_else():
+    assert compose.severity("High") == "high" and compose.severity("high; critical") == "critical"
+    assert compose.severity("CVSS 9.8") is None and compose.severity(None) is None
+    _, prev = root(cand())
+    reply = compose.reply_post(prev, cand(), {"advisory_severity": "moderate"})
+    assert _block(reply) == {"advisory_severity": "moderate"} and "Upstream severity: moderate." in reply
+    with pytest.raises(ValueError):
+        compose.reply_post(prev, cand(), {"advisory_severity": "seen at 2.0.77"})
+
+
+def test_the_block_severity_is_the_pages_word_never_the_records():  # dmmf
+    assert root(cand(advisory_severity="critical"))[1].advisory_severity is None
+    assert root(cand(advisory_severity="low", severity_word="high; critical"))[1].advisory_severity == "critical"
+    assert "severity_word" not in cand(severity_word="high").to_dict()  # read again on each admit
+
+
+def test_a_reply_to_a_root_titled_with_its_ledger_key_keeps_its_identity():
+    key = "CVE-2026-88968:claude-code"
+    c = cand(id=key, aliases=("CVE-2026-88968",), injection_exec=False, fixed=None, affected=None)
+    _, adv = root(c, ("high", "severity-tier1"))
+    prev = dataclasses.replace(adv, title=f"Claude Code: security advisory ({key})")  # as posted before 0dvh
+    fixed = [{"name": "Claude Code", "ecosystem": "claude-code", "affected": None, "fixed": "2.1.251"}]
+    reply = compose.reply_post(prev, c, {"products": fixed, "advisory_severity": "high"})
+    merged = compose.parse_reply(reply, prev)
+    assert merged.id == key and merged.title == prev.title and merged.advisory_severity == "high"
+    assert "title" not in _block(reply) and "id" not in _block(reply)
+
+
 # ---------------------------------------------------------------- h340: ids a post may name
 
 @pytest.mark.parametrize("bad", ["LEAD-2026-11-07-claude-code", "OSV-2026-1", "x" * 128, "CVE-2026-1",
