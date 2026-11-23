@@ -102,9 +102,14 @@ class Candidate:
     # The advisory's title as the authoritative source words it (CISA's entry name, or
     # the vendor page's title read by rules.evidence); never a collector's, never identity.
     source_title: str | None = None
+    # The severity word the vendor's repository advisory page states (rules.evidence),
+    # set by main's admit: the only severity a post may carry (h340, dmmf). Never kept
+    # in the state file: a deferred candidate is admitted again, which reads it again.
+    severity_word: str | None = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
+        del d["severity_word"]
         d["aliases"] = list(self.aliases)
         d["sources"] = [asdict(s) for s in self.sources]
         return d

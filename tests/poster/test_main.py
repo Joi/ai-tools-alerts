@@ -1055,6 +1055,7 @@ def test_synthetic_never_merges_with_a_real_advisory(env, order, capsys):
     real = finding()
     fake = finding(fid="CVE-2099-0010", aliases=("GHSA-abcd-efgh-ijkl",), fixed=None)
     env.collector([real, fake] if order == 0 else [fake, real])
+    env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl"))  # one page, whatever the order (dmmf)
     code, summary, relay = env.run(kev_catalog=inputs.read_kev_file(SYNTHETIC))
     assert code == 0, summary
     assert "reserved synthetic id=1" in capsys.readouterr().err
@@ -1689,19 +1690,37 @@ def test_the_japanese_root_says_a_range_is_in_the_source(env):  # 0dvh
     assert "影響バージョンは出典を参照" in ssh.ja[0][2]
 
 
-def test_the_block_carries_the_loudest_upstream_severity(env):  # 0dvh
-    env.collector([finding(severity="high"), finding(severity="critical")])
+def test_the_block_carries_the_vendor_pages_severity_word(env):  # 0dvh, dmmf: the page's, never the record's
+    env.collector([finding(severity="low")])
+    env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", severity="Critical"))
     _, _, ssh = env.run()
     assert schema.parse_post(_roots(ssh)[0][2]).advisory_severity == "critical"
 
 
-def test_a_severity_change_rides_a_reply_and_never_posts_alone(env):  # 0dvh
-    env.collector([finding(fixed=None, severity="high", affected="<2.1.0")])
-    env.run()
-    env.collector([finding(fixed=None, severity="critical", affected="<2.1.0")])
+def test_a_records_severity_rates_but_never_reaches_the_block(env):  # dmmf, h340 criterion 4
+    """The page states no severity word; the record, citing only the vendor's page, says
+    "critical". It may rate the advisory (h340 keeps it for the level); the block says nothing."""
+    env.collector([finding(severity="critical")])
+    env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", severity="Unrated", title=""))
+    _, summary, ssh = env.run()
+    assert "roots=1" in summary
+    adv = schema.parse_post(_roots(ssh)[0][2])
+    assert adv.level == "high" and adv.advisory_severity is None and "critical" not in _roots(ssh)[0][2].lower()
+
+
+def test_a_severity_change_rides_a_reply_and_never_posts_alone(env):  # 0dvh, dmmf: the page's word
+    def page(sev, patched):
+        env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", severity=sev, affected="< 2.1.0", patched=patched))
+    env.collector([finding(fixed=None, severity="low")])
+    page("High", None)
+    _, summary, _ = env.run()
+    assert "roots=1" in summary  # a range is stated: no hold
+    env.collector([finding(fixed=None, severity="low")])
+    page("Critical", None)
     _, summary, ssh = env.run(now=T0 + 600)
     assert "replies=0" in summary and ssh.calls == []
-    env.collector([finding(fixed="2.1.0", severity="critical", affected="<2.1.0")])
+    env.collector([finding(fixed=None, severity="low")])
+    page("Critical", "2.1.0")
     _, summary, ssh = env.run(now=T0 + 1200)
     assert "replies=1" in summary and "Upstream severity: critical." in ssh.calls[0][2]
 
@@ -1741,15 +1760,23 @@ def test_a_waiting_candidate_survives_a_run_that_dies(env, monkeypatch):  # 0dvh
     assert "roots=1" in summary and "Fixed in 2.1.0." in _roots(ssh)[0][2]
 
 
-def test_a_primary_source_keeps_the_notice_fix_and_first_sight(env):  # 0dvh with 8ke5
-    env.collector([{**MAC, "fixed": "15.1", "sources": [{"url": SOCIAL, "published_at": None}]}])
-    env.run()
+def test_a_fieldless_sighting_keeps_the_notice_fix_and_first_sight(env, capsys):  # 0dvh, dmmf
+    """The held notice's fix is the vendor page's. A later sighting of the same advisory
+    that a vendor site page confirms (no fields) loses none of it."""
+    env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", cve="CVE-2026-5001", severity="Low",
+                                      affected="< 2.1.0", patched="2.1.0"))
+    env.collector([finding(severity=None, fixed=None)])
+    assert "held=1" in env.run()[1]
     stamp = env.state()["held"][0]["adv"]["posted_at"]
-    env.collector([MAC])  # a primary source, no fix
-    env.run(now=T0 + 7200)
-    h = env.state()["held"][0]["adv"]
-    assert h["products"][0]["fixed"] == "15.1" and h["actions"] and h["posted_at"] == stamp
-    assert h["sources"][0]["url"] == APPLE
+    env.collector([finding(fid="CVE-2026-5001", severity=None, fixed=None,
+                           sources=("https://www.anthropic.com/security/cve-2026-5001",))])
+    capsys.readouterr()
+    _, summary, _ = env.run(now=T0 + 7200)
+    assert "roots=0" in summary and "skipped" not in capsys.readouterr().err  # confirmed, merged
+    (h,) = env.state()["held"]
+    h = h["adv"]
+    assert h["products"][0]["fixed"] == "2.1.0" and h["products"][0]["affected"] == "<2.1.0"
+    assert h["actions"] and h["posted_at"] == stamp and h["sources"][0]["url"] == GHSA
 
 
 def test_a_spaced_timestamp_dates_the_age_limit(env):  # 0dvh
@@ -2038,7 +2065,7 @@ def test_a_fresh_state_is_already_past_the_gate(env, capsys):
 
 
 def test_sources_a_thread_learned_before_the_gate_are_listed_only_if_the_vendors(env):
-    env.collector([finding(fixed=None)])
+    env.collector([finding(fixed=None, affected="< 2.1.1")])  # a range: posts now, never waits (0dvh)
     env.run()
     with Ledger(env.config.ledger) as led:
         (e,) = led._state()["entries"]

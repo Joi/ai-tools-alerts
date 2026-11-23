@@ -361,7 +361,7 @@ def _item_ok(it) -> bool:
 
 def candidate_from(d) -> Candidate:
     """A Candidate rebuilt from Candidate.to_dict(); ValueError when it is not one."""
-    if not (isinstance(d, dict) and set(d) | {"source_title"} == _CANDIDATE_FIELDS  # r7hr: older lack it
+    if not (isinstance(d, dict) and set(d) | {"source_title"} == _CANDIDATE_FIELDS - {"severity_word"}  # r7hr
             and (d.get("source_title") is None or isinstance(d["source_title"], str))):
         raise ValueError("not a candidate")
     strs = ("id", "product_text")

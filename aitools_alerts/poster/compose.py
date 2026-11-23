@@ -286,7 +286,7 @@ def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, sc
     if not sources:
         raise ValueError("no https source the schema accepts: the advisory does not post")
     adv = schema.validate(asdict(schema.Advisory(
-        id=c.id, aliases=_ids(c.aliases, c.id)[:50], level=level, advisory_severity=severity(c.advisory_severity),
+        id=c.id, aliases=_ids(c.aliases, c.id)[:50], level=level, advisory_severity=severity(c.severity_word),
         title=f"{scope.name}: {_kind(c, reason)} ({public_form(c.id)})",
         products=[schema.Product(scope.name, scope.ecosystem, schema_affected(c.affected), fixed)],
         actions=[schema.Action("upgrade", scope.name, fixed)] if fixed else [],

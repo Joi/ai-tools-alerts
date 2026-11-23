@@ -100,7 +100,7 @@ def test_live_feed_replay(env, monkeypatch):  # noqa: F811
     for t, cands in steps:
         feeding[:] = [cands]
         for c in cands:  # h340: the vendor's page states what the live thread then said
-            if c.id == CLAUDE:
+            if c.id.split(":")[0] == CLAUDE_ID:
                 env.pages.put(c.sources[0].url, advisory_page(
                     "GHSA-5xjx-9qx6-jcrv", cve="CVE-2026-88968", affected=None, patched=c.fixed,
                     title="TOCTOU Race in Edit Tool Allows File Writes Outside the Workspace"))
@@ -166,12 +166,42 @@ def _batch_steps(day):
     return [(t, list(c.values())) for t, c in sorted(steps.items())]
 
 
+# The package each product's repository advisory page names (dmmf): (name, ecosystem),
+# ecosystem None for GitHub's "Software" label.
+PACKAGES = {"Claude Code": ("@anthropic-ai/claude-code", "npm"),
+            "MCP Inspector": ("@modelcontextprotocol/inspector", "npm"),
+            "MCP TypeScript SDK": ("@modelcontextprotocol/sdk", "npm"),
+            "MCP Python SDK": ("mcp", "pip"),
+            "MCP servers and clients": ("modelcontextprotocol/servers", None)}
+_REPO_PAGE = re.compile(r"https://github\.com/([^/]+/[^/]+)/security/advisories/(GHSA(?:-[0-9a-z]{4}){3})")
+
+
+def _pages(env, cands):
+    """h340, dmmf: the vendor's page is the source. At each step every candidate's
+    repository advisory page states what the live thread then said: its fix (or none
+    yet) and its range. A live id whose slug h340's BOT_ID refuses (a slash) is cut to
+    its base id; the replay is about the hold and the age limit, not the key's form."""
+    out = []
+    for c in cands:
+        if not main.candidates.BOT_ID.fullmatch(c.id):
+            c = main.replace(c, id=c.id.split(":")[0])
+        for s in c.sources:
+            if (m := _REPO_PAGE.fullmatch(s.url)) and c.product_text in PACKAGES:
+                name, eco = PACKAGES[c.product_text]
+                base = c.id.split(":")[0]
+                env.pages.put(s.url, advisory_page(
+                    m.group(2), package=name, ecosystem=eco, affected=c.affected, patched=c.fixed,
+                    cve=base if base.startswith("CVE-") else None, repo=m.group(1)))
+        out.append(c)
+    return out
+
+
 def _replay(env, monkeypatch, steps):  # noqa: F811
     feeding, sent, summaries = [], [], []
     monkeypatch.setattr(main, "gather", lambda *a, **k: (
         feeding.pop(0) if feeding else [], {}, {"kev": "ok", "collector": "ok", "heartbeat": "off"}))
     for t, cands in steps:
-        feeding[:] = [cands]
+        feeding[:] = [_pages(env, cands)]
         code, summary, ssh = env.run(now=t)
         assert code == 0, summary
         summaries.append(summary)
@@ -179,16 +209,22 @@ def _replay(env, monkeypatch, steps):  # noqa: F811
     return sent, summaries
 
 
-def test_replay_11_07_posts_no_old_root(env, monkeypatch):  # noqa: F811
+def test_replay_11_07_posts_no_old_root(env, monkeypatch, capsys):  # noqa: F811
     """17 roots whose primary sources were 12 to 226 days old, fixes two hours later."""
     steps = _batch_steps(7)
     assert len(steps) == 2 and len({c.id for _, cs in steps for c in cs}) == 17
     sent, summaries = _replay(env, monkeypatch, steps)
     assert sent == []  # no real-time root, so no reply either
-    assert [int(re.search(r" aged=(\d+)", s).group(1)) for s in summaries] == [len(c) for _, c in steps]
+    # h340: OpenClaw's root cited only github.com/advisories/, authoritative for nobody's
+    # product: it is dropped before any level, so it is neither aged nor posted.
+    vendor = [[c for c in cs if c.product_text != "OpenClaw"] for _, cs in steps]
+    assert [sum(c.product_text == "OpenClaw" for c in cs) for _, cs in steps] == [0, 1]
+    assert [int(re.search(r" aged=(\d+)", s).group(1)) for s in summaries] == [len(c) for c in vendor]
+    assert "skipped: no authoritative source=1" in capsys.readouterr().err
     st = env.state()  # each is a notice for the digest: listed by 11-07's (sent 11:30 Tokyo) or still held
     noticed = {k.split("|", 1)[1] for k in st["digested"]} | {h["adv"]["id"].casefold() for h in st["held"]}
-    assert {c.id.casefold() for _, cs in steps for c in cs} <= noticed
+    held_ids = {c.id.casefold() for cs in vendor for c in _pages(env, cs)}
+    assert len(held_ids) == 16 and held_ids <= noticed and not any("32846" in i for i in noticed)
 
 
 def test_replay_11_18_posts_each_once_with_its_fix(env, monkeypatch):  # noqa: F811

@@ -469,4 +469,6 @@ def _merged(members, scope_name, ledger):
         fixed=fix.fixed, affected=fix.affected,
         # every member's severity text, so B2's rule sees it whichever order (never published)
         advisory_severity="; ".join(dict.fromkeys(severities)) or None,
+        # the pages' words only (dmmf); compose publishes the loudest
+        severity_word="; ".join(dict.fromkeys(c.severity_word for c in members if c.severity_word)) or None,
         sources=tuple(sources))

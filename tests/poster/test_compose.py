@@ -750,6 +750,12 @@ def test_the_upstream_severity_word_is_published_and_nothing_else():
         compose.reply_post(prev, cand(), {"advisory_severity": "seen at 2.0.77"})
 
 
+def test_the_block_severity_is_the_pages_word_never_the_records():  # dmmf
+    assert root(cand(advisory_severity="critical"))[1].advisory_severity is None
+    assert root(cand(advisory_severity="low", severity_word="high; critical"))[1].advisory_severity == "critical"
+    assert "severity_word" not in cand(severity_word="high").to_dict()  # read again on each admit
+
+
 def test_a_reply_to_a_root_titled_with_its_ledger_key_keeps_its_identity():
     key = "CVE-2026-88968:claude-code"
     c = cand(id=key, aliases=("CVE-2026-88968",), injection_exec=False, fixed=None, affected=None)

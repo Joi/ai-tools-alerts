@@ -32,6 +32,14 @@ def adv_for(c, level="critical"):
     return compose.root_post(c, level, rules.scope_of(c.product_text), posted_at=T0)[1]
 
 
+def test_merge_keeps_every_pages_severity_word_and_no_records():  # dmmf
+    (m, _), = ledger.merge([pair(cand(advisory_severity="critical; Title", severity_word="high")),
+                            pair(cand(id="GHSA-abcd-efgh-ijkl", aliases=("CVE-2026-0001",), severity_word="critical")),
+                            pair(cand(id="GHSA-zzzz-zzzz-zzzz", aliases=("CVE-2026-0001",), advisory_severity="low"))])
+    assert m.severity_word == "high; critical" and compose.severity(m.severity_word) == "critical"
+    assert m.advisory_severity == "critical; Title; low"  # the level's input, never published
+
+
 def test_ledger_alias_merge(tmp_path):
     kev = cand(exploited=True)
     beat = cand(id="GHSA-abcd-efgh-ijkl", aliases=("CVE-2026-0001",), fixed="2.1.0",
