@@ -60,11 +60,12 @@ class Mirror:
     def man(self):
         return manifest.load(json.dumps(self.manifest).encode())
 
-    def publish_cert(self, key=None, issued=None, days=120, signer=None, man=None):
+    def publish_cert(self, key=None, issued=None, days=120, signer=None, man=None, min_cli=None):
         """Sign and serve a certificate for the current manifest (or ``man``)."""
         man = man or self.man
         issued = issued if issued is not None else man.event["created_at"]
-        self.cert = checkpoint.build_cert(signer or self.root_sec, man, key or self.ck, issued, issued + days * 86400)
+        self.cert = checkpoint.build_cert(signer or self.root_sec, man, key or self.ck, issued, issued + days * 86400,
+                                           min_cli)
         self.raw.pop("checkpoint-key.json", None)
         return self.cert
 
@@ -156,6 +157,12 @@ class Mirror:
         return json.dumps({"generated_at": "2099-01-01T00:00:00Z",
                            "channel": name.split(".")[0], "events": self.events[name]}).encode()
 
+    def write(self, path) -> str:
+        """The mirror's five files in the directory ``path``; returns its file:// URL."""
+        for name in ("manifest.json", "feed.json", "critical.json", "checkpoint-key.json", "checkpoint.json"):
+            (Path(path) / name).write_bytes(self.body(name))
+        return Path(path).as_uri() + "/"
+
     def fetch(self, url: str, timeout=None) -> bytes:
         name = url.rsplit("/", 1)[1]
         if url.startswith(SECOND):
@@ -165,6 +172,19 @@ class Mirror:
         if name not in ("manifest.json", "feed.json", "critical.json", "checkpoint-key.json", "checkpoint.json"):
             raise OSError(f"no such file {name}")
         return self.body(name)
+
+
+def mirror_now(min_cli=None) -> tuple:
+    """(a Mirror dated at the real clock, that clock): the manifest and the certificate
+    two hours old, so a reader that refuses what is dated ahead (a released one, or the
+    CLI, neither of which takes a clock) reads it. Date its events ``now - 3600`` on."""
+    import time
+    now = int(time.time())
+    m = Mirror()
+    m.clock = now
+    m.publish_manifest(version=1, issued=now - 7200, cert=False)
+    m.publish_cert(min_cli=min_cli)
+    return m, now
 
 
 class Boom(OSError):
@@ -225,7 +245,19 @@ def released_reader(tmp_path, home=None, tag="v0.1.4"):
         env = {"HOME": str(home), "PATH": os.environ["PATH"], "AITOOLS_ALERTS_TRUST_ROOT": root}
         return subprocess.run([sys.executable, "-c", boot, str(home), *args], cwd=old, env=env,
                               capture_output=True, text=True, timeout=120)
+
+    def py(code, *args, root=FIXTURE_ROOT):
+        """Run ``code`` in the released tree, after the same home redirect as ``run``;
+        ``args`` are its sys.argv[2:]."""
+        return _exec("import pathlib, sys; from aitools_alerts import config; "
+                     "config.home = lambda: pathlib.Path(sys.argv[1])\n" + code, root, *args)
+
+    def _exec(script, root, *args):
+        env = {"HOME": str(home), "PATH": os.environ["PATH"], "AITOOLS_ALERTS_TRUST_ROOT": root}
+        return subprocess.run([sys.executable, "-c", script, str(home), *args], cwd=old, env=env,
+                              capture_output=True, text=True, timeout=120)
+    run.py = py
     return run
 
 
-__all__ = ["released_reader", "break_write", "Boom", "CHANNELS", "FIXTURE_MIRROR", "FIXTURE_ROOT", "SECOND", "T0", "Mirror", "advisory", "asdict"]
+__all__ = ["released_reader", "mirror_now", "break_write", "Boom", "CHANNELS", "FIXTURE_MIRROR", "FIXTURE_ROOT", "SECOND", "T0", "Mirror", "advisory", "asdict"]
