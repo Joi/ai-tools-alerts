@@ -123,7 +123,7 @@ The CLI always computes with its own ruleset. A claim that names an older versio
 - **Product inside the claim tuple.** Rejected: the issue fixes the tuple; the alert it is signed with already names the product, and a second copy is one more field to disagree.
 - **Raw `vendorProject` and `product` as two KEV fields.** Rejected: the scope file defines the KEV identity as the two joined by one space, and that joined string is the only thing the binding reads. Two fields add nothing a member can check that one does not.
 - **Replace `level_for` outright with 9kgk's consequence rules.** Out of scope: 9kgk owns the rule; this slice owns the mechanism and a version 1 that changes one thing, the reading-made critical.
-- **Manifest `ruleset` key in this slice.** Split out: `manifest.parse_content` in every released reader refuses an unknown content key, so the reader change must ship in a release before the root signs such a manifest. `min_cli` is t8jr's.
+- **Manifest `ruleset` key in this slice.** Split out: `manifest.parse_content` in every released reader refuses an unknown content key, so the reader change must ship in a release before the root signs such a manifest. `min_cli` is t8jr's. (t8jr landed during this run and put `min_cli` in the checkpoint key certificate, which released readers read leniently; the ruleset pin follows it there, ai-tools-alerts#ed7n.)
 
 ## Assumes
 

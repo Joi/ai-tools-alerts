@@ -63,6 +63,7 @@ _ISO_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 MAX_TIME = 253402300799  # 9999-12-31T23:59:59Z
 _EVENT_KEYS = frozenset({"id", "pubkey", "created_at", "kind", "tags", "content", "sig"})
 _ISO = "%Y-%m-%dT%H:%M:%SZ"
+_MIN_CLI = re.compile(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}")  # a release version, as pyproject writes it
 
 
 class CheckpointError(ValueError):
@@ -77,6 +78,9 @@ class Cert:
     checkpoint_key: str
     issued_at: int
     expires_at: int
+    # The oldest CLI release the root says can read the feed; None: no floor. The CLI
+    # only reports it (cli.UPGRADE_LINE): nothing is refused because of it.
+    min_cli: str | None = None
 
 
 @dataclass(frozen=True)
@@ -202,8 +206,11 @@ def _parse_cert(ev) -> tuple:
         raise CheckpointError("certificate: created_at must equal issued_at")
     if expires <= issued:
         raise CheckpointError("certificate: expires_at must be after issued_at")
+    min_cli = c.get("min_cli")  # optional; readers at 0.1.7 and earlier ignore the key
+    if min_cli is not None and not (isinstance(min_cli, str) and _MIN_CLI.fullmatch(min_cli)):
+        raise CheckpointError("certificate: min_cli must be a version written N.N.N")
     return (_hex(c, "manifest_id", "certificate"), _int(c, "manifest_version", 1, MAX_INT, "certificate"),
-            key, issued, expires)
+            key, issued, expires, min_cli)
 
 
 def load_cert(src) -> Cert:
@@ -234,7 +241,7 @@ def verify_cert(cert: Cert, root_pubkey: str) -> bool:
         if not isinstance(ev, dict) or ev.get("pubkey") != root_pubkey:
             return False
         if _parse_cert(ev) != (cert.manifest_id, cert.manifest_version, cert.checkpoint_key,
-                               cert.issued_at, cert.expires_at):
+                               cert.issued_at, cert.expires_at, cert.min_cli):
             return False
         return nostr.verify_event(ev)
     except (ValueError, TypeError, KeyError, RecursionError):
@@ -265,14 +272,20 @@ def cert_order(new: Cert, old: Cert | None) -> str | None:
     return None
 
 
-def build_cert(root_sec: str, m: Manifest, checkpoint_key: str, issued_at: int, expires_at: int) -> dict:
-    """The signed certificate event naming ``checkpoint_key`` for manifest ``m``."""
+def build_cert(root_sec: str, m: Manifest, checkpoint_key: str, issued_at: int, expires_at: int,
+               min_cli: str | None = None) -> dict:
+    """The signed certificate event naming ``checkpoint_key`` for manifest ``m``.
+    ``min_cli`` (N.N.N) is written only when given."""
     if not _key_ok(checkpoint_key):
         raise CheckpointError("checkpoint_key is not an x-only public key (64 lowercase hex)")
     if not all(type(t) is int and 0 <= t <= MAX_TIME for t in (issued_at, expires_at)) or expires_at <= issued_at:
         raise CheckpointError("expires_at must be after issued_at, both whole seconds")
     content = {"v": VERSION, "manifest_id": m.event["id"], "manifest_version": m.version,
                "checkpoint_key": checkpoint_key, "issued_at": _iso(issued_at), "expires_at": _iso(expires_at)}
+    if min_cli is not None:
+        if not (isinstance(min_cli, str) and _MIN_CLI.fullmatch(min_cli)):
+            raise CheckpointError("min_cli must be a version written N.N.N")
+        content["min_cli"] = min_cli
     ev = nostr.sign_event(root_sec, {"created_at": issued_at, "kind": KIND, "tags": [["d", CERT_D_TAG]],
                                      "content": json.dumps(content, sort_keys=True, separators=(",", ":"))})
     _parse_cert(ev)

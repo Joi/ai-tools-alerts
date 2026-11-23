@@ -28,7 +28,7 @@ import time
 from dataclasses import asdict
 from urllib.parse import urlsplit
 
-from aitools_alerts import schema
+from aitools_alerts import schema, wire
 from aitools_alerts.poster import candidates
 
 POSTED_BY = "relay-bot"
@@ -447,10 +447,13 @@ def _change_line(k: str, adv: schema.Advisory, unexpressed: bool = False) -> str
     }[k]
 
 
-def reply_post(prev: schema.Advisory, c, changes: dict, *, reason: str | None = None) -> str:
+def reply_post(prev: schema.Advisory, c, changes: dict, *, reason: str | None = None,
+               lowered: bool = False) -> str:
     """A thread reply: one line per changed field, a source line, then a block of the
     changed fields only. Unchanged keys are dropped; aliases and sources are capped
     at the schema's 50 and 20. ``reason`` 'unverified' adds the unverified line.
+    ``lowered``: the thread has had a lowering (the caller's ledger knows); then no
+    level change at all may ride here, a raise included (spec/wire.md, rule 2).
     Raises ValueError for an empty, invalid or unpublishable patch."""
     if not isinstance(changes, dict):
         raise ValueError("changes: not an object")
@@ -474,6 +477,18 @@ def reply_post(prev: schema.Advisory, c, changes: dict, *, reason: str | None = 
             patch["actions"] = acts
     if not patch:
         raise ValueError("reply with no changed field")
+    if "expires_at" in patch:
+        # Every reader refuses a relay-bot reply that sets expires_at, and a finite one in a
+        # root ends the alert on released readers with no renewal: root_post writes null, a
+        # reply leaves the key out (spec/wire.md).
+        raise ValueError("reply: a relay-bot reply carries no expires_at")
+    if wire.is_lowering(patch, prev.level):
+        # Readers at 0.1.7 and earlier skip a relay-bot reply that lowers the level: before
+        # 0.1.7 a fix or a source in the same reply is lost with it (spec/wire.md).
+        raise ValueError("reply: a lowering travels alone (level_post)")
+    if lowered and "level" in patch:
+        # Those readers kept the higher level, so this raise may be a lowering to them.
+        raise ValueError("reply: on a thread that was lowered, a level change travels alone (level_post)")
     merged = apply_patch(prev, patch)
     _publishable(prev, merged, patch)
     body = [UNVERIFIED[0].upper() + UNVERIFIED[1:] + "."] if reason == "unverified" else []
@@ -483,6 +498,27 @@ def reply_post(prev: schema.Advisory, c, changes: dict, *, reason: str | None = 
     out = _inline("\n".join(body)) + f"\n\n```{schema.INFO_STRING}\n{block}\n```\n"
     if parse_reply(out, prev) != merged:
         raise ValueError("reply does not parse back")
+    return _guard(out)
+
+
+def level_post(prev: schema.Advisory, level: str) -> str:
+    """A thread reply that changes the level and nothing else: one line and a block of
+    exactly ``{"level": ...}``. What justifies it travels in the event's claim tag
+    (``wire.claim_tag``), never in the block.
+
+    Every lowering is sent this way, and so is every level change on a thread that
+    has had a lowering (spec/wire.md). Readers at 0.1.7 and earlier refuse a
+    relay-bot lowering and keep the higher level; from then on they hold a higher
+    level than the poster does, so a later raise can be a lowering to them too.
+    Alone, a refused level change costs them nothing else. Raises ValueError unless
+    ``level`` is a known level other than the thread's."""
+    patch = {"level": level}
+    if not isinstance(level, str) or level not in wire.LEVELS or level == prev.level:
+        raise ValueError("level change: the level must be a known level other than the thread's")
+    merged = apply_patch(prev, patch)
+    out = _inline(_change_line("level", merged)) + f"\n\n```{schema.INFO_STRING}\n{json.dumps(patch)}\n```\n"
+    if parse_reply(out, prev) != merged or json.loads(schema._last_block(out)) != patch:
+        raise ValueError("level change does not parse back")
     return _guard(out)
 
 

@@ -457,3 +457,14 @@ def test_the_digest_covers_the_tables_and_the_scope_file():
     scope = copy.deepcopy(SCOPE)
     scope["entries"][0]["authority"].append("example.com/")
     assert build(scope=scope).digest != RS.digest
+
+
+def test_the_wire_tag_carries_the_canonical_bytes():
+    """t8jr's carrier and this form are one serialisation: the tag's text is the claim's
+    canonical bytes, and the tag reads back as the claim."""
+    from aitools_alerts import wire
+    for v in VECTORS["claims"]:
+        tag = wire.claim_tag(v["claim"])
+        assert tag == [wire.CLAIM_TAG, v["canonical"]] and len(v["canonical"]) <= wire.MAX_CLAIM_BYTES
+        got = wire.claim_of({"tags": [tag]})
+        assert got == v["claim"] and ruleset.check_claim(got, v["product"]) == "ok"

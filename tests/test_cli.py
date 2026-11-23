@@ -748,3 +748,93 @@ def test_pull_prints_the_checkpoint_and_check_stays_quiet_when_verified(capsys):
     assert cli.main(["check"]) == 0
     out = capsys.readouterr().out
     assert "unverified" not in out and "stale" not in out
+
+
+# ---------------------------------------------------------------- min_cli (ai-tools-alerts#t8jr)
+
+def _mirror_with_min_cli(tmp_path, monkeypatch, min_cli):
+    """A mirror on disk whose certificate names ``min_cli``, and the config and root for it."""
+    from mirror_helpers import Mirror
+    m = Mirror()  # dated at the tests' reader clock (conftest.reader_clock)
+    m.publish_cert(min_cli=min_cli)
+    m.root_post(m.bot_sec, advisory(posted_by="relay-bot"))
+    (tmp_path / "mirror").mkdir()
+    write_config(f'mirror_url = "{m.write(tmp_path / "mirror")}"\n')
+    monkeypatch.setenv(cli.TRUST_ROOT_ENV, m.root)
+    return m
+
+
+def _upgrade_lines(capsys) -> list:
+    return [x for x in capsys.readouterr().err.split("\n") if x.startswith("aitools-alerts: upgrade:")]
+
+
+def test_an_older_cli_says_upgrade_once_on_every_command_and_changes_nothing_else(tmp_path, monkeypatch, sent, capsys):
+    _mirror_with_min_cli(tmp_path, monkeypatch, "99.0.0")
+    want = [f"aitools-alerts: upgrade: this aitools-alerts is {cli.__version__}; the feed needs 99.0.0 or later. "
+            "Newer alerts may be missing or shown at an older level here. See the README to upgrade."]
+    assert cli.main(["check"]) == 0 and _upgrade_lines(capsys) == []  # no pull yet: no certificate, no line
+    for argv, status in ((["pull"], 0), (["check"], 0), (["check", "--json"], 0), (["plan", "AITA-TEST-0001"], 0),
+                         (["run"], 2), (["notify"], 0), (["run", "--quiet"], 0), (["plan", "no-such-id"], 1)):
+        assert cli.main(argv) == status, argv  # the status is the command's own
+        assert _upgrade_lines(capsys) == want, argv
+    assert cli.main(["run", "--json"]) == 0
+    io = capsys.readouterr()
+    assert json.loads(io.out)["min_cli"] == "99.0.0" and io.err.count("upgrade:") == 1
+    assert len(json.loads(io.out)["matches"]) == 1  # the alert is still shown: nothing is hidden
+
+
+@pytest.mark.parametrize("min_cli", [None, "0.0.1", cli.__version__])
+def test_a_current_cli_says_nothing(tmp_path, monkeypatch, sent, capsys, min_cli):
+    _mirror_with_min_cli(tmp_path, monkeypatch, min_cli)
+    assert cli.main(["run", "--json"]) == 2
+    io = capsys.readouterr()
+    assert json.loads(io.out)["min_cli"] is None and "upgrade:" not in io.err
+
+
+def test_min_cli_is_read_under_the_current_root_only(tmp_path, monkeypatch, sent, capsys):
+    """A certificate stored under a test root says nothing once the root is the pinned one."""
+    _mirror_with_min_cli(tmp_path, monkeypatch, "99.0.0")
+    assert cli.main(["pull"]) == 0 and len(_upgrade_lines(capsys)) == 1
+    monkeypatch.delenv(cli.TRUST_ROOT_ENV)
+    assert cli.main(["check"]) == 0 and _upgrade_lines(capsys) == []
+
+
+def test_min_cli_comes_only_from_a_certificate_the_root_signed_and_never_from_an_older_one(tmp_path, monkeypatch, capsys):
+    """The certificate is the root's word: one signed by another key, or one issued
+    before the certificate already held, cannot set or raise the floor."""
+    from aitools_alerts import nostr
+    m = _mirror_with_min_cli(tmp_path, monkeypatch, None)
+    genuine = m.cert
+    assert cli.main(["pull"]) == 0 and _upgrade_lines(capsys) == []
+    forged = m.publish_cert(min_cli="99.0.0", signer=nostr.keygen()[0], issued=genuine["created_at"] + 10)
+    older = m.publish_cert(min_cli="99.0.0", issued=genuine["created_at"] - 10)
+    for cert in (forged, older):
+        (tmp_path / "mirror" / "checkpoint-key.json").write_text(json.dumps(cert))
+        cli.main(["pull"])
+        assert _upgrade_lines(capsys) == [], cert["created_at"]
+        assert State.load().cert_for(m.root).event["id"] == genuine["id"]
+    newer = m.publish_cert(min_cli="99.0.0", issued=genuine["created_at"] + 10)  # the root raises the floor
+    (tmp_path / "mirror" / "checkpoint-key.json").write_text(json.dumps(newer))
+    assert cli.main(["pull"]) == 0 and len(_upgrade_lines(capsys)) == 1
+    assert State.load().cert_for(m.root).min_cli == "99.0.0"  # it is in the state file: the next command says it too
+
+
+def test_the_upgrade_line_survives_a_failed_pull(tmp_path, monkeypatch, sent, capsys):
+    """A mirror that stops answering does not quiet the line: it comes from stored state."""
+    _mirror_with_min_cli(tmp_path, monkeypatch, "99.0.0")
+    assert cli.main(["pull"]) == 0 and len(_upgrade_lines(capsys)) == 1
+    (tmp_path / "mirror" / "feed.json").write_text("{")
+    assert cli.main(["pull"]) == 1 and len(_upgrade_lines(capsys)) == 1
+    (tmp_path / "mirror" / "manifest.json").unlink()
+    assert cli.main(["run"]) in (0, 2) and len(_upgrade_lines(capsys)) == 1
+
+
+@pytest.mark.parametrize("have, need, older", [("0.9.0", "0.10.0", True), ("0.10.0", "0.9.0", False),
+                                               ("1.0.0", "0.99.99", False), ("0.1.7", "0.1.8", True),
+                                               ("0.1.7", "0.1.7", False), ("0.2.0rc1", "0.2.0", True),
+                                               ("not a version", "9.9.9", False)])
+def test_versions_are_compared_as_numbers(tmp_path, monkeypatch, capsys, have, need, older):
+    _mirror_with_min_cli(tmp_path, monkeypatch, need)
+    monkeypatch.setattr(cli, "__version__", have)
+    assert cli.main(["pull"]) == 0
+    assert len(_upgrade_lines(capsys)) == (1 if older else 0)
