@@ -15,3 +15,10 @@ from the public feed (https://buzz.ai-tools.md/alerts/feed.json, generated
 Leads that a digest only counted ("N unrated leads") get invented ids
 (`LEAD-replayNN:<scope>`) and invented Mastodon URLs; every other value is the
 live one.
+
+`advisory-page.html`: the labelled part of a public repository security advisory
+page, https://github.com/anthropics/claude-code/security/advisories/GHSA-5j29-h97v-84ch
+as GitHub served it on 2026-11-23: the title, the header, the package block, the
+description, the severity and the CVE ID, with scripts, images and the author link
+removed. `rules.read_advisory` reads these labels; the fixture pins the markup it
+depends on (ai-tools-alerts#h340).
