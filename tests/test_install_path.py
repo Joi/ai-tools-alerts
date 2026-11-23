@@ -80,9 +80,11 @@ def test_ops_vm_readme_installs_only_from_the_verified_export():
                  f"archive -o \"$d/release.tar\" {em.RELEASE_COMMIT}"):
         assert want in files, want
     assert "scp ops/vm/" not in OPS and 'install-mirror.sh "${rel:?}"' in OPS
-    # vzc3 retired the poster's ssh route: nothing of it is installed on the VM any more.
-    for f in ("buzz-send", "aitools-poster-shell", "sudoers-aitools-poster", "sshd-match-aitools-poster.conf"):
-        assert f"${{rel:?}}/ops/vm/{f}" not in OPS, f
+    # vzc3 retired posting through the VM: buzz-send is never installed. The route left is
+    # put-only (nfm3), and every file of it comes from the verified export.
+    assert "ops/vm/buzz-send" not in OPS.replace("history before vzc3 (`ops/vm/buzz-send`)", "")
+    for f in ("aitools-poster-shell", "sudoers-aitools-poster", "sshd-match-aitools-poster.conf", "mirror-put"):
+        assert f"${{rel:?}}/ops/vm/{f}" in OPS, f
     assert not re.search(r'"\$rel[/"]', OPS), "an install step that runs on with $rel unset"
 
 
