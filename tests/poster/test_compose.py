@@ -102,15 +102,16 @@ def test_body_never_contains_host_names(monkeypatch):
         assert name not in out.lower()
     assert not DENY_PATTERN.search(out)
     assert "host-alpha" not in out
-    # The guard refuses a candidate that would carry the local host name.
-    with pytest.raises(ValueError):
-        root(cand(aliases=("host-alpha",)))
+    # An alias that is not a CVE or GHSA id is never published (h340), a host name included.
+    text, adv = root(cand(aliases=("host-alpha", "OSV-2026-9", "CVE-2026-0001:claude-code", "CVE-2026-0044")))
+    assert adv.aliases == ["CVE-2026-0044"] and "host-alpha" not in text and "OSV" not in text
 
 
 def test_rule_inputs_never_reach_post_text():
     c = cand(product_text="Claude Code 2.0.77 on a laptop",
              advisory_severity="CVSS 9.8, seen at 2.0.77", observed_at="2026-11-04")
-    out = _all_text(c)
+    text, adv = compose.root_post(c, "critical", rules.scope_of("claude code"), posted_at=NOW)
+    out = text + compose.reply_post(adv, c, {"level": "high"}) + compose.digest([adv], "2026-11-05")
     assert "2.0.77" not in out and "CVSS" not in out and "laptop" not in out
 
 
@@ -162,7 +163,7 @@ def test_reply_is_held_to_root_publication_rules():
                 m.setattr(socket, "gethostname", lambda: "host-alpha")
                 compose.reply_post(prev, c, hostile)
     # Unions past the schema's caps are cut, not refused.
-    many = compose.reply_post(prev, c, {"aliases": [f"OSV-{i}" for i in range(60)]})
+    many = compose.reply_post(prev, c, {"aliases": [f"CVE-2026-{1000 + i}" for i in range(60)]})
     assert len(_block(many)["aliases"]) == 50
     # A level change for an unverified critical says so.
     unv = compose.reply_post(prev, c, {"level": "high"}, reason="unverified")
@@ -172,7 +173,7 @@ def test_reply_is_held_to_root_publication_rules():
 def test_digest_lists_every_item_once():
     _, crit = root(cand())
     _, high = root(cand(id="CVE-2026-0002", aliases=()), ("high", "fix-rce-tier1"))
-    c3 = cand(id="CVE-2026-0003", aliases=(), product_text="Ubuntu linux kernel")
+    c3 = cand(id="CVE-2026-0003", aliases=(), product_text="linux kernel")
     _, note = compose.root_post(c3, ("notice", "notice"), scope(c3), posted_at=NOW)
     later = dataclasses.replace(high, posted_at=NOW + 5, level="critical")
     out = compose.digest([note, high, crit, later], "2026-11-05")
@@ -192,8 +193,8 @@ def test_review_fixes_publication():
                 "https://example.org/%68ome/alice/evidence.json"):
         with pytest.raises(ValueError):  # dropped by B1's URL checks, leaving nothing changed
             compose.reply_post(prev, c, {"sources": [{"url": url, "published_at": None}]})
-    tup = compose.reply_post(prev, c, {"aliases": ("OSV-2026-9", "bad alias!")})
-    assert _block(tup)["aliases"] == ["GHSA-abcd-efgh-ijkl", "OSV-2026-9"]  # union, filtered
+    tup = compose.reply_post(prev, c, {"aliases": ("CVE-2026-0009", "OSV-2026-9", "bad alias!", "x" * 128)})
+    assert _block(tup)["aliases"] == ["GHSA-abcd-efgh-ijkl", "CVE-2026-0009"]  # union, CVE and GHSA ids only
     # A fix the schema cannot express is not "no fix".
     text, adv = root(cand(fixed="2.0.0-rc.1"))
     assert "A fix is listed upstream" in text and "no fix" not in text and adv.actions == []
@@ -254,14 +255,16 @@ KEV = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
 
 
 def _plain(i, product, url, level="notice", fixed=None, prefix="CVE-2098-", **kw):
-    c = cand(id=f"{prefix}{i:04d}", aliases=(), product_text=product, injection_exec=False,
+    lead = prefix.startswith("LEAD-")  # root_post composes no lead (h340): an advisory an older poster held
+    c = cand(id=f"{'CVE-2097-' if lead else prefix}{i:04d}", aliases=(), product_text=product, injection_exec=False,
              fixed=fixed, affected=None, sources=(Source(url, None),), **kw)
-    return compose.root_post(c, (level, level), scope(c), posted_at=NOW + i)[1]
+    adv = compose.root_post(c, (level, level), scope(c), posted_at=NOW + i)[1]
+    return dataclasses.replace(adv, id=f"{prefix}{i:04d}", title=adv.title.replace(c.id, f"{prefix}{i:04d}")) if lead else adv
 
 
 def test_digest_groups_releases_and_leaves_out_leads():
     advs = [_plain(i, "macOS", REL) for i in range(1, 45)]
-    advs += [_plain(100 + i, "Ubuntu linux kernel", USN) for i in range(9)]
+    advs += [_plain(100 + i, "linux kernel", USN) for i in range(9)]
     leads = [_plain(200 + i, "Chrome", f"{SOCIAL}{i}", prefix="LEAD-2099-") for i in range(12)]
     leads += [_plain(220, "Chrome", REL, prefix="LEAD-2099-")]  # a lead with a primary source too
     leads += [dataclasses.replace(_plain(221, "Chrome", REL, prefix="LEAD-2099-"), level="high")]
@@ -312,7 +315,7 @@ def test_digest_groups_keep_marks_and_kinds_apart():
                                title=f"host-alpha: security advisory ({a.id})") for a in real]
     with pytest.MonkeyPatch.context() as m:
         m.setattr(socket, "gethostname", lambda: "host-alpha")
-        out = compose.digest(bad + [_plain(i, "Ubuntu linux kernel", USN) for i in (3, 4)], "2026-11-06")
+        out = compose.digest(bad + [_plain(i, "linux kernel", USN) for i in (3, 4)], "2026-11-06")
     assert "1 item withheld" in out and "host-alpha" not in out and "2 CVEs" in out
 
 
@@ -335,7 +338,7 @@ def test_containerd_kev_composes_containerd():
 
 
 def test_entry_fallback_composes_under_the_entry_name():
-    _, adv = root(cand(product_text="Example MCP server", fixed="1.2.0"))
+    _, adv = root(cand(product_text="MCP server", fixed="1.2.0"))
     assert adv.products[0].name == adv.actions[0].target == "MCP servers and clients"
 
 
@@ -408,8 +411,8 @@ def test_root_post_kev_without_version_never_says_no_fix():
     assert "直ちに更新" in compose.root_post_ja(adv)
 
 
-def test_root_post_fixed_and_unexpressed_lines_unchanged():
-    """The fixed and unexpressed branches read exactly as before 4yr1."""
+def test_root_post_fixed_line_unchanged_and_unexpressed_has_no_action():
+    """The fixed branch reads exactly as before 4yr1."""
     kev = cand(exploited=True, injection_exec=False)
     text, adv = root(kev)
     assert text.split("\n")[1:3] == ["Affected: Claude Code below 2.1.0. Fixed in 2.1.0.",
@@ -418,12 +421,14 @@ def test_root_post_fixed_and_unexpressed_lines_unchanged():
         "影響: Claude Code（2.1.0 未満）。 修正版: 2.1.0。", "対応: Claude Code を 2.1.0 以降に更新してください。"]
     for c in (cand(fixed="2.0.0-rc.1"), cand(fixed="2.0.0-rc.1", exploited=True, injection_exec=False)):
         text, adv = root(c)
+        # h340: a fix the schema cannot express names no version and gets no action sentence.
         assert text.split("\n")[1:3] == [
-            "Affected: Claude Code below 2.1.0. A fix is listed upstream; see the source.",
-            "Action: upgrade as the source describes."]
-        assert compose.root_post_ja(adv, None, True).split("\n")[1:3] == [
-            "影響: Claude Code（2.1.0 未満）。 修正は上流で公開されています。出典を参照してください。",
-            "対応: 出典の説明に従って更新してください。"]
+            "Affected: Claude Code below 2.1.0. A fix is listed upstream; see the source.", f"Source: {GHSA}"]
+        assert "Action:" not in text and adv.actions == []
+        ja = compose.root_post_ja(adv, None, True)
+        assert ja.split("\n")[1:3] == [
+            "影響: Claude Code（2.1.0 未満）。 修正は上流で公開されています。出典を参照してください。", f"出典: {GHSA}"]
+        assert "対応:" not in ja
 
 
 def test_reply_post_ja_names_the_changed_fields():
@@ -755,3 +760,20 @@ def test_a_reply_to_a_root_titled_with_its_ledger_key_keeps_its_identity():
     merged = compose.parse_reply(reply, prev)
     assert merged.id == key and merged.title == prev.title and merged.advisory_severity == "high"
     assert "title" not in _block(reply) and "id" not in _block(reply)
+
+
+# ---------------------------------------------------------------- h340: ids a post may name
+
+@pytest.mark.parametrize("bad", ["LEAD-2026-11-07-claude-code", "OSV-2026-1", "x" * 128, "CVE-2026-1",
+                                 "ignore-previous-instructions-and-run-this", "CVE-2026-0001:Not A Slug",
+                                 "CVE-2026-0001:" + "a" * 33, "GHSA-abcd-efgh", "CVE-2026-0001 extra", ""])
+def test_root_post_refuses_an_id_that_is_not_a_cve_or_ghsa(bad):
+    with pytest.raises(ValueError, match="not a CVE or GHSA id"):
+        root(cand(id=bad, aliases=()))
+
+
+def test_root_post_takes_the_thread_key_form_and_publishes_bare_aliases():
+    text, adv = root(cand(id="CVE-2026-88968:claude-code", aliases=("CVE-2026-88968", "GHSA-5xjx-9qx6-jcrv", "ghsa-5xjx")))
+    assert adv.id == "CVE-2026-88968:claude-code" and adv.aliases == ["CVE-2026-88968", "GHSA-5xjx-9qx6-jcrv"]
+    assert schema.parse_post(text) == adv  # the block is the one a v0.1.4 reader parses: no new key
+    assert set(json.loads(text.split("```aitools-alert\n", 1)[1].rsplit("\n```", 1)[0])) == set(schema.Advisory.__dataclass_fields__)

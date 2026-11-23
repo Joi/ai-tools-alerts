@@ -239,8 +239,10 @@ def range_unexpressed(c) -> bool:
 
 
 def public_id(a) -> bool:
-    """An id the schema accepts that is not a ledger key: one a post may name as an alias."""
-    return isinstance(a, str) and schema._IDENT.fullmatch(a) is not None and not _LEDGER_KEY.match(a)
+    """An id a post may name as an alias: a bare CVE or GHSA id (h340). A ledger key
+    (CVE-2026-123158:openssh) is identity, never an alias (8ke5); any other shape is
+    text someone upstream chose."""
+    return isinstance(a, str) and candidates.ADVISORY_ID.fullmatch(a) is not None
 
 
 def _ids(raw, exclude: str) -> list[str]:
@@ -269,12 +271,15 @@ def _upstream(t) -> str | None:
 
 def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, schema.Advisory]:
     """(post text, Advisory) for a new thread: four body lines (five with the source's
-    own title second), then the block.
+    own title second; one fewer when the fix cannot be expressed), then the block.
+    ``c.id`` must be a CVE or GHSA id, bare or as a thread key (``candidates.BOT_ID``).
     ``level`` is ``rules.level_for``'s (level, reason), or a bare level. A reserved
     primary id (a synthetic check, ``run --kev-file``) marks the head line, and
     ``schema.validate`` marks the block's title; nothing else marks either."""
     if getattr(scope, "components", ()):  # rules.scope_of resolves an entry to its component
         raise ValueError("an unresolved scope entry would publish a group name")
+    if not (isinstance(c.id, str) and candidates.BOT_ID.fullmatch(c.id)):
+        raise ValueError("the id is not a CVE or GHSA id: the advisory does not post")  # h340
     level, reason = level if isinstance(level, tuple) else (level, None)
     fixed = schema_fixed(c.fixed)
     sources = _sources(c.sources)
@@ -293,16 +298,17 @@ def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, sc
     unexpressed = fix_unexpressed(c)
     title = source_title(c)
     # No version is not no fix: a KEV entry carries no version data at all (4yr1).
+    # A fix the schema cannot express gets no action sentence: the post names no version (h340).
+    action = [] if unexpressed else [
+        f"Action: upgrade {p.name} to {fixed} or later." if fixed
+        else "Action: check the vendor for an update; this is exploited in the wild, "
+             "so update now if a release is out." if c.exploited is True or _exploited(adv)
+        else "Action: check the vendor for an update and apply it."]
     body = [f"{head}: {adv.title}", *([title] if title else []),
             f"Affected: {p.name}{_words(p.affected, range_unexpressed(c))}."
             + (f" Fixed in {fixed}." if fixed else " A fix is listed upstream; see the source."
                if unexpressed else " The source does not state a fixed version; check the vendor's advisory."),
-            f"Action: upgrade {p.name} to {fixed} or later." if fixed
-            else "Action: upgrade as the source describes." if unexpressed
-            else "Action: check the vendor for an update; this is exploited in the wild, "
-                 "so update now if a release is out." if c.exploited is True or _exploited(adv)
-            else "Action: check the vendor for an update and apply it.",
-            f"Source: {_primary(adv.sources)}"]
+            *action, f"Source: {_primary(adv.sources)}"]
     return _guard(schema.render_post(adv, _inline("\n".join(body)))), adv
 
 
@@ -333,16 +339,16 @@ def root_post_ja(adv: schema.Advisory, reason: str | None = None, unexpressed: b
     p, fixed = adv.products[0], adv.products[0].fixed
     head = _JA_LEVEL[adv.level] + (f" ({SYNTHETIC})" if is_synthetic(adv.id) else "") \
         + (f" ({UNVERIFIED})" if reason == "unverified" else "")
+    action = [] if unexpressed and not fixed else [
+        f"対応: {p.name} を {fixed} 以降に更新してください。" if fixed
+        else "対応: ベンダーの更新情報を確認してください。悪用が確認されているため、リリースがあれば直ちに更新してください。"
+        if exploited else "対応: ベンダーの更新情報を確認し、リリースがあれば適用してください。"]
     return _inline("\n".join([
         f"{head}: {_ja_title(adv)}", *([f"原題: {title}"] if title else []),
         f"影響: {p.name}{_words_ja(p.affected, range_unexpressed)}。"
         + (f" 修正版: {fixed}。" if fixed else " 修正は上流で公開されています。出典を参照してください。"
            if unexpressed else " 出典には修正版の記載がありません。ベンダーのアドバイザリを確認してください。"),
-        f"対応: {p.name} を {fixed} 以降に更新してください。" if fixed
-        else "対応: 出典の説明に従って更新してください。" if unexpressed
-        else "対応: ベンダーの更新情報を確認してください。悪用が確認されているため、リリースがあれば直ちに更新してください。"
-        if exploited else "対応: ベンダーの更新情報を確認し、リリースがあれば適用してください。",
-        f"出典: {_primary(adv.sources)}"]))
+        *action, f"出典: {_primary(adv.sources)}"]))
 
 
 def _change_line_ja(k: str, adv: schema.Advisory, unexpressed: bool = False) -> str:

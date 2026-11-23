@@ -41,8 +41,9 @@ RUN_DIR = re.compile(r"\d{4}-\d{2}-\d{2}T\d{6}Z")
 
 _STATE_KEYS = {"schema_version", "since", "heartbeat", "collector", "kev_since",
                "digest_date", "digest_at", "digest_roots", "digest_ids", "held", "digested",
-               "outbox", "deferred", "withheld", "waiting"}
+               "outbox", "deferred", "withheld", "waiting", "gate"}
 MAX_WAITING = 2000  # 0dvh: first sight of a held high, per scope and id
+GATE = 1  # h340: everything unpublished in the state was admitted by an authoritative source
 MAX_DIGEST_IDS = 10  # the event ids of the last digests sent, oldest first
 _ITEM_KEYS = {"key", "kind", "scope", "ids", "channel", "text", "adv", "exploited", "date", "sent", "root"}
 _CANDIDATE_FIELDS = frozenset(Candidate.__dataclass_fields__)
@@ -239,7 +240,8 @@ def new_state(now: int, backfill_days: int) -> dict:
     since = now - backfill_days * 86400
     return {"schema_version": 1, "since": since, "heartbeat": None, "collector": None,
             "kev_since": None, "digest_date": None, "digest_at": since, "digest_roots": [], "digest_ids": [],
-            "held": [], "digested": [], "outbox": [], "deferred": [], "withheld": [], "waiting": {}}
+            "held": [], "digested": [], "outbox": [], "deferred": [], "withheld": [], "waiting": {},
+            "gate": GATE}
 
 
 def _strs(v) -> bool:
@@ -344,12 +346,15 @@ def load_state(path: Path, now: int, backfill_days: int) -> dict:
         st["withheld"] = []  # a state file written before withheld existed (8acj)
     if isinstance(st, dict) and "waiting" not in st:
         st["waiting"] = {}  # a state file written before waiting existed (0dvh)
+    if isinstance(st, dict) and "gate" not in st:
+        st["gate"] = 0  # written before the h340 gate: main.run migrates it once
     if isinstance(st, dict) and set(st) == _STATE_KEYS - {"digest_ids"}:
         st["digest_ids"] = []  # a state file written before digest_ids existed
     try:
         ok = (isinstance(st, dict) and set(st) == _STATE_KEYS
               and type(st["schema_version"]) is int and st["schema_version"] == 1
               and type(st["since"]) is int and type(st["digest_at"]) is int
+              and type(st["gate"]) is int and st["gate"] in (0, GATE)
               and isinstance(st["digest_roots"], list) and all(isinstance(i, str) for i in st["digest_roots"])
               and isinstance(st["digest_ids"], list) and len(st["digest_ids"]) <= MAX_DIGEST_IDS
               and all(isinstance(i, str) and _HEX64.fullmatch(i) for i in st["digest_ids"])

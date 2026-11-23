@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from git_env import git_env_is_ours  # noqa: F401 - first: clears git's environment at import; autouse for every test
 from aitools_alerts import config, curator, pull
 from mirror_helpers import T0, Mirror
 
