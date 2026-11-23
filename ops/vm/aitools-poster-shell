@@ -2,10 +2,14 @@
 # aitools-poster-shell: the login shell of the relay VM's `aitools-poster` Unix
 # user, which the ai-tools-alerts poster logs in as with its own ssh key. sshd
 # runs the login shell as `<shell> -c "<client command>"`; interactive logins
-# get no -c and are refused. Only one command shape is allowed:
+# get no -c and are refused. Two command shapes are allowed:
 #   /home/<relay user>/bin/buzz-send messages send --channel <uuid> --content - [--reply-to <64 hex>]
-# (aitools_alerts.poster.transport.remote_argv). The wrapper runs as the relay
-# user through one sudoers rule, so the key file stays that user's alone. The
+#   /home/<relay user>/bin/mirror-put checkpoint
+# (aitools_alerts.poster.transport.remote_argv and .put). The first posts as
+# the relay bot; the second stores the signed feed checkpoint for the mirror
+# exporter, which verifies it before publishing (ops/vm/mirror-put). Each runs
+# as the relay user through one sudoers rule, so the key file stays that
+# user's alone. The
 # relay user's name is the one line of /etc/aitools-poster/relay-user, written
 # on the VM and not tracked (the public repo does not name it).
 # Source of truth: ops/vm/aitools-poster-shell in the alerts repo. The hex
@@ -29,6 +33,7 @@ RELAY_USER=""
   && [[ "$RELAY_USER" =~ ^[abcdefghijklmnopqrstuvwxyz_][abcdefghijklmnopqrstuvwxyz0123456789_-]{0,31}$ ]] \
   || fail "refused: relay user file is not one user name ($RELAY_USER_FILE)"
 WRAPPER="/home/$RELAY_USER/bin/buzz-send"
+PUT="/home/$RELAY_USER/bin/mirror-put"
 [ "$#" -eq 2 ] && [ "$1" = "-c" ] || fail "refused: interactive login (this user runs one command shape only)"
 cmd="$2"
 [ -n "$cmd" ] || fail "refused: empty command"
@@ -38,6 +43,10 @@ shopt -s lastpipe 2>/dev/null || fail "refused: unparsable command (needs bash 4
 python3 -I -c 'import shlex,sys; [print(a, end="\0") for a in shlex.split(sys.argv[1])]' "$cmd" 2>/dev/null \
   | mapfile -d '' -t argv || fail "refused: unparsable command"
 n=${#argv[@]}
+# The second shape: exactly these two words, compared whole.
+if [ "$n" -eq 2 ] && [ "${argv[0]}" = "$PUT" ] && [ "${argv[1]}" = "checkpoint" ]; then
+  exec sudo -n -u "$RELAY_USER" -- "$PUT" checkpoint
+fi
 [ "$n" -eq 7 ] || [ "$n" -eq 9 ] || fail "refused: argument count $n"
 [ "${argv[0]}" = "$WRAPPER" ] || fail "refused: program ${argv[0]}"
 [ "${argv[1]}" = "messages" ] && [ "${argv[2]}" = "send" ] || fail "refused: subcommand"

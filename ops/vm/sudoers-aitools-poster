@@ -4,5 +4,6 @@
 # check the file with `visudo -cf <file>`, then move it into place.
 # sudoers `*` also matches spaces, so this rule only pins the program and the
 # leading arguments; ops/vm/aitools-poster-shell is the strict check.
+# The last command (mirror-put checkpoint) has no wildcard: sudo matches it whole.
 # sudo resets the environment and sets HOME to RELAY_USER's home.
-aitools-poster ALL=(RELAY_USER) NOPASSWD: /home/RELAY_USER/bin/buzz-send messages send --channel [0-9a-f]* --content -, /home/RELAY_USER/bin/buzz-send messages send --channel [0-9a-f]* --content - --reply-to [0-9a-f]*
+aitools-poster ALL=(RELAY_USER) NOPASSWD: /home/RELAY_USER/bin/buzz-send messages send --channel [0-9a-f]* --content -, /home/RELAY_USER/bin/buzz-send messages send --channel [0-9a-f]* --content - --reply-to [0-9a-f]*, /home/RELAY_USER/bin/mirror-put checkpoint

@@ -1,0 +1,31 @@
+# Run: nfm3-poster-checkpoint
+Instruction: Piece 4 of ai-tools-alerts#ek5q (brief TASK-ai-tools-alerts#ek5q.md, /do-it, starting rung floored at medium): the poster signs the checkpoint on its own machine each run; a second guarded command delivers it to the relay VM; the exporter verifies and publishes it and the certificate. No rollout.
+Stage: code-review:branch
+Rung: heavy (dispatch floor medium; hard triggers in the diff: the poster reads a signing key from a file, and ops/vm holds the relay VM's login guard and sudoers rule, a live deploy path. Start-floor evaluator not run: its rubric file is outside the paths the seat rules let this session read.)
+Lens: "Readers at v0.1.4 are on member machines. A change they cannot parse must fail safe (they ignore it), never crash them."
+Spec: docs/superpowers/specs/2026-11-23-nfm3-poster-checkpoint-design.md   Plan: docs/superpowers/plans/2026-11-23-nfm3-poster-checkpoint.md
+Agency project: — (no agency tools in this session; built directly)
+Kata: ai-tools-alerts#nfm3 (parent ai-tools-alerts#ek5q)
+Review shape: one independent pass per artifact (fresheyes, gpt-6-astra: security-shaped per the brief), one delta only when a BLOCKER fix changes behaviour. Completion check: the test suite passes and the pull request is open (merges wait on ai-tools-alerts#xrx2).
+
+## Scorecards
+Pass 1 [spec]: 2B/5S/0C/0R · fixed -/- · velocity = (—→7, escalation no)   (fresheyes gpt-6-astra high, snapshot 524003c1, REASON=-)
+  spec passes: 1 · fixed 7. B: acknowledged sends are owed across runs until seen on the mirror (a relay could drop one post and one checkpoint and get a clean checkpoint an hour later); the limit of the guarantee for curator posts the signer never saw is stated. B: a thread too large for the window still has its root and curator replies listed (a bloated thread lost its retraction). S: the budget is 990 events and 2 MiB so two windows fit the exporter's caps during a transition, and the exporter's rule when they do not; owed ids are reserved inside the budget and their threads listed first; the certificate is chosen by the reader's ordering among bundled and mirror; seq is max(clock, last + 1); the rollout uses a signed tag before the pin commit.
+  Heavy: the BLOCKER fixes changed the spec, so its delta rides with the plan pass (one run: the spec's snapshot diff and the whole plan).
+Pass 2 [spec delta + plan]: 3B/9S/0C/0R · fixed 7/7 prior · velocity ↑ (7→12, escalation no)   (fresheyes gpt-6-astra high, git diff 524003c1 f5217688 and the whole plan, REASON=-)
+  B fixed in the design and the build: an acknowledgement is written to the owed file at the moment it arrives, before the pull and before the journal drops the item (a failed pull or a crash erased it); nothing owed is ever dropped for room: when the must-list events do not fit, no checkpoint is signed (eviction let a crowded run forget a post without a day of staleness); roots with their curator replies are listed for every eligible thread before any other traffic (a newer thread could fill the window before an older thread's retraction was considered).
+  S fixed: an owed reply's root is recorded at send and listed; the exporter keeps the exact pinned events, not their threads; a salvaged old thread keeps its newest event so the reader's retention does not drop it; the key file is opened without blocking; the key and owed files join the config's path collision check; the published checkpoint supplies the seq floor after a lost state file; the exporter keeps the published checkpoint as its ordering floor across a key rotation; the rollout installs the candidate poster and its config before key generation.
+  This was the design's last pass (ruling jibot-code#41e2): the three blocker fixes above have not been read by an independent model as design; the code review reads them as code.
+
+## Chunks
+- [x] chunk 1 — poster: key file, owed posts, window, signing, delivery (tests/poster/test_signer.py)
+- [x] chunk 2 — relay VM: mirror-put, the guard's second shape, sudoers (tests/test_mirror_put.py, tests/test_poster_shell.py)
+- [x] chunk 3 — exporter: certificate and checkpoint, caps, publish order; end to end (tests/mirror/test_export.py, tests/poster/test_end_to_end.py)
+
+## Notes
+- Stacked on 6whv-reader-checkpoint (pull request 10, open): reviews of this branch diff against that branch's head.
+- Requirements carried in from earlier pieces' reviews (comments on ai-tools-alerts#nfm3): the window of 1,500 events and 3 MiB; the exporter keeping listed events ahead of its caps; a two-day margin below the reader's retention; a test in which an export crosses a cap between two checkpoints.
+- No rollout from this session: the steps go into the rollout issue under ek5q.
+- decided (execution): the summary line gains " checkpoint=<state>" only when the checkpoint is configured; unset, the line is byte for byte what it was (the spec's first draft printed checkpoint=off; other tools read that line).
+- decided (execution): the end-to-end test drives the real ops/vm/mirror-put under bash; the guard's second shape is tested with transport.put's own argv in tests/test_poster_shell.py. The exporter's reader tests that piece 3 moved to the writers' pull stay there (they publish no checkpoint); the member pull of exporter output is covered by the new exporter test and the end-to-end test.
+- A test found a real bug during the build: the window counted an id twice when it was named twice among the must-list events, so it under-filled; fixed before the first commit.

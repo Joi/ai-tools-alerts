@@ -77,6 +77,11 @@ class Config:
     translate_curator: bool = False
     translate_mirror_url: str = _member_config.DEFAULT_MIRROR_URL
     secrets_helper: Path | None = None
+    # The feed checkpoint (ai-tools-alerts#nfm3): the file holding the checkpoint secret
+    # key on THIS machine (mode 600; one key, one poster, one ledger), and the absolute
+    # path on the relay VM of the command that stores a checkpoint. Both or neither.
+    checkpoint_key_file: Path | None = None
+    relay_put_wrapper: str | None = None
 
     def check_relay(self) -> None:
         """A run sends, so it needs the relay route; pending and resolve do not."""
@@ -101,6 +106,11 @@ class Config:
         return self.ledger.with_name(self.ledger.name + ".translate.json")
 
     @property
+    def owed_state(self) -> Path:
+        """The checkpoint number last used and the acknowledged posts not yet seen on the mirror."""
+        return self.ledger.with_name(self.ledger.name + ".checkpoint.json")
+
+    @property
     def mirror_dir(self) -> Path:
         """The verified mirror events the curator pass reads (a member-style state dir)."""
         return self.ledger.with_name(self.ledger.name + ".mirror")
@@ -108,12 +118,16 @@ class Config:
     def check_paths(self) -> None:
         """The ledger, its lock, the journal and the KEV cache are four distinct files."""
         files = [self.ledger, self.ledger.with_name(self.ledger.name + ".lock"), self.state, self.kev_cache,
-                 self.translate_state, self.mirror_dir]
+                 self.translate_state, self.owed_state]
+        if self.checkpoint_key_file is not None:  # a cache write must never land on the key
+            files.append(self.checkpoint_key_file)
+        files.append(self.mirror_dir)
         # Case-folded: APFS is case-insensitive, so ledger.json and LEDGER.json are one file.
         real = [os.path.realpath(p).casefold() for p in files]
         mirror = real[-1] + os.sep  # the mirror directory holds its own state files and lock
         if len(set(real)) != len(real) or any(r.startswith(mirror) for r in real[:-1]):
-            raise ConfigError("ledger, ledger lock, state, kev_cache and the translation files must differ")
+            raise ConfigError("ledger, ledger lock, state, kev_cache, the translation and checkpoint files "
+                              "and the checkpoint key file must differ")
 
 
 def load_config(path) -> Config:
@@ -165,6 +179,16 @@ def load_config(path) -> Config:
         if not isinstance(raw["secrets_helper"], str) or not os.path.isabs(raw["secrets_helper"]):
             raise ConfigError("secrets_helper must be an absolute path")
         out["secrets_helper"] = Path(raw["secrets_helper"])
+    if "checkpoint_key_file" in raw:
+        if not isinstance(raw["checkpoint_key_file"], str) or not os.path.isabs(raw["checkpoint_key_file"]):
+            raise ConfigError("checkpoint_key_file must be an absolute path")
+        out["checkpoint_key_file"] = Path(raw["checkpoint_key_file"])
+    if "relay_put_wrapper" in raw:
+        if not isinstance(raw["relay_put_wrapper"], str) or not _WRAPPER.fullmatch(raw["relay_put_wrapper"]):
+            raise ConfigError("relay_put_wrapper must be an absolute path")
+        out["relay_put_wrapper"] = raw["relay_put_wrapper"]
+    if ("checkpoint_key_file" in out) != ("relay_put_wrapper" in out):
+        raise ConfigError("checkpoint_key_file and relay_put_wrapper go together")
     if out.get("translate_curator") and "secrets_helper" not in out:
         raise ConfigError("translate_curator needs secrets_helper")
     cfg = Config(**out)

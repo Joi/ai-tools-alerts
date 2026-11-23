@@ -143,6 +143,30 @@ Host <poster-alias>
 
 The poster config then sets `relay_ssh_host = "<poster-alias>"` and `relay_send_wrapper = "/home/<user>/bin/buzz-send"`, the absolute path, since the guard compares the program exactly.
 
+### The feed checkpoint: `mirror-put` and the exporter's inbox
+
+From the release that contains `ops/vm/mirror-put` (later than the `v0.1.4` pinned above; take every file from that release's verified export, as above).
+
+The poster signs a checkpoint on its own machine each run: a list of the posts that exist, so that this VM cannot leave one out of the mirror unnoticed. The signing key never comes here. The poster hands the signed checkpoint to `mirror-put`, which stores it; the exporter publishes it only after checking its signature against the certificate the trust root signed (`trust/checkpoint-key.json` in the deployed copy), and only together with every post it lists.
+
+| file | installed at | mode |
+|---|---|---|
+| `mirror-put` | `/home/<user>/bin/mirror-put` | 700, `<user>` |
+| — (made by `mirror-put`) | `/home/<user>/alerts-inbox/` | 700, `<user>`; `checkpoint.json` 600 |
+
+1. Install `mirror-put` from `${rel:?}/ops/vm/mirror-put` as `buzz-send` is installed, and compare its `sha256sum` with the release's.
+2. Install the guard and the sudoers file from the same release (steps 3 of "Install" above for the sudoers file; the guard is `install -o root -g root -m 755`). The guard then allows a second command, exactly `/home/<user>/bin/mirror-put checkpoint`, and the sudoers rule names it without a wildcard.
+3. Install the exporter copy from the same release ("The exporter copy"), whose unit passes `--checkpoint-key %h/ai-tools-alerts/trust/checkpoint-key.json --inbox %h/alerts-inbox`. Until `trust/checkpoint-key.json` exists in the deployed copy, the exporter publishes neither new file and behaves as before.
+4. On the poster machine set `relay_put_wrapper = "/home/<user>/bin/mirror-put"` beside `relay_send_wrapper`.
+
+Checks, from the poster machine, after the install:
+
+- `printf '[]' | ssh <poster-alias> /home/<user>/bin/mirror-put checkpoint` prints `mirror-put: not one JSON event object` and exits 1: the guard, sudo and the script ran, and nothing was stored.
+- `ssh <poster-alias> /home/<user>/bin/mirror-put manifest` prints `refused: argument count 2`: the guard allows the one word only.
+- After the poster's next run, the exporter's journal line ends `checkpoint=published seq <n>`, and the mirror serves `checkpoint-key.json` and `checkpoint.json`.
+
+What the poster's ssh key can now do on the VM that it could not before: replace `~/alerts-inbox/checkpoint.json` with other bytes. The exporter publishes those bytes only if the checkpoint key signed them.
+
 ### Test after every install
 
 From the poster Mac, each with `-v` and `-o ConnectTimeout=20`. Tests 1 to 5 count only when the same output shows `Authenticated to ... using "publickey"` with the poster key, so it is the guard or sshd refusing and not a failed login:

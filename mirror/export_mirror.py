@@ -13,7 +13,12 @@ BIP-340 signature and drops (and counts) the failures, keeps only kind 9
 (NIP-29 group chat message) events signed by a poster in the current
 manifest, then writes feed.json, critical.json,
 feed.atom, index.html, manifest.json and root.pub (the checkout's
-trust/root.pub, refused unless it is the pinned root) into --out, each to a
+trust/root.pub, refused unless it is the pinned root) into --out, and, with
+--checkpoint-key and --inbox, checkpoint-key.json (the root's certificate for
+the checkpoint key, from the checkout) and checkpoint.json (the feed
+checkpoint the poster signed on its own machine and mirror-put stored in the
+inbox), each only after verifying it and the checkpoint only when every event
+it lists is in this export (see publish_trust), each to a
 temp file in that directory and then os.replace. Nothing is written unless
 every channel read and the manifest check succeed, so a failed run leaves the
 previous files served.
@@ -42,6 +47,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
 from aitools_alerts import TRUST_ROOT_PUBKEY, nostr, pull, schema  # noqa: E402
+from aitools_alerts import checkpoint as cpt  # noqa: E402
 from aitools_alerts import manifest as mf  # noqa: E402
 from aitools_alerts.state import State  # noqa: E402
 
@@ -226,7 +232,8 @@ def _event_size(ev: dict) -> int:
     return len(json.dumps(ev, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) + 1
 
 
-def cap(events: dict[str, list[dict]], m, generated_at: str) -> tuple[dict[str, list[dict]], dict[str, int]]:
+def cap(events: dict[str, list[dict]], m, generated_at: str, pinned=frozenset(),
+        wanted=frozenset()) -> tuple[dict[str, list[dict]], dict[str, int]]:
     """Each channel's events within MAX_CHANNEL_EVENTS and, as the written
     file, MAX_CHANNEL_BYTES, in their original (query) order, with the count
     dropped per channel.
@@ -241,7 +248,13 @@ def cap(events: dict[str, list[dict]], m, generated_at: str) -> tuple[dict[str, 
     changes, patches), newest first, each as far as it fits: a CLI that cached
     the root in an earlier pull keeps every event it stored, so a correction
     must still reach it when its thread has outgrown the cap. Without the root
-    the page does not show the thread."""
+    the page does not show the thread.
+
+    ``pinned``: ids the published checkpoint lists. Exactly those events are
+    kept first, whatever their thread has grown to: a reader refuses a mirror
+    that lacks one. ``wanted``: ids a candidate checkpoint lists; kept the
+    same way when they fit the caps together with the pinned ones, else left
+    to the ordinary rule (the candidate then waits; see publish_trust)."""
     def key(ev):
         return _reply_target(ev) or ev["id"]
 
@@ -257,8 +270,23 @@ def cap(events: dict[str, list[dict]], m, generated_at: str) -> tuple[dict[str, 
         for i, ev in enumerate(evs):
             members.setdefault(key(ev), {}).setdefault(name, []).append(i)
     keep = {name: set() for name in events}
+
+    def reserve(ids, strict: bool) -> bool:
+        """Keep the events with these ids. Not strict: whatever the caps say.
+        Strict: only if every one fits; nothing is kept otherwise."""
+        hit = {n: [i for i, ev in enumerate(evs) if ev["id"] in ids and i not in keep[n]] for n, evs in events.items()}
+        size = {n: sum(_event_size(events[n][i]) for i in ix) for n, ix in hit.items()}
+        if strict and any(count[n] + len(hit[n]) > MAX_CHANNEL_EVENTS or size[n] > budget[n] for n in events):
+            return False
+        for n, ix in hit.items():
+            count[n] += len(ix)
+            budget[n] -= size[n]
+            keep[n].update(ix)
+        return True
+    reserve(pinned, strict=False)
+    reserve(wanted, strict=True)
     for k in sorted(newest, key=newest.get, reverse=True):
-        parts = members[k]
+        parts = {name: [i for i in ix if i not in keep[name]] for name, ix in members[k].items()}
         need = {name: (len(ix), sum(_event_size(events[name][i]) for i in ix)) for name, ix in parts.items()}
         if any(count[n] + c > MAX_CHANNEL_EVENTS or b > budget[n] for n, (c, b) in need.items()):
             salvage = [(events[n][i]["created_at"], events[n][i]["id"], n, i)
@@ -290,6 +318,58 @@ def check_manifest(path):
     if not mf.verify(m, TRUST_ROOT_PUBKEY):
         raise ExportError("manifest is not signed by the trust root")
     return raw, m
+
+
+def publish_trust(checkpoint_key, inbox, out: Path, m, now: int):
+    """(certificate bytes to publish or None, the published checkpoint or
+    None, the candidate checkpoint with its bytes or (None, None), a note for
+    the summary line).
+
+    The certificate comes from the checkout and is published only if the
+    trust root signed it for manifest ``m`` and it is inside its dates. The
+    published checkpoint is ``out``/checkpoint.json when it is a well-formed
+    checkpoint with a valid signature, whichever key signed it: after a key
+    rotation it is the old key's, readers still hold it, and a new one must
+    not be dated before it. The candidate is ``inbox``/checkpoint.json when
+    it verifies under the certificate, fits the manifest and the clock, and
+    may follow the published one (cpt.checkpoint_order)."""
+    if checkpoint_key is None or not Path(checkpoint_key).exists():
+        return None, None, (None, None), "none"
+    published = None
+    try:
+        published = cpt.load_checkpoint(out / "checkpoint.json")
+        if not nostr.verify_event(published.event):
+            published = None
+    except cpt.CheckpointError:
+        pass
+    try:
+        raw = Path(checkpoint_key).read_bytes()
+        cert = cpt.load_cert(raw)
+    except (OSError, cpt.CheckpointError):
+        return None, published, (None, None), "refused (certificate unreadable)"
+    if not cpt.verify_cert(cert, TRUST_ROOT_PUBKEY):
+        return None, published, (None, None), "refused (certificate not signed by the trust root)"
+    problem = cpt.cert_problem(cert, m, now)
+    if problem is not None:
+        return None, published, (None, None), f"refused (certificate: {problem})"
+    if inbox is None:
+        return raw, published, (None, None), "none"
+    try:
+        data = (Path(inbox) / "checkpoint.json").read_bytes()
+    except OSError:
+        return raw, published, (None, None), "none" if published is None else f"kept seq {published.seq} (no candidate)"
+    try:
+        cand = cpt.load_checkpoint(data)
+    except cpt.CheckpointError:
+        return raw, published, (None, None), "refused (candidate malformed)"
+    if not cpt.verify_checkpoint(cand, cert):
+        return raw, published, (None, None), "refused (candidate not signed by the certified key)"
+    problem = cpt.checkpoint_problem(cand, m, now) or cpt.checkpoint_order(cand, published)
+    if problem is not None:
+        return raw, published, (None, None), f"refused (candidate: {problem})"
+    if published is not None and cand.event["id"] == published.event["id"]:
+        return raw, published, (None, None), f"kept seq {published.seq} (no newer candidate)"
+    return raw, published, (cand, data), ""
 
 
 def check_root_pub(path) -> bytes:
@@ -616,7 +696,7 @@ def write_atomic(out: Path, name: str, data: bytes) -> None:
 
 
 def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_URL, now=None,
-           root_pub=None) -> dict:
+           root_pub=None, checkpoint_key=None, inbox=None) -> dict:
     out = Path(out)
     if not out.is_dir():
         raise ExportError(f"output directory {out} does not exist")
@@ -638,7 +718,18 @@ def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_
     events, counts = {}, {}
     for name, cid in channels.items():
         events[name], counts[name] = clean(reader(name, cid), m, frozenset(channels.values()), now, admitted)
-    events, capped = cap(events, m, generated_at)
+    cert_raw, published, (cand, cand_raw), cp_note = publish_trust(checkpoint_key, inbox, out, m, now)
+    events, capped = cap(events, m, generated_at, pinned=published.events if published else frozenset(),
+                         wanted=cand.events if cand else frozenset())
+    if cand is not None:
+        # Published only together with every event it lists: a reader refuses a
+        # mirror that lacks one. Until then the published checkpoint stays.
+        missing = cand.events - {e["id"] for evs in events.values() for e in evs}
+        if missing:
+            keep = f"kept seq {published.seq}" if published else "none"
+            cp_note, cand_raw = f"{keep} (candidate lists {len(missing)} events not exported)", None
+        else:
+            cp_note = f"published seq {cand.seq}"
     for name in channels:
         counts[name]["capped"] = capped[name]
     atom, entries = atom_doc(events["feed"], m, generated_at, mirror_url)
@@ -648,14 +739,21 @@ def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_
     # Manifest first: a reader never sees a new poster's event before the
     # manifest naming them. The page, then the feed's Atom, go last.
     files = [("manifest.json", raw_manifest), ("root.pub", raw_root)]
+    if cert_raw is not None:
+        files.append(("checkpoint-key.json", cert_raw))
     for name in sorted(channels, key=lambda n: n == "feed"):
         files.append((f"{name}.json", channel_doc(name, events[name], generated_at)))
+    if cand_raw is not None:
+        # After the event files: a reader that fetched the older checkpoint and the
+        # newer events is fine; one handed the newer checkpoint first would find
+        # its events missing.
+        files.append(("checkpoint.json", cand_raw))
     files.append(("index.html", index))
     files.append(("feed.atom", atom))
     files.append((ATOM_JA["file"], atom_ja))
     for fname, data in files:
         write_atomic(out, fname, data)
-    return {"channels": counts, "atom_entries": entries, "index_advisories": listed}
+    return {"channels": counts, "atom_entries": entries, "index_advisories": listed, "checkpoint": cp_note}
 
 
 def summary_line(result: dict) -> str:
@@ -664,7 +762,8 @@ def summary_line(result: dict) -> str:
              f" unbound={c['unbound']} future={c['future']}"
              for name, c in result["channels"].items()]
     return ("export_mirror: " + "; ".join(parts) + f"; atom entries={result['atom_entries']}"
-            f"; index advisories={result['index_advisories']}")
+            f"; index advisories={result['index_advisories']}"
+            + (f"; checkpoint={result['checkpoint']}" if result.get("checkpoint", "none") != "none" else ""))
 
 
 def main(argv=None) -> int:
@@ -677,6 +776,10 @@ def main(argv=None) -> int:
                      f"(default: {shlex.join(DEFAULT_PSQL)})")
     src.add_argument("--rows-from", help="JSON file {channel name: [row, ...]} instead of psql")
     ap.add_argument("--mirror-url", default=DEFAULT_MIRROR_URL, help="public URL of --out, for the Atom links")
+    ap.add_argument("--checkpoint-key", help="trust/checkpoint-key.json: the root's certificate for the checkpoint "
+                    "key; published when valid (absent file: nothing is published, as before)")
+    ap.add_argument("--inbox", help="directory where mirror-put stores the poster's checkpoint.json; it is "
+                    "published only after it verifies under --checkpoint-key")
     args = ap.parse_args(argv)
 
     try:
@@ -687,7 +790,8 @@ def main(argv=None) -> int:
             if not prefix:
                 raise ExportError("--psql-cmd is empty")
             reader = psql_reader(prefix)
-        result = export(args.channels, args.manifest, args.out, reader, args.mirror_url)
+        result = export(args.channels, args.manifest, args.out, reader, args.mirror_url,
+                        checkpoint_key=args.checkpoint_key, inbox=args.inbox)
     except ExportError as e:
         print(f"export_mirror: {e}; nothing written", file=sys.stderr)
         return 1
