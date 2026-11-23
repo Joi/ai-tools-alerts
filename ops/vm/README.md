@@ -51,6 +51,8 @@ python3 ops/vm/scan-for-poster-keys.py --manifest trust/manifest.json <relay use
 
 It looks inside every file and every tar or gzip archive under those paths, archives inside archives included, for strings shaped like a Nostr secret key, derives each one's public key in memory and compares it with the manifest's posters. It prints paths and counts only. Exit 0 means no poster key was found and every path was read; exit 1 means a key was found or a path could not be read. The database volume holds only signed public events and is not scanned.
 
+Toolchain trees on the VM carry upstream test fixtures the scan cannot open: deliberately corrupt archives and zstd samples. Each one fails the scan as `UNREAD`. To accept one, list its exact `UNREAD:` text in a file and pass `--allow-unread <file>`; the scan still prints it, as `ALLOWED UNREAD`, and every other unread path still fails. The raw bytes of every file are searched before any decoding, so a key stored in such a file in plain text is still found. Keep the list outside this repository, with the run's record.
+
 ## Channel administration
 
 Channel changes (create, add a member, delete) are signed by a channel owner. jibot's key is held on the poster machine, not the VM, so run the Buzz CLI on that machine, with the key exported from the secrets helper in that shell only and never on a command line:

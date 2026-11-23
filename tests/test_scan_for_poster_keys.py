@@ -111,6 +111,61 @@ def test_a_corrupt_archive_fails(tmp_path, manifest, capsys):
     assert code == 1 and "UNREAD: " in out
 
 
+def test_a_gzip_with_a_broken_deflate_stream_is_unread_not_a_crash(tmp_path, manifest, capsys):
+    # A valid header over a damaged stream raises zlib.error, not OSError.
+    good = gzip.compress(os.urandom(4096), mtime=0)
+    bad = good[:10] + bytes(b ^ 0xFF for b in good[10:40]) + good[40:]
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "damaged.tar.gz").write_bytes(bad)
+    (root / "k.sec.hex").write_text(POSTER_SEC)  # the scan goes on past the damaged file
+    code, out = run(manifest, root, capsys)
+    assert code == 1 and "UNREAD: " in out and "damaged.tar.gz" in out and "POSTER KEY: " in out
+
+
+def test_an_unexpected_decoder_error_is_unread(tmp_path, manifest, capsys, monkeypatch):
+    def boom(_):
+        raise RuntimeError("x")
+    monkeypatch.setattr(scan.gzip, "decompress", boom)
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "a.gz").write_bytes(gzip.compress(b"x"))
+    code, out = run(manifest, root, capsys)
+    assert code == 1 and "a.gz (RuntimeError)" in out
+
+
+def test_allow_unread_accepts_only_the_exact_listed_paths(tmp_path, manifest, capsys):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "fixture.zst").write_bytes(b"\x28\xb5\x2f\xfd" + b"\x00" * 40)
+    (root / "other.zst").write_bytes(b"\x28\xb5\x2f\xfd" + b"\x01" * 40)
+    allow = tmp_path / "allow.txt"
+    allow.write_text(f"# upstream fixture\n\n{root / 'fixture.zst'} (zstd: cannot open)\n")
+    args = ["--manifest", str(manifest), "--allow-unread", str(allow), str(root)]
+    assert scan.main(args) == 1  # other.zst is not listed
+    out = capsys.readouterr().out
+    assert f"ALLOWED UNREAD: {root / 'fixture.zst'}" in out and f"UNREAD: {root / 'other.zst'}" in out
+    assert "unread=1 allowed_unread=1" in out
+    (root / "other.zst").unlink()
+    assert scan.main(args) == 0
+    assert "unread=0 allowed_unread=1" in capsys.readouterr().out
+
+
+def test_allow_unread_never_hides_a_poster_key(tmp_path, manifest, capsys):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "fixture.zst").write_bytes(b"\x28\xb5\x2f\xfd" + POSTER_SEC.encode())  # raw bytes are still searched
+    allow = tmp_path / "allow.txt"
+    allow.write_text(f"{root / 'fixture.zst'} (zstd: cannot open)\n")
+    code = scan.main(["--manifest", str(manifest), "--allow-unread", str(allow), str(root)])
+    out = capsys.readouterr().out
+    assert code == 1 and "POSTER KEY: " in out and POSTER_SEC not in out
+
+
+def test_an_unusable_allow_file_is_2(tmp_path, manifest):
+    assert scan.main(["--manifest", str(manifest), "--allow-unread", str(tmp_path / "nope"), str(tmp_path)]) == 2
+
+
 def test_a_missing_root_fails_and_a_bad_manifest_is_2(tmp_path, manifest, capsys):
     assert run(manifest, tmp_path / "nope", capsys)[0] == 1
     bad = tmp_path / "bad.json"

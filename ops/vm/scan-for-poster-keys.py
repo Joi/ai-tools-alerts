@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """scan-for-poster-keys: fail when a trust-manifest poster's secret key is on this machine.
 
-Usage: scan-for-poster-keys.py --manifest <trust/manifest.json> <root> [<root> ...]
+Usage: scan-for-poster-keys.py --manifest <trust/manifest.json> [--allow-unread <file>] <root> [<root> ...]
 
 Walks every regular file under each root (symlinks are not followed), and every
 member of every tar or gzip archive found there, recursing into archives inside
@@ -13,6 +13,14 @@ never a candidate, never a key.
 Exit 0: no poster key found and every path was read. Exit 1: a poster key was
 found, or a file or archive could not be read (an unread path is not a pass).
 Exit 2: bad arguments or manifest.
+
+--allow-unread names a file of exact UNREAD lines (the text after "UNREAD: ",
+one per line; blank lines and lines starting with # are ignored). A listed path
+is printed as ALLOWED UNREAD and does not fail the scan; any other unread path
+still does. Use it only for files known not to hold a key, such as an upstream
+toolchain's deliberately corrupt test fixtures. Every file's raw bytes are
+searched before any decoding, so an allowed path is unread only below its
+compression or container layer.
 
 The derivation is aitools_alerts.nostr's, imported from the repository this file
 sits in (ops/vm/ -> repository root), so copy the repository, not this file alone.
@@ -31,6 +39,7 @@ import re
 import sys
 import tarfile
 import zipfile
+import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -92,7 +101,7 @@ class Scan:
             if blob.startswith(magic):
                 try:
                     inner = fn(blob)
-                except (OSError, EOFError, ValueError, lzma.LZMAError):
+                except (OSError, EOFError, ValueError, lzma.LZMAError, zlib.error):
                     self.unread.append(f"{label} ({name})")
                     return
                 if len(inner) > MAX_BLOB:
@@ -143,7 +152,10 @@ class Scan:
         except OSError:
             self.unread.append(p)
             return
-        self.data(p, blob, 0)
+        try:
+            self.data(p, blob, 0)
+        except Exception as e:  # any decoder failure is UNREAD (a failure), never a crash
+            self.unread.append(f"{_SAFE.sub('?', p)} ({type(e).__name__})")
 
     def root(self, root: str) -> None:
         if os.path.isfile(root) and not os.path.islink(root):
@@ -166,6 +178,7 @@ class Scan:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--manifest", required=True, type=Path)
+    ap.add_argument("--allow-unread", type=Path)
     ap.add_argument("roots", nargs="+")
     a = ap.parse_args(argv)
     try:
@@ -173,16 +186,25 @@ def main(argv=None) -> int:
     except (OSError, ValueError, KeyError, TypeError) as e:
         print(f"scan-for-poster-keys: manifest unusable: {type(e).__name__}", file=sys.stderr)
         return 2
+    allowed: set[str] = set()
+    if a.allow_unread:
+        try:
+            allowed = {l.strip() for l in a.allow_unread.read_text(encoding="utf-8").splitlines()
+                       if l.strip() and not l.lstrip().startswith("#")}
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"scan-for-poster-keys: allow-unread file unusable: {type(e).__name__}", file=sys.stderr)
+            return 2
     s = Scan(targets)
     for r in a.roots:
         s.root(r)
     for h in s.hits:
         print(f"POSTER KEY: {h}")
+    failing = [u for u in s.unread if u not in allowed]
     for u in s.unread:
-        print(f"UNREAD: {u}")
+        print(f"{'ALLOWED UNREAD' if u in allowed else 'UNREAD'}: {u}")
     print(f"scanned files={s.files} archive_members={s.members} candidates={len(s.seen)} "
-          f"poster_keys={len(s.hits)} unread={len(s.unread)}")
-    return 1 if s.hits or s.unread else 0
+          f"poster_keys={len(s.hits)} unread={len(failing)} allowed_unread={len(s.unread) - len(failing)}")
+    return 1 if s.hits or failing else 0
 
 
 if __name__ == "__main__":
