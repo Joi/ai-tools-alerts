@@ -117,9 +117,18 @@ never make a post. Reading the page's own published time is a separate change
 
 ## Blast radius and rollback
 
-Poster only, one machine. No state format change beyond 0dvh's `waiting` key (its
-rollback note stands). Rollback: revert the merge of this pull request on main and
-reinstall, with 0dvh's `jq 'del(.waiting)'` step.
+Poster only, one machine. No state format change beyond 0dvh's `waiting` key.
+Rollback follows 0dvh's note: never a whole revert once a root has posted under the
+public-form titles or with a severity, since h340's compose refuses both and every
+later update to such a thread would be withheld and dropped. Roll back the
+behaviour only: restore `Run.plan_new` without the hold and the age limit, keep
+compose, rules, candidates and ledger, reinstall (the plan's Rollback section).
+
+The review of f7339e8 found two state faults, fixed here: a publication date learned
+while a notice is held is kept on the held notice (a later undated sighting is still
+aged), and a candidate deferred because its page could not be read records first
+sight in `waiting` (half the cap, as a notice does), so the age limit and the hold
+count from the run that first saw it.
 
 ## Assumes
 

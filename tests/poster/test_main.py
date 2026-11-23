@@ -1816,6 +1816,40 @@ def test_a_spaced_timestamp_survives_in_the_held_notice(env):  # 0dvh delta revi
     assert "aged=1" in summary and ssh.calls == []
 
 
+def test_a_date_learned_while_held_is_kept_for_a_later_undated_sighting(env):  # dmmf review
+    low = finding(severity=None, fixed=None)  # undated: a held notice
+    env.collector([low])
+    assert "held=1" in env.run()[1]
+    dated = finding(fixed="2.1.0", severity="high")
+    dated["sources"][0]["published_at"] = "2026-10-01T00:00:00Z"  # 35 days before T0
+    env.collector([dated])
+    assert "aged=1" in env.run(now=T0 + 600)[1]
+    env.collector([finding(fixed="2.1.0", severity="high")])  # undated again
+    _, summary, ssh = env.run(now=T0 + 1200)
+    assert "aged=1" in summary and "roots=0" in summary and ssh.calls == []
+
+
+def test_first_sight_is_the_run_that_deferred_on_a_failed_fetch(env):  # dmmf review
+    """Seen six days after its source, its page failing for two days: judged at six days."""
+    young = finding(fixed="2.1.0", severity="high")
+    young["sources"][0]["published_at"] = "2026-10-30T00:00:00Z"  # six days before T0
+    env.collector([young])
+    env.pages.put(GHSA, "", status=503)
+    assert "roots=0" in env.run()[1] and env.state()["deferred"]
+    del env.pages.fixed[GHSA]
+    _, summary, _ = env.run(now=T0 + 2 * 86400)
+    assert "aged=0" in summary and "roots=1" in summary
+
+
+def test_the_hold_counts_from_the_run_that_deferred_on_a_failed_fetch(env):  # dmmf review
+    env.collector([finding(fixed=None, severity="high")])
+    env.pages.put(GHSA, "", status=503)
+    env.run()
+    del env.pages.fixed[GHSA]  # seven hours later the page answers, still with no fix
+    _, summary, _ = env.run(now=T0 + 7 * 3600)
+    assert "waiting=0" in summary and "roots=1" in summary
+
+
 # ---------------------------------------------------------------- h340: only what an authoritative source says
 
 ROUTER = "https://github.com/musistudio/claude-code-router/security/advisories/GHSA-evil-evil-evil"

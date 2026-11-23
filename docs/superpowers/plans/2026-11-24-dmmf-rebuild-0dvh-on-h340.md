@@ -51,11 +51,18 @@ Spec: `docs/superpowers/specs/2026-11-24-dmmf-rebuild-0dvh-on-h340-design.md`.
 
 ## Acceptance
 
-Spec S1 to S5. Then: pull request, gate, review, merge with the no-reply author,
-`git log -1 --format=%ae origin/main` prints it; close dmmf and 0dvh on the merge
-commit; close pull request 8 as replaced.
+Spec S1 to S5. Then: pull request, gate, review, merge with the no-reply author;
+`git fetch origin`, check that `origin/main` is the pull request's merge commit
+(`gh pr view <n> --json mergeCommit`), and only then that
+`git log -1 --format=%ae origin/main` prints the no-reply address; close dmmf and
+0dvh on the merge commit; close pull request 8 as replaced.
 
 ## Rollback
 
-Revert the merge commit on main; reinstall the poster; `jq 'del(.waiting)'` on the
-state file before the old version's first run (0dvh's note).
+Never a whole revert once a root has posted under this change: the h340 compose
+refuses a public-form title on a ledger-key id and a non-null severity, so every
+later update to such a thread would be withheld and dropped (0dvh spec, "Blast
+radius and rollback"). Roll back the behaviour only: a commit on main that restores
+`Run.plan_new` without the hold and the age limit (no `waiting`, no `aged`), keeping
+`compose.py`, `rules.py`, `candidates.py` and `ledger.py` as they are; reinstall the
+poster. The state's `waiting` key is still read by this code, so it stays.
