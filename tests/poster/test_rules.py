@@ -66,14 +66,14 @@ def test_kev_tier2_is_high():
 def test_trojanized_without_primary_is_high_unverified():
     c = cand(product_text="npm:@anthropic-ai/claude-code", trojanized=True)
     assert level(c, False) == ("high", "unverified")
-    assert level(c, True) == ("critical", "trojanized-primary")
+    assert level(c, True) == ("high", "reading")  # s6mt: a model's reading never makes a critical
 
 
 def test_injection_exec_needs_fix():
     c = cand(product_text="Cursor IDE", injection_exec=True)
     assert level(c, True) == ("notice", "notice")
     fixed = cand(product_text="Cursor IDE", injection_exec=True, fixed="1.7.4")
-    assert level(fixed, True) == ("critical", "injection-exec-fixed")
+    assert level(fixed, True) == ("high", "reading")  # s6mt
     assert level(fixed, False) == ("high", "unverified")
 
 def test_out_of_scope_is_none():
@@ -687,3 +687,217 @@ def test_a_redirect_to_a_url_with_a_query_is_refused():
     o = FakeOpener({VENDOR: (302, VENDOR + "?q=x"), VENDOR + "?q=x": (200, b"CVE-2026-0001 claude code")})
     allow = lambda u: rules.authoritative(u, CLAUDE) and "?" not in u  # noqa: E731
     assert rules.http_page(VENDOR, allow, opener=o) == (404, "") and o.seen == [VENDOR]
+
+
+# ------------------------------------------------- the level rests on fields (s6mt)
+
+import hashlib  # noqa: E402
+import json  # noqa: E402
+import random  # noqa: E402
+
+from aitools_alerts import ruleset  # noqa: E402
+from aitools_alerts.poster import inputs, ledger  # noqa: E402
+
+VECTORS = json.loads((schema.SPEC_DIR / "claim-vectors.json").read_text(encoding="utf-8"))
+T = 1795000000
+VENDOR_PAGE = dict(cve="CVE-2026-0007", severity="High", blocks=[
+    ("@anthropic-ai/claude-code", "npm", ">= 2.0.0, < 2.1.0", "2.1.0"),  # given out of order, and one twice
+    ("@anthropic-ai/claude-code", "npm", "< 1.9.5", "1.9.5"),
+    ("@anthropic-ai/claude-code", "npm", ">= 2.0.0, < 2.1.0", "2.1.0"),
+    ("some-other-package", "npm", "< 9", "9")])
+
+
+def vector(name):
+    return next(v for v in VECTORS["claims"] if v["name"] == name)
+
+
+def kev_cand(vendor="Anthropic", product="Claude Code", cve="CVE-2026-0001"):
+    got = candidates.from_kev({"vulnerabilities": [
+        {"cveID": cve, "vendorProject": vendor, "product": product, "dateAdded": "2026-11-04"}]}, "2026-01-01")
+    return got[0]
+
+
+def page_cand(page=VENDOR_PAGE, **kw):
+    """(the candidate with its readings as main.admit sets them, its evidence)."""
+    c = ghsa_cand(**kw)
+    ev = rules.evidence(c, CLAUDE, served({REPO + G1: (200, advisory_page(G1, **page))}))
+    return replace(c, readings=rules.readings_for(c, ev)), ev
+
+
+def test_the_page_evidence_carries_the_fields_a_reading_needs():
+    c, ev = page_cand()
+    assert ev.structured and ev.ghsa == G1 and ev.repository == "anthropics/claude-code"
+    assert ev.packages == (("npm", "@anthropic-ai/claude-code", ">= 2.0.0, < 2.1.0", "2.1.0"),
+                           ("npm", "@anthropic-ai/claude-code", "< 1.9.5", "1.9.5"),
+                           ("npm", "@anthropic-ai/claude-code", ">= 2.0.0, < 2.1.0", "2.1.0"))
+    ((source, text),) = c.readings
+    fields = json.loads(text)
+    assert source == "ghsa" and fields["cwes"] == [] and fields["type"] is None and fields["severity"] == "high"
+    assert [p["range"] for p in fields["packages"]] == ["< 1.9.5", ">= 2.0.0, < 2.1.0"]  # sorted, the repeat once
+    # A block that states no fix has a null, never the page's word "None"; "Moderate" is the API's "medium".
+    c, ev = page_cand(dict(severity="Moderate", patched=None))
+    fields = json.loads(c.readings[0][1])
+    assert fields["packages"][0]["first_patched"] is None and fields["severity"] == "medium"
+    # A vendor site page that only names the id, and a page that confirmed nothing, give no reading.
+    site = cand(sources=(Source("https://www.anthropic.com/security/x", None),))
+    ev = rules.evidence(site, CLAUDE, served({"https://www.anthropic.com/security/x": (200, "<html>CVE-2026-0001 Claude Code</html>")}))
+    assert ev.ok and not ev.structured and rules.readings_for(site, ev) == ()
+    assert rules.readings_for(cand(), rules.Evidence()) == ()
+
+
+def test_fields_a_claim_cannot_carry_make_no_reading_and_never_a_crash():
+    ev = rules.Evidence(url=REPO + G1, structured=True, ghsa=G1, repository="anthropics/claude-code",
+                        packages=(("", "npm:@anthropic-ai/claude-code", None, None),))
+    assert rules.readings_for(ghsa_cand(), ev) == ()
+    assert rules.reading_text("kev", {"cve_id": "CVE-2026-0001", "name": "e\u0301"}) is None  # not NFC
+    odd = kev_cand(product="Claude Cod\u0065\u0301")  # not NFC: CISA's text is kept as it is, so no reading
+    assert odd.exploited is True and odd.readings == ()
+
+
+def test_a_kev_reading_is_made_from_the_catalog_entry_and_nowhere_else():
+    c = kev_cand()
+    assert c.readings == (("kev", '{"cve_id":"CVE-2026-0001","name":"Anthropic Claude Code"}'),)
+    ev = rules.evidence(c, CLAUDE, served({}))
+    assert rules.readings_for(c, ev) == c.readings
+    # The exploited flag alone (a merge, the ledger, the state file) makes no reading.
+    flagged = cand(exploited=True)
+    assert rules.evidence(flagged, CLAUDE, served({})).kev and rules.readings_for(flagged, rules.Evidence(kev=True)) == ()
+    assert "readings" not in c.to_dict()
+    back = inputs.candidate_from(c.to_dict())
+    assert back.exploited is True and back.readings == () and back == replace(c, readings=())
+
+
+def test_merge_then_defer_then_reload_keeps_the_level_and_claims_no_fresh_reading():
+    collector, _ = page_cand(id="CVE-2026-0001", page=dict(cve="CVE-2026-0001", severity="Low"))
+    merged, scope = ledger.merge([(collector, CLAUDE), (kev_cand(), CLAUDE)])[0]
+    assert merged.product_text == "claude-code" and merged.exploited is True  # the first member's text
+    assert [s for s, _ in merged.readings] == ["ghsa", "kev"]
+    assert json.loads(merged.readings[1][1])["name"] == "Anthropic Claude Code"  # CISA's own string
+    claims = rules.claims_for(merged, scope, T)
+    assert [c["level"] for c in claims] == ["notice", "critical"]
+    assert all(ruleset.check_claim(c, scope.name) == "ok" for c in claims)
+    assert rules.level_for(merged, scope, True) == ("critical", "kev-tier1")
+    reloaded = inputs.candidate_from(merged.to_dict())  # a later run, the catalog unread
+    assert reloaded.readings == () and rules.claims_for(reloaded, scope, T) == []
+    assert rules.readings_for(reloaded, rules.evidence(reloaded, scope, served({}))) == ()
+    assert rules.level_for(reloaded, scope, False) == ("critical", "kev-tier1")  # no reading lowers nothing
+    assert rules.basis(reloaded, scope, "critical") == "fields"
+    again = ledger.merge([(merged, CLAUDE), (merged, CLAUDE)])[0][0]
+    assert again.readings == merged.readings  # joined once
+
+
+def test_a_models_reading_raises_to_high_and_never_makes_a_critical():
+    scope = CLAUDE
+    for flags in ({"trojanized": True}, {"injection_exec": True, "fixed": "1.0"},
+                  {"trojanized": True, "injection_exec": True, "fixed": "1.0", "advisory_severity": "critical"}):
+        c = cand(product_text="claude-code", **flags)
+        for ok in (True, False):
+            lvl, why = rules.level_for(c, scope, ok)
+            assert (lvl, why) == ("high", "reading" if ok else "unverified")
+            assert rules.basis(c, scope, lvl) == "reading"
+    assert ruleset.load().reading_cap == "high"
+    # The predicates are as before: tier 1 only, and injection needs a fix.
+    assert level(cand(product_text="Apple macOS", trojanized=True), True) == ("notice", "notice")
+    assert level(cand(product_text="Cursor IDE", injection_exec=True), True) == ("notice", "notice")
+    assert rules.basis(cand(), scope, "notice") == "fields"
+
+
+def test_the_level_and_its_basis_come_from_the_readings():
+    c, _ = page_cand()
+    assert c.advisory_severity is None  # nothing but the reading says high
+    assert rules.level_for(c, CLAUDE, False) == ("high", "fields")
+    assert rules.basis(c, CLAUDE, "high") == "fields" and rules.basis(c, CLAUDE, "critical") == "reading"
+    said = replace(c, advisory_severity="high")  # the page's word, as main.admit copies it
+    assert rules.level_for(said, CLAUDE, False) == ("high", "severity-tier1")
+    assert rules.basis(said, CLAUDE, "high") == "fields"
+    low, _ = page_cand(dict(severity="Low"))
+    assert rules.level_for(low, CLAUDE, True) == ("notice", "notice")
+    told = replace(low, advisory_severity="remote code execution", fixed="2.1.0")  # a collector's words
+    assert rules.level_for(told, CLAUDE, True) == ("high", "fix-rce-tier1")
+    assert rules.basis(told, CLAUDE, "high") == "reading"
+    k = kev_cand()
+    assert rules.level_for(k, CLAUDE, False) == ("critical", "kev-tier1") and rules.basis(k, CLAUDE, "critical") == "fields"
+    # A reading of another product lends this one nothing.
+    assert rules.level_for(replace(cand(product_text="codex cli"), readings=k.readings),
+                           rules.scope_of("codex cli"), True) == ("notice", "notice")
+
+
+@pytest.mark.parametrize("name", ["poster-kev", "poster-ghsa-page"])
+def test_the_poster_builds_the_shared_vectors_byte_for_byte(name):
+    v = vector(name)
+    if name == "poster-kev":
+        c = kev_cand()
+    else:
+        g = "GHSA-aaaa-bbbb-cccc"
+        c = ghsa_cand(id=g, sources=(Source(REPO + g, None),))
+        ev = rules.evidence(c, CLAUDE, served({REPO + g: (200, advisory_page(g, **VENDOR_PAGE))}))
+        c = replace(c, readings=rules.readings_for(c, ev))
+    (claim,) = rules.claims_for(c, CLAUDE, T)
+    raw = ruleset.canonical(claim)
+    assert raw.decode("utf-8") == v["canonical"] and hashlib.sha256(raw).hexdigest() == v["sha256"]
+    assert claim == v["claim"] and v["product"] == CLAUDE.name
+
+
+def test_rule_of_fields_is_the_level_of_every_claim_the_poster_builds():
+    """The property (s6mt acceptance): over generated candidates, every claim's level is
+    what the ruleset gives its fields; the published level is never below a claim's; it is
+    critical only by a field; and with nothing but a model's reading it is high at most."""
+    rng, rs = random.Random(20261124), ruleset.load()
+    products = [("claude-code", "@anthropic-ai/claude-code", "npm", "anthropics/claude-code"),
+                ("openai/codex", "@openai/codex", "npm", "openai/codex"),
+                ("openssh", "OpenSSH", None, "openssh/openssh-portable"),
+                ("apple macos", None, None, None), ("linux kernel", None, None, None)]
+    kev_names = {"claude-code": ("Anthropic", "Claude Code"), "openai/codex": ("OpenAI", "Codex"),
+                 "openssh": ("OpenBSD", "OpenSSH"), "apple macos": ("Apple", "macOS"),
+                 "linux kernel": ("Linux", "Kernel")}
+    seen = {"critical": 0, "high": 0, "notice": 0, "claims": 0, "reading": 0}
+    for n in range(500):
+        text, package, eco, repo = rng.choice(products)
+        scope = rules.scope_of(text)
+        g = "GHSA-" + "-".join("".join(rng.choice("23456789cfghjmpqrvwx") for _ in range(4)) for _ in range(3))
+        members, want = [], 0
+        if package and rng.random() < 0.6:
+            blocks = [(package, eco, rng.choice(["< 2.0.0", ">= 1.0.0, < 1.4.2", None]),
+                       rng.choice(["2.0.0", "1.4.2", None])) for _ in range(rng.randint(1, 3))]
+            if rng.random() < 0.3:
+                blocks.append(("left-pad", "npm", "< 1", "1"))
+            page = advisory_page(g, severity=rng.choice(["Low", "Moderate", "High", "Critical"]), blocks=blocks,
+                                 cve="CVE-2026-0001" if rng.random() < 0.5 else None, repo=repo)
+            url = f"https://github.com/{repo}/security/advisories/{g}"
+            c = cand(id=g, product_text=text, sources=(Source(url, None),),
+                     trojanized=rng.random() < 0.3, injection_exec=rng.random() < 0.3,
+                     fixed=rng.choice([None, "2.0.0"]),
+                     advisory_severity=rng.choice([None, "high", "remote code execution", "low"]))
+            ev = rules.evidence(c, scope, served({url: (200, page)}))
+            assert ev.structured
+            members.append(replace(c, readings=rules.readings_for(c, ev), aliases=tuple(sorted(i.upper() for i in ev.ids if i.startswith("cve")))))
+            want += 1
+        if rng.random() < 0.4 or not members:
+            members.append(kev_cand(*kev_names[text]))
+            want += 1
+        if rng.random() < 0.2:  # a flagged record with no reading at all
+            members.append(cand(id="CVE-2026-0001", product_text=text, trojanized=True))
+        c = ledger.merge([(m, scope) for m in members])[0][0] if len({m.id for m in members}) == 1 or \
+            all("CVE-2026-0001" in (m.id, *m.aliases) for m in members) else members[0]
+        want = len(c.readings)
+        claims = rules.claims_for(c, scope, T + n)
+        assert len(claims) == want and (want > 0 or not any(m.readings for m in members))
+        for claim in claims:
+            assert ruleset.check_claim(claim, scope.name) == "ok"
+            assert claim["level"] == rs.level([(claim["source"], claim["fields"])], scope.name)
+            assert json.loads(ruleset.canonical(claim)) == claim
+        ok = rng.random() < 0.5
+        lvl, why = rules.level_for(c, scope, ok)
+        best = rs.highest("none", *(x["level"] for x in claims))
+        assert rs.rank(lvl) >= rs.rank(best)
+        if lvl == "critical":
+            assert best == "critical" or (c.exploited is True and scope.tier == 1)
+            assert rules.basis(c, scope, lvl) == "fields"
+        if not claims and c.exploited is not True:
+            assert rs.rank(lvl) <= rs.rank(rs.reading_cap)
+        if scope.tier == 2:
+            assert lvl != "critical"
+        seen[lvl] += 1
+        seen["claims"] += len(claims)
+        seen["reading"] += rules.basis(c, scope, lvl) == "reading"
+    assert min(seen.values()) > 20, seen  # the generator reaches every level, both bases

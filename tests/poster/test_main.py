@@ -1492,23 +1492,26 @@ def test_japanese_roots_carry_the_candidates_exploited_state(env, monkeypatch): 
     assert all("直ちに更新" in text for _, _, text in relay.ja)
 
 
-def test_kev_learned_at_the_same_level_makes_the_japanese_action_urgent(env):  # 4yr1
-    """A verified trojanized release with no fix is critical; KEV listing it later keeps
-    the level, so the thread keeps its title. The reply's full Japanese advisory still
-    says it is exploited."""
-    first = finding(fid="CVE-2026-0001", fixed=None)
+def test_kev_learned_on_a_flagged_thread_raises_it_and_makes_the_japanese_action_urgent(env):  # 4yr1, s6mt
+    """A verified trojanized release with no fix is high: a model's reading never makes a
+    critical (s6mt). KEV listing it later raises the thread to critical, by a field. The
+    Japanese advisory of that run says it is exploited."""
+    first = finding(fid="CVE-2026-0001", fixed=None, affected="<99.0.0")  # a range: the hold for a bare high is not this test's
     first["trojanized"] = True
     env.collector([first])
-    assert "roots=1" in env.run()[1]
+    _, summary, relay = env.run()
+    assert "roots=1" in summary and chans(relay) == [("feed", None)]
+    assert relay.calls[0][2].startswith("HIGH: Claude Code: trojanized release (CVE-2026-0001)")
     (e,), _ = env.ledger()
-    assert e["advisory"]["title"] == "Claude Code: trojanized release (CVE-2026-0001)"
+    assert e["level"] == "high" and e["advisory"]["title"] == "Claude Code: trojanized release (CVE-2026-0001)"
     env.kev.catalog = {"vulnerabilities": [kev_item()]}
     code, summary, relay = env.run(now=T0 + 3600)
-    assert code == 0 and "replies=2" in summary and "ja=2" in summary
+    assert code == 0 and "copies=1" in summary and "replies=1" in summary and "ja=2" in summary
     (e,), _ = env.ledger()
-    assert e["advisory"]["title"] == "Claude Code: trojanized release (CVE-2026-0001)"  # kept
+    assert e["level"] == "critical"
+    assert e["advisory"]["title"] == "Claude Code: known exploited vulnerability (CVE-2026-0001)"
+    assert relay.ja
     for _, _, text in relay.ja:
-        assert "改ざんされたリリース (CVE-2026-0001)" in text
         assert "悪用が確認されているため、リリースがあれば直ちに更新してください。" in text
 
 
@@ -2006,15 +2009,15 @@ def test_a_page_that_echoes_its_query_confirms_nothing(env, capsys):
 
 
 def test_a_model_read_flag_counts_only_from_a_record_that_cites_the_vendors_advisory_alone(env):
-    pure = {**finding(fid="GHSA-aaaa-aaaa-aaaa", severity=None, fixed=None), "trojanized": True}
+    pure = {**finding(fid="GHSA-aaaa-aaaa-aaaa", severity=None, fixed=None, affected="<99.0.0"), "trojanized": True}
     mixed = {**finding(fid="GHSA-bbbb-bbbb-bbbb", severity=None, fixed=None, sources=(REPO + "GHSA-bbbb-bbbb-bbbb", ROUTER)),
              "trojanized": True}
     junk = {**finding(fid="GHSA-cccc-cccc-cccc", severity=None, fixed=None,
                       sources=(REPO + "GHSA-cccc-cccc-cccc", "https://www.anthropic.com/security/unread")), "trojanized": True}
     env.collector([pure, mixed, junk])
     _, summary, relay = env.run()
-    assert chans(relay) == [("critical", None), ("feed", None)] and "held=2" in summary
-    assert relay.calls[0][2].startswith("CRITICAL: Claude Code: trojanized release (GHSA-aaaa-aaaa-aaaa)")
+    assert chans(relay) == [("feed", None)] and "held=2" in summary  # s6mt: the flag raises to high, never critical
+    assert relay.calls[0][2].startswith("HIGH: Claude Code: trojanized release (GHSA-aaaa-aaaa-aaaa)")
     assert sorted(h["adv"]["id"] for h in env.state()["held"]) == ["GHSA-bbbb-bbbb-bbbb", "GHSA-cccc-cccc-cccc"]
 
 
@@ -2163,3 +2166,50 @@ def test_a_kev_entry_posts_though_the_page_budget_is_spent(env, monkeypatch):
     _, summary, relay = env.run()
     assert "roots=1" in summary and relay.calls[0][2].startswith("CRITICAL: Claude Code: known exploited vulnerability")
     assert env.state()["deferred"] == []
+
+
+# ------------------------------------------------- readings reach the level through admit (s6mt)
+
+def _levelled(env, monkeypatch, **kw):
+    """(run result, the candidates level_for was asked about) for one run."""
+    seen, real = [], main.rules.level_for
+    monkeypatch.setattr(main.rules, "level_for", lambda c, scope, ok: seen.append((c, scope)) or real(c, scope, ok))
+    return env.run(**kw), seen
+
+
+def test_admit_puts_the_readings_on_what_the_level_is_computed_from(env, monkeypatch):
+    from aitools_alerts import ruleset
+    env.collector([finding(fid="CVE-2026-0001", severity="high", affected="<2.1.0")])
+    env.kev.catalog = {"vulnerabilities": [kev_item()]}
+    (code, summary, relay), seen = _levelled(env, monkeypatch)
+    assert code == 0 and "roots=1" in summary and len(seen) == 1
+    c, scope = seen[0]
+    assert sorted(s for s, _ in c.readings) == ["ghsa", "kev"]
+    fields = dict((s, json.loads(t)) for s, t in c.readings)
+    assert fields["kev"] == {"cve_id": "CVE-2026-0001", "name": "Anthropic Claude Code"}
+    assert fields["ghsa"]["repository"] == "anthropics/claude-code" and fields["ghsa"]["severity"] == "high"
+    assert [(p["ecosystem"], p["name"], p["first_patched"]) for p in fields["ghsa"]["packages"]] == [("", "Claude Code", "2.1.0")]
+    claims = main.rules.claims_for(c, scope, T0)
+    assert sorted(x["level"] for x in claims) == ["critical", "high"]
+    assert all(ruleset.check_claim(x, scope.name) == "ok" for x in claims)
+    assert "readings" not in json.dumps(env.state())  # never in the state file
+
+
+def test_a_page_confirmed_finding_alone_has_one_ghsa_reading(env, monkeypatch):
+    env.collector([finding(severity="high")])
+    (_, summary, _), seen = _levelled(env, monkeypatch)
+    ((c, scope),) = seen
+    assert [s for s, _ in c.readings] == ["ghsa"] and json.loads(c.readings[0][1])["ghsa_id"] == "GHSA-abcd-efgh-ijkl"
+    assert main.rules.basis(c, scope, "high") == "fields"
+
+
+def test_a_later_run_without_the_flag_lowers_nothing(env):
+    first = {**finding(fid="GHSA-aaaa-aaaa-aaaa", severity=None, fixed=None, affected="<99.0.0"), "trojanized": True}
+    env.collector([first])
+    _, summary, relay = env.run()
+    assert "roots=1" in summary and relay.calls[0][2].startswith("HIGH: ")
+    env.collector([{**first, "trojanized": False}])  # the model no longer reads it that way
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "roots=0" in summary and "replies=0" in summary and relay.calls == []
+    (e,), _ = env.ledger()
+    assert e["level"] == "high" and e["advisory"]["level"] == "high"
