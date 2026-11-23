@@ -1,8 +1,20 @@
 """Fixtures for the pull and CLI tests."""
 
+import os
 from pathlib import Path
 
 import pytest
+
+# Git reads these to find its repository, index and work tree BEFORE it looks at the
+# directory it runs in. Tests here build throwaway repositories and run git in them
+# (one deletes every ref). Started with GIT_DIR set, as any git hook does, those
+# commands would act on the real repository instead: on 2026-11-23 that deleted every
+# branch, tag and reflog of a shared clone (ai-tools-alerts#4e1y). They are removed for
+# the whole session at import, before any test or fixture runs, and again per test.
+GIT_LOCATION_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+                     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES", "GIT_PREFIX")
+for _name in GIT_LOCATION_VARS:
+    os.environ.pop(_name, None)
 
 from aitools_alerts import config, curator, pull
 from mirror_helpers import T0, Mirror
@@ -27,6 +39,13 @@ def reader_clock(monkeypatch):
     monkeypatch.setattr(pull, "time", clock)
     monkeypatch.setattr(curator, "time", clock)  # the curator dates replies by the same clock
     return clock
+
+
+@pytest.fixture(autouse=True)
+def _no_inherited_git_location(monkeypatch):
+    """No test runs git with a repository location it did not choose (see GIT_LOCATION_VARS)."""
+    for name in GIT_LOCATION_VARS:
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)
