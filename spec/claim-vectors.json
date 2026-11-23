@@ -1,5 +1,5 @@
 {
- "description": "Test vectors for the claim a poster signs and a member's CLI checks offline (s6mt). A claim is {id, source, fields, ruleset, level, confirmed_at, checked_at}: id is the advisory id the source is looked up by and equals the fields' own id (a CVE id reads kev, a GHSA id ghsa, any other OSV id osv); fields is the reading, as spec/ruleset.json defines it; ruleset is the integer version of the ruleset that gave the level; level is critical, high, notice or none; confirmed_at and checked_at are integer Unix seconds, confirmed_at not after checked_at. The product is not in the claim: it is the product of the alert the claim is signed with. Canonical form: the JSON object with keys sorted by code point at every depth, no whitespace between tokens, strings escaped only where JSON requires it (the quote, the backslash; control characters never occur), every other character literal, UTF-8. Values are objects with ASCII keys, lists, strings in NFC with no control, format, surrogate or private-use character (Unicode categories Cc, Cf, Cs, Co), integers of magnitude at most 2^53 - 1, true, false and null; there is no float. Lists whose order the source does not fix have one order: packages ascending by (ecosystem, name, range, first_patched) compared by code point with null as the empty string, each entry once; cwes ascending, each once, [] when none. 'claims': each vector's 'canonical' is the exact text of the canonical form of 'claim', 'sha256' its SHA-256, and the ruleset gives 'claim.level' for 'product'. 'levels': the level the ruleset gives 'product' for 'readings', each [source, fields]. Both test suites load this file: tests/test_ruleset.py and tests/poster/test_rules.py, which builds poster-kev and poster-ghsa-page through the poster's own code.",
+ "description": "Test vectors for the claim a poster signs and a member's CLI checks offline (s6mt). A claim is {id, source, fields, ruleset, level, confirmed_at, checked_at}: id is the advisory id the source is looked up by and equals the fields' own id (a CVE id reads kev, a GHSA id ghsa, any other OSV id osv); fields is the reading, as spec/ruleset.json defines it; ruleset is the integer version of the ruleset that gave the level; level is critical, high, notice or none; confirmed_at and checked_at are integer Unix seconds, confirmed_at not after checked_at. The product is not in the claim: it is the product of the alert the claim is signed with. Canonical form: the JSON object with keys sorted by code point at every depth and no whitespace between tokens. Values are objects, lists, strings, integers of magnitude at most 2^53 - 1, true, false and null; there is no float. Every string, keys included, is printable ASCII (U+0020 to U+007E), so the bytes are ASCII and the only escapes are those of the quote and the backslash. A source value with any other character cannot be carried: that reading is malformed and makes no claim. Unicode is left out whole because which characters exist, and what they normalise to, differs between the Unicode versions two readers run. Lists whose order the source does not fix have one order: packages ascending by (ecosystem, name, range, first_patched) compared by code point with null as the empty string, each entry once; cwes ascending, each once, [] when none. 'claims': each vector's 'canonical' is the exact text of the canonical form of 'claim', 'sha256' its SHA-256, and the ruleset gives 'claim.level' for 'product'. 'levels': the level the ruleset gives 'product' for 'readings', each [source, fields]. Both test suites load this file: tests/test_ruleset.py and tests/poster/test_rules.py, which builds poster-kev and poster-ghsa-page through the poster's own code.",
  "ruleset": 1,
  "claims": [
   {
@@ -133,7 +133,7 @@
    "sha256": "15355075e69506d669ffe85536364f9d74ba57b96903c4f0ab00f34c3bbec9b3"
   },
   {
-   "name": "ghsa-non-ascii-unbound",
+   "name": "ghsa-escapes-unbound",
    "product": "Claude Code",
    "claim": {
     "id": "GHSA-xxxx-3333-yyyy",
@@ -149,7 +149,7 @@
      "packages": [
       {
        "ecosystem": "",
-       "name": "Éditeur d’outils 工具",
+       "name": "A \"quoted\" tool \\ path/name",
        "range": "< 3",
        "first_patched": "3"
       }
@@ -160,8 +160,8 @@
     "confirmed_at": 1795000000,
     "checked_at": 1795003600
    },
-   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cvss_vector\":null,\"cwes\":[],\"ghsa_id\":\"GHSA-xxxx-3333-yyyy\",\"packages\":[{\"ecosystem\":\"\",\"first_patched\":\"3\",\"name\":\"Éditeur d’outils 工具\",\"range\":\"< 3\"}],\"repository\":null,\"severity\":\"critical\",\"type\":\"reviewed\",\"withdrawn_at\":null},\"id\":\"GHSA-xxxx-3333-yyyy\",\"level\":\"none\",\"ruleset\":1,\"source\":\"ghsa\"}",
-   "sha256": "49aff3040de2ae8ee8a66739957431b1c006e0e8d0f76758d4c7744cf9d1cdca"
+   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cvss_vector\":null,\"cwes\":[],\"ghsa_id\":\"GHSA-xxxx-3333-yyyy\",\"packages\":[{\"ecosystem\":\"\",\"first_patched\":\"3\",\"name\":\"A \\\"quoted\\\" tool \\\\ path/name\",\"range\":\"< 3\"}],\"repository\":null,\"severity\":\"critical\",\"type\":\"reviewed\",\"withdrawn_at\":null},\"id\":\"GHSA-xxxx-3333-yyyy\",\"level\":\"none\",\"ruleset\":1,\"source\":\"ghsa\"}",
+   "sha256": "e60816e62b72d5cfa89ffd2255fedf2beb37fc2f3f37ca2a4f8a83143e8dced6"
   },
   {
    "name": "ghsa-withdrawn",

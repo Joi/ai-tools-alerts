@@ -749,8 +749,8 @@ def test_fields_a_claim_cannot_carry_make_no_reading_and_never_a_crash():
     ev = rules.Evidence(url=REPO + G1, structured=True, ghsa=G1, repository="anthropics/claude-code",
                         packages=(("", "npm:@anthropic-ai/claude-code", None, None),))
     assert rules.readings_for(ghsa_cand(), ev) == ()
-    assert rules.reading_text("kev", {"cve_id": "CVE-2026-0001", "name": "e\u0301"}) is None  # not NFC
-    odd = kev_cand(product="Claude Cod\u0065\u0301")  # not NFC: CISA's text is kept as it is, so no reading
+    assert rules.reading_text("kev", {"cve_id": "CVE-2026-0001", "name": "e\u0301"}) is None  # not printable ASCII
+    odd = kev_cand(product="Claude Cod\u0065\u0301")  # outside ASCII: CISA's text is kept as it is, so no reading
     assert odd.exploited is True and odd.readings == ()
 
 

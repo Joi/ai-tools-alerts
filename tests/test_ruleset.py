@@ -287,7 +287,12 @@ def test_only_a_complete_cvss_vector_has_an_attack_vector():
     full = V40 + "/E:A/CR:H/MAV:N/S:P/AU:Y/R:I/V:C/RE:M/U:Green"  # FIRST's own supplemental values
     assert ruleset.cvss_metrics(full)["U"] == "Green"
     assert ruleset.cvss_metrics(V31 + "/E:P/RL:O/RC:C/CR:H/MAV:L")["MAV"] == "L"
-    for bad in ("CVSS:4.0/AV:N", V31 + "/AV:L", V40 + "/E:A/E:P", V31.replace("AV:N/AC:L", "AC:L/AV:N"),
+    shuffled = "CVSS:3.1/AC:L/AV:N/PR:N/UI:R/S:U/C:H/I:H/A:H"  # 3.x readers take the metrics in any order
+    assert ruleset.cvss_metrics(shuffled) == ruleset.cvss_metrics(V31)
+    assert ruleset.cvss_metrics("CVSS:3.0/E:P/A:H/I:H/C:H/S:U/UI:R/PR:N/AC:L/AV:A")["AV"] == "A"
+    assert RS.level([ghsa(cvss_vector=shuffled, cwes=["CWE-78"], type="reviewed")], CC) == "high"
+    for bad in ("CVSS:4.0/AV:N", V31 + "/AV:L", V40 + "/E:A/E:P", V40.replace("AV:A/AC:L", "AC:L/AV:A"),
+                "CVSS:4.0/E:A/" + V40[9:], shuffled.replace("/PR:N", ""), shuffled.replace("UI:R", "UI:X"),
                 V40.replace("AT:N/", ""), V31.lower(), " " + V31, V31 + "/x:y", V31 + "/E:", None, 7, "x" * 400):
         assert ruleset.cvss_metrics(bad) is None, bad
     cwe = dict(cwes=["CWE-78"], type="reviewed")
@@ -306,11 +311,6 @@ def test_registries_as_the_sources_name_them_fit_the_form():
     assert RS.read(*osv(packages=many)) == {}  # a long advisory is read, and binds nothing here
     with pytest.raises(RulesetError):
         RS.read(*osv(packages=ruleset.ordered(pkg(f"p{i}") for i in range(1001))))
-
-
-def test_an_unassigned_code_point_is_not_part_of_the_rule():
-    """Unassigned differs between Unicode versions; two readers must agree on a claim."""
-    assert ruleset.canonical({"v": "a" + chr(0x50000) + "b"})  # plane 5: unassigned in every version so far
 
 
 def test_ordered_puts_a_builders_packages_in_the_one_order():
@@ -335,23 +335,41 @@ def test_claim_vectors_have_one_byte_form(v):
 def test_the_vectors_cover_what_the_form_has_to_settle():
     names = {v["name"] for v in VECTORS["claims"]}
     assert {"poster-kev", "poster-ghsa-page"} <= names
-    assert any(not v["canonical"].isascii() for v in VECTORS["claims"])
+    assert all(v["canonical"].isascii() for v in VECTORS["claims"])
+    assert any('\\"' in v["canonical"] and "\\\\" in v["canonical"] for v in VECTORS["claims"])  # the two escapes
     assert any(v["claim"]["level"] == NONE for v in VECTORS["claims"])
     two = next(v for v in VECTORS["claims"] if v["name"] == "poster-ghsa-page")["claim"]["fields"]
     assert two["cwes"] == [] and len(two["packages"]) == 2
     assert len({(p["ecosystem"], p["name"]) for p in two["packages"]}) == 1
 
 
-@pytest.mark.parametrize("value", [1.0, float("nan"), 2**53, "é", "a\u0000b", "a‎b", "a" + chr(0xE000) + "b", "a" + chr(0xD800), b"x", (1,),
+@pytest.mark.parametrize("value", [1.0, float("nan"), 2**53, "é", "a\u0000b", "a‎b", "a" + chr(0xE000) + "b", "a" + chr(0xD800), "caf" + chr(0xE9), "a" + chr(0xA0) + "b", "a\tb", "a\nb", "a" + chr(0x7F), chr(0x1CCD8), chr(0x50000), b"x", (1,),
                                    {"kéy": 1}, {1: 1}], ids=lambda v: "")
 def test_canonical_refuses_what_two_readers_could_write_differently(value):
     with pytest.raises(RulesetError):
         ruleset.canonical({"v": value})
 
 
-def test_canonical_sorts_keys_and_keeps_non_ascii_literal():
-    assert ruleset.canonical({"b": [1, None, True], "a": {"d": "é", "c": -1}}) \
-        == '{"a":{"c":-1,"d":"é"},"b":[1,null,true]}'.encode("utf-8")
+def test_canonical_sorts_keys_and_escapes_only_the_quote_and_the_backslash():
+    assert ruleset.canonical({"b": [1, None, True], "a": {"d": 'x"y\\z', "c": -1}}) \
+        == b'{"a":{"c":-1,"d":"x\\"y\\\\z"},"b":[1,null,true]}'
+
+
+def test_a_name_outside_ascii_is_refused_so_no_unicode_version_decides_a_level():
+    """U+1CCD8 folds to "C" under NFKC in Unicode 16 and is unassigned in Unicode 14:
+    a reader on each would bind "Anthropic <that>laude Code" differently under one
+    digest. No string of a reading leaves printable ASCII, so neither binds it."""
+    for name in ("Anthropic " + chr(0x1CCD8) + "laude Code", "Anthropic " + chr(0xFF23) + "laude Code",
+                 "Anthropic Claude" + chr(0xA0) + "Code", "Anthropic Claude Cod" + chr(0xE9), "Anthropic\tClaude Code"):
+        with pytest.raises(RulesetError):
+            RS.read(*kev(name))
+        forged = dict(RS.claim(*kev(), CC, 1795000000, 1795000000))
+        forged["fields"] = {"cve_id": "CVE-2026-0001", "name": name}
+        assert ruleset.check_claim(forged, CC) == "refused"
+    with pytest.raises(RulesetError):
+        RS.read(*osv(packages=[pkg("@anthropic-ai/" + chr(0x441) + "laude-code", range=None, first_patched=None)]))
+    assert all(m.isascii() for e in SCOPE["entries"] for m in [*e.get("match", []),
+               *(i for c in e.get("components", []) for i in c["match"])])
 
 
 def claim(reading=None, product=CC, **kw):

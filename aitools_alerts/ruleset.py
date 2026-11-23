@@ -70,9 +70,7 @@ _FIELDS = {"kev": ("cve_id", "name"),
            "osv": ("osv_id", "withdrawn", "packages")}
 _DASHES = re.compile("[\u2010-\u2015\u2212]")
 _SPACES = re.compile(r"\s+")
-# Refused in every string. Unassigned (Cn) is not in the rule: it differs between Unicode
-# versions, and two readers must agree on whether a claim is well formed.
-_NO_CHAR = frozenset({"Cc", "Cf", "Cs", "Co"})
+_ASCII = re.compile(r"[\x20-\x7e]*")  # every string of a reading, a claim and the digest's input
 
 
 class RulesetError(ValueError):
@@ -118,8 +116,12 @@ def index(entries) -> dict[str, schema.ScopeEntry]:
 # ------------------------------------------------------------------ canonical form
 
 def _plain(v, depth: int = 0) -> None:
-    """Refuse anything the canonical form does not define: a float, a non-NFC or
-    control-bearing string, a non-ASCII key, an integer JSON readers disagree on."""
+    """Refuse anything the canonical form does not define: a float, an integer JSON
+    readers disagree on, and any string that is not printable ASCII. Unicode is left
+    out whole: which characters exist, and what they normalise to, differs between
+    the Unicode versions two readers run, and a name that one reader folds to a
+    product's identity and another does not would give two levels under one digest.
+    Every identity in spec/scope.json is ASCII, so a name outside ASCII binds nothing."""
     if v is None or type(v) is bool:
         return
     if type(v) is int:
@@ -127,8 +129,8 @@ def _plain(v, depth: int = 0) -> None:
             _fail("an integer outside the exact range")
         return
     if type(v) is str:
-        if not unicodedata.is_normalized("NFC", v) or any(unicodedata.category(c) in _NO_CHAR for c in v):
-            _fail("a string that is not NFC or carries a control, format, surrogate or private-use character")
+        if not _ASCII.fullmatch(v):
+            _fail("a string with a character outside printable ASCII (U+0020 to U+007E)")
         return
     if depth >= 12:  # a claim nests 4 deep; the digest's input (the scope file) 8
         _fail("nested too deeply")
@@ -138,8 +140,8 @@ def _plain(v, depth: int = 0) -> None:
         return
     if type(v) is dict:
         for k, x in v.items():
-            if type(k) is not str or not k.isascii() or not k:
-                _fail("an object key that is not ASCII text")
+            if type(k) is not str or not k:
+                _fail("an object key that is not text")
             _plain(k)
             _plain(x, depth + 1)
         return
@@ -148,7 +150,8 @@ def _plain(v, depth: int = 0) -> None:
 
 def canonical(obj) -> bytes:
     """The one byte form of a claim (or of any object the digest covers): keys sorted
-    by code point at every depth, no whitespace, non-ASCII literal, UTF-8."""
+    by code point at every depth, no whitespace; every string is printable ASCII, so the
+    bytes are ASCII and no escape but those of the quote and the backslash occurs."""
     _plain(obj)
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
@@ -193,21 +196,26 @@ def _when(v, what: str):
 
 def cvss_metrics(vector) -> dict[str, str] | None:
     """{metric: value} of a CVSS 3.0, 3.1 or 4.0 vector, or None when it is not one:
-    the version's base metrics first, each once, in order, with a value the version
-    defines; then any further metrics, each named once. A vector that is cut short or
-    states a metric twice has no attack vector to read."""
+    every base metric of the version, each once, with a value the version defines,
+    and any further metrics, each named once. Version 4.0 fixes the order (the base
+    metrics first, in the specification's order); 3.0 and 3.1 allow any order. A
+    vector that is cut short or states a metric twice has no attack vector to read."""
     if type(vector) is not str or len(vector) > 300:
         return None
     head, *parts = vector.split("/")
-    base = _CVSS_BASE.get({"CVSS:3.0": "3", "CVSS:3.1": "3", "CVSS:4.0": "4"}.get(head, ""))
+    major = {"CVSS:3.0": "3", "CVSS:3.1": "3", "CVSS:4.0": "4"}.get(head, "")
+    base = _CVSS_BASE.get(major)
     if base is None or len(parts) < len(base) or not all(_METRIC.fullmatch(x) for x in parts):
         return None
     pairs = [tuple(x.split(":")) for x in parts]
     if len({k for k, _ in pairs}) != len(pairs):
         return None
-    if any(k != name or v not in values for (k, v), (name, values) in zip(pairs, base)):
+    found = dict(pairs)
+    if any(found.get(name) not in values for name, values in base):
         return None
-    return dict(pairs)
+    if major == "4" and [k for k, _ in pairs[:len(base)]] != [name for name, _ in base]:
+        return None
+    return found
 
 
 def _packages(v) -> list[dict]:
