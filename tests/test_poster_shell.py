@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 VM = ROOT / "ops" / "vm"
 GUARD = VM / "aitools-poster-shell"
 WRAPPER_LINE = 'WRAPPER="/home/$RELAY_USER/bin/buzz-send"\n'
+PUT_LINE = 'PUT="/home/$RELAY_USER/bin/mirror-put"\n'
 USER_FILE_LINE = "RELAY_USER_FILE=/etc/aitools-poster/relay-user\n"
 DIR = object()  # relay_user=DIR puts a directory where the file goes
 CHANNEL = "599adb9f-4f9f-4b19-aee3-66667c3293e8"
@@ -56,6 +57,14 @@ echo '{"accepted":true,"event_id":"00"}'
 """
 
 
+FAKE_PUT = r"""#!/usr/bin/env bash
+d="$(dirname "$0")"
+printf '%s\0' "$@" > "$d/put-argv"
+cat > "$d/put-stdin"
+echo '{"stored":true,"bytes":1}'
+"""
+
+
 def _make_guard(tmp_path, bash, relay_user="relayuser\n"):
     fake = tmp_path / "bin"
     fake.mkdir()
@@ -65,14 +74,16 @@ def _make_guard(tmp_path, bash, relay_user="relayuser\n"):
         user_file.mkdir()
     elif relay_user is not None:
         user_file.write_text(relay_user)
-    for name, body in (("sudo", FAKE_SUDO), ("buzz-send", FAKE_WRAPPER)):
+    for name, body in (("sudo", FAKE_SUDO), ("buzz-send", FAKE_WRAPPER), ("mirror-put", FAKE_PUT)):
         (fake / name).write_text(body)
         (fake / name).chmod(0o755)
     wrapper = str(fake / "buzz-send")
     src = GUARD.read_text()
-    assert src.count(WRAPPER_LINE) == 1 and src.count(USER_FILE_LINE) == 1
+    assert src.count(WRAPPER_LINE) == 1 and src.count(USER_FILE_LINE) == 1 and src.count(PUT_LINE) == 1
     copy = tmp_path / "aitools-poster-shell"
+    put = str(fake / "mirror-put")
     copy.write_text(src.replace(WRAPPER_LINE, f"WRAPPER={shlex.quote(wrapper)}\n")
+                    .replace(PUT_LINE, f"PUT={shlex.quote(put)}\n")
                     .replace(USER_FILE_LINE, f"RELAY_USER_FILE={shlex.quote(str(user_file))}\n"))
     env = {"PATH": f"{fake}:{os.environ['PATH']}", "HOME": str(tmp_path)}
 
@@ -83,6 +94,7 @@ def _make_guard(tmp_path, bash, relay_user="relayuser\n"):
 
     run.fake = fake
     run.wrapper = wrapper
+    run.put = put
     return run
 
 
@@ -109,6 +121,7 @@ def _refused(r, fake: Path, why: str):
     assert err["error"] == "user_error" and err["message"].startswith("aitools-poster-shell: refused")
     assert why in err["message"]
     assert not (fake / "sudo-argv").exists() and not (fake / "wrapper-argv").exists()
+    assert not (fake / "put-argv").exists()
 
 
 def test_bash3_fails_closed(tmp_path):
@@ -236,7 +249,8 @@ def test_sudoers_reference_matches_the_guard():
     lines = [ln for ln in (VM / "sudoers-aitools-poster").read_text().splitlines()
              if ln and not ln.startswith("#")]
     w = "/home/RELAY_USER/bin/buzz-send messages send --channel [0-9a-f]* --content -"
-    assert lines == [f"aitools-poster ALL=(RELAY_USER) NOPASSWD: {w}, {w} --reply-to [0-9a-f]*"]
+    p = "/home/RELAY_USER/bin/mirror-put checkpoint"  # no wildcard: sudo matches the command whole
+    assert lines == [f"aitools-poster ALL=(RELAY_USER) NOPASSWD: {w}, {w} --reply-to [0-9a-f]*, {p}"]
 
 
 def test_sshd_match_reference():
@@ -248,3 +262,59 @@ def test_sshd_match_reference():
                                            "X11Forwarding", "PermitTTY", "PermitTunnel",
                                            "AllowStreamLocalForwarding")),
                      "DisableForwarding yes", "PermitUserRC no"]
+
+
+# ------------------------------------------- the second shape: mirror-put checkpoint (nfm3)
+
+def test_put_shape_reaches_mirror_put_with_stdin_intact(guard):
+    from aitools_alerts.poster import transport
+    seen = {}
+
+    def ssh(argv, **kw):  # what transport.put hands to ssh is exactly what the guard accepts
+        seen["remote"] = argv[-1]
+        return subprocess.CompletedProcess(argv, 0, b'{"stored":true,"bytes":1}\n', b"")
+    assert transport.put("checkpoint", b'{"x":1}', ssh, host="relay.example.invalid", wrapper=guard.put) == (True, "stored")
+    doc = '{"id":"日本語"}\n--relay x'.encode()
+    r = guard("-c", seen["remote"], stdin=doc)
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout) == {"stored": True, "bytes": 1}
+    assert _argv(guard.fake / "sudo-argv") == ["-n", "-u", "relayuser", "--", guard.put, "checkpoint"]
+    assert _argv(guard.fake / "put-argv") == ["checkpoint"]
+    assert (guard.fake / "put-stdin").read_bytes() == doc
+    assert not (guard.fake / "wrapper-argv").exists()
+
+
+@pytest.mark.parametrize("tail", [
+    [], ["manifest"], ["checkpoint", "extra"], ["checkpoint", ""], ["Checkpoint"], ["checkpoint;id"],
+    ["--help"], ["checkpoint", "--out", "/etc/passwd"], ["messages", "send"]])
+def test_other_put_shapes_refused(guard, tail):
+    r = guard("-c", shlex.join([guard.put, *tail]))
+    assert r.returncode == 1 and not (guard.fake / "put-argv").exists()
+    assert not (guard.fake / "sudo-argv").exists() and not (guard.fake / "wrapper-argv").exists()
+    assert json.loads(r.stderr.decode().splitlines()[0])["message"].startswith("aitools-poster-shell: refused")
+
+
+@pytest.mark.parametrize("program", ["/tmp/mirror-put", "mirror-put", "/home/other/bin/mirror-put",
+                                     "/home/relayuser/bin/../bin/mirror-put"])
+def test_mirror_put_at_another_path_refused(guard, program):
+    r = guard("-c", shlex.join([program, "checkpoint"]))
+    assert r.returncode == 1 and not (guard.fake / "put-argv").exists() and not (guard.fake / "sudo-argv").exists()
+
+
+def test_put_argument_checks_in_transport():
+    from aitools_alerts.poster import transport
+    for kw in (dict(kind="manifest"), dict(wrapper="mirror-put"), dict(wrapper="/x/y z"), dict(host="-oProxy"),
+               dict(data="text"), dict(data=b"")):
+        args = dict(kind="checkpoint", data=b"{}", host="h.example.invalid", wrapper="/home/u/bin/mirror-put")
+        args.update(kw)
+        with pytest.raises(ValueError):
+            transport.put(args["kind"], args["data"], lambda *a, **k: None, host=args["host"], wrapper=args["wrapper"])
+
+    def refused(argv, **kw):
+        return subprocess.CompletedProcess(argv, 1, b"", b'{"error":"user_error","message":"mirror-put: x"}\n')
+    ok, detail = transport.put("checkpoint", b"{}", refused, host="h.example.invalid", wrapper="/home/u/bin/mirror-put")
+    assert ok is False and detail.startswith("exit 1")
+
+    def timeout(argv, **kw):
+        raise subprocess.TimeoutExpired("ssh", 1)
+    assert transport.put("checkpoint", b"{}", timeout, host="h.example.invalid", wrapper="/home/u/bin/mirror-put")[0] is False

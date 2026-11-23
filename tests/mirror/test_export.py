@@ -995,3 +995,280 @@ def test_future_event_published_by_an_older_exporter_is_withdrawn(env):
     result = run_export(env, rows_reader([ok, far]), now=now)
     assert result["channels"]["feed"]["future"] == 1
     assert [e["id"] for e in json.loads((env[2] / "feed.json").read_text())["events"]] == [ok["id"]]
+
+
+# ------------------------------------------- the certificate and the checkpoint (ai-tools-alerts#nfm3)
+
+from aitools_alerts import checkpoint as cpt  # noqa: E402
+from aitools_alerts import manifest as manifest_mod  # noqa: E402
+
+CK_SEC, CK_PUB = nostr.keygen()
+NOW = 1793865900
+
+
+@pytest.fixture
+def trust(env, tmp_path):
+    """env plus a certificate for CK_PUB under the env manifest, and an inbox."""
+    channels, manifest, out = env
+    man = manifest_mod.load(manifest)
+    cert = tmp_path / "checkpoint-key.json"
+    cert.write_text(json.dumps(cpt.build_cert(ROOT_SEC, man, CK_PUB, 1793865600, 1793865600 + 120 * 86400)))
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+
+    class T:
+        pass
+    t = T()
+    t.env, t.man, t.cert, t.inbox, t.out = env, man, cert, inbox, out
+
+    def put(ids, seq, now=NOW - 60, sec=CK_SEC, man=None):
+        ev = cpt.build_checkpoint(sec, man or t.man, seq, ids, now)
+        (inbox / "checkpoint.json").write_text(json.dumps(ev))
+        return ev
+
+    def run(rows, critical=(), now=NOW, **kw):
+        return em.export(channels, manifest, out, rows_reader(rows, critical), now=now,
+                         checkpoint_key=kw.pop("checkpoint_key", cert), inbox=kw.pop("inbox", inbox), **kw)
+
+    def served():
+        p = out / "checkpoint.json"
+        return cpt.load_checkpoint(p) if p.exists() else None
+    t.put, t.run, t.served = put, run, served
+    return t
+
+
+def test_exporter_publishes_certificate_and_checkpoint_a_member_pull_accepts(trust, tmp_path, monkeypatch):
+    a = ev(BOT_SEC, _adv_post("Alpha", "AITA-TEST-0001", "critical"), 1793865600)
+    gone = ev(CUR_SEC, "retract", 1793865700, tags=[("e", a["id"], "", "root")])
+    cp_ev = trust.put([a["id"], gone["id"]], seq=7)
+    result = trust.run([a, gone])
+    assert result["checkpoint"] == "published seq 7" and "checkpoint=published seq 7" in em.summary_line(result)
+    assert json.loads((trust.out / "checkpoint.json").read_text()) == cp_ev
+    assert cpt.verify_cert(cpt.load_cert(trust.out / "checkpoint-key.json"), ROOT_PUB)
+    from aitools_alerts.state import State
+    home = tmp_path / "member"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    st = State.load()
+    res = pull.fetch(trust.out.as_uri() + "/", st, root_pubkey=ROOT_PUB, now=NOW + 60)  # the member's, checked pull
+    assert res.error is None and pull.unverified(State.load(), NOW + 60) is None
+    assert [(t.adv.title, t.retracted) for t in pull.advisories(State.load())] == [("Alpha", True)]
+
+
+def test_checkpoint_is_written_after_the_event_files(trust, monkeypatch):
+    a = ev(BOT_SEC, "one", 1793865600)
+    trust.put([a["id"]], seq=1)
+    order = []
+    real = em.write_atomic
+    monkeypatch.setattr(em, "write_atomic", lambda out, name, data: (order.append(name), real(out, name, data))[1])
+    trust.run([a])
+    assert order.index("manifest.json") < order.index("checkpoint-key.json") < order.index("feed.json") \
+        < order.index("checkpoint.json") and order.index("critical.json") < order.index("checkpoint.json")
+
+
+def test_candidate_is_held_back_until_its_events_are_exported(trust):
+    a = ev(BOT_SEC, "one", 1793865600)
+    b = ev(BOT_SEC, "two, just sent: the relay has not stored it yet", 1793865700)
+    trust.put([a["id"]], seq=1)
+    assert trust.run([a])["checkpoint"] == "published seq 1"
+    trust.put([a["id"], b["id"]], seq=2)
+    result = trust.run([a])
+    assert result["checkpoint"] == "kept seq 1 (candidate lists 1 events not exported)" and trust.served().seq == 1
+    assert trust.run([a, b])["checkpoint"] == "published seq 2" and trust.served().seq == 2
+    assert trust.run([a, b])["checkpoint"] == "kept seq 2 (no newer candidate)"
+
+
+@pytest.mark.parametrize("case, note", [
+    ("another key", "refused (candidate not signed by the certified key)"),
+    ("the bot key", "refused (candidate not signed by the certified key)"),
+    ("another manifest", "refused (candidate: other manifest)"),
+    ("dated ahead", "refused (candidate: dated ahead)"),
+    ("older than published", "refused (candidate: older checkpoint)"),
+    ("same number, other content", "refused (candidate: conflicting checkpoint)"),
+    ("malformed", "refused (candidate malformed)"),
+])
+def test_exporter_refuses_a_bad_candidate_and_keeps_serving_the_published_one(trust, case, note):
+    a = ev(BOT_SEC, "one", 1793865600)
+    b = ev(BOT_SEC, "two", 1793865610)
+    trust.put([a["id"]], seq=5)
+    assert trust.run([a, b])["checkpoint"] == "published seq 5"
+    before = (trust.out / "checkpoint.json").read_bytes()
+    if case == "another key":
+        trust.put([a["id"], b["id"]], seq=6, sec=nostr.keygen()[0])
+    elif case == "the bot key":
+        trust.put([a["id"], b["id"]], seq=6, sec=BOT_SEC)
+    elif case == "another manifest":
+        other = nostr.sign_event(ROOT_SEC, {"created_at": 1793865601, "kind": 30078, "tags": [["d", "aitools-alerts-manifest"]],
+                                            "content": json.dumps({"version": 2, "issued_at": "2026-11-05T08:00:01Z", "posters": [
+                                                {"pubkey": CUR_PUB, "role": "curator", "name": "Curator"}]})})
+        trust.put([a["id"]], seq=6, man=manifest_mod.load(json.dumps(other).encode()))
+    elif case == "dated ahead":
+        trust.put([a["id"], b["id"]], seq=6, now=NOW + pull.MAX_AHEAD_S + 1)
+    elif case == "older than published":
+        trust.put([a["id"]], seq=4, now=NOW - 30)
+    elif case == "same number, other content":
+        trust.put([a["id"], b["id"]], seq=5)
+    else:
+        (trust.inbox / "checkpoint.json").write_text("{")
+    result = trust.run([a, b])
+    assert result["checkpoint"] == note and (trust.out / "checkpoint.json").read_bytes() == before
+    assert len(json.loads((trust.out / "feed.json").read_text())["events"]) == 2  # the export itself goes on
+
+
+@pytest.mark.parametrize("case, note", [
+    ("by a stranger", "refused (certificate not signed by the trust root)"),
+    ("expired", "refused (certificate: expired)"),
+    ("another manifest", "refused (certificate: other manifest)"),
+    ("unreadable", "refused (certificate unreadable)"),
+])
+def test_a_bad_certificate_is_not_published_and_the_export_goes_on(trust, case, note):
+    a = ev(BOT_SEC, "one", 1793865600)
+    trust.put([a["id"]], seq=1)
+    if case == "by a stranger":
+        trust.cert.write_text(json.dumps(cpt.build_cert(nostr.keygen()[0], trust.man, CK_PUB, 1793865600, 1793965600)))
+    elif case == "expired":
+        trust.cert.write_text(json.dumps(cpt.build_cert(ROOT_SEC, trust.man, CK_PUB, 1793765600, 1793765700)))
+    elif case == "another manifest":
+        other = replace_manifest_id(trust.man)
+        trust.cert.write_text(json.dumps(cpt.build_cert(ROOT_SEC, other, CK_PUB, 1793865600, 1793965600)))
+    else:
+        trust.cert.write_text("{")
+    result = trust.run([a])
+    assert result["checkpoint"] == note
+    assert not (trust.out / "checkpoint-key.json").exists() and not (trust.out / "checkpoint.json").exists()
+    assert len(json.loads((trust.out / "feed.json").read_text())["events"]) == 1
+
+
+def replace_manifest_id(man):
+    from dataclasses import replace as dc_replace
+    return dc_replace(man, event={**man.event, "id": "0" * 64})
+
+
+def test_without_the_options_or_the_certificate_file_nothing_new_is_published(trust, tmp_path):
+    a = ev(BOT_SEC, "one", 1793865600)
+    trust.put([a["id"]], seq=1)
+    result = trust.run([a], checkpoint_key=None)
+    assert result["checkpoint"] == "none" and "checkpoint" not in em.summary_line(result)
+    result = trust.run([a], checkpoint_key=tmp_path / "absent.json")  # as on main before the rollout
+    assert result["checkpoint"] == "none"
+    assert {p.name for p in trust.out.iterdir()} == NAMES
+    assert trust.run([a], inbox=None)["checkpoint"] == "none"  # the certificate alone is published
+    assert (trust.out / "checkpoint-key.json").exists() and not (trust.out / "checkpoint.json").exists()
+
+
+def test_events_a_published_checkpoint_lists_survive_the_caps(trust, monkeypatch):
+    """The exact pinned events are kept, whatever their thread has grown to: here the
+    pinned root's thread outgrows the count cap, then the byte cap."""
+    monkeypatch.setattr(em, "MAX_CHANNEL_EVENTS", 6)
+    root = ev(BOT_SEC, _adv_post("Pinned", "AITA-TEST-0031"), 1793865000)
+    gone = ev(CUR_SEC, "retract", 1793865010, tags=[("e", root["id"], "", "root")])
+    trust.put([root["id"], gone["id"]], seq=1)
+    assert trust.run([root, gone])["checkpoint"] == "published seq 1"
+    bloat = [ev(BOT_SEC, f"note {i}", 1793865100 + i, tags=[("e", root["id"], "", "root")]) for i in range(10)]
+    newer = [ev(BOT_SEC, f"newer {i}", 1793865500 + i) for i in range(5)]
+    trust.run([root, gone, *bloat, *newer])
+    ids = [e["id"] for e in json.loads((trust.out / "feed.json").read_text())["events"]]
+    assert root["id"] in ids and gone["id"] in ids and len(ids) <= 6
+    monkeypatch.setattr(em, "MAX_CHANNEL_EVENTS", 2000)
+    monkeypatch.setattr(em, "MAX_CHANNEL_BYTES", 6000)
+    fat = [ev(BOT_SEC, "x" * 1500, 1793865200 + i, tags=[("e", root["id"], "", "root")]) for i in range(6)]
+    trust.run([root, gone, *fat])
+    ids = [e["id"] for e in json.loads((trust.out / "feed.json").read_text())["events"]]
+    assert root["id"] in ids and gone["id"] in ids
+
+
+def test_two_checkpoints_with_disjoint_events_are_both_served_during_the_move(trust, monkeypatch):
+    monkeypatch.setattr(em, "MAX_CHANNEL_EVENTS", 10)
+    first = [ev(BOT_SEC, f"first {i}", 1793865000 + i) for i in range(5)]
+    second = [ev(BOT_SEC, f"second {i}", 1793865100 + i) for i in range(5)]
+    late = ev(BOT_SEC, "not exported yet", 1793865200)
+    trust.put([e["id"] for e in first], seq=1)
+    assert trust.run(first)["checkpoint"] == "published seq 1"
+    trust.put([e["id"] for e in second] + [late["id"]], seq=2)
+    result = trust.run([*first, *second])  # the candidate waits for one event; both sets are served meanwhile
+    assert result["checkpoint"].startswith("kept seq 1")
+    ids = {e["id"] for e in json.loads((trust.out / "feed.json").read_text())["events"]}
+    assert ids == {e["id"] for e in first + second}
+    monkeypatch.setattr(em, "MAX_CHANNEL_EVENTS", 8)  # now the union no longer fits: the published one wins
+    result = trust.run([*first, *second, late])
+    ids = {e["id"] for e in json.loads((trust.out / "feed.json").read_text())["events"]}
+    assert {e["id"] for e in first} <= ids and result["checkpoint"].startswith("kept seq 1")
+    monkeypatch.setattr(em, "MAX_CHANNEL_EVENTS", 20)
+    assert trust.run([*first, *second, late])["checkpoint"] == "published seq 2"
+
+
+def test_after_a_key_rotation_the_published_checkpoint_is_still_the_floor(trust):
+    """The certificate now names a new key. The published checkpoint is the old key's and
+    no longer verifies under it, but readers hold it: a new-key checkpoint dated before
+    it must not be published."""
+    a = ev(BOT_SEC, "one", 1793865600)
+    trust.put([a["id"]], seq=9, now=NOW - 60)
+    assert trust.run([a])["checkpoint"] == "published seq 9"
+    new_sec, new_pub = nostr.keygen()
+    trust.cert.write_text(json.dumps(cpt.build_cert(ROOT_SEC, trust.man, new_pub, 1793865700, 1793965700)))
+    trust.put([a["id"]], seq=1, now=NOW - 120, sec=new_sec)
+    assert trust.run([a])["checkpoint"] == "refused (candidate: older checkpoint)" and trust.served().seq == 9
+    trust.put([a["id"]], seq=1, now=NOW - 30, sec=new_sec)
+    assert trust.run([a])["checkpoint"] == "published seq 1" and trust.served().event["pubkey"] == new_pub
+
+
+def test_unit_passes_the_checkpoint_options():
+    unit = (ROOT / "mirror" / "aitools-alerts-mirror.service").read_text()
+    assert "--checkpoint-key %h/ai-tools-alerts/trust/checkpoint-key.json --inbox %h/alerts-inbox" in unit
+
+
+def test_an_older_certificate_never_replaces_the_one_being_served(trust):
+    """A restored old deployment must not put an older certificate back: readers that hold
+    the newer one refuse checkpoints by the key the older names."""
+    a = ev(BOT_SEC, "one", 1793865600)
+    trust.put([a["id"]], seq=1)
+    old_cert = trust.cert.read_text()
+    new_sec, new_pub = nostr.keygen()
+    trust.cert.write_text(json.dumps(cpt.build_cert(ROOT_SEC, trust.man, new_pub, 1793865700, 1793965700)))
+    trust.put([a["id"]], seq=1, sec=new_sec)
+    assert trust.run([a])["checkpoint"] == "published seq 1"
+    served = (trust.out / "checkpoint-key.json").read_bytes()
+    trust.cert.write_text(old_cert)  # the old deployment comes back, with the old key's later checkpoint
+    trust.put([a["id"]], seq=50, now=NOW - 10)
+    result = trust.run([a])
+    assert result["checkpoint"] == "refused (certificate: older certificate)"
+    assert (trust.out / "checkpoint-key.json").read_bytes() == served and trust.served().event["pubkey"] == new_pub
+    twin = cpt.build_cert(ROOT_SEC, trust.man, CK_PUB, 1793865700, 1793965700)  # the same second, another key
+    trust.cert.write_text(json.dumps(twin))
+    assert trust.run([a])["checkpoint"] == "refused (certificate: conflicting certificate)"
+
+
+@pytest.mark.parametrize("junk", [b"", b"{", b"[]", b"\xff\xfe", b"[" * 5000 + b"]" * 5000, b'{"id": 1}'])
+def test_a_hostile_inbox_or_output_file_never_stops_the_export(trust, junk):
+    """The relay VM's user can write anything into the inbox and the output directory:
+    the feed must still be exported."""
+    a = ev(BOT_SEC, "one", 1793865600)
+    (trust.inbox / "checkpoint.json").write_bytes(junk)
+    (trust.out / "checkpoint.json").write_bytes(junk)
+    (trust.out / "checkpoint-key.json").write_bytes(junk)
+    result = trust.run([a])
+    assert len(json.loads((trust.out / "feed.json").read_text())["events"]) == 1
+    assert result["checkpoint"].startswith(("refused", "none"))
+
+
+def test_a_published_file_with_a_bad_signature_is_no_floor(trust):
+    """out/checkpoint.json is the VM user's to write: one that is well formed but not
+    validly signed must not block a real candidate with its date or number."""
+    a = ev(BOT_SEC, "one", 1793865600)
+    fake = cpt.build_checkpoint(CK_SEC, trust.man, 10**9, [a["id"]], NOW + 10**6)
+    fake["sig"] = fake["sig"][:-2] + ("00" if fake["sig"][-2:] != "00" else "11")
+    (trust.out / "checkpoint.json").write_text(json.dumps(fake))
+    trust.put([a["id"]], seq=3)
+    assert trust.run([a])["checkpoint"] == "published seq 3" and trust.served().seq == 3
+
+
+def test_a_candidates_events_are_reserved_ahead_of_the_thread_rule(trust, monkeypatch):
+    """The candidate lists a root whose thread has outgrown the caps. Without the
+    reservation the thread rule would skip the root and the candidate could never be published."""
+    monkeypatch.setattr(em, "MAX_CHANNEL_EVENTS", 6)
+    root = ev(BOT_SEC, _adv_post("Wanted", "AITA-TEST-0041"), 1793865000)
+    bloat = [ev(BOT_SEC, f"note {i}", 1793865100 + i, tags=[("e", root["id"], "", "root")]) for i in range(10)]
+    trust.put([root["id"]], seq=1)
+    result = trust.run([root, *bloat])
+    assert result["checkpoint"] == "published seq 1"
+    assert root["id"] in [e["id"] for e in json.loads((trust.out / "feed.json").read_text())["events"]]

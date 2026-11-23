@@ -57,7 +57,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from aitools_alerts import TRUST_ROOT_PUBKEY, check, manifest, pull, schema
-from aitools_alerts.poster import candidates, compose, inputs, ledger, rules, translate, transport
+from aitools_alerts.poster import candidates, compose, inputs, ledger, rules, signer, translate, transport
 from aitools_alerts.poster.inputs import Config, ConfigError
 from aitools_alerts.poster.ledger import Ledger, LedgerError
 from aitools_alerts.state import State
@@ -193,6 +193,7 @@ class Run:
                 raise _Stop
             it["sent"] = r.event_id
             self.save()  # the journal holds the id before the ledger records it
+        self._owe(it)  # here, so a replay of an item whose send was journaled records it too
         if not ja:  # a Japanese reply has no thread record: the journal is its record
             self._record(it)
         if self.led.has_pending(it["key"]):  # while the sent item still exists to finish it
@@ -202,6 +203,21 @@ class Run:
         self.save()
         self.n[{"root": "roots", "copy": "copies", "reply": "replies", "digest": "digest", "ja": "ja"}[it["kind"]]] += 1
         return True
+
+    def _owe(self, it):
+        """The relay acknowledged this post: every checkpoint owes it until the mirror
+        shows it (signer.record_sent), written now, before the journal lets the item go."""
+        if self.config.checkpoint_key_file is None or it.get("sent") is None:
+            return
+        root = it.get("root") if it["kind"] == "ja" else None
+        if it["kind"] == "reply":  # the root it replied to in ITS channel (a critical has one per channel)
+            e = self.led.lookup(it["ids"], scope=it.get("scope"))
+            root = (getattr(e, "channel_ids", {}).get(it["channel"]) if e is not None else None) or it.get("root")
+        try:
+            signer.record_sent(self.config.owed_state, it["sent"], len(it["text"].encode("utf-8")), root, self.now)
+        except OSError as e:  # a debt that cannot be written down must stop the run, not be forgotten
+            self.owe_failed = True  # and this run signs no checkpoint: it would omit the post
+            raise LedgerError(f"checkpoint state {self.config.owed_state}: {e.strerror or e}") from None
 
     def _withhold(self, it, message):  # a refused item, with a root's copies that need it, leaves the journal
         group = [it] + [o for o in self.state["outbox"] if it["kind"] == "root" and o["kind"] == "copy"
@@ -952,7 +968,7 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
     if not config.strip_hosts:  # the candidate filter then knows only the input's own host names
         print("aitools-alerts-poster: warning: strip_hosts is empty", file=sys.stderr)
     channels = channels or inputs.load_channels()
-    n, code, err, status, skipped, tr_status = Counter(), 0, None, None, Counter(), "-"
+    n, code, err, status, skipped, tr_status, cp_status = Counter(), 0, None, None, Counter(), "-", "off"
     try:
         with Ledger(config.ledger) as led:
             state = inputs.load_state(config.state, now, config.backfill_days)
@@ -1013,6 +1029,18 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
                     tr_status = "error"
                     _say(f"curator translation stopped: {type(e).__name__}")
                 r.drain_ja()  # a Japanese reply never delays or stops an English post
+            # Last, whatever the outcome above: a run whose posts failed still vouches for what exists.
+            try:
+                if getattr(r, "owe_failed", False):
+                    # An acknowledged post could not be written down. It is still in the send
+                    # journal; the next run records it before it signs. This one must not sign.
+                    cp_status = "owed-unrecorded"
+                else:
+                    cp_status = signer.run_checkpoint(config, now, ssh=ssh, fetch=mirror_fetch,
+                                                      root=translate_kw.get("root", TRUST_ROOT_PUBKEY))
+            except Exception as e:  # noqa: BLE001 - nothing here may reach the run's exit code
+                cp_status = "error"
+                _say(f"checkpoint stopped: {type(e).__name__}")
             if state["withheld"]:  # every run says so until a human settles them
                 _say(f"withheld={len(state['withheld'])} refused by the relay; see pending, resolve --requeue|--drop")
     except LedgerError as e:
@@ -1023,6 +1051,8 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
         _say("skipped: " + ", ".join(f"{k}={v}" for k, v in sorted(skipped.items())))
     summary = "aitools-alerts-poster: " + " ".join(f"{k}={n[k]}" for k in SUMMARY) \
         + " translate=" + tr_status + " inputs=" + _inputs_field(status)
+    if cp_status != "off":  # unset, the line is byte for byte what it was (others parse it)
+        summary += " checkpoint=" + cp_status
     if err:
         print(f"aitools-alerts-poster: {err}", file=sys.stderr)
         summary += " error=" + ("internal" if err.startswith("internal error") else "ledger")
@@ -1183,7 +1213,24 @@ def main(argv=None) -> int:
     sp.add_argument("--reason", help="why it is known not delivered (required with --not-delivered)")
     hp = sub.add_parser("translate-clear-hold", help="resume curator translation after an auth failure")
     hp.add_argument("--config", type=Path, default=inputs.DEFAULT_CONFIG)
+    kp = sub.add_parser("checkpoint-keygen", help="create the checkpoint key file named in the config; prints the npub")
+    kp.add_argument("--config", type=Path, default=inputs.DEFAULT_CONFIG)
     a = p.parse_args(argv)
+    if a.cmd == "checkpoint-keygen":
+        try:
+            cfg = inputs.load_config(a.config)
+            if cfg.checkpoint_key_file is None:
+                raise ConfigError("set checkpoint_key_file (and relay_put_wrapper) in the config first")
+            npub = signer.keygen(cfg.checkpoint_key_file)
+            signer.init_owed(cfg.owed_state)  # a new key owes nothing: signing may start at once
+            print(npub)  # the public key only
+        except OSError as e:
+            print(f"aitools-alerts-poster: {e.strerror or type(e).__name__}", file=sys.stderr)
+            return 2
+        except (ConfigError, signer.KeyFileError) as e:
+            print(f"aitools-alerts-poster: {e}", file=sys.stderr)
+            return 2
+        return 0
     if a.cmd in ("pending", "resolve", "translate-clear-hold"):
         try:
             cfg = inputs.load_config(a.config)

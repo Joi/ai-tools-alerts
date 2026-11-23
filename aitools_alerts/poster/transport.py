@@ -81,6 +81,35 @@ def remote_argv(channel_id: str, reply_to: str | None = None, *, wrapper: str) -
     return argv
 
 
+def put(kind: str, data: bytes, ssh=None, *, host: str, wrapper: str, timeout: float = TIMEOUT) -> tuple[bool, str]:
+    """Hand one signed document to the relay VM's storing command
+    (``ops/vm/mirror-put``): ``<wrapper> <kind>`` with ``data`` on stdin.
+    Returns (stored, a short detail for the log). Nothing is retried: the
+    next run signs a newer document. Malformed arguments raise ValueError."""
+    if kind != "checkpoint":
+        raise ValueError("kind must be checkpoint")
+    if not isinstance(wrapper, str) or not _WRAPPER.fullmatch(wrapper):
+        raise ValueError("wrapper must be an absolute path on the relay VM")
+    if not isinstance(host, str) or not host or host.startswith("-"):
+        raise ValueError("host must be a host name")
+    if not isinstance(data, bytes) or not data:
+        raise ValueError("data must be bytes")
+    argv = ["ssh", *SSH_OPTIONS, "--", host, shlex.join([wrapper, kind])]
+    ssh = ssh if ssh is not None else _default_ssh
+    try:
+        proc = ssh(argv, input=data, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, "ssh timed out"
+    except OSError as e:
+        return False, f"ssh could not start: {e}"[-MAX_STDERR:]
+    try:
+        ok = proc.returncode == 0 and json.loads(_decode(proc.stdout).strip().splitlines()[-1]).get("stored") is True
+    except (ValueError, IndexError, AttributeError):
+        ok = False
+    detail = "stored" if ok else f"exit {proc.returncode}: {_decode(proc.stderr)[-300:]}"
+    return ok, "".join(ch if ch.isprintable() else "?" for ch in detail)
+
+
 def _decode(b) -> str:
     if isinstance(b, bytes):
         b = b.decode("utf-8", "replace")

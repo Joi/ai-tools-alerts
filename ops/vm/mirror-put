@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# mirror-put — store one signed document from the poster for the mirror
+# exporter to check and publish.
+#
+# Installed on the relay VM at ~/bin/mirror-put of the relay's login user,
+# mode 700, owned by that user. Source of truth: ops/vm/mirror-put in the
+# ai-tools-alerts repo; ops/vm/README.md says how to install and verify it.
+#
+# Caller contract: mirror-put checkpoint, with the document on stdin:
+#   printf '%s' "$json" | mirror-put checkpoint
+# It is run by the poster's login-shell guard (ops/vm/aitools-poster-shell)
+# through sudo, as the relay user. The one kind is "checkpoint": the feed
+# checkpoint the poster signs on its own machine (aitools_alerts/checkpoint.py).
+#
+# This script verifies no signature. It refuses anything that is not one JSON
+# object with exactly the seven NIP-01 event keys, or that is over 256 KiB,
+# and stores the rest in ~/alerts-inbox/checkpoint.json (directory mode 700,
+# file mode 600): a temporary file in that directory, then a rename, so the
+# exporter never reads half a file. The inbox is not served. The exporter
+# (mirror/export_mirror.py --inbox) verifies the checkpoint under the
+# root-signed certificate before it publishes anything, so whoever can run
+# this command can replace the inbox file and nothing more.
+#
+# A refusal prints one JSON error line, exits 1 and leaves the previous file.
+# Success prints {"stored":true,"bytes":N}.
+set +x
+set -euo pipefail
+umask 077
+
+INBOX="${HOME:?}/alerts-inbox"
+MAX_BYTES=262144
+
+fail() {
+  local msg="${1//[[:cntrl:]]/?}"
+  msg="${msg//\\/\\\\}"
+  msg="${msg//\"/\\\"}"
+  printf '{"error":"user_error","message":"mirror-put: %s"}\n' "$msg" >&2
+  exit 1
+}
+
+[ "$#" -eq 1 ] || fail "usage: mirror-put checkpoint (document on stdin)"
+[ "$1" = "checkpoint" ] || fail "refused kind (only: checkpoint)"
+
+mkdir -p -m 700 "$INBOX" 2>/dev/null || fail "cannot create the inbox directory"
+[ -d "$INBOX" ] && [ ! -L "$INBOX" ] || fail "the inbox is not a directory"
+tmp="$(mktemp "$INBOX/.checkpoint.XXXXXXXX")" || fail "cannot create a temporary file in the inbox"
+trap 'rm -f "$tmp"' EXIT
+
+# One byte more than the limit is read, so an oversized document is seen as
+# such without reading all of it.
+head -c "$((MAX_BYTES + 1))" > "$tmp" || fail "read failed"
+bytes="$(wc -c < "$tmp")" || fail "read failed"
+bytes="${bytes//[[:space:]]/}"
+[ "$bytes" -le "$MAX_BYTES" ] || fail "document larger than $MAX_BYTES bytes"
+[ "$bytes" -gt 0 ] || fail "empty document"
+
+# The document goes to python3 on stdin, never on an argv. Duplicate keys are
+# refused: a second copy of a key could differ from the one a later reader keeps.
+python3 -I -c '
+import json, sys
+KEYS = {"id", "pubkey", "created_at", "kind", "tags", "content", "sig"}
+def pairs(p):
+    d = {}
+    for k, v in p:
+        if k in d:
+            raise ValueError("duplicate key")
+        d[k] = v
+    return d
+try:
+    doc = json.loads(sys.stdin.buffer.read().decode("utf-8"), object_pairs_hook=pairs)
+except (ValueError, RecursionError):
+    sys.exit(1)
+sys.exit(0 if isinstance(doc, dict) and set(doc) == KEYS else 1)
+' < "$tmp" 2>/dev/null || fail "not one JSON event object"
+
+# A directory at the target would swallow the temporary file and report success.
+[ ! -d "$INBOX/checkpoint.json" ] || fail "the inbox file is a directory"
+chmod 600 "$tmp" || fail "cannot set the file mode"
+mv -f "$tmp" "$INBOX/checkpoint.json" || fail "cannot store the document"
+trap - EXIT
+printf '{"stored":true,"bytes":%s}\n' "$bytes"
