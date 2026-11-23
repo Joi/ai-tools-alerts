@@ -279,7 +279,7 @@ class Run:
         try:
             st = State.load(self.config.mirror_dir)
             if translate.bounded(lambda: pull.fetch(self.config.translate_mirror_url, st, fetch=fetch,
-                                                    root_pubkey=root, now=self.now), 120).error is not None:
+                                                    root_pubkey=root, now=self.now, checkpoint=False), 120).error is not None:
                 return None
         except (translate.CallError, ValueError, OSError):  # a timeout, an unreadable mirror state
             return None
@@ -700,7 +700,7 @@ class Run:
         another product's post of the same id stays). Raises when the pull fails."""
         st = State.load(self.config.mirror_dir)
         res = translate.bounded(lambda: pull.fetch(self.config.translate_mirror_url, st, fetch=fetch,
-                                                   root_pubkey=root, now=self.now), 120)
+                                                   root_pubkey=root, now=self.now, checkpoint=False), 120)
         if res.error is not None:
             raise ValueError(f"mirror pull: {res.error}")
         m = st.accepted(root)

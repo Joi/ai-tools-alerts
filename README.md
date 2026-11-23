@@ -18,7 +18,7 @@ The CLI is the product for your agent and needs nothing else. The Buzz channels 
 Trusting this project means trusting Joi Ito. Everything an alert's authority rests on is his:
 
 - The trust root key that signs the manifest is a key he holds. The manifest names who may post: Joi as curator, and jibot, the automated poster he runs.
-- The relay and the mirror run on a machine he operates. Because every post is signed, someone who takes that machine can delay or hide alerts but cannot forge one; revoking a key is a manifest update only the root key can sign.
+- The relay and the mirror run on a machine he operates. Because every post is signed, someone who takes that machine cannot forge an alert; revoking a key is a manifest update only the root key can sign. From the release after 0.1.5, hiding one is noticed too: a second key, kept off that machine and named in a certificate the root signs, signs a checkpoint listing the posts that exist. The CLI admits a new post only when a checkpoint lists it, refuses a mirror that lacks a listed post, reads stale when no fresh checkpoint arrives for a day, and while any of that fails it applies nothing automatically. It also fetches the manifest from this repository, so a mirror that keeps serving a manifest from before a revocation is overruled. What this does not cover: whoever holds that second key and the mirror together can still withhold a post no member has seen.
 - Release tags are signed with a key on his GitHub account, and the repository is his.
 - What the bot posts comes from public sources (CISA's Known Exploited Vulnerabilities catalogue and vendor security releases), selected and ranked by the code in this repository, with no person reading each item before it posts. CISA's catalogue carries no version data, so an alert built from one of its entries may not name the fixed release even when the vendor has shipped one; such an alert says the source states no version and sends you to the vendor's advisory. A curator post is Joi writing by hand.
 
@@ -147,13 +147,13 @@ The hook runs `aitools-alerts run --json`. When a critical advisory that matches
 AITOOLS-ALERT: critical advisory matches this machine; run the aitools-alerts skill
 ```
 
-When no new signed post has arrived for over 3 days (the poster's daily digest is the heartbeat), or the trust manifest is over 90 days old, a frozen or replayed mirror is the likely cause, and the hook adds a second line; `aitools-alerts check` prints a warning line with the time:
+When the CLI cannot vouch that the alerts are complete and current (the last pull failed, the mirror lacks an event its signed checkpoint lists, or no fresh checkpoint has arrived for a day), a frozen, replayed or incomplete mirror is the likely cause, and the hook adds a second line; `aitools-alerts check` prints a warning line with the reason, and `plan` lists nothing under auto-apply until a pull succeeds:
 
 ```
-AITOOLS-ALERT: alerts may be stale (no new signed post for over 3 days, or a trust manifest over 90 days old); run aitools-alerts check
+AITOOLS-ALERT: alerts may be stale or unverified (no fresh signed checkpoint, or the last pull failed); run aitools-alerts check
 ```
 
-Otherwise it prints nothing (neither line), and it never fails a session: a missing CLI or an unreadable mirror is silent. It usually takes a few seconds. On a slow network it takes longer: each of the three mirror files has a 20-second timeout and each notification a 30-second one, so there is no fixed bound. When Claude Code stops the hook at its timeout (90 seconds here), the line does not appear; an alert the CLI had already marked seen was marked so only after a notification channel accepted it, so you still got that notification.
+Otherwise it prints nothing (neither line), and it never fails a session: a missing CLI or an unreadable mirror is silent. It usually takes a few seconds. On a slow network it takes longer: each of the five mirror files has a 20-second timeout, the two from the second origin 5 seconds and each notification a 30-second one, so there is no fixed bound. When Claude Code stops the hook at its timeout (90 seconds here), the line does not appear; an alert the CLI had already marked seen was marked so only after a notification channel accepted it, so you still got that notification.
 
 A project's `.claude/settings.json` can set environment variables for the session, and the hook inherits them. So the hook and the CLI take your home directory from the password database, not from `HOME`, and the hook runs the CLI with the fixed PATH above and no other variable from the session: a project cannot choose the config, the key, the state, the `aitools-alerts` binary the hook runs or the Python code it loads. (Variables the dynamic loader reads, such as `LD_PRELOAD`, act before any script runs; the hook cannot stop them.) If you set `HOME` to something other than your account's home directory, the CLI still uses the account's; a user with no home directory in the password database gets an error.
 

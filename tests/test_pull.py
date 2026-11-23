@@ -781,22 +781,33 @@ def test_pull_records_newest_trusted_event_and_manifest_time(mirror):
     _, st = do_pull(mirror)
     assert State.load().last_pull["newest_event_at"] == T0 + 500
     assert State.load().last_pull["manifest_issued_at"] == T0 + 1
-    assert pull.stale_since(st, T0 + 1000) is None
-    assert pull.stale_since(st, T0 + 500 + 3 * DAY) is None
-    assert pull.stale_since(st, T0 + 500 + 3 * DAY + 1) == T0 + 500
+    # fresh for the checkpoint's validity (a day from T0 + 500, when it was signed), then stale
+    assert pull.stale_since(st, T0 + 1000) is None and pull.unverified(st, T0 + 1000) is None
+    assert pull.stale_since(st, T0 + 500 + DAY) is None
+    assert pull.stale_since(st, T0 + 500 + DAY + 1) == T0 + 500
+    assert pull.unverified(st, T0 + 500 + DAY + 1) == "checkpoint out of date"
     mirror.raw["manifest.json"] = b"{"  # a failed pull still records the stored state
     res, st = do_pull(mirror)
     assert res.error == "bad manifest"
     assert State.load().last_pull["newest_event_at"] == T0 + 500
+    assert pull.unverified(st, T0 + 1000) == "the last pull failed (bad manifest)"
+    assert pull.stale_since(st, T0 + 1000) == T0 + 500  # the accepted checkpoint's time
 
 
-def test_old_manifest_is_stale_even_with_fresh_events(mirror):
-    mirror.post(mirror.cur_sec, "digest", created_at=T0 + 90 * DAY)
+def test_expired_certificate_is_unverified_even_with_a_fresh_checkpoint(mirror):
+    """What replaced the 90-day manifest rule: the certificate that names the
+    checkpoint key expires, and a checkpoint by that key no longer counts."""
+    mirror.publish_cert(days=2)  # issued with the manifest at T0 + 1
+    mirror.post(mirror.cur_sec, "digest", created_at=T0 + 100)
+    _, st = do_pull(mirror)
+    mirror.post(mirror.cur_sec, "digest", created_at=T0 + 2 * DAY - 100)
+    mirror.checkpoint(now=T0 + 2 * DAY - 100)
     st = State.load()
     pull.fetch("https://mirror.example.invalid/alerts", st, fetch=mirror.fetch, root_pubkey=mirror.root,
-               now=T0 + 90 * DAY)  # a clock that admits the event
-    assert pull.stale_since(st, T0 + 90 * DAY + 1) is None
-    assert pull.stale_since(st, T0 + 1 + 90 * DAY + 1) == T0 + 1  # the manifest's issued time
+               now=T0 + 2 * DAY - 50)
+    assert pull.unverified(st, T0 + 1 + 2 * DAY) is None  # the certificate's last second
+    assert pull.unverified(st, T0 + 1 + 2 * DAY + 1) == "checkpoint key certificate expired"
+    assert pull.stale_since(st, T0 + 1 + 2 * DAY + 1) == T0 + 2 * DAY - 100
 
 
 def test_events_of_keys_the_manifest_does_not_trust_do_not_count(mirror):
@@ -810,11 +821,14 @@ def test_events_of_keys_the_manifest_does_not_trust_do_not_count(mirror):
     assert pull.stale_since(st, T0 + 900 + 3 * DAY) == T0 + 100
 
 
-def test_no_events_measures_from_the_manifest_and_never_pulled_is_not_stale(mirror):
-    assert pull.stale_since(State.load(), T0 + 100 * DAY) is None
+def test_never_pulled_is_unverified_and_no_events_measures_from_the_checkpoint(mirror):
+    fresh = State.load()
+    assert pull.unverified(fresh, T0 + 100 * DAY) == "no pull yet"
+    assert pull.stale_since(fresh, T0 + 100 * DAY) == T0 + 100 * DAY  # nothing signed to date it by
     _, st = do_pull(mirror)
     assert pull.freshness(st) == (None, T0 + 1)
-    assert pull.stale_since(st, T0 + 1 + 3 * DAY + 1) == T0 + 1
+    assert pull.stale_since(st, T0 + 1000) is None  # an empty feed with a fresh checkpoint is verified
+    assert pull.stale_since(st, T0 + 1 + DAY + 1) == T0 + 1  # the checkpoint was signed at the certificate's time
 
 
 # ------------------------------- channel binding and the date bound (ai-tools-alerts#gefy)
@@ -878,9 +892,11 @@ def test_future_dated_event_is_refused(mirror):
     now = T0 + 1000
     mirror.post(mirror.bot_sec, "at the bound", created_at=now + pull.MAX_AHEAD_S)
     ahead = mirror.post(mirror.bot_sec, "past the bound", created_at=now + pull.MAX_AHEAD_S + 1)
+    mirror.checkpoint(ids=mirror.honest_ids(now + pull.MAX_AHEAD_S), now=now)  # the signer lists the one at the bound
     res, st = do_pull(mirror)
     assert res.error is None and res.dropped == {"future-dated": 1}
     assert len(st.events) == 1 and ahead["id"] not in State.load().events
+    mirror.checkpoint(ids=mirror.honest_ids(now + pull.MAX_AHEAD_S + 1), now=now + 1)
     st = State.load()
     pull.fetch("https://mirror.example.invalid/alerts", st, fetch=mirror.fetch, root_pubkey=mirror.root,
                now=now + 1)  # its date has come: admitted
@@ -924,8 +940,10 @@ def test_clock_set_back_keeps_a_stored_retraction(mirror):
     st = State.load()
     res = pull.fetch("https://mirror.example.invalid/alerts", st, fetch=mirror.fetch, root_pubkey=mirror.root,
                      now=T0 + 1000 - 3600)
-    assert res.error is None and not res.dropped
+    # the certificate (issued at T0 + 1) is itself ahead of this clock, so the pull is refused; either way
+    assert res.error == "no checkpoint key certificate" and not res.dropped
     assert gone["id"] in State.load().events and threads()[0].retracted
+    assert pull.unverified(State.load(), T0 + 1000 - 3600) is not None
 
 
 ONE, TWO = CHANNELS["feed"], CHANNELS["critical"]
@@ -973,7 +991,7 @@ def test_live_feed_fixture_is_read_whole(monkeypatch):
     st = State.load()
     now = max(e["created_at"] for e in doc["events"]) + 60
     res = pull.fetch("https://mirror.example.invalid/alerts", st, fetch=lambda u: files[u.rsplit("/", 1)[1]],
-                     now=now)
+                     now=now, checkpoint=False)  # the real keys cannot sign a test checkpoint: the writers' pull
     assert res.error is None and not res.dropped
     assert set(st.events) == {e["id"] for e in doc["events"]} and len(doc["events"]) == 10
     assert all(e["kind"] == 9 and [t[0] for t in e["tags"]].count("h") == 1 for e in doc["events"])
@@ -982,33 +1000,11 @@ def test_live_feed_fixture_is_read_whole(monkeypatch):
 
 
 def test_released_reader_reads_the_regenerated_fixture(tmp_path):
-    """The fixture mirror's events now carry h tags; the released v0.1.4 reader, which
-    knows nothing of them, still reads the mirror."""
-    import subprocess
-    import sys
-    import tarfile
-    repo = FIXTURE_MIRROR.parents[2]
-    tar = subprocess.run(["git", "-C", str(repo), "archive", "v0.1.4", "aitools_alerts", "spec", "trust"],
-                         capture_output=True)
-    if tar.returncode != 0:
-        pytest.skip("tag v0.1.4 is not in this clone")
-    old = tmp_path / "v014"
-    old.mkdir()
-    with tarfile.open(fileobj=io.BytesIO(tar.stdout)) as tf:
-        tf.extractall(old, filter="data")
-    home = tmp_path / "home014"
-    (home / ".config" / "aitools-alerts").mkdir(parents=True)
-    (home / ".config" / "aitools-alerts" / "config.toml").write_text("trust_root_override = true\n")
-    env = {"HOME": str(home), "PATH": os.environ["PATH"], "AITOOLS_ALERTS_TRUST_ROOT": FIXTURE_ROOT}
-
-    # v0.1.4 takes the home from the password database, never HOME: point it at the temp home
-    # in-process, or this test would read and write the real user's state.
-    boot = ("import pathlib, sys; from aitools_alerts import cli, config; "
-            "config.home = lambda: pathlib.Path(sys.argv[1]); sys.exit(cli.main(sys.argv[2:]))")
-
-    def run(*args):
-        return subprocess.run([sys.executable, "-c", boot, str(home), *args], cwd=old, env=env,
-                              capture_output=True, text=True, timeout=120)
+    """The fixture mirror's events carry h tags and the mirror also serves a certificate
+    and a checkpoint; the released v0.1.4 reader, which knows none of them, still reads it."""
+    from mirror_helpers import released_reader
+    assert {"checkpoint-key.json", "checkpoint.json"} <= {p.name for p in FIXTURE_MIRROR.iterdir()}
+    run = released_reader(tmp_path)
     got = run("pull", "--mirror-url", FIXTURE_MIRROR.as_uri() + "/")
     assert got.returncode == 0 and "2 new events" in got.stdout and "Traceback" not in got.stderr, got.stderr
     got = run("check")
