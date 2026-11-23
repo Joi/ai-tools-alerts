@@ -1,6 +1,6 @@
 # Run: mx38-protect-main-and-install-path
 Instruction: Read TASK-ai-tools-alerts#mx38.md in this worktree root, then run `kata show ai-tools-alerts#mx38` and follow the brief and the dispatch rules (do-it, starting rung floored at medium; not repoman-managed: scripts/test-gate.sh, one independent review on gpt-6-astra, PR, merge by this session, close on the merge commit).
-Stage: spec-review
+Stage: committing (PR #3 merged at b4b93807; tag v0.1.5 on 3ed4427e; ruleset on; pin PR #4 open, waiting on the account's email-privacy setting, see Notes)
 Rung: heavy (start-floor heavy: hard-trigger live deploy path — the install path and live ruleset state; evaluator BR2 REV2 NOV1 INT2 FC2 = 9; dispatch floor medium)
 Lens: "ops/vm README verifies buzz-send against a signed tag never origin/main"; "signed commits required on main, pull requests required"; "public-scan.sh scans every commit message and blob reachable from every ref"
 Spec: docs/superpowers/specs/2026-11-23-mx38-protect-main-and-install-path-design.md   Plan: docs/superpowers/plans/2026-11-23-mx38-protect-main-and-install-path.md
@@ -24,10 +24,13 @@ Pass 1 [code:branch]: 0B/7S/7C/0R · fixed -/- · velocity = (—→14, escalati
   Cosmetic fixed: CODEOWNERS adds aitools_alerts/, mirror/, scripts/; header notes shallow clones and refs/pull; guard hash check says which machine; spec no longer names the private issue's content; install-line test covers .git@ and pip install git+. Not changed: gpgsig scanned raw (fails safe), raw control characters in printed names, stderr/stdout ordering when piped.
 
 ## Chunks
-- [ ] 1 install path (README, mirror PIPX_LINE, pyproject pin, ops/vm/README, version 0.1.5, CHANGELOG)
-- [ ] 2 SECURITY.md and CODEOWNERS
-- [ ] 3 public scan over history
-- [ ] 4 land by PR, tag v0.1.5, pin commit by PR, rulesets, fleet signing, slice comments
+- [x] 1 install path (README, mirror PIPX_LINE, pyproject pin, ops/vm/README, version 0.1.5, CHANGELOG) — eefd405, fixes in 3ed4427
+- [x] 2 SECURITY.md and CODEOWNERS — 412f45e, 3ed4427
+- [x] 3 public scan over history — 27906d6, 34eb6a0, 3ed4427
+- [ ] 4 land by PR (done: #3, merge b4b93807), tag v0.1.5 (done: on 3ed4427e), rulesets (done, refusal proved), fleet signing (done, three Macs), slice comments (done), known files (done on three Macs; one Mac's gate fails on a new local branch's objects, its issue told), poster reinstalled (0.1.5), pin commit by PR (#4 open: waits on the email-privacy setting)
 
 ## Notes
 - Prior work: kata search found b9mz (signed tags, allowed_signers), tppb (H6 history leak; M6 correction comment 79663t), z5wb (the review). docs/superpowers/runs/2026-11-06-release-tag-verification.md is the verify-section design this run extends.
+- Skip temptations, resolved by doing the step: Agency MCP tools were absent, so execution was direct per plan task with each chunk's verification commands; the plan was written after the spec review while chunk 3 was being drafted, and its fresheyes pass ran before landing (all 7 findings fixed). Some artifact edits used a python replace with an assert per needle (fails loudly on a stale needle) instead of the Edit tool.
+- A host name reached a local commit's run-record line; the gate's history pass caught it and the commit was amended before any push.
+- GitHub's merge commit for PR #3 took the account's default commit address as author, a personal address now in public history (cannot be rewritten under the force-push block). The detail is on the private tracker. `gh pr merge --author-email <no-reply>` is refused ("Invalid email address") while the account does not keep its email private, and the token cannot change that setting (no user scope). PR #4 therefore stays open until the account setting changes; nothing else lands on main without the same leak.
