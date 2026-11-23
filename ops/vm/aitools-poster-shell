@@ -34,7 +34,7 @@ RELAY_USER=""
   || fail "refused: relay user file is not one user name ($RELAY_USER_FILE)"
 WRAPPER="/home/$RELAY_USER/bin/buzz-send"
 PUT="/home/$RELAY_USER/bin/mirror-put"
-[ "$#" -eq 2 ] && [ "$1" = "-c" ] || fail "refused: interactive login (this user runs one command shape only)"
+[ "$#" -eq 2 ] && [ "$1" = "-c" ] || fail "refused: interactive login (this user runs two command shapes only)"
 cmd="$2"
 [ -n "$cmd" ] || fail "refused: empty command"
 # python3 splits; a pipeline (pipefail, lastpipe) so its exit status decides, and

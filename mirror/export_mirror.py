@@ -352,6 +352,14 @@ def publish_trust(checkpoint_key, inbox, out: Path, m, now: int):
     problem = cpt.cert_problem(cert, m, now)
     if problem is not None:
         return None, published, (None, None), f"refused (certificate: {problem})"
+    # Never an older certificate over a newer one (a restored old deployment): readers that
+    # hold the newer one refuse checkpoints by the key the older names.
+    try:
+        served = cpt.load_cert(out / "checkpoint-key.json")
+        if cpt.verify_cert(served, TRUST_ROOT_PUBKEY) and cpt.cert_order(cert, served) is not None:
+            return None, published, (None, None), f"refused (certificate: {cpt.cert_order(cert, served)})"
+    except cpt.CheckpointError:
+        pass
     if inbox is None:
         return raw, published, (None, None), "none"
     try:

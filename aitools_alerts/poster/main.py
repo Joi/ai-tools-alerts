@@ -203,13 +203,14 @@ class Run:
         shows it (signer.record_sent), written now, before the journal lets the item go."""
         if self.config.checkpoint_key_file is None or it.get("sent") is None:
             return
-        root = it.get("root") if it["kind"] in ("ja", "reply") else None
-        if it["kind"] == "reply" and root is None:
+        root = it.get("root") if it["kind"] == "ja" else None
+        if it["kind"] == "reply":  # the root it replied to in ITS channel (a critical has one per channel)
             e = self.led.lookup(it["ids"], scope=it.get("scope"))
-            root = getattr(e, "channel_ids", {}).get(it["channel"]) if e is not None else None
+            root = (getattr(e, "channel_ids", {}).get(it["channel"]) if e is not None else None) or it.get("root")
         try:
             signer.record_sent(self.config.owed_state, it["sent"], len(it["text"].encode("utf-8")), root, self.now)
         except OSError as e:  # a debt that cannot be written down must stop the run, not be forgotten
+            self.owe_failed = True  # and this run signs no checkpoint: it would omit the post
             raise LedgerError(f"checkpoint state {self.config.owed_state}: {e.strerror or e}") from None
 
     def _withhold(self, it, message):  # a refused item, with a root's copies that need it, leaves the journal
@@ -930,8 +931,13 @@ def run(now: int, config, *, ssh=None, kev_fetch=inputs.urllib_fetch,
                 r.drain_ja()  # a Japanese reply never delays or stops an English post
             # Last, whatever the outcome above: a run whose posts failed still vouches for what exists.
             try:
-                cp_status = signer.run_checkpoint(config, now, ssh=ssh, fetch=mirror_fetch,
-                                                  root=translate_kw.get("root", TRUST_ROOT_PUBKEY))
+                if getattr(r, "owe_failed", False):
+                    # An acknowledged post could not be written down. It is still in the send
+                    # journal; the next run records it before it signs. This one must not sign.
+                    cp_status = "owed-unrecorded"
+                else:
+                    cp_status = signer.run_checkpoint(config, now, ssh=ssh, fetch=mirror_fetch,
+                                                      root=translate_kw.get("root", TRUST_ROOT_PUBKEY))
             except Exception as e:  # noqa: BLE001 - nothing here may reach the run's exit code
                 cp_status = "error"
                 _say(f"checkpoint stopped: {type(e).__name__}")
@@ -1115,7 +1121,12 @@ def main(argv=None) -> int:
             cfg = inputs.load_config(a.config)
             if cfg.checkpoint_key_file is None:
                 raise ConfigError("set checkpoint_key_file (and relay_put_wrapper) in the config first")
-            print(signer.keygen(cfg.checkpoint_key_file))  # the public key only
+            npub = signer.keygen(cfg.checkpoint_key_file)
+            signer.init_owed(cfg.owed_state)  # a new key owes nothing: signing may start at once
+            print(npub)  # the public key only
+        except OSError as e:
+            print(f"aitools-alerts-poster: {e.strerror or type(e).__name__}", file=sys.stderr)
+            return 2
         except (ConfigError, signer.KeyFileError) as e:
             print(f"aitools-alerts-poster: {e}", file=sys.stderr)
             return 2

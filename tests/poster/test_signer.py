@@ -54,12 +54,13 @@ def signing(env, tmp_path):  # noqa: F811
     key.write_text(nostr.nsec(m.ck_sec) + "\n")
     key.chmod(0o600)
     env.config = replace(env.config, checkpoint_key_file=key, relay_put_wrapper=PUT)
+    signer.init_owed(env.config.owed_state)  # as checkpoint-keygen does for a new key
     env.key = key
     return env
 
 
 def owed_ids(env):  # noqa: F811
-    return [o["id"] for o in signer.load_owed(env.config.owed_state)["owed"]]
+    return [o["id"] for o in signer.load_owed(env.config.owed_state, T0)["owed"]]
 
 
 def on_mirror(m, title, at, sec=None, **kw):
@@ -178,22 +179,39 @@ def test_checkpoint_keygen_command_prints_only_the_npub(tmp_path, capsys):
 def test_owed_entries_are_recorded_settled_and_given_up_only_by_time(tmp_path):
     path = tmp_path / "owed.json"
     a, b, root = "a" * 64, "b" * 64, "c" * 64
+    signer.init_owed(path)
     signer.record_sent(path, a, 100, None, 1000)
     signer.record_sent(path, b, 50, root, 2000)
     signer.record_sent(path, a, 100, None, 3000)  # once
     signer.record_sent(path, "not-an-id", 5, None, 3000)
-    rec = signer.load_owed(path)
-    assert rec["owed"] == [{"id": a, "bytes": 100 + signer.ENVELOPE, "since": 1000, "root": None},
+    rec = signer.load_owed(path, 3000)
+    assert rec["hold_until"] == 0 and rec["owed"] == [{"id": a, "bytes": 100 + signer.ENVELOPE, "since": 1000, "root": None},
                            {"id": b, "bytes": 50 + signer.ENVELOPE, "since": 2000, "root": root}]
     assert signer.settle_owed(rec["owed"], {a}, 3000) == ([rec["owed"][1]], 0)
     assert signer.settle_owed(rec["owed"], set(), 1000 + signer.OWED_S - 1) == (rec["owed"], 0)
     assert signer.settle_owed(rec["owed"], set(), 1000 + signer.OWED_S) == ([rec["owed"][1]], 1)
     many = [{"id": f"{i:064x}", "bytes": 10**6, "since": 5} for i in range(500)]
     assert signer.settle_owed([dict(o, root=None) for o in many], set(), 6)[1] == 0  # never dropped for room
-    path.write_text("{")
-    assert signer.load_owed(path) == {"last_seq": 0, "owed": []}
-    path.write_text(json.dumps({"last_seq": 1, "owed": [{"id": "x"}]}))
-    assert signer.load_owed(path) == {"last_seq": 0, "owed": []}
+    signer.init_owed(path)  # never replaces a record
+    assert len(signer.load_owed(path, 3000)["owed"]) == 2
+
+
+@pytest.mark.parametrize("damage", ["missing", "not json", "wrong shape", "old shape"])
+def test_a_lost_owed_record_holds_signing_for_the_owed_period(tmp_path, damage, capsys):
+    """The record is the only memory of what the relay acknowledged. Lost, the poster
+    cannot know what it owes: it signs nothing for 72 hours instead of starting clean."""
+    path = tmp_path / "owed.json"
+    if damage == "not json":
+        path.write_text("{")
+    elif damage == "wrong shape":
+        path.write_text(json.dumps({"last_seq": 1, "owed": [{"id": "x"}], "hold_until": 0}))
+    elif damage == "old shape":
+        path.write_text(json.dumps({"last_seq": 1, "owed": []}))
+    assert signer.load_owed(path, 5000) == {"last_seq": 0, "owed": [], "hold_until": 5000 + signer.OWED_S, "gone": {}}
+    assert "no checkpoint is signed for 72 hours" in capsys.readouterr().err
+    signer.record_sent(path, "a" * 64, 10, None, 5000)  # a send in that state writes the hold down with the debt
+    rec = signer.load_owed(path, 6000)
+    assert rec["hold_until"] == 5000 + signer.OWED_S and [o["id"] for o in rec["owed"]] == ["a" * 64]
 
 
 def test_next_seq():
@@ -225,10 +243,13 @@ def test_window_lists_whole_threads_newest_first_within_the_budget(monkeypatch):
     monkeypatch.setattr(signer, "MAX_LISTED", 20)
     threads = [_thread(m, f"T{i}", T0 - 1000 * (10 - i), replies=5) for i in range(5)]  # six events each, T4 newest
     got = _win(m)
-    assert set(got) >= {e["id"] for t in threads[2:] for e in t}  # the three newest, whole (18 events)
-    assert len(got) == 20  # ... and the roots of the two that did not fit: a root is always listed
-    assert {threads[0][0]["id"], threads[1][0]["id"]} <= set(got)
-    assert not {e["id"] for t in threads[:2] for e in t[1:]} & set(got)
+    assert set(got) == {e["id"] for t in threads[2:] for e in t}  # the three newest, whole (18 events)
+    monkeypatch.setattr(signer, "MAX_LISTED", 12)
+    small = on_mirror(m, "Small and older", T0 - 99000, sec=m.bot_sec)
+    got = _win(m)  # a thread that does not fit is skipped and an older, smaller one still gets in
+    assert set(got) == {e["id"] for t in threads[3:] for e in t}
+    monkeypatch.setattr(signer, "MAX_LISTED", 13)
+    assert set(_win(m)) == {e["id"] for t in threads[3:] for e in t} | {small["id"]}
 
 
 def test_window_leaves_out_old_threads_and_events_dated_after_the_signing(monkeypatch):
@@ -258,13 +279,20 @@ def test_curator_replies_are_listed_before_any_other_traffic(monkeypatch):
 def test_when_what_must_be_listed_does_not_fit_nothing_is_signed(monkeypatch):
     m = Mirror()
     monkeypatch.setattr(signer, "MAX_LISTED", 5)
-    for i in range(6):
-        _thread(m, f"T{i}", T0 - 100 * (i + 1))
-    assert _win(m) is None  # six roots, room for five
+    for i in range(3):
+        _thread(m, f"T{i}", T0 - 1000 * (i + 1), retract_at=T0 - 1000 * (i + 1) + 50)
+    assert _win(m) is None  # three roots with their retractions: six events, room for five
     monkeypatch.setattr(signer, "MAX_LISTED", 6)
     assert len(_win(m)) == 6
     owed = [{"id": f"{i:064x}", "bytes": 10, "since": T0, "root": None} for i in range(3)]
     assert _win(m, owed) is None  # the owed ids are never the ones dropped
+    plain = Mirror()
+    monkeypatch.setattr(signer, "MAX_LISTED", 5)
+    for i in range(400):
+        on_mirror(plain, f"Digest {i}", T0 - 100 * (i + 1), sec=plain.bot_sec)
+    events = {e["id"]: e for evs in plain.events.values() for e in evs}
+    got = signer.window(events.values(), plain.man, [], T0, FEED)
+    assert len(got) == 5  # plain roots are never the reason to refuse: the newest five are listed
     monkeypatch.setattr(signer, "MAX_LISTED", 990)
     big = [{"id": "f" * 64, "bytes": signer.MAX_LISTED_BYTES, "since": T0, "root": None}]
     assert _win(m, big) is None
@@ -277,8 +305,8 @@ def test_owed_ids_and_the_roots_they_reply_to_come_first(monkeypatch):
     _thread(m, "Newer", T0 - 100, replies=1)
     owed = [{"id": "a" * 64, "bytes": 10, "since": T0, "root": old[0]["id"]}]
     got = _win(m, owed)
-    assert got[:2] == ["a" * 64, old[0]["id"]]  # the reply the relay acknowledged, and its root
-    assert len(got) == 4  # then the newer thread; the old parent's bot replies did not fit
+    assert got[0] == "a" * 64 and old[0]["id"] in got  # the reply the relay acknowledged, and its root
+    assert len(got) == 4  # then the newer thread whole; the old parent's bot replies did not fit
 
 
 def test_a_salvaged_old_thread_keeps_its_newest_event(monkeypatch):
@@ -314,7 +342,7 @@ def test_a_run_signs_and_delivers_a_checkpoint(signing, capsys):
     sent = set(ssh.ids)  # what this run posted: acknowledged, not on the mirror yet
     assert sent and c.events == {a["id"], gone["id"]} | sent | {o for o in owed_ids(signing)}
     assert set(owed_ids(signing)) >= sent
-    assert signer.load_owed(signing.config.owed_state)["last_seq"] == T0
+    assert signer.load_owed(signing.config.owed_state, T0)["last_seq"] == T0
     sec = signer.read_key(signing.key)
     seen = capsys.readouterr()
     everything = seen.out + seen.err + summary + " ".join(" ".join(a) for a in ssh.argvs)
@@ -377,10 +405,19 @@ def test_two_runs_in_one_second_and_a_lost_state_file(signing):
     second = ssh.last()
     assert (first.seq, second.seq) == (T0, T0 + 1)
     signing.mirror.raw["checkpoint.json"] = json.dumps(second.event).encode()  # the mirror publishes it
-    signing.config.owed_state.unlink()  # the count is lost while it is ahead of the clock
-    _, _, ssh = signing.run(ssh=PutSSH(), now=T0 + 1)
-    third = ssh.last()
-    assert third.seq == T0 + 2 and cp.checkpoint_order(third, second) is None
+    signing.config.owed_state.unlink()  # the record is lost while the count is ahead of the clock
+    _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + 1)
+    assert summary.endswith(" checkpoint=held") and ssh.puts == []  # what was owed is unknown: nothing is signed
+    _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + signer.OWED_S)
+    assert summary.endswith(" checkpoint=held") and ssh.puts == []
+    signing.mirror.clock = T0 + signer.OWED_S + 2
+    _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + signer.OWED_S + 1)
+    third = ssh.last()  # the hold is over; the published checkpoint supplied the floor for the number
+    assert summary.endswith(" checkpoint=sent") and third.seq == T0 + signer.OWED_S + 1
+    assert cp.checkpoint_order(third, second) is None
+    signing.config.owed_state.write_text(json.dumps({"last_seq": 0, "owed": [], "hold_until": 0, "gone": {}}))
+    _, _, ssh = signing.run(ssh=PutSSH(), now=T0 + 1)  # a fresh record, the clock behind the published number
+    assert ssh.last().seq == T0 + 2
 
 
 # ---------------------------------------------------------------- the relay withholds a post
@@ -437,7 +474,7 @@ def test_a_post_seen_on_the_mirror_is_no_longer_owed(signing):
     _, _, ssh = signing.run(ssh=PutSSH())
     (sent,) = [i for i in owed_ids(signing)][:1]
     ev = on_mirror(m, "Stand-in", T0 + 10)
-    rec = signer.load_owed(signing.config.owed_state)
+    rec = signer.load_owed(signing.config.owed_state, T0)
     rec["owed"] = [dict(rec["owed"][0], id=ev["id"])]  # as if the relay exported what was sent
     signer.save_owed(signing.config.owed_state, rec)
     signing.run(ssh=PutSSH(), now=T0 + 3600)
@@ -466,3 +503,224 @@ def test_default_second_origin_is_not_consulted_by_the_poster(signing):
         return m.fetch(url)
     signing.run(ssh=PutSSH(), mirror_fetch=fetch)
     assert seen and all(u.startswith(signing.config.translate_mirror_url) for u in seen)
+
+
+# ---------------------------------------------------------------- findings of the code review
+
+def test_an_owed_reply_brings_its_old_threads_retraction(monkeypatch):
+    """A root and its curator retraction are 399 days old: past the 398-day line, still
+    in the poster's store. The poster replied to that thread and the relay withholds the
+    reply from the mirror. The checkpoint must list the retraction with the root."""
+    m = Mirror()
+    old = T0 - pull.RETENTION_S + DAY
+    root = on_mirror(m, "Retracted long ago", old, sec=m.bot_sec)
+    gone = m.reply(m.cur_sec, root, "retract", created_at=old + 60)
+    assert _win(m) == []  # by itself the thread is past the line
+    owed = [{"id": "a" * 64, "bytes": 10, "since": T0, "root": root["id"]}]
+    assert set(_win(m, owed)) == {"a" * 64, root["id"], gone["id"]}
+
+
+def test_the_event_that_keeps_an_old_thread_alive_is_mandatory(monkeypatch):
+    """When root and corrections are all old, the thread's newest event must be listed
+    with them; if there is no room for it, nothing is signed."""
+    m = Mirror()
+    edge = T0 - pull.RETENTION_S
+    root = on_mirror(m, "Ancient", edge - 50 * DAY, sec=m.bot_sec)
+    fix = m.reply(m.cur_sec, root, "level: notice", created_at=edge - 10 * DAY)
+    recent = m.post(m.bot_sec, "note", created_at=T0 - 100, tags=[("e", root["id"], "", "root")])
+    for i in range(3):
+        _thread(m, f"Recent {i}", T0 - 50 - i)
+    monkeypatch.setattr(signer, "MAX_LISTED", 2)
+    assert _win(m) is None  # the ancient root and its correction fit, the event that keeps them alive does not
+    monkeypatch.setattr(signer, "MAX_LISTED", 3)
+    assert set(_win(m)) == {root["id"], fix["id"], recent["id"]}  # before any recent thread
+    monkeypatch.setattr(signer, "MAX_LISTED", 990)
+    kept = {e["id"]: e for evs in m.events.values() for e in evs if e["id"] in _win(m)}
+    assert root["id"] in pull._retain(kept, T0, pull.PullResult())  # a reader keeps the ancient thread
+
+
+def test_a_debt_that_cannot_be_written_stops_the_run_from_signing(signing, monkeypatch):
+    """The relay acknowledged a post and the owed record could not be written. The run
+    fails (exit 1) and must not sign: its checkpoint would omit the post. The next run
+    replays the journaled item, records the debt, and lists it."""
+    signing.collector([finding()])
+    real = signer.record_sent
+
+    def fails(*a, **k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(signer, "record_sent", fails)
+    code, summary, ssh = signing.run(ssh=PutSSH())
+    assert code == 1 and summary.split(" checkpoint=")[1].startswith("owed-unrecorded") and ssh.puts == []
+    monkeypatch.setattr(signer, "record_sent", real)
+    code, summary, ssh2 = signing.run(ssh=PutSSH(), now=T0 + 60)
+    assert " checkpoint=sent" in summary and set(ssh.ids) <= ssh2.last().events
+    assert set(ssh.ids) <= set(owed_ids(signing))
+
+
+def test_a_mirror_that_drips_bytes_cannot_hold_the_run(signing, monkeypatch):
+    """Every read of the mirror is inside one wall-clock bound, the certificate and the
+    published checkpoint included."""
+    from aitools_alerts.poster import translate
+    seen = []
+    real = translate.bounded
+
+    def bounded(fn, deadline):
+        seen.append(deadline)
+        return real(fn, deadline)
+    monkeypatch.setattr(translate, "bounded", bounded)
+    fetched = []
+    m = signing.mirror
+
+    def fetch(url, timeout=None):
+        fetched.append((url.rsplit("/", 1)[1], len(seen)))
+        return m.fetch(url)
+    signing.run(ssh=PutSSH(), mirror_fetch=fetch)
+    inside = [name for name, depth in fetched if name in ("checkpoint-key.json", "checkpoint.json")]
+    assert "checkpoint-key.json" in inside and "checkpoint.json" in inside
+    import inspect
+    src = inspect.getsource(signer.run_checkpoint)
+    after = src.split("translate.bounded(read_mirror", 1)[1]
+    assert "get(base" not in after and "get(url" not in after and "pull.fetch(" not in after  # no read outside the bound
+
+    def stalls(url, timeout=None):
+        if url.endswith("checkpoint-key.json"):
+            raise translate.CallError("timeout")
+        return m.fetch(url)
+    monkeypatch.setattr(translate, "bounded", lambda fn, deadline: (_ for _ in ()).throw(translate.CallError("timeout")))
+    code, summary, ssh = signing.run(ssh=PutSSH(), mirror_fetch=stalls, now=T0 + 60)
+    assert code == 0 and " checkpoint=no-mirror" in summary and ssh.puts == []
+
+
+def test_curator_roots_in_test_salvage_are_listed_first(monkeypatch):
+    """Roots matter only with their corrections: a thread with a curator reply has root
+    and reply in the must-list; the bloated thread's other replies are what is left out."""
+    m = Mirror()
+    monkeypatch.setattr(signer, "MAX_LISTED", 4)
+    huge = _thread(m, "Bloated", T0 - 3000, replies=30, retract_at=T0 - 2000)
+    got = set(_win(m))
+    assert got == {huge[0]["id"], huge[-1]["id"]}
+
+
+def test_keygen_command_starts_the_owed_record_without_a_hold(tmp_path, capsys):
+    cfg = tmp_path / "poster.toml"
+    cfg.write_text(f'ledger = "{tmp_path}/l.json"\nkev_cache = "{tmp_path}/k.json"\n'
+                   f'checkpoint_key_file = "{tmp_path}/c.nsec"\nrelay_put_wrapper = "{PUT}"\n')
+    assert main.main(["checkpoint-keygen", "--config", str(cfg)]) == 0
+    rec = signer.load_owed(inputs.load_config(cfg).owed_state, T0)
+    assert rec == {"last_seq": 0, "owed": [], "hold_until": 0, "gone": {}}
+
+
+# ---------------------------------------------------------------- findings of the same-model pass
+
+def test_a_post_stamped_after_the_run_began_stays_owed_until_it_can_be_listed(signing):
+    """The relay stamps a post after the run's own start time, and the exporter can show
+    it before the run's pull. It cannot be listed yet (it is dated after the signing
+    time), so it must not be settled yet either."""
+    m = signing.mirror
+    late = on_mirror(m, "Stamped five seconds after the run began", T0 + 5, sec=m.bot_sec)
+    signer.record_sent(signing.config.owed_state, late["id"], 100, None, T0)
+    _, summary, ssh = signing.run(ssh=PutSSH())
+    assert summary.endswith(" checkpoint=sent")
+    assert late["id"] in ssh.last().events and late["id"] in owed_ids(signing)  # listed as owed, still owed
+    _, _, ssh = signing.run(ssh=PutSSH(), now=T0 + 3600)
+    assert late["id"] in ssh.last().events and late["id"] not in owed_ids(signing)  # listed from the mirror
+
+
+def test_an_event_that_leaves_the_mirror_is_listed_for_three_days_then_given_up(signing, tmp_path):
+    """The poster keeps listing an event the mirror stopped serving (readers refuse the
+    mirror and read stale: the drop is noticed), and gives it up after 72 hours, or a
+    post that was truly deleted would keep every reader stale for a year."""
+    m = signing.mirror
+    stays = on_mirror(m, "Stays", T0 - 600)
+    goes = on_mirror(m, "Goes", T0 - 500)
+    signing.run(ssh=PutSSH())
+    for name in m.events:
+        m.events[name] = [e for e in m.events[name] if e["id"] != goes["id"]]
+    for hours in (1, 30, 71):
+        _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + hours * 3600)
+        assert goes["id"] in ssh.last().events and "gone_dropped" not in summary
+    _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + 74 * 3600)
+    assert "checkpoint=sent,gone_dropped=1" in summary
+    assert goes["id"] not in ssh.last().events and stays["id"] in ssh.last().events
+    assert goes["id"] not in State.load(signing.config.mirror_dir).events
+    m.events["feed.json"].append(goes)  # it comes back: it is simply an event on the mirror again
+    _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + 75 * 3600)
+    assert goes["id"] in ssh.last().events and "gone_dropped" not in summary
+
+
+def test_an_owed_reply_records_the_root_of_its_own_channel(signing):
+    """A critical has one root per channel; an update's reply in the feed is owed with the
+    feed root, not the critical channel's."""
+    from test_main import FakeKEV, kev_item
+    signing.run(ssh=PutSSH(), kev=FakeKEV(catalog={"vulnerabilities": [kev_item()]}))
+    entries, _ = signing.ledger()
+    (entry,) = entries.values() if isinstance(entries, dict) else entries
+    roots = entry["channel_ids"]
+    assert set(roots) == {"feed", "critical"} and roots["feed"] != roots["critical"]
+    rec = signer.load_owed(signing.config.owed_state, T0)
+    by_id = {o["id"]: o for o in rec["owed"]}
+    assert by_id[roots["feed"]]["root"] is None and by_id[roots["critical"]]["root"] is None
+    replies = [o for o in rec["owed"] if o["root"] is not None]
+    assert replies and all(o["root"] in roots.values() for o in replies)  # the Japanese replies name their own root
+    it = {"kind": "reply", "sent": "e" * 64, "text": "x", "ids": entry["aliases"], "scope": entry["scope"],
+          "channel": "feed", "root": roots["critical"]}
+    with main.Ledger(signing.config.ledger) as led:
+        run = main.Run(T0, signing.config, led, {"outbox": []}, CHANNELS, PutSSH(), None)
+        run._owe(it)
+    assert {o["id"]: o for o in signer.load_owed(signing.config.owed_state, T0)["owed"]}["e" * 64]["root"] == roots["feed"]
+
+
+def test_a_crash_between_the_journal_and_the_owed_record_is_made_good_on_replay(signing, monkeypatch):
+    """The send's id is in the journal; the process dies before the debt is written.
+    The next run replays the item and records the debt before it signs."""
+    signing.collector([finding()])
+
+    class Dies(BaseException):
+        pass
+    real = main.Run._owe
+
+    def die(self, it):
+        raise Dies
+    monkeypatch.setattr(main.Run, "_owe", die)
+    ssh = PutSSH()
+    with pytest.raises(Dies):
+        signing.run(ssh=ssh)
+    assert owed_ids(signing) == [] and ssh.ids  # acknowledged, journaled, not yet owed
+    monkeypatch.setattr(main.Run, "_owe", real)
+    _, summary, ssh2 = signing.run(ssh=PutSSH(), now=T0 + 60)
+    assert ssh.ids[0] in owed_ids(signing) and ssh.ids[0] in ssh2.last().events
+
+
+def test_key_file_owned_by_someone_else_is_refused(tmp_path, monkeypatch):
+    path = tmp_path / "k.nsec"
+    signer.keygen(path)
+    monkeypatch.setattr(os, "geteuid", lambda: os.getuid() + 1)
+    with pytest.raises(signer.KeyFileError, match="not owned"):
+        signer.read_key(path)
+
+
+@pytest.mark.parametrize("error", [RuntimeError("x"), ValueError("x"), cp.CheckpointError("x"), OSError(5, "io")])
+def test_any_failure_inside_the_signer_leaves_the_runs_exit_code_alone(signing, monkeypatch, error):
+    def boom(*a, **k):
+        raise error
+    monkeypatch.setattr(signer, "window", boom)
+    code, summary, ssh = signing.run(ssh=PutSSH())
+    assert code == 0 and summary.endswith(" checkpoint=error") and ssh.puts == []
+
+
+def test_a_published_checkpoint_by_another_key_is_no_floor_for_the_number(signing):
+    m = signing.mirror
+    other = cp.build_checkpoint(nostr.keygen()[0], m.man, T0 + 10**6, [], T0 - 60)
+    m.raw["checkpoint.json"] = json.dumps(other).encode()
+    _, _, ssh = signing.run(ssh=PutSSH())
+    assert ssh.last().seq == T0  # a checkpoint anyone could have written does not move the number
+
+
+def test_settled_debts_are_saved_even_when_nothing_is_signed(signing, monkeypatch):
+    m = signing.mirror
+    seen = on_mirror(m, "Seen", T0 - 100, sec=m.bot_sec)
+    signer.record_sent(signing.config.owed_state, seen["id"], 10, None, T0 - 50)
+    signer.record_sent(signing.config.owed_state, "d" * 64, 10, None, T0 - 50)
+    monkeypatch.setattr(signer, "MAX_LISTED", 0)
+    _, summary, ssh = signing.run(ssh=PutSSH())
+    assert summary.endswith(" checkpoint=too-large") and owed_ids(signing) == ["d" * 64]

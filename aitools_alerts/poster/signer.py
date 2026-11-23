@@ -27,7 +27,7 @@ from aitools_alerts import checkpoint as cpt
 from aitools_alerts import manifest, nostr, pull
 from aitools_alerts.state import State, write_json
 
-__all__ = ["run_checkpoint", "KeyFileError", "read_key", "keygen", "load_owed", "save_owed", "record_sent", "settle_owed",
+__all__ = ["run_checkpoint", "KeyFileError", "read_key", "keygen", "init_owed", "load_owed", "save_owed", "record_sent", "settle_owed",
            "window", "next_seq", "MAX_LISTED", "MAX_LISTED_BYTES", "OWED_S", "MARGIN_S", "ENVELOPE"]
 
 # One checkpoint lists at most this much. The exporter must be able to serve
@@ -114,24 +114,42 @@ def _entry_ok(o) -> bool:
             and (o["root"] is None or nostr._is_hex(o["root"], 32)))
 
 
-def load_owed(path) -> dict:
-    """``{"last_seq": int, "owed": [{"id", "bytes", "since", "root"}]}``. A
-    missing file is empty. A malformed one is also taken as empty, with a
-    line on stderr: a lost number is made good from the published checkpoint
-    or the clock, and lost owed ids are what a deleted file would lose too."""
+def init_owed(path) -> None:
+    """Create the record for a new checkpoint key (checkpoint-keygen): nothing
+    is owed and signing may start at once. Never replaces an existing one."""
+    if not os.path.exists(path):
+        save_owed(path, {"last_seq": 0, "owed": [], "hold_until": 0, "gone": {}})
+
+
+def load_owed(path, now: int) -> dict:
+    """``{"last_seq": int, "owed": [{"id", "bytes", "since", "root"}],
+    "hold_until": int, "gone": {id: since}}``. ``gone``: events the poster
+    holds that the mirror has stopped serving, and since when (settle_gone).
+
+    The record is the only memory of what the relay acknowledged. If it is
+    missing or unreadable, that memory is gone: the poster cannot know which
+    posts it still owes, so it signs nothing for OWED_S (``hold_until``), the
+    time after which any debt would have been given up anyway. Members read
+    stale meanwhile, which is the truth. A new key starts with ``init_owed``
+    and no hold."""
     try:
         with open(path, "rb") as f:
             rec = json.loads(f.read(8 << 20).decode("utf-8"))
-        ok = (isinstance(rec, dict) and set(rec) == {"last_seq", "owed"} and type(rec["last_seq"]) is int
-              and 0 <= rec["last_seq"] <= cpt.MAX_SEQ and isinstance(rec["owed"], list)
-              and all(_entry_ok(o) for o in rec["owed"]))
+        ok = (isinstance(rec, dict) and set(rec) == {"last_seq", "owed", "hold_until", "gone"}
+              and type(rec["last_seq"]) is int and 0 <= rec["last_seq"] <= cpt.MAX_SEQ
+              and type(rec["hold_until"]) is int and isinstance(rec["owed"], list)
+              and all(_entry_ok(o) for o in rec["owed"]) and isinstance(rec["gone"], dict)
+              and all(nostr._is_hex(k, 32) and type(v) is int for k, v in rec["gone"].items()))
     except FileNotFoundError:
-        return {"last_seq": 0, "owed": []}
+        ok, why = False, "is missing"
     except (OSError, ValueError, RecursionError):
-        ok = False
+        ok, why = False, "is unreadable"
+    else:
+        why = "is malformed"
     if not ok:
-        _say(f"checkpoint state {path} is unreadable; starting it again")
-        return {"last_seq": 0, "owed": []}
+        _say(f"checkpoint state {path} {why}: what the relay acknowledged is not known, "
+             f"so no checkpoint is signed for {OWED_S // 3600} hours")
+        return {"last_seq": 0, "owed": [], "hold_until": int(now) + OWED_S, "gone": {}}
     return rec
 
 
@@ -144,14 +162,15 @@ def record_sent(path, event_id, text_bytes: int, root, now: int) -> None:
     poster owes it to every checkpoint until it has seen it on the mirror.
     Called from the send path, before the journal drops the item, so a run
     that then fails its pull or dies has still recorded it. ``root``: the
-    thread root the post replied to, or None."""
+    thread root the post replied to, or None. Raises OSError when the record
+    cannot be written: the caller must then not sign a checkpoint."""
     if not nostr._is_hex(event_id, 32):
         return
-    rec = load_owed(path)
+    rec = load_owed(path, now)
     if all(o["id"] != event_id for o in rec["owed"]):
         rec["owed"].append({"id": event_id, "bytes": int(text_bytes) + ENVELOPE, "since": int(now),
                             "root": root if nostr._is_hex(root, 32) else None})
-        save_owed(path, rec)
+    save_owed(path, rec)  # also when nothing was added: a hold that load_owed began must reach the disk
 
 
 def settle_owed(owed: list, present, now: int) -> tuple[list, int]:
@@ -162,6 +181,20 @@ def settle_owed(owed: list, present, now: int) -> tuple[list, int]:
     live = [o for o in owed if o["id"] not in present]
     kept = sorted((o for o in live if o["since"] > now - OWED_S), key=lambda o: (o["since"], o["id"]))
     return kept, len(live) - len(kept)
+
+
+def settle_gone(gone: dict, held, served, now: int) -> tuple[dict, set]:
+    """Events the poster holds (``held``) that the mirror no longer serves
+    (``served``: the ids in the channel files just fetched): since when each
+    has been missing, and the ids to give up. The poster keeps listing a
+    missing event, so readers refuse the mirror and read stale: that is how a
+    relay that drops a post is noticed. After OWED_S it is given up (removed
+    from the poster's copy), or a post that was truly deleted would keep
+    every reader stale for as long as the poster remembers it."""
+    missing = set(held) - set(served)
+    since = {i: gone.get(i, int(now)) for i in missing}
+    drop = {i for i, t in since.items() if t <= now - OWED_S}
+    return {i: t for i, t in since.items() if i not in drop}, drop
 
 
 # ---------------------------------------------------------------- the window
@@ -177,11 +210,13 @@ def window(events, m, owed: list, now: int, channels=None):
     MAX_LISTED_BYTES; or None when what MUST be listed does not fit, in which
     case no checkpoint may be signed.
 
-    Must be listed, in this order: the owed ids; the root each owed reply
-    names; and for every eligible thread its root and every curator reply (a
+    Must be listed: the owed ids; and, for every eligible thread that has a
+    curator reply or an owed reply, its root and every curator reply (a
     curator reply is how an alert is retracted, lowered or corrected: no
     other traffic may push one out). Then whole threads, newest first; a
-    thread that does not fit whole is skipped and the next is tried.
+    thread that does not fit whole is skipped and the next is tried. A plain
+    root with no correction is not in the must-list: a year of daily digests
+    must not by itself fill it.
 
     Eligible: the thread's newest event is not older than the reader's
     retention less MARGIN_S. Events dated after ``now`` are never listed. A
@@ -198,7 +233,11 @@ def window(events, m, owed: list, now: int, channels=None):
 
     def newest(key):
         return max(threads[key], key=lambda e: (e["created_at"], e["id"]))
-    order = sorted((k for k in threads if newest(k)["created_at"] >= cutoff),
+    # A thread an owed reply belongs to is listed whatever its age: the owed
+    # reply, once members have it, keeps the thread inside their retention, so
+    # its root must come with every curator reply the poster knows.
+    owed_roots = {o["root"] for o in owed if o["root"] in threads}
+    order = sorted((k for k in threads if newest(k)["created_at"] >= cutoff or k in owed_roots),
                    key=lambda k: (newest(k)["created_at"], newest(k)["id"]), reverse=True)
     out: dict[str, None] = {}  # insertion-ordered set of ids
     used = {"n": 0, "bytes": 0}
@@ -215,18 +254,21 @@ def window(events, m, owed: list, now: int, channels=None):
     def sized(evs):
         return [(e["id"], _size(e)) for e in evs]
     must = [(o["id"], o["bytes"]) for o in owed]
-    must += sized(usable[o["root"]] for o in owed if o["root"] in usable)
     for key in order:
-        must += sized(e for e in threads[key] if e["id"] == key
-                      or manifest.role_of(m, e["pubkey"]) == "curator")
+        fixes = [e for e in threads[key] if e["id"] != key and manifest.role_of(m, e["pubkey"]) == "curator"]
+        if not fixes and key not in owed_roots:
+            continue
+        core = [e for e in threads[key] if e["id"] == key] + fixes
+        if all(e["created_at"] < cutoff for e in core) and key not in owed_roots:
+            # Root and corrections are all old, and only other replies keep the thread
+            # alive: its newest event is listed with them, or the reader's retention,
+            # which sees only listed events, would drop them.
+            core.append(newest(key))
+        must += sized(core)
     if not take(must):
         return None
     for key in order:
-        if take(sized(threads[key])):
-            continue
-        listed = [e for e in threads[key] if e["id"] in out]
-        if listed and all(e["created_at"] < cutoff for e in listed):
-            take(sized([newest(key)]))  # keeps the salvaged part inside the reader's retention
+        take(sized(threads[key]))  # whole, or (too large) only what is already listed
     return list(out)
 
 
@@ -249,40 +291,79 @@ def run_checkpoint(config, now: int, *, ssh=None, fetch=None, root: str = TRUST_
     from aitools_alerts.poster import transport, translate
     if config.checkpoint_key_file is None or config.relay_put_wrapper is None:
         return "off"
+    rec = load_owed(config.owed_state, now)
+    if now < rec["hold_until"]:  # the record of what is owed was lost: see load_owed
+        save_owed(config.owed_state, rec)
+        return "held"
     sec = read_key(config.checkpoint_key_file)
     pub = nostr.pubkey_gen(bytes.fromhex(sec)).hex()
     get = fetch or pull.default_fetch
     base = config.translate_mirror_url if config.translate_mirror_url.endswith("/") \
         else config.translate_mirror_url + "/"
     st = State.load(config.mirror_dir)
+
+    def read_mirror():
+        """Everything read from the mirror, under one wall-clock bound: a mirror that
+        drips bytes must not hold the run, and the ledger lock, past it."""
+        seen = {}
+
+        def keep(url, *a):
+            seen[url.rsplit("/", 1)[1]] = body = get(url, *a)
+            return body
+        res = pull.fetch(base, st, fetch=keep, root_pubkey=root, now=now, checkpoint=False)
+        docs = {name: seen.get(name) for name in pull.FILES}
+        for name in ("checkpoint-key.json", "checkpoint.json"):
+            try:
+                docs[name] = get(base + name)
+            except Exception:  # noqa: BLE001 - not served or unreachable: there is none
+                docs[name] = None
+        return res, docs
     try:
-        res = translate.bounded(lambda: pull.fetch(base, st, fetch=fetch, root_pubkey=root, now=now,
-                                                   checkpoint=False), 120)
+        res, docs = translate.bounded(read_mirror, 120)
     except (translate.CallError, ValueError, OSError):
         return "no-mirror"
     m = st.manifest
     if res.error is not None or m is None or st.manifest_root != root:
         return "no-mirror"
-    cert = pull._choose_cert(m, root, now, None, [(get, base)])
+
+    def served(url):
+        data = docs[url.rsplit("/", 1)[1]]
+        if data is None:
+            raise OSError("not served")
+        return data
+    cert = pull._choose_cert(m, root, now, None, [(served, base)])
     if cert is None or cpt.cert_problem(cert, m, now) is not None or cert.checkpoint_key != pub:
         return "no-certificate"
     published = 0
     try:  # the number of the checkpoint the mirror serves, when this key signed it: a floor for ours
-        cp = cpt.load_checkpoint(get(base + "checkpoint.json"))
+        cp = cpt.load_checkpoint(served(base + "checkpoint.json"))
         if cpt.verify_checkpoint(cp, cert):
             published = cp.seq
-    except Exception:  # noqa: BLE001 - none served, unreachable or malformed: no floor from it
+    except (OSError, cpt.CheckpointError):  # none served or malformed: no floor from it
         pass
-    rec = load_owed(config.owed_state)
-    owed, dropped = settle_owed(rec["owed"], set(st.events), now)
-    tail = f",owed_dropped={dropped}" if dropped else ""
+    # What the mirror serves right now (ids only; the pull verified what it stored).
+    serving = set()
+    for name in pull.FILES:
+        try:
+            serving |= {e["id"] for e in json.loads(docs[name])["events"] if isinstance(e.get("id"), str)}
+        except (TypeError, ValueError, KeyError, AttributeError):
+            return "no-mirror"
+    gone, give_up = settle_gone(rec["gone"], st.events, serving, now)
+    if give_up:  # missing for OWED_S: no longer the poster's to vouch for
+        st.accept(root, m, {i: e for i, e in st.events.items() if i not in give_up})
+        st.save_events()
+    rec = {**rec, "gone": gone}
+    # An acknowledged post stays owed until the poster holds it AND could list it: one
+    # stamped after this run began is not listed yet, so it is not settled yet either.
+    owed, dropped = settle_owed(rec["owed"], {i for i, e in st.events.items() if e["created_at"] <= now}, now)
+    tail = (f",owed_dropped={dropped}" if dropped else "") + (f",gone_dropped={len(give_up)}" if give_up else "")
     ids = window(st.events.values(), m, owed, now)
     if ids is None:
-        save_owed(config.owed_state, {"last_seq": rec["last_seq"], "owed": owed})
+        save_owed(config.owed_state, {**rec, "owed": owed})
         _say(f"checkpoint not signed: {len(owed)} owed posts and the curator replies do not fit one checkpoint")
         return "too-large" + tail
     seq = next_seq(now, rec["last_seq"], published)
-    save_owed(config.owed_state, {"last_seq": seq, "owed": owed})  # the number is used up before it is sent
+    save_owed(config.owed_state, {**rec, "last_seq": seq, "owed": owed})  # the number is used up before it is sent
     event = cpt.build_checkpoint(sec, m, seq, ids, int(now))
     del sec
     ok, detail = transport.put("checkpoint", json.dumps(event, separators=(",", ":")).encode("utf-8"), ssh,

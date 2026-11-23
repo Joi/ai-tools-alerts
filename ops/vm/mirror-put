@@ -73,6 +73,8 @@ except (ValueError, RecursionError):
 sys.exit(0 if isinstance(doc, dict) and set(doc) == KEYS else 1)
 ' < "$tmp" 2>/dev/null || fail "not one JSON event object"
 
+# A directory at the target would swallow the temporary file and report success.
+[ ! -d "$INBOX/checkpoint.json" ] || fail "the inbox file is a directory"
 chmod 600 "$tmp" || fail "cannot set the file mode"
 mv -f "$tmp" "$INBOX/checkpoint.json" || fail "cannot store the document"
 trap - EXIT

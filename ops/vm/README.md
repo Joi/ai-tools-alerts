@@ -157,7 +157,7 @@ The poster signs a checkpoint on its own machine each run: a list of the posts t
 1. Install `mirror-put` from `${rel:?}/ops/vm/mirror-put` as `buzz-send` is installed, and compare its `sha256sum` with the release's.
 2. Install the guard and the sudoers file from the same release (steps 3 of "Install" above for the sudoers file; the guard is `install -o root -g root -m 755`). The guard then allows a second command, exactly `/home/<user>/bin/mirror-put checkpoint`, and the sudoers rule names it without a wildcard.
 3. Install the exporter copy from the same release ("The exporter copy"), whose unit passes `--checkpoint-key %h/ai-tools-alerts/trust/checkpoint-key.json --inbox %h/alerts-inbox`. Until `trust/checkpoint-key.json` exists in the deployed copy, the exporter publishes neither new file and behaves as before.
-4. On the poster machine set `relay_put_wrapper = "/home/<user>/bin/mirror-put"` beside `relay_send_wrapper`.
+4. On the poster machine the config needs two keys together, `checkpoint_key_file = "<absolute path>"` and `relay_put_wrapper = "/home/<user>/bin/mirror-put"` (one without the other is a config error and the poster does not run). Set both, then run `aitools-alerts-poster checkpoint-keygen --config <toml>`, which creates the key file and the poster's record of owed posts and prints the npub; the trust root then signs the certificate for that npub (`scripts/sign-checkpoint-key.py`), and it is landed as `trust/checkpoint-key.json` and deployed with the exporter copy. Until the certificate is served the poster's summary line ends `checkpoint=no-certificate`. The full order, with the release steps around it, is in the rollout issue for this feature.
 
 Checks, from the poster machine, after the install:
 

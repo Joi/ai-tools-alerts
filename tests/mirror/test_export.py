@@ -1215,3 +1215,60 @@ def test_after_a_key_rotation_the_published_checkpoint_is_still_the_floor(trust)
 def test_unit_passes_the_checkpoint_options():
     unit = (ROOT / "mirror" / "aitools-alerts-mirror.service").read_text()
     assert "--checkpoint-key %h/ai-tools-alerts/trust/checkpoint-key.json --inbox %h/alerts-inbox" in unit
+
+
+def test_an_older_certificate_never_replaces_the_one_being_served(trust):
+    """A restored old deployment must not put an older certificate back: readers that hold
+    the newer one refuse checkpoints by the key the older names."""
+    a = ev(BOT_SEC, "one", 1793865600)
+    trust.put([a["id"]], seq=1)
+    old_cert = trust.cert.read_text()
+    new_sec, new_pub = nostr.keygen()
+    trust.cert.write_text(json.dumps(cpt.build_cert(ROOT_SEC, trust.man, new_pub, 1793865700, 1793965700)))
+    trust.put([a["id"]], seq=1, sec=new_sec)
+    assert trust.run([a])["checkpoint"] == "published seq 1"
+    served = (trust.out / "checkpoint-key.json").read_bytes()
+    trust.cert.write_text(old_cert)  # the old deployment comes back, with the old key's later checkpoint
+    trust.put([a["id"]], seq=50, now=NOW - 10)
+    result = trust.run([a])
+    assert result["checkpoint"] == "refused (certificate: older certificate)"
+    assert (trust.out / "checkpoint-key.json").read_bytes() == served and trust.served().event["pubkey"] == new_pub
+    twin = cpt.build_cert(ROOT_SEC, trust.man, CK_PUB, 1793865700, 1793965700)  # the same second, another key
+    trust.cert.write_text(json.dumps(twin))
+    assert trust.run([a])["checkpoint"] == "refused (certificate: conflicting certificate)"
+
+
+@pytest.mark.parametrize("junk", [b"", b"{", b"[]", b"\xff\xfe", b"[" * 5000 + b"]" * 5000, b'{"id": 1}'])
+def test_a_hostile_inbox_or_output_file_never_stops_the_export(trust, junk):
+    """The relay VM's user can write anything into the inbox and the output directory:
+    the feed must still be exported."""
+    a = ev(BOT_SEC, "one", 1793865600)
+    (trust.inbox / "checkpoint.json").write_bytes(junk)
+    (trust.out / "checkpoint.json").write_bytes(junk)
+    (trust.out / "checkpoint-key.json").write_bytes(junk)
+    result = trust.run([a])
+    assert len(json.loads((trust.out / "feed.json").read_text())["events"]) == 1
+    assert result["checkpoint"].startswith(("refused", "none"))
+
+
+def test_a_published_file_with_a_bad_signature_is_no_floor(trust):
+    """out/checkpoint.json is the VM user's to write: one that is well formed but not
+    validly signed must not block a real candidate with its date or number."""
+    a = ev(BOT_SEC, "one", 1793865600)
+    fake = cpt.build_checkpoint(CK_SEC, trust.man, 10**9, [a["id"]], NOW + 10**6)
+    fake["sig"] = fake["sig"][:-2] + ("00" if fake["sig"][-2:] != "00" else "11")
+    (trust.out / "checkpoint.json").write_text(json.dumps(fake))
+    trust.put([a["id"]], seq=3)
+    assert trust.run([a])["checkpoint"] == "published seq 3" and trust.served().seq == 3
+
+
+def test_a_candidates_events_are_reserved_ahead_of_the_thread_rule(trust, monkeypatch):
+    """The candidate lists a root whose thread has outgrown the caps. Without the
+    reservation the thread rule would skip the root and the candidate could never be published."""
+    monkeypatch.setattr(em, "MAX_CHANNEL_EVENTS", 6)
+    root = ev(BOT_SEC, _adv_post("Wanted", "AITA-TEST-0041"), 1793865000)
+    bloat = [ev(BOT_SEC, f"note {i}", 1793865100 + i, tags=[("e", root["id"], "", "root")]) for i in range(10)]
+    trust.put([root["id"]], seq=1)
+    result = trust.run([root, *bloat])
+    assert result["checkpoint"] == "published seq 1"
+    assert root["id"] in [e["id"] for e in json.loads((trust.out / "feed.json").read_text())["events"]]

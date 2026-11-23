@@ -104,6 +104,7 @@ def world(env, tmp_path, monkeypatch):  # noqa: F811
     key.write_text(nostr.nsec(w.ck_sec) + "\n")
     key.chmod(0o600)
     env.config = replace(env.config, checkpoint_key_file=key, relay_put_wrapper=PUT)
+    signer.init_owed(env.config.owed_state)
     w.env = env
 
     def poster_run():
@@ -155,12 +156,12 @@ def test_poster_to_member_end_to_end(world, tmp_path):
     assert w.export()["checkpoint"] == f"published seq {newer.seq}"
     res, st, shown_now = w.member(member)
     assert res.error is None and pull.unverified(st, w.now) is None and len(shown_now) == len(shown) + 1
-    assert signer.load_owed(w.env.config.owed_state)["owed"]  # settled at the poster's next run, not before
+    assert signer.load_owed(w.env.config.owed_state, w.now)["owed"]  # settled at the poster's next run, not before
 
     # The poster's next run finds its posts on the mirror: nothing is owed any more.
     w.now += 3600
     w.poster_run()
-    assert signer.load_owed(w.env.config.owed_state)["owed"] == []
+    assert signer.load_owed(w.env.config.owed_state, w.now)["owed"] == []
 
     # The released reader pulls the same mirror, new files and all.
     old = released_reader(tmp_path)
