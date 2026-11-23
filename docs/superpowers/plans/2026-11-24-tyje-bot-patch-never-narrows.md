@@ -15,10 +15,11 @@ Spec: `docs/superpowers/specs/2026-11-24-tyje-bot-patch-never-narrows-design.md`
 - [ ] Import `versions`.
 - [ ] `_fixed_holds(old, new)`: `new` is null, or equals `old`, or both parse and `new` is higher. Judged apart from the range, because `check.plan` reads an upgrade's version from `fixed` (spec review, blocker 1).
 - [ ] `_covered(p, by)`: one entry of `by` has `p`'s ecosystem, `p`'s name in lower case, a `fixed` that holds, and a range that `versions.covers` `p`'s.
-- [ ] `_kept(a, by)`: some action of `by` has `a`'s verb and target and either `a`'s value or, for `upgrade`, a higher readable version than `a`'s readable one.
-- [ ] `_narrowed(adv, new) -> list[str]`: the names among `products`, `actions`, `sources` in which `new` shrinks `adv`.
-- [ ] `_apply_patch(adv, patch, role, dropped=None)`: unchanged up to validation. Then, for a role other than `curator`: the fields `_narrowed` names are put back to `adv`'s with `dataclasses.replace`, and `dropped["narrowing"]` is incremented once when there is any. The level and expiry refusals above stay as they are.
-- [ ] `threads_from` passes its `dropped` counter to `_apply_patch`. Nothing else in the loop changes: a patch with a held field is still an applied patch (it moves `updated_at` and joins the thread's changes), as a patch of `{}` is today.
+- [ ] `_kept(a, by)`: one action of `by` has `a`'s verb and target and either `a`'s value or, for `upgrade`, a value that `_fixed_holds` (higher, or none).
+- [ ] `_listed(s, by)`: one source of `by` has `s`'s URL.
+- [ ] `_join(cur, new, stands)`: `cur`, then each entry of `new` that `cur` does not stand for, each replacing the entries it stands for. (Amended after the code review's blocker: the first plan held a narrowed field whole, which a patch dated earlier could turn against a later widening. See the spec, "Why a join".)
+- [ ] `_apply_patch(adv, patch, role, dropped=None)`: unchanged up to validation, except that a field the patch omits is validated cut to the schema's limit and then kept whole. For a role other than `curator`, each of the three fields the patch names becomes the join of the thread's and the patch's, and `dropped["narrowing"]` is incremented once when a named list does not itself stand for the thread's. The level and expiry refusals stay.
+- [ ] `threads_from` passes its `dropped` counter. When a non-curator patch is refused, it is counted `bad-patch` as today and then read again with only its `products`, `actions` and `sources`; if that changes the thread, it applies as a change.
 - [ ] Docstrings of `_apply_patch` and `advisories` state the rule.
 
 ### Task 3: tests (`tests/test_bot_patch.py`, new)
@@ -55,6 +56,15 @@ scripts/test-gate.sh
 ```
 
 Acceptance: both pass; `git diff origin/main --stat` shows no change under `spec/`, `aitools_alerts/schema.py`, `aitools_alerts/check.py`, `aitools_alerts/poster/` or `aitools_alerts/curator.py`, and no existing test file changed.
+
+### Amendment after the code review (tests added)
+
+- [ ] Two pulls per field: a widening applies, then a patch dated before it arrives; the widening's entry is still there and the member at 99.0.5 still matches.
+- [ ] A backdated level raise turns a later patch (level raise plus widening) into a lowering: the patch is `bad-patch`, its title does not apply, its widening does.
+- [ ] `_apply_patch` folded over every order of five product patches: every signed entry is stood for, and the list is the same four entries.
+- [ ] A thread joined to 101 products still takes a bot level raise and a curator's title.
+- [ ] `versions.covers` is transitive over a grid.
+- [ ] Earlier tests that asserted a field unchanged after a narrowing now assert the join: nothing removed, additions appended.
 
 ### After the merge
 

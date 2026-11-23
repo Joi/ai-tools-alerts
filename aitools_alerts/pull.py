@@ -682,7 +682,7 @@ def _fixed_holds(old: str | None, new: str | None) -> bool:
 
 
 def _covered(p, by: list) -> bool:
-    """One patched product entry stands for ``p``: the same ecosystem and
+    """One product entry of ``by`` stands for ``p``: the same ecosystem and
     name (as check.match compares names), a range that matches every
     installation ``p``'s matches, and a ``fixed`` that is not lower."""
     return any(q.ecosystem == p.ecosystem and q.name.lower() == p.name.lower()
@@ -691,33 +691,32 @@ def _covered(p, by: list) -> bool:
 
 
 def _kept(a, by: list) -> bool:
-    """A patched action says what ``a`` says: the same verb, target and
-    value. An upgrade's version may rise (it follows a raised ``fixed``),
-    never fall, appear or go."""
-    for b in by:
-        if (b.verb, b.target) != (a.verb, a.target):
-            continue
-        if b.value == a.value:
-            return True
-        if a.verb == "upgrade":
-            old, new = versions.parse(a.value), versions.parse(b.value)
-            if old is not None and new is not None and new > old:
-                return True
-    return False
+    """One action of ``by`` says what ``a`` says: the same verb, target and
+    value. An upgrade's version is ordered as ``fixed`` is: one with a
+    higher version, or with none, stands for it."""
+    return any((b.verb, b.target) == (a.verb, a.target)
+               and (b.value == a.value or (a.verb == "upgrade" and _fixed_holds(a.value, b.value)))
+               for b in by)
 
 
-def _narrowed(adv: Advisory, new: Advisory) -> list[str]:
-    """The fields in which ``new`` would shrink what a member sees of
-    ``adv``: a product entry no patched entry covers (removed, a narrower
-    ``affected``, a lower ``fixed``, a ``fixed`` where there was none), an
-    action not kept, a source URL gone."""
-    out = []
-    if not all(_covered(p, new.products) for p in adv.products):
-        out.append("products")
-    if not all(_kept(a, new.actions) for a in adv.actions):
-        out.append("actions")
-    if not {s.url for s in adv.sources} <= {s.url for s in new.sources}:
-        out.append("sources")
+def _listed(s, by: list) -> bool:
+    return any(t.url == s.url for t in by)
+
+
+# field -> (the schema's list limit, "an entry of this list stands for that one")
+_WIDEST = {"products": (50, _covered), "actions": (20, _kept), "sources": (20, _listed)}
+
+
+def _join(cur: list, new: list, stands) -> list:
+    """``cur`` and ``new`` as one list in which every entry of either is
+    stood for: an entry of ``new`` that ``cur`` already stands for adds
+    nothing; any other is appended and replaces the entries it stands for.
+    Nothing a member matched or was shown through either list is lost, in
+    whatever order the lists arrive."""
+    out = list(cur)
+    for q in new:
+        if not stands(q, out):
+            out = [p for p in out if not stands(p, [q])] + [q]
     return out
 
 
@@ -730,12 +729,15 @@ def _apply_patch(adv: Advisory, patch: dict, role: str, dropped: Counter | None 
 
     A patch from any role but curator never shrinks what a member sees
     (ai-tools-alerts#tyje). One that lowers ``level`` or sets ``expires_at``
-    is invalid whole. In ``products``, ``actions`` and ``sources`` it may
-    only add or widen: a field it would narrow (see _narrowed) keeps its
-    value, the rest of the patch applies, and the patch is counted once in
-    ``dropped`` as ``narrowing``. Each of the three is therefore always the
-    widest signed state the thread has had. A curator's patch is not
-    compared."""
+    is invalid. Its ``products``, ``actions`` and ``sources`` do not replace
+    the thread's: they are joined to them (_join), so the patch can add an
+    entry or widen one and can take nothing away. A patch whose list does not
+    itself stand for everything the thread held is counted once in
+    ``dropped`` as ``narrowing``. The join does not depend on the order the
+    patches are read in, so a patch dated before one already applied cannot
+    undo it. A joined list may pass the schema's limit; the limit is checked
+    on what each event carries. A curator's patch replaces the fields it
+    names."""
     if set(patch) - (_PATCH_KEYS - {"id", "posted_by"}):
         return None  # B3's contract: id and posted_by may not appear
     if role != "curator":
@@ -744,17 +746,21 @@ def _apply_patch(adv: Advisory, patch: dict, role: str, dropped: Counter | None 
         lvl = patch.get("level", adv.level)
         if not isinstance(lvl, str) or lvl not in _RANK or _RANK[lvl] < _RANK[adv.level]:
             return None
+    base = asdict(adv)
+    for k, (limit, _) in _WIDEST.items():
+        base[k] = base[k][:limit]  # a joined list past the limit must not fail a patch that omits it
     try:
-        new = schema.validate({**asdict(adv), **patch, "posted_by": adv.posted_by})
+        new = schema.validate({**base, **patch, "posted_by": adv.posted_by})
     except ValueError:
         return None
+    keep = {k: getattr(adv, k) for k in _WIDEST if k not in patch}
     if role != "curator":
-        held = _narrowed(adv, new)
-        if held:
-            new = replace(new, **{k: getattr(adv, k) for k in held})
-            if dropped is not None:
-                dropped["narrowing"] += 1
-    return new
+        named = [k for k in _WIDEST if k in patch]
+        if dropped is not None and any(not all(_WIDEST[k][1](e, getattr(new, k)) for e in getattr(adv, k))
+                                       for k in named):
+            dropped["narrowing"] += 1
+        keep.update((k, _join(getattr(adv, k), getattr(new, k), _WIDEST[k][1])) for k in named)
+    return replace(new, **keep)
 
 
 def _first_line(content: str) -> str:
@@ -823,8 +829,9 @@ def advisories(state: State, dropped: Counter | None = None, checkpointed: bool 
     whose first line is ``retract`` retracts the thread for good; one whose
     first line is ``level: high`` or ``level: notice`` lowers the level. A
     reply's ``aitools-alert`` block, if any, is a patch (see _apply_patch):
-    a relay-bot's may add to or widen the products, actions and sources of
-    its thread, never narrow them (counted as ``narrowing``).
+    a relay-bot's adds to or widens the products, actions and sources of
+    its thread and never narrows them (an attempt is counted as
+    ``narrowing``), even when the rest of it is refused.
     Once a curator has posted or amended a thread, a relay-bot reply to it is
     discussion, so the bot can neither suppress, alter nor undo a curator's
     word; only its ``lang:`` translations still count (ai-tools-alerts#bq8v). A patch that fails validation, or raises, is counted and skipped.
@@ -904,7 +911,18 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
             new = None
         if new is None:
             dropped["bad-patch"] += 1
-        else:
+            if role != "curator":
+                # What a refused patch adds to products, actions or sources
+                # still counts: were it lost with the patch, a patch dated
+                # earlier that raises the level would take it away.
+                p = {k: p[k] for k in _WIDEST if k in p}
+                try:
+                    new = _apply_patch(t[0], p, role) if p else None
+                except Exception:
+                    new = None
+                if new == t[0]:
+                    new = None
+        if new is not None:
             t[0], t[2], t[3] = new, ev["created_at"], t[3] or role == "curator"
             if t[6][-1] != ev["id"]:
                 t[6].append(ev["id"])

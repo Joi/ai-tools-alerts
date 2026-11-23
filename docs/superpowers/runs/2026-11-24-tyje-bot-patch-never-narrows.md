@@ -17,10 +17,19 @@ Pass 1 [spec]: 1B/2S/0C/0R · fixed -/- · velocity = (—→3, escalation no)  
   rebutted 2 (S): (a) a curator's partial amendment after a held bot narrowing reads against the wide state, where a released reader carries the narrowed one: on purpose. The curator signed the fields the patch names; reading it against the narrowed state would let any later curator amendment put a forged narrowing into force. Stated in the spec, with a regression test of the designed behaviour. The lens line above is sharpened accordingly: a curator's patch applies exactly as signed, each field it names, whole. (b) the snapshot's commit message: a dangling review snapshot, never landed.
 Pass 1 [plan]: 0B/3S/0C/0R · fixed -/- · velocity = (—→3, escalation no)   (fresheyes gpt-6-astra high, snapshot 5b7d8e42, REASON=-)
   plan passes: 1 · fixed 3, all test gaps: the grid test goes through check.match with readable, unreadable and missing installed versions (versions.check alone cannot see a name match's actions); each list starts with two entries and loses one, with and without an addition in the same field; an upgrade action going from no version to one is held, asserted on the stored action.
+Pass 1 [code:branch]: 1B/0S/0C/0R · fixed -/- · velocity = (—→1, escalation no)   (Stage 2 fresheyes gpt-6-astra high on origin/main...c6d83e0, --rebuttals with the two spec rebuttals, REASON=-)
+  B fixed: holding a narrowed field whole depends on the order patches are read in, and the signer dates its own patches. A patch dated before an applied widening, adding an unrelated entry, made the widening fail on the next read. The three fields are now joined (order-free), also from a patch refused for its level or expiry; a joined list may pass the schema's limit. Spec, plan, changelog and design text rewritten to the join; two-pull regressions for each field.
+  The fix changed behaviour: one delta pass (fresheyes --since c6d83e0), then no further pass.
 
 ## Chunks
 - [x] chunk 1: the range comparison (versions.py), the reader rule (pull.py), tests, docs
+- [x] chunk 1 fix after the code review: the join (pull.py), tests, docs
 
 ## Notes
 - Prior work: `kata search "narrow products fixed bot patch"` finds only ai-tools-alerts#h29n, whose comments carry the design review (finding D1 and rule 6 of the revised design). No dead end on record. capability-search not run: it is in a private repository the brief puts out of scope, and this piece builds no tool.
 - The poster takes a thread's previous state from its own ledger (`poster/main.py`, `schema.validate(entry.advisory)`), not from the reader, so a narrowing the reader holds back is not sent again on the next run.
+- The D1 tests fail without the rule (checked once with the comparison stubbed out, before the first commit).
+- Gate: scripts/test-gate.sh run with a scratch known-hits list (the shared one plus 66 objects that only local rescue refs and other local branches reach, none reachable from this branch, a remote or a tag), as the 6a92 run did. The plain scan exits 1 on this clone for those objects alone.
+- Rebased onto main after 0.1.6 was released mid-run: the changelog entry moved under Unreleased and "0.1.5 and earlier" became "0.1.6 and earlier".
+- Spec, plan and manifest edits after the reviews were made with checked Python replacements (each asserted one match) and two sed lines, noted against the Edit/Write-only rule.
+- Skip-temptations: none acted on. The start-floor evaluator did not run (see Rung).
