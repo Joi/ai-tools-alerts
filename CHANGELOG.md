@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.1.6 — 2026-11-24
+
+The feed checkpoint is in force. `trust/checkpoint-key.json` is the root-signed certificate for the poster's checkpoint key (signed 2026-11-23, expires 2027-03-23), and readers of this release refuse a pull until they hold a valid certificate (this one is bundled, and the mirror serves it) and the mirror serves a checkpoint signed by the key it names.
 
 The CLI accepts an event only when it is a kind 9 message with one `h` tag naming an alert channel in `spec/channels.json`. Before, anything a poster's key had ever signed, anywhere, could be served by the mirror as an alert, a patch or a retraction (security review of 2026-11-23, finding M3). It also refuses a new event dated more than 10 minutes ahead of the local clock: one event dated years ahead used to count as fresh news for years and silenced the warning about a frozen mirror (finding H2). Events already stored are kept whatever their date, so a clock that jumps back cannot undo a stored retraction; they only stop counting as fresh news. The pull summary counts both as `not-channel-post` and `future-dated`. The mirror exporter publishes neither kind of event, which protects installed v0.1.4 readers from the future-dated one.
 

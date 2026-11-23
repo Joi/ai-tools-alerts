@@ -420,7 +420,21 @@ def test_unit_execstart_runs_from_fresh_checkout(tmp_path):
     proc = subprocess.run([sys.executable] + argv[1:] + ["--rows-from", rows],
                           cwd=tmp_path, capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr
-    assert {p.name for p in (home / "alerts-mirror").iterdir()} == NAMES
+    # A release that ships a certificate the exporter can use (root-signed,
+    # bound to the shipped manifest, not expired) serves it from the first run;
+    # checkpoint.json waits for the poster's first put to the inbox. Past the
+    # certificate's expiry the exporter rightly withholds it, and so does this.
+    shipped = set()
+    cert_path = ROOT / "trust" / "checkpoint-key.json"
+    if cert_path.exists():
+        import time
+        from aitools_alerts import TRUST_ROOT_PUBKEY, checkpoint as cpt, manifest as mf
+        cert = cpt.load_cert(cert_path)
+        shipped_m = mf.load(ROOT / "trust" / "manifest.json")
+        assert cpt.verify_cert(cert, TRUST_ROOT_PUBKEY)
+        if cpt.cert_problem(cert, shipped_m, time.time()) is None:
+            shipped = {"checkpoint-key.json"}
+    assert {p.name for p in (home / "alerts-mirror").iterdir()} == NAMES | shipped
 
 
 def test_psql_rows_keep_unicode_line_separators(env, monkeypatch):
