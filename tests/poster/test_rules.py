@@ -421,17 +421,19 @@ def test_fixed_is_the_highest_patched_version_and_the_range_needs_one_block():
     two = ev(blocks=[("@anthropic-ai/claude-code", "npm", "< 1.2.9", "1.2.9"),
                      ("claude code", None, "< 2.1.251", "v2.1.251"),
                      ("Claude Desktop", "anthropic", "< 9.0", "9.0")])  # the third is another product
-    assert (two.fixed, two.affected) == ("2.1.251", None)
+    assert (two.fixed, two.affected) == ("2.1.251", rules.UNEXPRESSED)  # dmmf: ranges stated, none carried
     # One of the product's packages fixed in 1.9.0, another (2.x) with no patch: no version is safe for all.
     mixed = ev(blocks=[("@anthropic-ai/claude-code", "npm", "< 1.9.0", "1.9.0"), ("claude code", None, ">= 2.0.0", "None")])
-    assert (mixed.fixed, mixed.affected) == (None, None)
+    assert (mixed.fixed, mixed.affected) == (None, rules.UNEXPRESSED)
+    assert ev(affected=">= 1.0 || < 0.5").affected == rules.UNEXPRESSED  # dmmf: a range the schema cannot say
     for patched in ("None", "none", ""):  # the vendor states no fix
         assert ev(patched=patched).fixed is None, patched
     for patched in ("2.1.x", "see release notes", "2.1.251 or 3.0.0-beta+1", "2.0.0-rc.1", ">= 2.1.251"):
         got = ev(patched=patched).fixed  # a fix the schema cannot carry: said to exist, never named
         assert got == rules.UNEXPRESSED and compose.schema_fixed(got) is None, patched
-    for affected in ("*", "all versions", "", "2.1.0"):
-        assert ev(affected=affected).affected is None, affected
+    for affected in ("*", "all versions", "2.1.0"):  # dmmf: stated, not carried: "see the source"
+        assert ev(affected=affected).affected == rules.UNEXPRESSED, affected
+    assert ev(affected="").affected is None  # an empty field states no range
 
 
 def test_a_vendor_site_page_needs_the_id_and_the_product_name_and_gives_no_fields():

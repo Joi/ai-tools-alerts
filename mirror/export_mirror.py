@@ -610,16 +610,25 @@ def index_doc(events: dict[str, list[dict]], m, channels: dict, now: int,
     created = {eid: e["created_at"] for eid, e in union.items()}
     threads = [t for t in _threads(union, m, now) if not schema.is_synthetic(t.adv.id)
                and created[t.root_id] <= schema.MAX_TIMESTAMP]
-    threads.sort(key=lambda t: (created[t.root_id], t.root_id), reverse=True)
-    threads = threads[:INDEX_LIMIT]
+    # 6e20: a critical's feed root and its critical-channel copy are one advisory, one row:
+    # the copy changed last (a curator amends one), Retracted if either is, the first date.
+    groups: dict[tuple, list] = {}
+    for t in threads:
+        groups.setdefault((t.adv.id.casefold(), t.adv.products[0].name if t.adv.products else ""), []).append(t)
+    rows_of = []
+    for g in groups.values():
+        t = max(g, key=lambda t: (t.updated_at, created[t.root_id], t.root_id))
+        rows_of.append((t, any(x.retracted for x in g), min(created[x.root_id] for x in g)))
+    rows_of.sort(key=lambda r: (r[2], r[0].root_id), reverse=True)
+    rows_of = rows_of[:INDEX_LIMIT]
 
     rows = []
-    for t in threads:
+    for t, retracted, first in rows_of:
         adv = t.adv
         expired = adv.expires_at is not None and adv.expires_at < now  # pull.active's rule
-        title = ("Retracted: " if t.retracted else "Expired: " if expired else "") + adv.title
+        title = ("Retracted: " if retracted else "Expired: " if expired else "") + adv.title
         url, primary = _source(adv)
-        date = _iso(created[t.root_id])[:10]
+        date = _iso(first)[:10]
         note = "" if primary else " (not a primary source)"
         rows.append(
             f'<li><span class="level level-{_esc(adv.level)}">{_esc(adv.level)}</span> '
@@ -681,7 +690,7 @@ def index_doc(events: dict[str, list[dict]], m, channels: dict, now: int,
 </body>
 </html>
 """
-    return doc.encode("utf-8"), len(threads)
+    return doc.encode("utf-8"), len(rows_of)
 
 
 # ---------------------------------------------------------------- writing

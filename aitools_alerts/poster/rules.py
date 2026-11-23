@@ -327,7 +327,7 @@ def _is_product(block: Block, scope, entries=None) -> bool:
     return hit is not None and hit.name == scope.name
 
 
-UNEXPRESSED = "unexpressed"  # a fix the vendor states and the schema cannot carry; never published
+UNEXPRESSED = "unexpressed"  # a fix or range the vendor states and the schema cannot carry; never published
 
 
 def _highest(patched) -> str | None:
@@ -392,7 +392,8 @@ def evidence(c: Candidate, scope, page, entries=None) -> Evidence:
     when it answers 200, parses (``read_advisory``) as the advisory its URL names,
     c's base id is that advisory's GHSA or CVE ID, and one of its package blocks is
     this product; it then gives the ids, the highest patched version, the range (one
-    matching block only), the title and the severity word. Any other authoritative
+    matching block only; UNEXPRESSED when a matching block states a range the schema
+    cannot carry, or several do), the title and the severity word. Any other authoritative
     page (never one with a query string, which a site can echo back) confirms c when
     its visible text names c's base id and the product's name; it gives the base id
     alone, and main rates it a notice. A repository page wins over another page.
@@ -438,8 +439,10 @@ def evidence(c: Candidate, scope, page, entries=None) -> Evidence:
                 other |= base in own
                 continue
             affected = compose.schema_affected(mine[0].affected) if len(mine) == 1 else None
+            if affected in (None, "*") and any(b.affected for b in mine):
+                affected = UNEXPRESSED  # dmmf: a range is stated, never "all": the post says "see the source"
             rank, found = 2, dict(url=u, ids=own, fixed=_highest(b.patched for b in mine),
-                                  affected=None if affected == "*" else affected, title=p.title,
+                                  affected=affected, title=p.title,
                                   severity=p.severity)
         elif rank == 0:
             low = " ".join(_lines(text)).lower()  # what a reader sees: no tag, attribute or script
