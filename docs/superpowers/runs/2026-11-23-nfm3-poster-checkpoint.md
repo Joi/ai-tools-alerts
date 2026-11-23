@@ -1,6 +1,6 @@
 # Run: nfm3-poster-checkpoint
 Instruction: Piece 4 of ai-tools-alerts#ek5q (brief TASK-ai-tools-alerts#ek5q.md, /do-it, starting rung floored at medium): the poster signs the checkpoint on its own machine each run; a second guarded command delivers it to the relay VM; the exporter verifies and publishes it and the certificate. No rollout.
-Stage: code-review:branch delta
+Stage: committing (pull request left open: no merge until ai-tools-alerts#xrx2 closes)
 Rung: heavy (dispatch floor medium; hard triggers in the diff: the poster reads a signing key from a file, and ops/vm holds the relay VM's login guard and sudoers rule, a live deploy path. Start-floor evaluator not run: its rubric file is outside the paths the seat rules let this session read.)
 Lens: "Readers at v0.1.4 are on member machines. A change they cannot parse must fail safe (they ignore it), never crash them."
 Spec: docs/superpowers/specs/2026-11-23-nfm3-poster-checkpoint-design.md   Plan: docs/superpowers/plans/2026-11-23-nfm3-poster-checkpoint.md
@@ -22,6 +22,10 @@ Pass 1 [code:branch]: 3B/10S/9C/0R · fixed -/- · velocity = (—→22, escalat
   C fixed: mirror-put refuses when its target is a directory; checkpoint-keygen reports a write error without a traceback; the guard's message says two shapes; the README lists every checkpoint= value. C not changed: a temporary file left by SIGKILL in the inbox; write_atomic on a directory target (the existing files behave the same); the owed list growing while no certificate exists (rollout step 2 to 3 only).
   Tests added for eight surviving mutants (the replay path of _owe, the recorded root, the owner check, the wrap around the signer, the published number's verification in poster and exporter, the candidate's reservation, the save on too-large).
   Heavy: the BLOCKER fixes changed behaviour, so one delta pass follows (fresheyes --since 2a0d270).
+Pass 2 [code:branch delta]: 1B/2S/0C/0R · fixed 13/13 prior · velocity ↓ (22→3, escalation no)   (fresheyes --since 2a0d270, reviewed a66ed0d, gpt-6-astra high, REASON=-)
+  B fixed: giving up a vanished curator reply after 72 hours left its root listed without the correction; a curator reply is now never given up, and its thread is left out of checkpoints while the reply is missing.
+  S fixed: only a validly signed copy in the fetched files counts as served (a bare id or a broken copy stopped the absence clock); the directory-target refusal in mirror-put has its test.
+  No further pass (ruling jibot-code#41e2): the commit after a66ed0d is unreviewed by an independent model and is named in the kata comment.
 
 ## Chunks
 - [x] chunk 1 — poster: key file, owed posts, window, signing, delivery (tests/poster/test_signer.py)

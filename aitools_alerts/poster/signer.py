@@ -183,18 +183,30 @@ def settle_owed(owed: list, present, now: int) -> tuple[list, int]:
     return kept, len(live) - len(kept)
 
 
-def settle_gone(gone: dict, held, served, now: int) -> tuple[dict, set]:
-    """Events the poster holds (``held``) that the mirror no longer serves
-    (``served``: the ids in the channel files just fetched): since when each
-    has been missing, and the ids to give up. The poster keeps listing a
-    missing event, so readers refuse the mirror and read stale: that is how a
-    relay that drops a post is noticed. After OWED_S it is given up (removed
-    from the poster's copy), or a post that was truly deleted would keep
-    every reader stale for as long as the poster remembers it."""
+def settle_gone(gone: dict, held: dict, served, now: int, m) -> tuple[dict, set, set]:
+    """Events the poster holds (``held``, id -> event) that the mirror no
+    longer serves (``served``: ids of the validly signed events in the channel
+    files just fetched): (since when each has been missing, the ids to give
+    up, the thread roots to leave out of checkpoints).
+
+    The poster keeps listing a missing event, so readers refuse the mirror and
+    read stale: that is how a relay that drops a post is noticed. After OWED_S
+    it must end, or a post that was truly deleted would keep every reader
+    stale for as long as the poster remembers it. How it ends depends on what
+    is missing. A root or an ordinary reply is given up: removed from the
+    poster's copy. A curator reply is never given up, because a checkpoint
+    with the root and without that reply would certify the alert as it stood
+    before the correction, a retracted alert as live. Its whole thread is
+    left out of checkpoints instead, for as long as the reply is missing:
+    new members do not see the thread; members who hold the correction keep it."""
     missing = set(held) - set(served)
     since = {i: gone.get(i, int(now)) for i in missing}
-    drop = {i for i, t in since.items() if t <= now - OWED_S}
-    return {i: t for i, t in since.items() if i not in drop}, drop
+    late = {i for i, t in since.items() if t <= now - OWED_S}
+    fixes = {i for i in late if pull._thread_ref(held[i]) is not None
+             and manifest.role_of(m, held[i]["pubkey"]) == "curator"}
+    drop = late - fixes
+    suppress = {pull._thread_ref(held[i]) for i in fixes}
+    return {i: t for i, t in since.items() if i not in drop}, drop, suppress
 
 
 # ---------------------------------------------------------------- the window
@@ -204,7 +216,7 @@ def _size(ev: dict) -> int:
     return len(json.dumps(ev, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) + 1
 
 
-def window(events, m, owed: list, now: int, channels=None):
+def window(events, m, owed: list, now: int, channels=None, suppress=frozenset()):
     """The ids one checkpoint lists, from ``events`` (the poster's verified
     copy of the mirror) and the owed entries, within MAX_LISTED events and
     MAX_LISTED_BYTES; or None when what MUST be listed does not fit, in which
@@ -222,13 +234,16 @@ def window(events, m, owed: list, now: int, channels=None):
     retention less MARGIN_S. Events dated after ``now`` are never listed. A
     skipped thread whose listed events are all older than that line also has
     its newest event listed, so the reader's retention, which sees only
-    listed events, keeps them."""
+    listed events, keeps them. ``suppress``: thread roots to leave out whole
+    (see settle_gone)."""
     channels = pull.channel_ids() if channels is None else channels
     usable = {ev["id"]: ev for ev in events if manifest.role_of(m, ev["pubkey"]) is not None
               and pull._bound(ev, channels) and ev["created_at"] <= now}
     threads: dict[str, list[dict]] = {}
     for ev in usable.values():
-        threads.setdefault(pull._thread_ref(ev) or ev["id"], []).append(ev)
+        key = pull._thread_ref(ev) or ev["id"]
+        if key not in suppress:
+            threads.setdefault(key, []).append(ev)
     cutoff = now - pull.RETENTION_S + MARGIN_S
 
     def newest(key):
@@ -341,14 +356,16 @@ def run_checkpoint(config, now: int, *, ssh=None, fetch=None, root: str = TRUST_
             published = cp.seq
     except (OSError, cpt.CheckpointError):  # none served or malformed: no floor from it
         pass
-    # What the mirror serves right now (ids only; the pull verified what it stored).
+    # What the mirror serves right now: the events in the fetched files whose own signature
+    # verifies. The stored copy is no evidence (the pull keeps a stored event when the mirror
+    # sends a broken copy of it), and a bare id is not an event a reader could take.
     serving = set()
     for name in pull.FILES:
         try:
-            serving |= {e["id"] for e in json.loads(docs[name])["events"] if isinstance(e.get("id"), str)}
-        except (TypeError, ValueError, KeyError, AttributeError):
+            serving |= {e["id"] for e in json.loads(docs[name])["events"] if nostr.verify_event(e)}
+        except (TypeError, ValueError, KeyError, AttributeError, RecursionError):
             return "no-mirror"
-    gone, give_up = settle_gone(rec["gone"], st.events, serving, now)
+    gone, give_up, suppress = settle_gone(rec["gone"], st.events, serving, now, m)
     if give_up:  # missing for OWED_S: no longer the poster's to vouch for
         st.accept(root, m, {i: e for i, e in st.events.items() if i not in give_up})
         st.save_events()
@@ -356,8 +373,9 @@ def run_checkpoint(config, now: int, *, ssh=None, fetch=None, root: str = TRUST_
     # An acknowledged post stays owed until the poster holds it AND could list it: one
     # stamped after this run began is not listed yet, so it is not settled yet either.
     owed, dropped = settle_owed(rec["owed"], {i for i, e in st.events.items() if e["created_at"] <= now}, now)
-    tail = (f",owed_dropped={dropped}" if dropped else "") + (f",gone_dropped={len(give_up)}" if give_up else "")
-    ids = window(st.events.values(), m, owed, now)
+    tail = ((f",owed_dropped={dropped}" if dropped else "") + (f",gone_dropped={len(give_up)}" if give_up else "")
+            + (f",threads_suppressed={len(suppress)}" if suppress else ""))
+    ids = window(st.events.values(), m, owed, now, suppress=suppress)
     if ids is None:
         save_owed(config.owed_state, {**rec, "owed": owed})
         _say(f"checkpoint not signed: {len(owed)} owed posts and the curator replies do not fit one checkpoint")

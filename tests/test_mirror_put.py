@@ -98,3 +98,13 @@ def test_an_inbox_that_is_a_symlink_is_refused(put, tmp_path):
     put.inbox.symlink_to(elsewhere)
     refused(put("checkpoint", stdin=event()), "not a directory")
     assert list(elsewhere.iterdir()) == []
+
+
+def test_a_directory_where_the_file_goes_is_refused(put):
+    """mv would move the temporary file INTO the directory and report success."""
+    put.inbox.mkdir(mode=0o700)
+    put.file.mkdir()
+    (put.file / "kept").write_text("x")
+    refused(put("checkpoint", stdin=event()), "is a directory")
+    assert [p.name for p in put.file.iterdir()] == ["kept"]
+    assert [p.name for p in put.inbox.iterdir()] == ["checkpoint.json"]  # no temporary file left

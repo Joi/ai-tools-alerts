@@ -724,3 +724,47 @@ def test_settled_debts_are_saved_even_when_nothing_is_signed(signing, monkeypatc
     monkeypatch.setattr(signer, "MAX_LISTED", 0)
     _, summary, ssh = signing.run(ssh=PutSSH())
     assert summary.endswith(" checkpoint=too-large") and owed_ids(signing) == ["d" * 64]
+
+
+# ---------------------------------------------------------------- findings of the delta review
+
+def test_a_vanished_curator_reply_is_never_given_up_its_thread_is_left_out(signing):
+    """The mirror keeps the root and drops the curator's retraction. After 72 hours the
+    poster must not sign the root without it: the thread is left out of checkpoints for
+    as long as the retraction is missing, and the retraction is never forgotten."""
+    m = signing.mirror
+    other = on_mirror(m, "Another alert", T0 - 700)
+    root = on_mirror(m, "Retracted", T0 - 600)
+    gone = m.reply(m.cur_sec, root, "retract", created_at=T0 - 500)
+    _, _, ssh = signing.run(ssh=PutSSH())
+    assert {root["id"], gone["id"]} <= ssh.last().events
+    m.events["feed.json"].remove(gone)
+    _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + 3600)
+    assert {root["id"], gone["id"]} <= ssh.last().events  # still listed: readers refuse the mirror
+    for hours in (74, 200):
+        _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + hours * 3600)
+        listed = ssh.last().events
+        assert "threads_suppressed=1" in summary and "gone_dropped" not in summary
+        assert root["id"] not in listed and gone["id"] not in listed and other["id"] in listed
+        assert gone["id"] in State.load(signing.config.mirror_dir).events  # never forgotten
+    m.events["feed.json"].append(gone)  # the mirror serves it again: the thread is back, retracted
+    _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + 201 * 3600)
+    assert {root["id"], gone["id"]} <= ssh.last().events and "threads_suppressed" not in summary
+
+
+def test_a_bare_id_or_a_broken_copy_does_not_count_as_served(signing):
+    """Only a validly signed event in the fetched files counts as served. A placeholder
+    with a known id, or a copy with a bad signature, must not stop the absence clock."""
+    m = signing.mirror
+    stays = on_mirror(m, "Stays", T0 - 600)
+    goes = on_mirror(m, "Goes", T0 - 500)
+    signing.run(ssh=PutSSH())
+    broken = dict(goes, sig="0" * 128)
+    for fake in ({"id": goes["id"]}, broken):
+        for name in m.events:  # the event was posted to both channel files
+            m.events[name] = [e for e in m.events[name] if e.get("id") != goes["id"]] + [fake]
+        _, summary, _ = signing.run(ssh=PutSSH(), now=T0 + 3600)
+        rec = signer.load_owed(signing.config.owed_state, T0 + 3600)
+        assert goes["id"] in rec["gone"] and stays["id"] not in rec["gone"], summary
+    _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + 80 * 3600)
+    assert "gone_dropped=1" in summary and goes["id"] not in ssh.last().events
