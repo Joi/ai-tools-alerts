@@ -551,6 +551,7 @@ class Run:
         severity = "; ".join(x for x in (ev.severity, title if ev.url else None) if x) or None
         return replace(c, aliases=tuple(aliases), fixed=ev.fixed, affected=ev.affected, sources=tuple(kept),
                        source_title=title, severity_word=ev.severity,  # dmmf: the page's word, alone
+                       readings=rules.readings_for(c, ev),  # s6mt: what the level can rest on, as fields
                        advisory_severity=severity or (c.advisory_severity if trusted else None),
                        trojanized=c.trojanized is True and trusted, injection_exec=c.injection_exec is True and trusted)
 

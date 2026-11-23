@@ -16,10 +16,11 @@ import json
 import re
 import unicodedata
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+from aitools_alerts import ruleset
 from aitools_alerts.schema import Source  # re-exported: candidates.Source is schema.Source
 
 KEV_CATALOG_URL = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
@@ -106,10 +107,14 @@ class Candidate:
     # set by main's admit: the only severity a post may carry (h340, dmmf). Never kept
     # in the state file: a deferred candidate is admitted again, which reads it again.
     severity_word: str | None = None
+    # What structured sources state, as (source, canonical JSON text of the fields)
+    # (s6mt): a kev reading from from_kev, a ghsa reading from main's admit. Never kept
+    # in the state file: a reading is of this run, and a deferred candidate has none.
+    readings: tuple = ()
 
     def to_dict(self) -> dict:
         d = asdict(self)
-        del d["severity_word"]
+        del d["severity_word"], d["readings"]
         d["aliases"] = list(self.aliases)
         d["sources"] = [asdict(s) for s in self.sources]
         return d
@@ -491,8 +496,16 @@ def from_kev(kev_json: dict, since_date: str) -> CandidateList:
         if isinstance(notes, str):
             raw += [(tok, None) for tok in re.split(r"[;\s]+", notes[:5000]) if tok]
         # CISA's own name for the entry is its title: the catalog is the authority (h340).
+        n = len(out)
         _build(cve, (), f"{vendor} {product}", _sources(raw, hosts), {"observed_at": added},
                hosts, out, exploited=True, title=_title(it.get("vulnerabilityName"), hosts))
+        if len(out) > n:  # s6mt: the catalog's own fields, read now; the one place a kev reading is made
+            fields = {"cve_id": cve, "name": f"{vendor} {product}"}
+            try:
+                ruleset.load().read("kev", fields)
+                out[-1] = replace(out[-1], readings=(("kev", ruleset.canonical(fields).decode("utf-8")),))
+            except ruleset.RulesetError:
+                pass  # a name the claim's form cannot carry: no reading; the level still stands on the flag
 
     return _each(items, out, one)
 

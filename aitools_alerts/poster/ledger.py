@@ -471,4 +471,5 @@ def _merged(members, scope_name, ledger):
         advisory_severity="; ".join(dict.fromkeys(severities)) or None,
         # the pages' words only (dmmf); compose publishes the loudest
         severity_word="; ".join(dict.fromkeys(c.severity_word for c in members if c.severity_word)) or None,
+        readings=tuple(dict.fromkeys(r for c in members for r in getattr(c, "readings", ()))),  # s6mt
         sources=tuple(sources))

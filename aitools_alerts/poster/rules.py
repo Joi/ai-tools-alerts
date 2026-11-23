@@ -5,26 +5,31 @@ identity only (``scope_of``): never by a word in free text, so a third-party
 package cannot resolve to a tier-1 product (h340). A candidate posts only when a
 source authoritative for that product says so (``evidence``): the CISA KEV catalog
 this run fetched, or a page under the product's own ``authority`` prefixes that
-answers 200 and names the advisory's id. Critical fires only by rule: the product
-is in scope tier 1 and (KEV lists it as exploited, or a confirmed page and a
-trojanized release, or an injection-to-execution path with a fix). Tier 2 never
-posts critical. Items outside both tiers do not post.
+answers 200 and names the advisory's id. Critical fires only by rule and only by a
+field: the product is in scope tier 1 and KEV lists the CVE as exploited, or a
+reading of a source's own fields gives critical. Tier 2 never posts critical.
+Items outside both tiers do not post.
+
+The level table itself is spec/ruleset.json, evaluated by ``aitools_alerts.ruleset``
+(s6mt): ``level_for`` takes what the candidate's readings support, and a model's
+reading of prose (the trojanized and injection flags, severity text) may raise to
+``reading_cap`` and never makes a critical.
 """
 
 from __future__ import annotations
 
 import functools
 import html
+import json
 import re
 import threading
 import time
-import unicodedata
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from urllib.parse import urljoin, urlsplit
 
-from aitools_alerts import schema, versions
+from aitools_alerts import ruleset, schema, versions
 from aitools_alerts.poster import compose
 from aitools_alerts.poster.candidates import ADVISORY_ID, BOT_ID, Candidate
 
@@ -49,15 +54,7 @@ _TOKEN = re.compile(r"(?:[^\W_]|\.)+")
 _HIGH_WORDS = frozenset({"high", "critical"})
 
 
-_DASHES = re.compile("[\u2010-\u2015\u2212]")
-_SPACES = re.compile(r"\s+")
-
-
-def _norm(text: str) -> str:
-    """NFKC, lowercase, Unicode dashes to "-", whitespace runs to one space, so
-    compatibility characters and spacing cannot dodge a pattern."""
-    text = unicodedata.normalize("NFKC", text).lower()
-    return _SPACES.sub(" ", _DASHES.sub("-", text))
+_norm, _tier, _index = ruleset.norm, ruleset.tier_of, ruleset.index  # one lookup for poster and CLI (s6mt)
 
 
 def _tokens(text: str) -> set[str]:
@@ -67,11 +64,6 @@ def _tokens(text: str) -> set[str]:
 @functools.lru_cache(maxsize=1)
 def _default_entries() -> tuple[schema.ScopeEntry, ...]:
     return tuple(schema.load_scope())
-
-
-def _tier(entry) -> int | None:
-    t = getattr(entry, "tier", None)
-    return t if type(t) is int and t in (1, 2) else None
 
 
 def vendor_words(entries) -> set[str]:
@@ -90,25 +82,6 @@ def vendor_words(entries) -> set[str]:
 @functools.lru_cache(maxsize=1)
 def _default_vendor_words() -> frozenset[str]:
     return frozenset(vendor_words(_default_entries()))
-
-
-def _index(entries) -> dict[str, schema.ScopeEntry]:
-    """{identity: the entry, resolved to its component where the identity is one}. A
-    resolved component carries its own name and identities, its own authority or the
-    entry's, and no components: the product a post names and the ledger keys."""
-    out: dict[str, schema.ScopeEntry] = {}
-    for e in entries:
-        if _tier(e) is None:
-            continue
-        for c in getattr(e, "components", ()):
-            own = c.authority if getattr(c, "authority", None) is not None else e.authority
-            hit = replace(e, name=c.name, match=list(c.match), authority=tuple(own), components=())
-            for m in c.match:
-                out.setdefault(_norm(m).strip(), hit)
-        whole = replace(e, components=())
-        for m in e.match:
-            out.setdefault(_norm(m).strip(), whole)
-    return out
 
 
 @functools.lru_cache(maxsize=1)
@@ -143,11 +116,28 @@ def scope_of(product_text, log: list[str] | None = None, entries=None) -> schema
     return hit
 
 
+def _readings(c) -> list:
+    """The candidate's readings as the ruleset takes them: [(source, fields)]."""
+    return [(source, json.loads(text)) for source, text in getattr(c, "readings", ())]
+
+
+def _fields_level(c, scope) -> str:
+    """What the candidate's readings alone support for this product (ruleset.NONE..critical)."""
+    return ruleset.load().level(_readings(c), scope.name)
+
+
 def level_for(c: Candidate, scope: schema.ScopeEntry, source_ok: bool) -> tuple[str, str]:
     """(level, reason) for an in-scope candidate, by the Global Constraints.
 
-    Reasons: kev-tier1, trojanized-primary, injection-exec-fixed, unverified,
-    fix-rce-tier1, severity-tier1, kev-tier2, notice. severity-tier1 is a tier-1
+    The level is the highest of what the candidate's readings support by
+    spec/ruleset.json (reason ``fields`` when only they give it), the KEV row's
+    level when ``exploited`` is set (carried by a merge or the ledger when this
+    run made no reading: no fresh reading lowers nothing), and a reading of prose,
+    which is ``high`` at most (s6mt): a flag that made a critical before makes
+    ``high`` with reason ``reading``.
+
+    Reasons: kev-tier1, reading, unverified, fix-rce-tier1, severity-tier1,
+    kev-tier2, fields, notice. severity-tier1 is a tier-1
     candidate with a CVE or GHSA id whose advisory severity is the word "high" or
     "critical"; it needs no fix, and it never makes a critical. ``source_ok`` is "a page
     authoritative for this product named this advisory" (``evidence``) and counts only when it is the
@@ -158,26 +148,85 @@ def level_for(c: Candidate, scope: schema.ScopeEntry, source_ok: bool) -> tuple[
     tier = _tier(scope)
     if tier is None:
         raise ValueError(f"scope tier must be 1 or 2, got {getattr(scope, 'tier', None)!r}")
-    verified = source_ok is True
-    exploited = c.exploited is True  # only candidates.from_kev sets it
+    rs = ruleset.load()
+    level, reason = _prose_level(c, tier, source_ok is True, rs)
+    fields = _fields_level(c, scope)
+    if rs.rank(fields) > rs.rank(level):
+        return fields, "fields"
+    return level, reason
+
+
+def _prose_level(c, tier: int, verified: bool, rs) -> tuple[str, str]:
+    """The level by the KEV flag and by readings of prose, each clause as it was before
+    s6mt except that none returns a critical for a flag."""
+    if c.exploited is True:  # only candidates.from_kev sets it; the KEV row is mechanical: no fetch needed
+        return rs.class_level("kev", tier), "kev-tier1" if tier == 1 else "kev-tier2"
     if tier == 2:
-        return ("high", "kev-tier2") if exploited else ("notice", "notice")
-    if exploited:
-        return "critical", "kev-tier1"  # the KEV clause is mechanical: no fetch needed
+        return "notice", "notice"
+    cap = rs.reading_cap  # a reading never makes a critical
     trojanized = c.trojanized is True
     injection = c.injection_exec is True and bool(c.fixed)
     if trojanized or injection:
-        if not verified:
-            return "high", "unverified"
-        return ("critical", "trojanized-primary") if trojanized else ("critical", "injection-exec-fixed")
+        return cap, "reading" if verified else "unverified"
     severity = c.advisory_severity
     if c.fixed and isinstance(severity, str) and _SEVERE.search(_norm(severity)):
-        return "high", "fix-rce-tier1"
+        return cap, "fix-rce-tier1"
     # ledger.merge joins members' severities with "; ": any one member's word counts.
     if isinstance(severity, str) and any(p.strip() in _HIGH_WORDS for p in _norm(severity).split(";")) \
             and any(isinstance(i, str) and ADVISORY_ID.fullmatch(i) for i in (c.id, *c.aliases)):
-        return "high", "severity-tier1"
+        return cap, "severity-tier1"
     return "notice", "notice"
+
+
+def basis(c: Candidate, scope: schema.ScopeEntry, level: str) -> str:
+    """``fields`` when the level rests on structured source fields: the candidate's
+    readings support it, or it is the KEV row's (``exploited``). ``reading`` when it
+    rests on a model's reading of prose: a member's CLI cannot recompute it, and
+    shows it as unverified by design. A notice needs no support."""
+    rs = ruleset.load()
+    held = _fields_level(c, scope)
+    if c.exploited is True:
+        held = rs.highest(held, rs.class_level("kev", _tier(scope)))
+    return "fields" if level == "notice" or rs.rank(held) >= rs.rank(level) else "reading"
+
+
+def reading_text(source: str, fields) -> str | None:
+    """The reading's fields (or a function that builds them) as canonical JSON text
+    (a frozen Candidate stays hashable), or None when they are not a reading the
+    ruleset accepts."""
+    try:
+        fields = fields() if callable(fields) else fields
+        ruleset.load().read(source, fields)
+        return ruleset.canonical(fields).decode("utf-8")
+    except (ruleset.RulesetError, TypeError, ValueError):  # no value a page states may stop the run
+        return None
+
+
+def readings_for(c: Candidate, ev: "Evidence") -> tuple:
+    """The candidate's readings after admission. A ``kev`` reading comes only from
+    ``candidates.from_kev``, made from the catalog entry this run read, and is kept
+    when the evidence is KEV's; the ``exploited`` flag alone, which a merge and the
+    state file carry, never makes one. A ``ghsa`` reading is added when a repository
+    advisory page confirmed the candidate by its own fields. Fields the page does
+    not show are null or empty."""
+    out = [r for r in getattr(c, "readings", ()) if r[0] == "kev" and ev.kev]
+    if ev.structured and ev.ghsa and ev.repository:
+        text = reading_text("ghsa", lambda: {
+            "ghsa_id": "GHSA" + ev.ghsa.lower()[4:], "type": None, "withdrawn_at": None,
+            "repository": ev.repository, "severity": {"moderate": "medium"}.get(ev.severity, ev.severity),
+            "cvss_vector": None, "cwes": [],
+            "packages": ruleset.ordered({"ecosystem": e, "name": n, "range": a or None, "first_patched": p or None}
+                                        for e, n, a, p in ev.packages)})
+        if text is not None:
+            out.append(("ghsa", text))
+    return tuple(dict.fromkeys(out))
+
+
+def claims_for(c: Candidate, scope: schema.ScopeEntry, now: int) -> list[dict]:
+    """The claims this run can sign for an admitted candidate: one per reading, its
+    level the ruleset's for this product, confirmed and checked now."""
+    rs = ruleset.load()
+    return [rs.claim(source, fields, scope.name, now, now) for source, fields in _readings(c)]
 
 
 def _countable(url) -> bool:
@@ -347,6 +396,11 @@ def _highest(patched) -> str | None:
     return max(found, key=versions.parse) if found else None
 
 
+def _stated_patch(patched) -> str | None:
+    """A block's "Patched versions" text, or None where it states none (empty, "None")."""
+    return patched if patched and patched.strip().lower() != "none" else None
+
+
 class PageBudget(Exception):
     """The run has fetched its share of pages: the candidate waits for the next run."""
 
@@ -371,6 +425,9 @@ class Evidence:
     unparsed: bool = False
     budget: bool = False
     structured: bool = False  # confirmed by a repository advisory page's own fields
+    ghsa: str | None = None  # that page's GHSA id
+    repository: str | None = None  # owner/repo of the page, lowercase
+    packages: tuple = ()  # its blocks that are this product: (ecosystem or "", name, affected, patched) as stated
     other_package: bool = False  # the vendor's page for this id names only packages that are not this product
 
     @property
@@ -443,7 +500,10 @@ def evidence(c: Candidate, scope, page, entries=None) -> Evidence:
                 affected = UNEXPRESSED  # dmmf: a range is stated, never "all": the post says "see the source"
             rank, found = 2, dict(url=u, ids=own, fixed=_highest(b.patched for b in mine),
                                   affected=affected, title=p.title,
-                                  severity=p.severity)
+                                  severity=p.severity, ghsa=p.ghsa,
+                                  repository="/".join(urlsplit(u).path.split("/")[1:3]).lower(),
+                                  packages=tuple((b.ecosystem if b.ecosystem in _REGISTRIES else "", b.name,
+                                                  b.affected, _stated_patch(b.patched)) for b in mine))
         elif rank == 0:
             low = " ".join(_lines(text)).lower()  # what a reader sees: no tag, attribute or script
             if not (_names(low, base) and _names(low, scope.name)):
@@ -454,7 +514,8 @@ def evidence(c: Candidate, scope, page, entries=None) -> Evidence:
                     affected=found.get("affected"), title=found.get("title"), severity=found.get("severity"),
                     retry=(retry or unparsed or budget) and not found and not kev,
                     unparsed=unparsed and not found, budget=budget and not found,
-                    structured=rank == 2, other_package=other and not found)
+                    structured=rank == 2, other_package=other and not found, ghsa=found.get("ghsa"),
+                    repository=found.get("repository"), packages=found.get("packages", ()))
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
