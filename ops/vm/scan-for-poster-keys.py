@@ -17,10 +17,12 @@ Exit 2: bad arguments or manifest.
 --allow-unread names a file of exact UNREAD lines (the text after "UNREAD: ",
 one per line; blank lines and lines starting with # are ignored). A listed path
 is printed as ALLOWED UNREAD and does not fail the scan; any other unread path
-still does. Use it only for files known not to hold a key, such as an upstream
-toolchain's deliberately corrupt test fixtures. Every file's raw bytes are
-searched before any decoding, so an allowed path is unread only below its
-compression or container layer.
+still does. Lines are compared with the unsanitized text, so a printed "?" never
+matches. Only a path whose raw bytes were searched can be waived: one the scan
+could not open below a compression or container layer. A file too large or not
+readable, a walk error and a missing root always fail. Use it only for files
+known not to hold a key, such as an upstream toolchain's deliberately corrupt
+test fixtures.
 
 The derivation is aitools_alerts.nostr's, imported from the repository this file
 sits in (ops/vm/ -> repository root), so copy the repository, not this file alone.
@@ -70,7 +72,15 @@ class Scan:
         self.seen: dict[bytes, bool] = {}  # candidate -> is a poster key (derived once)
         self.files = self.members = 0
         self.hits: list[str] = []
-        self.unread: list[str] = []
+        self.unread: list[str] = []  # printed (control and non-ASCII bytes shown as ?)
+        # Per unread entry, the unsanitized text an --allow-unread line must equal, or None when
+        # the entry can never be waived: its bytes were not searched (unreadable, too large to read,
+        # a walk error, a missing root, a crash during the search).
+        self.unread_key: list[str | None] = []
+
+    def _unread(self, text: str, waivable: bool) -> None:
+        self.unread.append(_SAFE.sub("?", text))
+        self.unread_key.append(text if waivable else None)
 
     def _is_poster(self, cand: bytes) -> bool:
         if cand not in self.seen:
@@ -84,17 +94,18 @@ class Scan:
         return self.seen[cand]
 
     def data(self, label: str, blob: bytes, depth: int) -> None:
-        label = _SAFE.sub("?", label)  # member names come from the archive: print no control bytes
+        # The raw bytes are searched first, so every unread entry below is waivable: only what lies
+        # under a compression or container layer the scan could not open goes unsearched.
         if any(self._is_poster(m.group(0)) for m in _CANDIDATE.finditer(blob)):
-            self.hits.append(label)
+            self.hits.append(_SAFE.sub("?", label))  # member names come from the archive: print no control bytes
         for magic, name in _UNSUPPORTED:
             if blob.startswith(magic):
-                self.unread.append(f"{label} ({name}: cannot open)")
+                self._unread(f"{label} ({name}: cannot open)", True)
                 return
         packed = (blob[:2] == b"\x1f\x8b" or blob[:3] == b"BZh" or blob[:6] == b"\xfd7zXZ\x00"
                   or blob[:4] == b"PK\x03\x04" or (len(blob) >= 512 and blob[257:262] == b"ustar"))
         if packed and depth >= MAX_DEPTH:
-            self.unread.append(f"{label} (nested deeper than {MAX_DEPTH})")
+            self._unread(f"{label} (nested deeper than {MAX_DEPTH})", True)
             return
         for magic, name, fn in ((b"\x1f\x8b", "gzip", gzip.decompress), (b"BZh", "bzip2", bz2.decompress),
                                 (b"\xfd7zXZ\x00", "xz", lzma.decompress)):
@@ -102,10 +113,10 @@ class Scan:
                 try:
                     inner = fn(blob)
                 except (OSError, EOFError, ValueError, lzma.LZMAError, zlib.error):
-                    self.unread.append(f"{label} ({name})")
+                    self._unread(f"{label} ({name})", True)
                     return
                 if len(inner) > MAX_BLOB:
-                    self.unread.append(f"{label} ({name}: larger than {MAX_BLOB} bytes unpacked)")
+                    self._unread(f"{label} ({name}: larger than {MAX_BLOB} bytes unpacked)", True)
                     return
                 self.data(f"{label}!{name}", inner, depth + 1)
                 return
@@ -117,11 +128,11 @@ class Scan:
                             continue
                         self.members += 1
                         if zi.file_size > MAX_BLOB:
-                            self.unread.append(_SAFE.sub("?", f"{label}!{zi.filename} (too large)"))
+                            self._unread(f"{label}!{zi.filename} (too large)", True)
                             continue
                         self.data(f"{label}!{zi.filename}", zf.read(zi), depth + 1)
             except (zipfile.BadZipFile, OSError, RuntimeError, ValueError) as e:
-                self.unread.append(f"{label} (zip: {type(e).__name__})")
+                self._unread(f"{label} (zip: {type(e).__name__})", True)
             return
         if len(blob) >= 512 and blob[257:262] == b"ustar":
             try:
@@ -131,42 +142,42 @@ class Scan:
                             continue
                         self.members += 1
                         if m.size > MAX_BLOB:
-                            self.unread.append(_SAFE.sub("?", f"{label}!{m.name} (too large)"))
+                            self._unread(f"{label}!{m.name} (too large)", True)
                             continue
                         f = tf.extractfile(m)
                         if f is None:
-                            self.unread.append(f"{label}!{m.name}")
+                            self._unread(f"{label}!{m.name}", True)
                             continue
                         self.data(f"{label}!{m.name}", f.read(), depth + 1)
             except (tarfile.TarError, OSError, EOFError) as e:
-                self.unread.append(f"{label} (tar: {type(e).__name__})")
+                self._unread(f"{label} (tar: {type(e).__name__})", True)
 
     def path(self, p: str) -> None:
         self.files += 1
         try:
             if os.path.getsize(p) > MAX_BLOB:
-                self.unread.append(f"{p} (larger than {MAX_BLOB} bytes)")
+                self._unread(f"{p} (larger than {MAX_BLOB} bytes)", False)
                 return
             with open(p, "rb") as fh:
                 blob = fh.read()
         except OSError:
-            self.unread.append(p)
+            self._unread(p, False)
             return
         try:
             self.data(p, blob, 0)
-        except Exception as e:  # any decoder failure is UNREAD (a failure), never a crash
-            self.unread.append(f"{_SAFE.sub('?', p)} ({type(e).__name__})")
+        except Exception as e:  # any failure is UNREAD (a failure), never a crash; the search may not have finished
+            self._unread(f"{p} ({type(e).__name__})", False)
 
     def root(self, root: str) -> None:
         if os.path.isfile(root) and not os.path.islink(root):
             self.path(root)
             return
         if not os.path.isdir(root):
-            self.unread.append(root + " (missing)")
+            self._unread(root + " (missing)", False)
             return
 
         def onerror(e):
-            self.unread.append(f"{getattr(e, 'filename', root)} (walk)")
+            self._unread(f"{getattr(e, 'filename', root)} (walk)", False)
         for d, dirs, files in os.walk(root, onerror=onerror):
             dirs[:] = [x for x in dirs if not os.path.islink(os.path.join(d, x))]
             for name in files:
@@ -189,8 +200,8 @@ def main(argv=None) -> int:
     allowed: set[str] = set()
     if a.allow_unread:
         try:
-            allowed = {l.strip() for l in a.allow_unread.read_text(encoding="utf-8").splitlines()
-                       if l.strip() and not l.lstrip().startswith("#")}
+            allowed = {l for l in a.allow_unread.read_text(encoding="utf-8").splitlines()
+                       if l.strip() and not l.startswith("#")}
         except (OSError, UnicodeDecodeError) as e:
             print(f"scan-for-poster-keys: allow-unread file unusable: {type(e).__name__}", file=sys.stderr)
             return 2
@@ -199,11 +210,12 @@ def main(argv=None) -> int:
         s.root(r)
     for h in s.hits:
         print(f"POSTER KEY: {h}")
-    failing = [u for u in s.unread if u not in allowed]
-    for u in s.unread:
-        print(f"{'ALLOWED UNREAD' if u in allowed else 'UNREAD'}: {u}")
+    waived = [k is not None and k in allowed for k in s.unread_key]
+    for u, w in zip(s.unread, waived):
+        print(f"{'ALLOWED UNREAD' if w else 'UNREAD'}: {u}")
+    failing = waived.count(False)
     print(f"scanned files={s.files} archive_members={s.members} candidates={len(s.seen)} "
-          f"poster_keys={len(s.hits)} unread={len(failing)} allowed_unread={len(s.unread) - len(failing)}")
+          f"poster_keys={len(s.hits)} unread={failing} allowed_unread={len(waived) - failing}")
     return 1 if s.hits or failing else 0
 
 

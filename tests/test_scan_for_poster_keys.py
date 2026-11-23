@@ -162,6 +162,48 @@ def test_allow_unread_never_hides_a_poster_key(tmp_path, manifest, capsys):
     assert code == 1 and "POSTER KEY: " in out and POSTER_SEC not in out
 
 
+@pytest.mark.parametrize("case", ["too-large", "unreadable", "missing-root"])
+def test_allow_unread_never_waives_a_path_whose_bytes_were_not_searched(tmp_path, manifest, capsys,
+                                                                       monkeypatch, case):
+    if case == "unreadable" and os.geteuid() == 0:
+        pytest.skip("root reads everything")
+    root = tmp_path / "root"
+    root.mkdir()
+    f = root / "big"
+    f.write_text("x" * 50 + POSTER_SEC)  # a plaintext key, never read
+    if case == "too-large":
+        monkeypatch.setattr(scan, "MAX_BLOB", 10)
+        label = f"{f} (larger than 10 bytes)"
+    elif case == "unreadable":
+        f.chmod(0)
+        label = str(f)
+    else:
+        root = tmp_path / "nope"
+        label = f"{root} (missing)"
+    allow = tmp_path / "allow.txt"
+    allow.write_text(label + "\n")
+    try:
+        code = scan.main(["--manifest", str(manifest), "--allow-unread", str(allow), str(root)])
+    finally:
+        f.chmod(0o600)
+    out = capsys.readouterr().out
+    assert code == 1 and f"UNREAD: {label}" in out and "ALLOWED" not in out
+
+
+def test_allow_unread_matches_the_raw_name_not_the_printed_one(tmp_path, manifest, capsys):
+    root = tmp_path / "root"
+    root.mkdir()
+    zst = b"\x28\xb5\x2f\xfd" + b"\x00" * 40
+    (root / "café.zst").write_bytes(zst)  # prints as caf?.zst
+    allow = tmp_path / "allow.txt"
+    allow.write_text(f"{root / 'caf?.zst'} (zstd: cannot open)\n", encoding="utf-8")
+    args = ["--manifest", str(manifest), "--allow-unread", str(allow), str(root)]
+    assert scan.main(args) == 1  # the printed form waives nothing
+    assert f"UNREAD: {root / 'caf?.zst'}" in capsys.readouterr().out
+    allow.write_text(f"{root / 'café.zst'} (zstd: cannot open)\n", encoding="utf-8")
+    assert scan.main(args) == 0
+
+
 def test_an_unusable_allow_file_is_2(tmp_path, manifest):
     assert scan.main(["--manifest", str(manifest), "--allow-unread", str(tmp_path / "nope"), str(tmp_path)]) == 2
 
