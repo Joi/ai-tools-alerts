@@ -420,7 +420,10 @@ def test_unit_execstart_runs_from_fresh_checkout(tmp_path):
     proc = subprocess.run([sys.executable] + argv[1:] + ["--rows-from", rows],
                           cwd=tmp_path, capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr
-    assert {p.name for p in (home / "alerts-mirror").iterdir()} == NAMES
+    # A release that ships the checkpoint certificate serves it from the first
+    # run; checkpoint.json waits for the poster's first put to the inbox.
+    shipped = {"checkpoint-key.json"} if (ROOT / "trust" / "checkpoint-key.json").exists() else set()
+    assert {p.name for p in (home / "alerts-mirror").iterdir()} == NAMES | shipped
 
 
 def test_psql_rows_keep_unicode_line_separators(env, monkeypatch):
