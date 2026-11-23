@@ -1,6 +1,6 @@
 # Run: t8jr-wire-format
 Instruction: Read TASK-ai-tools-alerts#t8jr.md in this worktree root, then run `kata show ai-tools-alerts#t8jr` and follow the brief and the dispatch rules. (Issue: self-correct wire format: released readers refuse unknown fields; carry the claim outside the alert block, finding D12.)
-Stage: verifying
+Stage: committing
 Rung: heavy (start-floor heavy: hard-trigger, BR2 REV1 NOV1 INT2 FC2 = 8). Evaluator: "secrets, auth or credential handling — the diff changes the code that mints and checks the root-signed checkpoint key certificate (`build_cert`, `_parse_cert`, and the content `scripts/sign-checkpoint-key.py` signs with the trust root key)". The dispatch floor was medium.
 Lens (every review pass carries it): "The block schema does not change in the h29n slices"; "every alert still appears, at the same or a higher level"; "A lowering is its own event and carries no other change"; "the block schema is byte-identical to v0.1.4's".
 Last reviewed: spec 9f7404cad0bac7c351fb1eee301cdf1f8cd0d4f4 (the delta; first pass a70b020345b0bf9ba2aee1c89407a5d1b604f362)
@@ -43,6 +43,6 @@ Pass 1 [code:whole-branch]: 0B/2S/8C/0R · fixed -/- · velocity = (—→10, es
 - The three chunks were built while the spec review ran and were reviewed as one unit, the whole branch, in one Stage 1 and Stage 2 round. That round is also the one independent whole-branch review the merge needs.
 - Skip-temptation, resolved by doing it: writing the plan after most of the code existed felt redundant; it was written, reviewed twice, and its review found the clock setup the compatibility pull depends on.
 - Changed lines: about 190 outside tests and documents, about 560 in tests. Over the 600-line guide counting tests; one deliverable, so not split.
-- Gate: the public scan run in the shared working clone fails on objects that only other sessions' local branches reach (no object in common with this branch or with origin/main, checked with `--hit-ids`). The gate was run again in a clone holding only this branch and the tags; result below.
+- Gate: the public scan run in the shared working clone fails on objects that only other sessions' local branches reach (no object in common with this branch or with origin/main, checked with `--hit-ids`). The gate was run again in a clone holding only this branch and the tags, at 24d5d79433ccc0fbe6804b5e6cc42022b734bd57 (after merging origin/main): the scan found nothing new, 1778 passed, 1 skipped, exit 0.
 - Follow-ups filed: ai-tools-alerts#yw7r (confirm the relay keeps an unknown tag), ai-tools-alerts#pwv0 (sign a certificate with `min_cli`).
 - Notes posted on: ai-tools-alerts#9mx8 (the design's sentence, corrected), #wa6n, #q03f, #0xq6, #9kgk, #r0ra, #ny5g, #fv4g, #s6mt.
