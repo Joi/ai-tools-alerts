@@ -1,0 +1,49 @@
+# Wire format: where new signed data may go
+
+Readers already installed cannot be changed. This file says what each released reader (v0.1.4 to v0.1.7) does with a field it does not know, and where the self-correcting design (ai-tools-alerts#h29n) therefore puts what it adds. `tests/test_wire_compat.py` unpacks each release from its tag and runs it against a feed built to these rules. The promise it checks: every alert is still shown on a released reader, at the level the current reader shows or a higher one, to the member whose machine it matches.
+
+## What released readers do
+
+| Where a new field goes | v0.1.4 to v0.1.7 |
+|---|---|
+| A new key in the `aitools-alert` block of a root | The root is never an advisory. No error is shown |
+| A new key in a reply's block | The reply is skipped. v0.1.7 still joins its `products`, `actions` and `sources` |
+| A relay-bot reply that lowers `level` or sets `expires_at` | The reply is skipped, with the same v0.1.7 exception. "Lowers" is judged against the level that reader holds |
+| A finite `expires_at` in a root's block | The alert is no longer shown after that time. No relay-bot reply can move it |
+| A new key in the manifest's content, or a second tag on its event | The manifest is refused and the pull fails |
+| A new key in the checkpoint key certificate's content | Ignored by v0.1.6 and v0.1.7. v0.1.4 and v0.1.5 do not read the certificate |
+| A new tag on an alert event (not `h`, not `e`) | Ignored. Tags are signed and stored |
+
+So the block (`spec/advisory.schema.json`) and the manifest are frozen: a test holds the schema to the v0.1.4 file. New signed data goes in an event tag, or in the certificate when the trust root must say it.
+
+## The claim
+
+The signed statement of what an alert's state rests on travels in one tag on the event whose state it describes (a root, a level change, a renewal):
+
+    ["claim", "<JSON object text>"]
+
+- At most one `claim` tag on an event, of exactly two elements.
+- The value is a JSON object, at most 2048 bytes of UTF-8, with no duplicate key and no `NaN` or `Infinity`.
+- `aitools_alerts.wire.claim_tag(obj)` writes it (sorted keys, no spaces); `wire.claim_of(event)` reads it and returns None for anything else.
+
+What the object holds, its canonical form and its test vectors are defined with the level function (ai-tools-alerts#s6mt). A reader never refuses an event because of its claim tag: an event with a claim the reader cannot use is read as an event with none.
+
+## Level changes and expiry
+
+1. **Every lowering by the relay bot is a level-only reply:** its block is exactly `{"level": "<level>"}` (`poster.compose.level_post`). Released readers skip it and keep the higher level. Nothing else is in it to lose.
+2. **On a thread that has had a lowering, every later level change is a level-only reply too.** A released reader still holds the higher level, so a raise from notice to high is a lowering to it, and it would skip a fix sent in the same reply. On a thread never lowered, a raise may share a reply.
+3. **A relay-bot block sets no expiry.** A root's block has `"expires_at": null` (the schema requires the key); a reply's block leaves the key out. Expiry is computed from the claim by readers that know it.
+
+A released reader that has refused a lowering shows the alert at its earlier, higher level for as long as the thread lasts. That is intended: the reader cannot check the lowering, and too high is the safe side.
+
+A narrowing of `products` is not covered here. v0.1.4 to v0.1.6 apply any relay-bot `products` list whole; v0.1.7 and later join it to what the thread held. That is true of the replies the poster sends today.
+
+## `min_cli`
+
+The trust root can name the oldest release that reads the feed in full. It is an optional key in the content of the checkpoint key certificate (`trust/checkpoint-key.json`): `"min_cli": "0.2.0"`, three dotted numbers. A CLI older than it prints one `upgrade:` line on every command and goes on working; nothing is refused or hidden because of it. Readers at 0.1.7 and earlier ignore the key.
+
+It is not in the manifest because a released reader refuses a manifest with a key it does not know. The same holds for anything else the root must pin later (a ruleset digest): the certificate, not the manifest.
+
+## Adding to the format
+
+Put a new signed thing where the table says released readers ignore it. Add it to the feed in `tests/test_wire_compat.py` first, and add the newly released tag to `RELEASED` there at each release.

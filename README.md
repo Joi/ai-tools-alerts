@@ -88,6 +88,8 @@ aitools-alerts run
 
 Run the hook, template and skill commands below from this checkout.
 
+When a command prints `aitools-alerts: upgrade: this aitools-alerts is X; the feed needs Y or later`, the trust root has said that releases older than Y cannot read everything the feed now carries. The CLI keeps working and shows what it can read; newer alerts may be missing, or shown at an older level. Verify and install the release this README pins, as above. `run --json` carries the same value as `min_cli` (null when this release is new enough). Releases 0.1.7 and earlier cannot print the line.
+
 Without pipx: `python3 -m venv ~/.local/share/aitools-alerts && ~/.local/share/aitools-alerts/bin/pip install .` from the verified checkout, then link the command where the schedules and the hook look for it: `mkdir -p ~/.local/bin && ln -s ~/.local/share/aitools-alerts/bin/aitools-alerts ~/.local/bin/`. The launchd and cron templates search `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and `/bin`; the hook searches the same directories and nothing else.
 
 Install a verified release commit, never a branch or a tag name alone: the trust root is pinned in the code you install, so the commit is what fixes it. `CHANGELOG.md` lists each release. There is no package on PyPI; install only as above.
