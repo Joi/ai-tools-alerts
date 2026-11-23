@@ -40,14 +40,14 @@ Trust root public key (x-only hex), the same value as `trust/root.pub`:
 afb55ca02209ca12e980bba67262f478b7977b6fdc6bbaf8c3b9fb96983c78a4
 ```
 
-Check it on two different hosts: `trust/root.pub` at the pinned release commit on GitHub (`https://github.com/Joi/ai-tools-alerts/blob/71872f7ea90e16897c98affb2e026ac4aca6ebd7/trust/root.pub`) and the copy the mirror on the relay VM publishes, `https://buzz.ai-tools.md/alerts/root.pub`. The VM's copy comes from a release deployed earlier, so agreement shows the root was not changed on GitHub alone since then. All three must show the same 64 characters. If they differ, do not install, and tell the ai-tools community; if the mirror's copy is missing, that is not a pass: wait for it.
+Check it on two different hosts: `trust/root.pub` at the pinned release commit on GitHub (`https://github.com/Joi/ai-tools-alerts/blob/5fa973d42f90e880835d6a3dd311014cbc32d2a0/trust/root.pub`) and the copy the mirror on the relay VM publishes, `https://buzz.ai-tools.md/alerts/root.pub`. The VM's copy comes from a release deployed earlier, so agreement shows the root was not changed on GitHub alone since then. All three must show the same 64 characters. If they differ, do not install, and tell the ai-tools community; if the mirror's copy is missing, that is not a pass: wait for it.
 
 
 ## Quick install
 
-The pinned release is `v0.1.6`, commit `71872f7ea90e16897c98affb2e026ac4aca6ebd7`. Paste this into your agent chat to set up ai-tools-alerts:
+The pinned release is `v0.1.7`, commit `5fa973d42f90e880835d6a3dd311014cbc32d2a0`. Paste this into your agent chat to set up ai-tools-alerts:
 
-> Set up ai-tools-alerts release v0.1.6, commit 71872f7ea90e16897c98affb2e026ac4aca6ebd7. Clone https://github.com/Joi/ai-tools-alerts and, before you read any other file from it or install anything, run `git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.6`, `git rev-parse 'v0.1.6^{commit}'` and `git tag --list 'v*' --sort=-v:refname` in the clone. Continue only if the tag check exits 0 and prints `Good "git" signature for 19930+Joi@users.noreply.github.com with ED25519 key SHA256:DS1FNZqf0HglC1QEQ50LS4AJny8P8MxvrHRj4vPEqaA`, that fingerprint also appears on https://buzz.ai-tools.md/alerts/, the commit is exactly 71872f7ea90e16897c98affb2e026ac4aca6ebd7, and v0.1.6 is the first line of the tag list. If any check fails, stop, install nothing, and tell me what failed. Then, in that clone, run `git checkout --detach 71872f7ea90e16897c98affb2e026ac4aca6ebd7` and `pipx install --force .`; never clone again, and never check out or install any other commit, tag or branch. Run `aitools-alerts init`, then, from that checkout and as its README describes, enable the hourly monitoring schedule for this system and add the supported agent instructions for your harness without weakening their safety rules. Verify that monitoring runs, then tell me what you installed and any remaining manual steps or limitations.
+> Set up ai-tools-alerts release v0.1.7, commit 5fa973d42f90e880835d6a3dd311014cbc32d2a0. Clone https://github.com/Joi/ai-tools-alerts and, before you read any other file from it or install anything, run `git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.7`, `git rev-parse 'v0.1.7^{commit}'` and `git tag --list 'v*' --sort=-v:refname` in the clone. Continue only if the tag check exits 0 and prints `Good "git" signature for 19930+Joi@users.noreply.github.com with ED25519 key SHA256:DS1FNZqf0HglC1QEQ50LS4AJny8P8MxvrHRj4vPEqaA`, that fingerprint also appears on https://buzz.ai-tools.md/alerts/, the commit is exactly 5fa973d42f90e880835d6a3dd311014cbc32d2a0, and v0.1.7 is the first line of the tag list. If any check fails, stop, install nothing, and tell me what failed. Then, in that clone, run `git checkout --detach 5fa973d42f90e880835d6a3dd311014cbc32d2a0` and `pipx install --force .`; never clone again, and never check out or install any other commit, tag or branch. Run `aitools-alerts init`, then, from that checkout and as its README describes, enable the hourly monitoring schedule for this system and add the supported agent instructions for your harness without weakening their safety rules. Verify that monitoring runs, then tell me what you installed and any remaining manual steps or limitations.
 
 ## Detailed install
 
@@ -55,26 +55,26 @@ You need Python 3.11 or later and nothing else; the CLI uses the standard librar
 
 ### Verify the release
 
-The pinned release is `v0.1.6`, commit `71872f7ea90e16897c98affb2e026ac4aca6ebd7`. Release tags are signed with an SSH key on Joi's GitHub account. The README on the default branch pins the latest release; the README inside a release pins the one before it, because a commit cannot contain its own hash. Check the tag and the commit before you install anything:
+The pinned release is `v0.1.7`, commit `5fa973d42f90e880835d6a3dd311014cbc32d2a0`. Release tags are signed with an SSH key on Joi's GitHub account. The README on the default branch pins the latest release; the README inside a release pins the one before it, because a commit cannot contain its own hash. Check the tag and the commit before you install anything:
 
 ```
 git clone https://github.com/Joi/ai-tools-alerts && cd ai-tools-alerts
-git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.6
-git rev-parse 'v0.1.6^{commit}'
+git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.1.7
+git rev-parse 'v0.1.7^{commit}'
 git tag --list 'v*' --sort=-v:refname
 ```
 
-The tag check passes only if it exits 0 and prints `Good "git" signature for 19930+Joi@users.noreply.github.com with ED25519 key SHA256:DS1FNZqf0HglC1QEQ50LS4AJny8P8MxvrHRj4vPEqaA`. `No principal matched` or `no signature found` is a failure: do not install. The commit check passes only if it prints exactly `71872f7ea90e16897c98affb2e026ac4aca6ebd7`; anything else means the tag is not the release this README pins: do not install. The tag list must start with `v0.1.6`: a newer tag means this README is out of date, so get the current one from the default branch; an older pin can be a downgrade to a release with known flaws.
+The tag check passes only if it exits 0 and prints `Good "git" signature for 19930+Joi@users.noreply.github.com with ED25519 key SHA256:DS1FNZqf0HglC1QEQ50LS4AJny8P8MxvrHRj4vPEqaA`. `No principal matched` or `no signature found` is a failure: do not install. The commit check passes only if it prints exactly `5fa973d42f90e880835d6a3dd311014cbc32d2a0`; anything else means the tag is not the release this README pins: do not install. The tag list must start with `v0.1.7`: a newer tag means this README is out of date, so get the current one from the default branch; an older pin can be a downgrade to a release with known flaws.
 
 `trust/allowed_signers` comes from the same repository as the tag, so the tag check alone shows only that the two agree. Compare the full fingerprint with the copy on the mirror page, `https://buzz.ai-tools.md/alerts/`, which the relay VM serves, not GitHub; a missing copy is not a pass: wait for it. GitHub's tags page shows the tag as Verified, and `https://github.com/Joi.keys` lists the key; both depend on the GitHub account alone.
 
 Only after every check passes, check out the pinned commit:
 
 ```
-git checkout --detach 71872f7ea90e16897c98affb2e026ac4aca6ebd7
+git checkout --detach 5fa973d42f90e880835d6a3dd311014cbc32d2a0
 ```
 
-Then install from this checkout (Install, below). You may instead install the same commit from GitHub, which pip fetches by hash, so a moved tag or a push to a branch cannot change what it installs: `pipx install git+https://github.com/Joi/ai-tools-alerts@71872f7ea90e16897c98affb2e026ac4aca6ebd7`. Either way, check out the commit first: the template, hook and skill files below come from this checkout.
+Then install from this checkout (Install, below). You may instead install the same commit from GitHub, which pip fetches by hash, so a moved tag or a push to a branch cannot change what it installs: `pipx install git+https://github.com/Joi/ai-tools-alerts@5fa973d42f90e880835d6a3dd311014cbc32d2a0`. Either way, check out the commit first: the template, hook and skill files below come from this checkout.
 
 ### Install
 
