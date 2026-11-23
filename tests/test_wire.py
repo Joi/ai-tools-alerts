@@ -47,6 +47,9 @@ def test_claim_tag_limit_is_in_bytes():
     {"tags": [["claim", '{"a":NaN}']]},
     {"tags": [["claim", '{"a":"' + "x" * wire.MAX_CLAIM_BYTES + '"}']]},
     {"tags": [["claim", "[" * 100000]]},
+    {"tags": [["claim", "[" * 2000]]},  # within the limit: too deep to parse
+    {"tags": [["claim", '{"a":1e999}']]}, {"tags": [["claim", '{"a":-1e999}']]},  # infinity, without the word
+    {"tags": [["claim", '{"a":"\\ud800"}']]},  # an escaped lone surrogate
     {"tags": [["claim", "\ud800"]]},
 ])
 def test_claim_of_is_none_and_never_raises(event):
@@ -97,6 +100,13 @@ def test_reply_post_refuses_a_lowering_alone_or_with_a_fix():
         with pytest.raises(ValueError, match="a lowering travels alone"):
             compose.reply_post(prev, cand(), changes)
     assert '"fixed": "2.2.0"' in compose.reply_post(prev, cand(), {"products": fixed})  # the fix alone still posts
+    # Rule 2: once a thread was lowered, a raise travels alone too; other changes still post.
+    was_lowered = replace(prev, level="notice")
+    assert '"level": "high"' in compose.reply_post(was_lowered, cand(), {"level": "high", "products": fixed})
+    for changes in ({"level": "high", "products": fixed}, {"level": "high"}):
+        with pytest.raises(ValueError, match="was lowered"):
+            compose.reply_post(was_lowered, cand(), changes, lowered=True)
+    assert '"fixed": "2.2.0"' in compose.reply_post(was_lowered, cand(), {"products": fixed}, lowered=True)
 
 
 def test_this_reader_keeps_the_higher_level_and_ignores_the_claim_tag():

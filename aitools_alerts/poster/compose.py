@@ -447,10 +447,13 @@ def _change_line(k: str, adv: schema.Advisory, unexpressed: bool = False) -> str
     }[k]
 
 
-def reply_post(prev: schema.Advisory, c, changes: dict, *, reason: str | None = None) -> str:
+def reply_post(prev: schema.Advisory, c, changes: dict, *, reason: str | None = None,
+               lowered: bool = False) -> str:
     """A thread reply: one line per changed field, a source line, then a block of the
     changed fields only. Unchanged keys are dropped; aliases and sources are capped
     at the schema's 50 and 20. ``reason`` 'unverified' adds the unverified line.
+    ``lowered``: the thread has had a lowering (the caller's ledger knows); then no
+    level change at all may ride here, a raise included (spec/wire.md, rule 2).
     Raises ValueError for an empty, invalid or unpublishable patch."""
     if not isinstance(changes, dict):
         raise ValueError("changes: not an object")
@@ -480,9 +483,12 @@ def reply_post(prev: schema.Advisory, c, changes: dict, *, reason: str | None = 
         # reply leaves the key out (spec/wire.md).
         raise ValueError("reply: a relay-bot reply carries no expires_at")
     if wire.is_lowering(patch, prev.level):
-        # Readers at 0.1.7 and earlier skip a relay-bot reply that lowers the level:
-        # a fix or a source in the same reply would be lost with it (spec/wire.md).
+        # Readers at 0.1.7 and earlier skip a relay-bot reply that lowers the level: before
+        # 0.1.7 a fix or a source in the same reply is lost with it (spec/wire.md).
         raise ValueError("reply: a lowering travels alone (level_post)")
+    if lowered and "level" in patch:
+        # Those readers kept the higher level, so this raise may be a lowering to them.
+        raise ValueError("reply: on a thread that was lowered, a level change travels alone (level_post)")
     merged = apply_patch(prev, patch)
     _publishable(prev, merged, patch)
     body = [UNVERIFIED[0].upper() + UNVERIFIED[1:] + "."] if reason == "unverified" else []

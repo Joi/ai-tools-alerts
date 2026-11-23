@@ -108,7 +108,7 @@ def released(tmp_path, tag, m, now) -> dict:
     run = released_reader(tmp_path, tag=tag)
     got = run("pull", "--mirror-url", m.write(tmp_path / "mirror"), root=m.root)
     assert got.returncode == 0 and "Traceback" not in got.stderr, (got.stdout, got.stderr)
-    if tag >= "v0.1.6":  # a checked pull: the certificate, min_cli key and all, was accepted
+    if tuple(map(int, tag[1:].split("."))) >= (0, 1, 6):  # a checked pull: the certificate, min_cli key and all, was accepted
         assert "; checkpoint " in got.stdout and " lists " in got.stdout and "unverified" not in got.stderr, got
     out = run.py(DUMP, str(now), root=m.root)
     assert out.returncode == 0, out.stderr
@@ -130,8 +130,9 @@ def test_every_alert_still_appears_on_a_released_reader_at_the_same_or_a_higher_
         assert theirs[at]["AITA-TEST-0002"] == ["critical", ["99.1.0"], True]  # a raise applies, claim tag and all
 
 
+@pytest.mark.parametrize("tag", ("v0.1.4", "v0.1.6"))
 @pytest.mark.parametrize("mixed", ["a lowering with a fix", "a raise with a fix, after a lowering"])
-def test_what_the_format_avoids_a_level_change_mixed_with_a_fix_loses_the_fix(tmp_path, mixed):
+def test_what_the_format_avoids_a_level_change_mixed_with_a_fix_loses_the_fix(tmp_path, mixed, tag):
     """The control for "a level change travels alone": a reply that lowers and fixes is
     skipped whole by readers before 0.1.7, so the member never learns the fixed version.
     After a lowering such a reader still holds critical, so a raise from notice to high
@@ -145,7 +146,7 @@ def test_what_the_format_avoids_a_level_change_mixed_with_a_fix_loses_the_fix(tm
     else:
         reply(compose.level_post(advisory(posted_by="relay-bot"), "notice"), now - 3000)
         reply(m.patch_text(level="high", products=fix), now - 2000)
-    assert released(tmp_path, "v0.1.4", m, now)[str(now)] == {"AITA-TEST-0001": ["critical", ["99.0.0"], True]}
+    assert released(tmp_path, tag, m, now)[str(now)] == {"AITA-TEST-0001": ["critical", ["99.0.0"], True]}
 
 
 @pytest.mark.parametrize("tag", RELEASED)

@@ -3,7 +3,8 @@
 Readers at 0.1.7 and earlier refuse an ``aitools-alert`` block with a key
 they do not know (the root is never an advisory), a manifest with a key they
 do not know (the pull fails), and a relay-bot reply that lowers a level (the
-whole reply is skipped). They ignore an event tag they do not know. So the
+reply is skipped; 0.1.7 alone still joins its products, actions and sources).
+They ignore an event tag they do not know. So the
 block and the manifest do not change, and what the self-correcting design
 adds goes here (spec/wire.md; tests/test_wire_compat.py runs the released
 readers against it):
@@ -55,7 +56,9 @@ def claim_tag(obj) -> list:
 def claim_of(event) -> dict | None:
     """The claim an event carries, or None: exactly one ``claim`` tag, of two
     elements, whose value is an object within the limit, strictly parsed (no
-    duplicate key, no NaN). Never raises. Verify the event's signature first:
+    duplicate key, no NaN, no number or string that JSON text cannot carry
+    back: ``1e999``, an escaped lone surrogate). Whatever it returns,
+    ``claim_tag`` can write. Never raises. Verify the event's signature first:
     a tag proves nothing by itself."""
     tags = event.get("tags") if isinstance(event, dict) else None
     if not isinstance(tags, list):
@@ -68,9 +71,13 @@ def claim_of(event) -> dict | None:
         if len(text.encode("utf-8")) > MAX_CLAIM_BYTES:
             return None
         obj = json.loads(text, object_pairs_hook=schema._no_duplicates, parse_constant=schema._reject_constant)
+        if not isinstance(obj, dict):
+            return None
+        # 1e999 parses to infinity and "\ud800" to a lone surrogate: neither can be written again
+        json.dumps(obj, allow_nan=False, ensure_ascii=False).encode("utf-8")
     except (ValueError, RecursionError):  # not JSON, a lone surrogate, nested too deeply
         return None
-    return obj if isinstance(obj, dict) else None
+    return obj
 
 
 def is_lowering(patch, level: str) -> bool:

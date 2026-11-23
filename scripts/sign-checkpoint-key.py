@@ -11,11 +11,13 @@ that manifest's event id, so every new manifest needs a new certificate: sign
 the manifest, then run this. It expires --days after now (1 to 400).
 
 --min-cli names the oldest aitools-alerts release that can read the feed. A CLI
-older than it prints one "upgrade" line on every command; nothing is refused.
+older than it prints one "upgrade" line on every command that reads the feed;
+nothing is refused.
 It lives here and not in the manifest because released readers refuse a
 manifest with a key they do not know and ignore one in this certificate
-(spec/wire.md). Readers at 0.1.7 and earlier never print the line. Pass it
-again on every later certificate, or the floor is gone.
+(spec/wire.md). The 0.1.7 release and earlier never print the line. Pass it
+again on every later certificate, or the floor is gone: the script says so on
+stderr when the certificate it replaces named one and this run does not.
 
 The key is taken as an npub only. A 64-hex secret key is a valid public key
 about half the time, so a hex argument could put a secret, pasted by mistake,
@@ -122,6 +124,9 @@ def main(argv=None) -> int:
             _die(f"existing {args.out} is not signed by the trust root; move it aside to replace it")
         if previous.issued_at >= now:  # readers that hold it would refuse the new one (cert_order)
             _die(f"existing {args.out} is issued at or after this machine's clock; check the clock")
+        if previous.min_cli is not None and args.min_cli is None:
+            print(f"sign-checkpoint-key: warning: the certificate being replaced names min_cli {previous.min_cli} "
+                  "and this one names none; pass --min-cli to keep the floor", file=sys.stderr)
 
     sec = read_root_secret()
     try:

@@ -31,7 +31,7 @@ What the object holds, its canonical form and its test vectors are defined with 
 ## Level changes and expiry
 
 1. **Every lowering by the relay bot is a level-only reply:** its block is exactly `{"level": "<level>"}` (`poster.compose.level_post`). Released readers skip it and keep the higher level. Nothing else is in it to lose.
-2. **On a thread that has had a lowering, every later level change is a level-only reply too.** A released reader still holds the higher level, so a raise from notice to high is a lowering to it, and it would skip a fix sent in the same reply. On a thread never lowered, a raise may share a reply.
+2. **On a thread that has had a lowering, every later level change is a level-only reply too.** A released reader still holds the higher level, so a raise from notice to high is a lowering to it, and it would skip a fix sent in the same reply. On a thread never lowered, a raise may share a reply. The poster knows which threads it lowered; it passes `lowered=True` to `compose.reply_post`, which then refuses any level change.
 3. **A relay-bot block sets no expiry.** A root's block has `"expires_at": null` (the schema requires the key); a reply's block leaves the key out. Expiry is computed from the claim by readers that know it.
 
 A released reader that has refused a lowering shows the alert at its earlier, higher level for as long as the thread lasts. That is intended: the reader cannot check the lowering, and too high is the safe side.
@@ -40,7 +40,7 @@ A narrowing of `products` is not covered here. v0.1.4 to v0.1.6 apply any relay-
 
 ## `min_cli`
 
-The trust root can name the oldest release that reads the feed in full. It is an optional key in the content of the checkpoint key certificate (`trust/checkpoint-key.json`): `"min_cli": "0.2.0"`, three dotted numbers. A CLI older than it prints one `upgrade:` line on every command and goes on working; nothing is refused or hidden because of it. Readers at 0.1.7 and earlier ignore the key.
+The trust root can name the oldest release that reads the feed in full. It is an optional key in the content of the checkpoint key certificate (`trust/checkpoint-key.json`): `"min_cli": "0.2.0"`, three dotted numbers. A CLI older than it prints one `upgrade:` line after every command that reads the feed (`pull`, `check`, `notify`, `plan`, `run`), once it holds the certificate, and goes on working; nothing is refused or hidden because of it. The 0.1.7 release and earlier ignore the key.
 
 It is not in the manifest because a released reader refuses a manifest with a key it does not know. The same holds for anything else the root must pin later (a ruleset digest): the certificate, not the manifest.
 

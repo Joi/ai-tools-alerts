@@ -569,3 +569,12 @@ def test_script_signs_min_cli_and_checks_it_before_reading_the_root_key(w, scrip
     assert script.calls == [] and not script.out.exists()
     assert script.main(script.argv(nostr.npub(w.ck), "--min-cli", "0.2.0")) == 0
     assert cp.load_cert(script.out).min_cli == "0.2.0"
+
+
+def test_script_warns_when_a_new_certificate_drops_the_floor(w, script, monkeypatch, capsys):
+    assert script.main(script.argv(nostr.npub(w.ck), "--min-cli", "0.2.0")) == 0
+    assert "warning" not in capsys.readouterr().err
+    monkeypatch.setattr(script.time, "time", lambda: T0 + 60.0)
+    assert script.main(script.argv(nostr.npub(w.ck))) == 0
+    assert "names min_cli 0.2.0 and this one names none" in capsys.readouterr().err
+    assert cp.load_cert(script.out).min_cli is None

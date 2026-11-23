@@ -465,7 +465,10 @@ def main(argv: list[str] | None = None) -> int:
                     "plan": cmd_plan, "run": cmd_run}[a.cmd](a, st, s)
         finally:  # every command that reads the feed, whatever it returned: an old CLI never goes quiet
             if need := _min_cli(a, st):
-                _err(UPGRADE_LINE.format(have=__version__, need=need))
+                try:
+                    _err(UPGRADE_LINE.format(have=__version__, need=need))
+                except OSError:  # stderr is gone: the command's own result still stands
+                    pass
     except (config.ConfigError, StateError, curator.CuratorError, relay.RelayError,
             pull.ChannelSpecError) as e:
         _err(str(e))
