@@ -1,0 +1,14 @@
+{
+  "pubkey": "afb55ca02209ca12e980bba67262f478b7977b6fdc6bbaf8c3b9fb96983c78a4",
+  "created_at": 1795464556,
+  "kind": 30078,
+  "tags": [
+    [
+      "d",
+      "aitools-alerts-checkpoint-key"
+    ]
+  ],
+  "content": "{\"checkpoint_key\":\"64c1fac69047031a938aa1d414fa64f80e73544d5446bbdc24c8003bcbdc9f92\",\"expires_at\":\"2027-03-23T20:09:16Z\",\"issued_at\":\"2026-11-23T20:09:16Z\",\"manifest_id\":\"88c95a87c7ecfbcbeab49ac532df588399c323f27b85ba2c819cc5af39171309\",\"manifest_version\":3,\"v\":1}",
+  "id": "7e341126b498a0b2b1fee435205baa789896ba5459ff79367b88c43fb106f6b4",
+  "sig": "dc2130c1effc50c4d7ea32d7fd861c6c4d966fd7903b5625087605d568acbb0375e7d0081f30afa842d90a71f01450c6393a93bb49d2f66539884a34cd15caae"
+}
