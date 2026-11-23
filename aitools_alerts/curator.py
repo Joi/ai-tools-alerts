@@ -252,10 +252,13 @@ def amend_event(sec: str, m, root: str, st: State, thread, root_ev: dict, *, lev
             new["level"] = level
     if fixed is not None:
         name, _, ver = fixed.rpartition("=")
+        # A thread may list one product more than once: a relay-bot reply adds
+        # an entry beside one it neither widens nor narrows (ai-tools-alerts#tyje).
         hits = [p for p in new["products"] if not name or p["name"] == name]
-        if len(hits) != 1:
+        if len({p["name"] for p in hits}) != 1:
             raise CuratorError("--fixed: give NAME=VERSION naming one product")
-        hits[0]["fixed"] = ver
+        for p in hits:
+            p["fixed"] = ver
         for a in new["actions"]:
             if a["verb"] == "upgrade" and a["target"] == hits[0]["name"]:
                 a["value"] = ver
@@ -273,8 +276,14 @@ def amend_event(sec: str, m, root: str, st: State, thread, root_ev: dict, *, lev
     patch = {k: v for k, v in new.items() if v != old[k]}
     if not patch and lower is None:
         raise CuratorError("nothing to change")
+    # A list relay-bot replies have joined past the schema's limit is kept
+    # whole when this amendment does not name it, as the readers keep it.
+    long = {k: getattr(prev, k) for k, limit in pull.LIST_LIMITS.items()
+            if k not in patch and len(getattr(prev, k)) > limit}
     try:
-        merged = compose.apply_patch(replace(prev, level=lower or prev.level), patch)
+        merged = compose.apply_patch(replace(prev, level=lower or prev.level,
+                                             **{k: v[:pull.LIST_LIMITS[k]] for k, v in long.items()}), patch)
+        merged = replace(merged, **long)
     except ValueError as e:
         raise CuratorError(f"the amended advisory is not valid: {e}") from None
     # The first line is always ours: a note can never read as retract or level.

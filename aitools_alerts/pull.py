@@ -55,7 +55,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field, replace
 from urllib.parse import urlsplit
 
-from . import TRUST_DIR, TRUST_ROOT_PUBKEY, manifest, nostr, schema
+from . import TRUST_DIR, TRUST_ROOT_PUBKEY, manifest, nostr, schema, versions
 from . import checkpoint as cpt
 from .manifest import Manifest
 from .schema import Advisory
@@ -671,13 +671,88 @@ def _patch(content: str) -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
-def _apply_patch(adv: Advisory, patch: dict, role: str) -> Advisory | None:
+def _fixed_holds(old: str | None, new: str | None) -> bool:
+    """``fixed`` never falls. None (no version is known to fix it) is the
+    highest: it may be reached, never left. check.plan takes an upgrade's
+    version from ``fixed``, so this holds whatever the range is."""
+    if new is None or new == old:
+        return True
+    a, b = versions.parse(old), versions.parse(new)
+    return a is not None and b is not None and b > a
+
+
+def _covered(p, by: list) -> bool:
+    """One product entry of ``by`` stands for ``p``: the same ecosystem and
+    name (as check.match compares names), a range that matches every
+    installation ``p``'s matches, and a ``fixed`` that is not lower."""
+    return any(q.ecosystem == p.ecosystem and q.name.lower() == p.name.lower()
+               and _fixed_holds(p.fixed, q.fixed)
+               and versions.covers(p.affected, p.fixed, q.affected, q.fixed) for q in by)
+
+
+def _kept(a, by: list) -> bool:
+    """One action of ``by`` says what ``a`` says: the same verb, target and
+    value. An upgrade's version is ordered as ``fixed`` is: one with a
+    higher version, or with none, stands for it."""
+    return any((b.verb, b.target) == (a.verb, a.target)
+               and (b.value == a.value or (a.verb == "upgrade" and _fixed_holds(a.value, b.value)))
+               for b in by)
+
+
+def _listed(s, by: list) -> bool:
+    return any(t.url == s.url for t in by)
+
+
+# field -> (the schema's list limit, "an entry of this list stands for that one")
+_WIDEST = {"products": (50, _covered), "actions": (20, _kept), "sources": (20, _listed)}
+LIST_LIMITS = {k: v[0] for k, v in _WIDEST.items()}  # what one event may carry; a joined list may hold more
+# Past this many entries a list is no longer compared entry by entry: each
+# comparison is a scan, and a key that floods a thread with entries none of
+# which stands for another would otherwise cost every read their square.
+_JOIN_SCAN = 200
+
+
+def _join(cur: list, new: list, stands) -> list:
+    """``cur`` and ``new`` as one list in which every entry of either is
+    stood for: an entry of ``new`` that ``cur`` already stands for adds
+    nothing; any other is appended and replaces the entries it stands for.
+    Nothing a member matched or was shown through either list is lost, in
+    whatever order the lists arrive. A list past _JOIN_SCAN entries only
+    grows: an entry not already in it is appended without comparison, which
+    loses nothing either."""
+    out = list(cur)
+    have = set(out)
+    for q in new:
+        if q in have:
+            continue
+        if len(out) <= _JOIN_SCAN:
+            if stands(q, out):
+                continue
+            out = [p for p in out if not stands(p, [q])]
+            have = set(out)
+        out.append(q)
+        have.add(q)
+    return out
+
+
+def _apply_patch(adv: Advisory, patch: dict, role: str, dropped: Counter | None = None) -> Advisory | None:
     """The advisory with ``patch`` applied, or None if the patch is invalid.
     Omitted field: unchanged. Present: replaced whole. null: cleared (only
     nullable fields validate as null); {} changes nothing. ``id`` and
     ``posted_by`` may not appear (B3 compose's contract): the thread keeps
-    its root's id and role. A relay-bot patch may not
-    lower ``level`` or set ``expires_at`` (both would hide an alert)."""
+    its root's id and role.
+
+    A patch from any role but curator never shrinks what a member sees
+    (ai-tools-alerts#tyje). One that lowers ``level`` or sets ``expires_at``
+    is invalid. Its ``products``, ``actions`` and ``sources`` do not replace
+    the thread's: they are joined to them (_join), so the patch can add an
+    entry or widen one and can take nothing away. A patch whose list does not
+    itself stand for everything the thread held is counted once in
+    ``dropped`` as ``narrowing``. The join does not depend on the order the
+    patches are read in, so a patch dated before one already applied cannot
+    undo it. A joined list may pass the schema's limit; the limit is checked
+    on what each event carries. A curator's patch replaces the fields it
+    names."""
     if set(patch) - (_PATCH_KEYS - {"id", "posted_by"}):
         return None  # B3's contract: id and posted_by may not appear
     if role != "curator":
@@ -686,10 +761,21 @@ def _apply_patch(adv: Advisory, patch: dict, role: str) -> Advisory | None:
         lvl = patch.get("level", adv.level)
         if not isinstance(lvl, str) or lvl not in _RANK or _RANK[lvl] < _RANK[adv.level]:
             return None
+    # A joined list past the limit must not fail a patch that omits it.
+    base = asdict(replace(adv, **{k: getattr(adv, k)[:limit] for k, limit in LIST_LIMITS.items()}))
     try:
-        return schema.validate({**asdict(adv), **patch, "posted_by": adv.posted_by})
+        new = schema.validate({**base, **patch, "posted_by": adv.posted_by})
     except ValueError:
         return None
+    keep = {k: getattr(adv, k) for k in _WIDEST if k not in patch}
+    if role != "curator":
+        named = [k for k in _WIDEST if k in patch]
+        if dropped is not None and any(
+                len(getattr(adv, k)) > _JOIN_SCAN  # no single event's list stands for a flooded one
+                or not all(_WIDEST[k][1](e, getattr(new, k)) for e in getattr(adv, k)) for k in named):
+            dropped["narrowing"] += 1
+        keep.update((k, _join(getattr(adv, k), getattr(new, k), _WIDEST[k][1])) for k in named)
+    return replace(new, **keep)
 
 
 def _first_line(content: str) -> str:
@@ -757,7 +843,10 @@ def advisories(state: State, dropped: Counter | None = None, checkpointed: bool 
     Replies apply to their root in (created_at, id) order. A curator reply
     whose first line is ``retract`` retracts the thread for good; one whose
     first line is ``level: high`` or ``level: notice`` lowers the level. A
-    reply's ``aitools-alert`` block, if any, is a patch (see _apply_patch).
+    reply's ``aitools-alert`` block, if any, is a patch (see _apply_patch):
+    a relay-bot's adds to or widens the products, actions and sources of
+    its thread and never narrows them (an attempt is counted as
+    ``narrowing``), even when the rest of it is refused.
     Once a curator has posted or amended a thread, a relay-bot reply to it is
     discussion, so the bot can neither suppress, alter nor undo a curator's
     word; only its ``lang:`` translations still count (ai-tools-alerts#bq8v). A patch that fails validation, or raises, is counted and skipped.
@@ -832,12 +921,23 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
         if p is None:
             continue  # convention text only, or discussion
         try:
-            new = _apply_patch(t[0], p, role)
+            new = _apply_patch(t[0], p, role, dropped)
         except Exception:  # a hostile patch never stops the other threads
             new = None
         if new is None:
             dropped["bad-patch"] += 1
-        else:
+            if role != "curator":
+                # What a refused patch adds to products, actions or sources
+                # still counts: were it lost with the patch, a patch dated
+                # earlier that raises the level would take it away.
+                p = {k: p[k] for k in _WIDEST if k in p}
+                try:
+                    new = _apply_patch(t[0], p, role) if p else None
+                except Exception:
+                    new = None
+                if new == t[0]:
+                    new = None
+        if new is not None:
             t[0], t[2], t[3] = new, ev["created_at"], t[3] or role == "curator"
             if t[6][-1] != ev["id"]:
                 t[6].append(ev["id"])
