@@ -112,6 +112,76 @@ def check(installed: str | None, affected: str | None, fixed: str | None) -> boo
     return result
 
 
+def _bounds(affected: str | None, fixed: str | None) -> tuple | None:
+    """A range as ``check`` reads it: (lower, upper), each None or (sort key,
+    inclusive). None when ``check`` could not read it (it then answers None
+    for every installed version)."""
+    lows, highs = [], []
+    if affected is not None:
+        if not isinstance(affected, str):
+            return None
+        parts = [] if affected == "*" else affected.split(",")
+        if affected != "*" and not 1 <= len(parts) <= 4:
+            return None
+        for comparator in parts:
+            m = _COMPARATOR.fullmatch(comparator)
+            key = parse(m.group(2)) if m else None
+            if key is None:
+                return None
+            if m.group(1) in (">", ">=", "="):
+                lows.append((key, m.group(1) != ">"))
+            if m.group(1) in ("<", "<=", "="):
+                highs.append((key, m.group(1) != "<"))
+    if fixed is not None:
+        key = parse(fixed) if isinstance(fixed, str) else None
+        if key is None:
+            return None
+        highs.append((key, False))
+    # The tightest of each: at one version an exclusive bound is the tighter.
+    return (max(lows, key=lambda b: (b[0], not b[1]), default=None),
+            min(highs, default=None))
+
+
+def _empty(bounds: tuple) -> bool:
+    lo, hi = bounds
+    return lo is not None and hi is not None and (
+        lo[0] > hi[0] or (lo[0] == hi[0] and not (lo[1] and hi[1])))
+
+
+def covers(affected: str | None, fixed: str | None,
+           by_affected: str | None, by_fixed: str | None) -> bool:
+    """True only when every installation the first range matches is matched
+    by the second (the ``by_`` pair) with at least the same actions, as
+    ``check.match`` decides both. Sufficient, not necessary: it may answer
+    False for a range that does cover, never True for one that does not.
+
+    A range with neither part matches by name alone, with actions. An
+    unreadable range matches every installed version as unparsable-version,
+    with no actions: it is covered only by another unreadable one or by one
+    with no bound, and it covers nothing readable."""
+    if (affected, fixed) == (by_affected, by_fixed):
+        return True
+    if by_affected is None and by_fixed is None:
+        return True
+    if affected is None and fixed is None:
+        return False
+    inner, outer = _bounds(affected, fixed), _bounds(by_affected, by_fixed)
+    if inner is None:
+        return outer is None or outer == (None, None)
+    if outer is None:
+        return False
+    if _empty(inner):
+        return True
+    if _empty(outer):
+        return False
+    (lo, hi), (by_lo, by_hi) = inner, outer
+    low = by_lo is None or (lo is not None and (
+        by_lo[0] < lo[0] or (by_lo[0] == lo[0] and (by_lo[1] or not lo[1]))))
+    high = by_hi is None or (hi is not None and (
+        by_hi[0] > hi[0] or (by_hi[0] == hi[0] and (by_hi[1] or not hi[1]))))
+    return low and high
+
+
 def affected(installed: str, affected: str | None, fixed: str | None) -> bool:
     """The plan's interface: True only when installed is readably affected."""
     return check(installed, affected, fixed) is True

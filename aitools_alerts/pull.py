@@ -55,7 +55,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field, replace
 from urllib.parse import urlsplit
 
-from . import TRUST_DIR, TRUST_ROOT_PUBKEY, manifest, nostr, schema
+from . import TRUST_DIR, TRUST_ROOT_PUBKEY, manifest, nostr, schema, versions
 from . import checkpoint as cpt
 from .manifest import Manifest
 from .schema import Advisory
@@ -671,13 +671,71 @@ def _patch(content: str) -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
-def _apply_patch(adv: Advisory, patch: dict, role: str) -> Advisory | None:
+def _fixed_holds(old: str | None, new: str | None) -> bool:
+    """``fixed`` never falls. None (no version is known to fix it) is the
+    highest: it may be reached, never left. check.plan takes an upgrade's
+    version from ``fixed``, so this holds whatever the range is."""
+    if new is None or new == old:
+        return True
+    a, b = versions.parse(old), versions.parse(new)
+    return a is not None and b is not None and b > a
+
+
+def _covered(p, by: list) -> bool:
+    """One patched product entry stands for ``p``: the same ecosystem and
+    name (as check.match compares names), a range that matches every
+    installation ``p``'s matches, and a ``fixed`` that is not lower."""
+    return any(q.ecosystem == p.ecosystem and q.name.lower() == p.name.lower()
+               and _fixed_holds(p.fixed, q.fixed)
+               and versions.covers(p.affected, p.fixed, q.affected, q.fixed) for q in by)
+
+
+def _kept(a, by: list) -> bool:
+    """A patched action says what ``a`` says: the same verb, target and
+    value. An upgrade's version may rise (it follows a raised ``fixed``),
+    never fall, appear or go."""
+    for b in by:
+        if (b.verb, b.target) != (a.verb, a.target):
+            continue
+        if b.value == a.value:
+            return True
+        if a.verb == "upgrade":
+            old, new = versions.parse(a.value), versions.parse(b.value)
+            if old is not None and new is not None and new > old:
+                return True
+    return False
+
+
+def _narrowed(adv: Advisory, new: Advisory) -> list[str]:
+    """The fields in which ``new`` would shrink what a member sees of
+    ``adv``: a product entry no patched entry covers (removed, a narrower
+    ``affected``, a lower ``fixed``, a ``fixed`` where there was none), an
+    action not kept, a source URL gone."""
+    out = []
+    if not all(_covered(p, new.products) for p in adv.products):
+        out.append("products")
+    if not all(_kept(a, new.actions) for a in adv.actions):
+        out.append("actions")
+    if not {s.url for s in adv.sources} <= {s.url for s in new.sources}:
+        out.append("sources")
+    return out
+
+
+def _apply_patch(adv: Advisory, patch: dict, role: str, dropped: Counter | None = None) -> Advisory | None:
     """The advisory with ``patch`` applied, or None if the patch is invalid.
     Omitted field: unchanged. Present: replaced whole. null: cleared (only
     nullable fields validate as null); {} changes nothing. ``id`` and
     ``posted_by`` may not appear (B3 compose's contract): the thread keeps
-    its root's id and role. A relay-bot patch may not
-    lower ``level`` or set ``expires_at`` (both would hide an alert)."""
+    its root's id and role.
+
+    A patch from any role but curator never shrinks what a member sees
+    (ai-tools-alerts#tyje). One that lowers ``level`` or sets ``expires_at``
+    is invalid whole. In ``products``, ``actions`` and ``sources`` it may
+    only add or widen: a field it would narrow (see _narrowed) keeps its
+    value, the rest of the patch applies, and the patch is counted once in
+    ``dropped`` as ``narrowing``. Each of the three is therefore always the
+    widest signed state the thread has had. A curator's patch is not
+    compared."""
     if set(patch) - (_PATCH_KEYS - {"id", "posted_by"}):
         return None  # B3's contract: id and posted_by may not appear
     if role != "curator":
@@ -687,9 +745,16 @@ def _apply_patch(adv: Advisory, patch: dict, role: str) -> Advisory | None:
         if not isinstance(lvl, str) or lvl not in _RANK or _RANK[lvl] < _RANK[adv.level]:
             return None
     try:
-        return schema.validate({**asdict(adv), **patch, "posted_by": adv.posted_by})
+        new = schema.validate({**asdict(adv), **patch, "posted_by": adv.posted_by})
     except ValueError:
         return None
+    if role != "curator":
+        held = _narrowed(adv, new)
+        if held:
+            new = replace(new, **{k: getattr(adv, k) for k in held})
+            if dropped is not None:
+                dropped["narrowing"] += 1
+    return new
 
 
 def _first_line(content: str) -> str:
@@ -757,7 +822,9 @@ def advisories(state: State, dropped: Counter | None = None, checkpointed: bool 
     Replies apply to their root in (created_at, id) order. A curator reply
     whose first line is ``retract`` retracts the thread for good; one whose
     first line is ``level: high`` or ``level: notice`` lowers the level. A
-    reply's ``aitools-alert`` block, if any, is a patch (see _apply_patch).
+    reply's ``aitools-alert`` block, if any, is a patch (see _apply_patch):
+    a relay-bot's may add to or widen the products, actions and sources of
+    its thread, never narrow them (counted as ``narrowing``).
     Once a curator has posted or amended a thread, a relay-bot reply to it is
     discussion, so the bot can neither suppress, alter nor undo a curator's
     word; only its ``lang:`` translations still count (ai-tools-alerts#bq8v). A patch that fails validation, or raises, is counted and skipped.
@@ -832,7 +899,7 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
         if p is None:
             continue  # convention text only, or discussion
         try:
-            new = _apply_patch(t[0], p, role)
+            new = _apply_patch(t[0], p, role, dropped)
         except Exception:  # a hostile patch never stops the other threads
             new = None
         if new is None:
