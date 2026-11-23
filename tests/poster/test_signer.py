@@ -773,3 +773,15 @@ def test_a_bare_id_or_a_broken_copy_does_not_count_as_served(signing):
         assert goes["id"] in rec["gone"] and stays["id"] not in rec["gone"], summary
     _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + 80 * 3600)
     assert "gone_dropped=1" in summary and goes["id"] not in ssh.last().events
+
+
+@pytest.mark.parametrize("drop", ["relay_ssh_host", "relay_put_wrapper", "checkpoint_key_file"])
+def test_a_config_built_in_code_with_two_of_the_three_checkpoint_keys_never_posts(signing, drop, capsys):
+    """check_relay applies load_config's all-or-none rule (vzc3, after nfm3): a run stops
+    before it posts instead of posting with the checkpoint silently off."""
+    signing.collector([finding()])
+    signing.config = replace(signing.config, **{drop: None})
+    relay = PutRelay()
+    code, summary, _ = signing.run(relay=relay)
+    assert code == 2 and "error=config" in summary and relay.calls == [] and relay.puts == []
+    assert "go together" in capsys.readouterr().err

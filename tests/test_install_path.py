@@ -133,3 +133,19 @@ def test_security_policy_and_codeowners():
               if l.strip() and not l.startswith("#")}
     for path in ("/trust/", "/spec/", "/ops/", "/hooks/", "/skills/", "/snippets/", "/README.md", "/pyproject.toml"):
         assert path in owners, path
+
+
+def test_the_checkpoint_route_is_installed_only_from_a_release_that_has_it():
+    """v0.1.5, the pinned release, has the send guard and no mirror-put (vzc3, after nfm3):
+    the route's section makes the operator check the export before installing it."""
+    route = section(OPS, "## The poster's ssh route: the checkpoint only")
+    for want in ('test -f "${rel:?}/ops/vm/mirror-put"', "! grep -q 'bin/buzz-send' \"${rel:?}/ops/vm/aitools-poster-shell\"",
+                 "WRONG RELEASE: install nothing", "predates this route"):
+        assert want in route, want
+    guard = (ROOT / "ops" / "vm" / "aitools-poster-shell").read_text()
+    assert "bin/buzz-send" not in guard and "buzz-send" not in (ROOT / "ops" / "vm" / "sudoers-aitools-poster").read_text()
+    if shutil.which("git") and subprocess.run(["git", "cat-file", "-e", f"{em.RELEASE_COMMIT}:ops/vm/aitools-poster-shell"],
+                                              cwd=ROOT, capture_output=True).returncode == 0:
+        old = subprocess.run(["git", "show", f"{em.RELEASE_COMMIT}:ops/vm/aitools-poster-shell"],
+                             cwd=ROOT, capture_output=True, text=True).stdout
+        assert "bin/buzz-send" in old  # the check above would stop an install from the pin

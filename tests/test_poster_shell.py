@@ -234,6 +234,8 @@ def test_put_shape_reaches_mirror_put_with_stdin_intact(guard):
     ["--help"], ["checkpoint", "--out", "/etc/passwd"], ["messages", "send"]])
 def test_other_put_shapes_refused(guard, tail):
     r = guard("-c", shlex.join([guard.put, *tail]))
+    if tail == ["manifest"]:  # the message ops/vm/README.md's checkpoint check expects
+        assert "refused: argument 2" in r.stderr.decode()
     assert r.returncode == 1 and not (guard.fake / "put-argv").exists()
     assert not (guard.fake / "sudo-argv").exists()
     assert json.loads(r.stderr.decode().splitlines()[0])["message"].startswith("aitools-poster-shell: refused")

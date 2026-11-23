@@ -103,6 +103,22 @@ class Config:
             raise ConfigError("relay_key_secret must be a secret name (A-Z, 0-9, _)")
         if not os.path.isabs(str(self.secrets_helper)):
             raise ConfigError("secrets_helper must be an absolute path")
+        self.check_checkpoint()
+
+    def check_checkpoint(self) -> None:
+        """The checkpoint's three keys: all or none, each well formed. load_config and
+        check_relay both call this, so a Config built in code meets the same rule."""
+        keys = (self.checkpoint_key_file, self.relay_ssh_host, self.relay_put_wrapper)
+        if any(k is None for k in keys) and any(k is not None for k in keys):
+            raise ConfigError("checkpoint_key_file, relay_ssh_host and relay_put_wrapper go together")
+        if self.checkpoint_key_file is None:
+            return
+        if not os.path.isabs(str(self.checkpoint_key_file)):
+            raise ConfigError("checkpoint_key_file must be an absolute path")
+        if not isinstance(self.relay_ssh_host, str) or not _SSH_HOST.fullmatch(self.relay_ssh_host):
+            raise ConfigError("relay_ssh_host must be an ssh host ([user@]host)")
+        if not isinstance(self.relay_put_wrapper, str) or not _WRAPPER.fullmatch(self.relay_put_wrapper):
+            raise ConfigError("relay_put_wrapper must be an absolute path")
 
     @property
     def state(self) -> Path:
@@ -214,11 +230,10 @@ def load_config(path) -> Config:
         if not isinstance(raw["relay_ssh_host"], str) or not _SSH_HOST.fullmatch(raw["relay_ssh_host"]):
             raise ConfigError("relay_ssh_host must be an ssh host ([user@]host)")
         out["relay_ssh_host"] = raw["relay_ssh_host"]
-    if len({k in out for k in ("checkpoint_key_file", "relay_ssh_host", "relay_put_wrapper")}) != 1:
-        raise ConfigError("checkpoint_key_file, relay_ssh_host and relay_put_wrapper go together")
     if out.get("translate_curator") and "secrets_helper" not in out:
         raise ConfigError("translate_curator needs secrets_helper")
     cfg = Config(**out)
+    cfg.check_checkpoint()
     cfg.check_paths()
     return cfg
 

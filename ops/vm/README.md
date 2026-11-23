@@ -108,7 +108,16 @@ The installer's `<id>` is a timestamp, so the recorded sha is the only note of w
 
 Until ai-tools-alerts#vzc3 the poster also sent each post through this route, as `~/bin/buzz-send messages send ...`, and `buzz-send` read jibot's key from a file in the relay user's home: whoever held the VM could read that key and sign alerts. Posts now go to the relay over HTTPS, signed on the poster machine (No poster key on the VM, above), and the send shape, `buzz-send` and the key files were removed from the VM after the HTTPS path had sent from a scheduled hourly run. Their files are in this repository's history before vzc3 (`ops/vm/buzz-send`).
 
-What remains is a put-only route for the feed checkpoint (ai-tools-alerts#nfm3), a signed document the relay does not store. It holds no key. The vzc3 removal took the whole route off the VM; the checkpoint's rollout installs it again, from the release that carries this page, with the steps below.
+What remains is a put-only route for the feed checkpoint (ai-tools-alerts#nfm3), a signed document the relay does not store. It holds no key. The vzc3 removal took the whole route off the VM; the checkpoint's rollout installs it again with the steps below.
+
+The release pinned in Release files above (v0.1.5) predates this route: its guard still allows the retired send shape and it has no `mirror-put`. Take every file of this section from the verified export of a later release that carries it (the rollout's candidate tag): run the Release files block with that tag and its commit in place of v0.1.5's, and use the `$rel` it sets. Before installing anything, check that export, and stop if either check fails:
+
+```bash
+test -f "${rel:?}/ops/vm/mirror-put" &&
+  ! grep -q 'bin/buzz-send' "${rel:?}/ops/vm/aitools-poster-shell" &&
+  ! grep -q 'buzz-send' "${rel:?}/ops/vm/sudoers-aitools-poster" &&
+  echo 'checkpoint-only route files: ok' || echo 'WRONG RELEASE: install nothing'
+```
 
 The poster logs in as a separate Unix user, `aitools-poster`, whose login shell is a guard that runs one command shape and nothing else, so a compromised poster machine can replace the stored checkpoint (which the exporter publishes only when the checkpoint key signed it) but cannot post, delete channels, add members or read any key (ai-tools-alerts#w75s). Sources of truth, all in `ops/vm/` of the verified release (`${rel:?}/ops/vm/`, Release files, above); copy them to the VM from `$rel`, never from a checkout:
 
@@ -155,7 +164,7 @@ The poster config then sets three keys together (any one without the others is a
 Checks, from the poster machine, after the install:
 
 - `printf '[]' | ssh <poster-alias> /home/<user>/bin/mirror-put checkpoint` prints `mirror-put: not one JSON event object` and exits 1: the guard, sudo and the script ran, and nothing was stored.
-- `ssh <poster-alias> /home/<user>/bin/mirror-put manifest` prints `refused: argument count 2`: the guard allows the one word only.
+- `ssh <poster-alias> /home/<user>/bin/mirror-put manifest` prints `refused: argument 2`: the guard allows the one word only.
 - After the poster's next run, the exporter's journal line ends `checkpoint=published seq <n>`, and the mirror serves `checkpoint-key.json` and `checkpoint.json`.
 
 What the poster's ssh key can do on the VM: replace `~/alerts-inbox/checkpoint.json` with other bytes. The exporter publishes those bytes only if the checkpoint key signed them.
