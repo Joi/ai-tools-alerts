@@ -515,7 +515,7 @@ class Run:
                 self.skipped["advisory page not parsed, deferred" if ev.unparsed
                              else "page budget, deferred" if ev.budget else "source fetch failed, deferred"] += 1
                 self.defer([(c, scope)])
-                self.saw(scope.name, [c.id, *c.aliases])  # dmmf: first sight is now, not when a page answers
+                self.saw(scope.name, c.id)  # dmmf: first sight is now, not when a page answers
             else:  # the second: harvest it for a package key the scope file lacks
                 self.skipped["vendor page names another package" if ev.other_package
                              else "no authoritative source"] += 1
@@ -610,13 +610,15 @@ class Run:
         w = self.state["waiting"]
         return next((k for k in (f"{scope}|{i.casefold()}" for i in ids) if k in w), default)
 
-    def saw(self, scope, ids) -> None:
+    def saw(self, scope, cid) -> None:
         """Record first sight for a candidate deferred before it could be judged (a page
         not read), while the map is under half full, as for a notice: the age limit and
-        the hold then count from this run, not from the run that reads the page (dmmf)."""
+        the hold then count from this run, not from the run that reads the page (dmmf).
+        Keyed by the primary id alone: the record's aliases are not yet confirmed, and
+        one claiming another advisory's id must not borrow or block that one's entry."""
         w = self.state["waiting"]
-        key = self._seen_key(scope, ids, f"{scope}|{ids[0].casefold()}")
-        if not self.is_synthetic_id(ids[0]) and key not in w and len(w) < inputs.MAX_WAITING // 2:
+        key = f"{scope}|{cid.casefold()}"
+        if not self.is_synthetic_id(cid) and key not in w and len(w) < inputs.MAX_WAITING // 2:
             w[key] = self.now
 
     def first_seen(self, scope, ids, held=None) -> int:

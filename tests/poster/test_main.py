@@ -1841,6 +1841,22 @@ def test_first_sight_is_the_run_that_deferred_on_a_failed_fetch(env):  # dmmf re
     assert "aged=0" in summary and "roots=1" in summary
 
 
+def test_an_unconfirmed_alias_never_takes_another_advisorys_first_sight(env):  # dmmf delta review
+    other = "https://github.com/anthropics/claude-code/security/advisories/GHSA-mnop-qrst-uvwx"
+    env.pages.put(GHSA, "", status=503)
+    env.collector([finding(severity=None, fixed=None)])  # A: deferred, first sight now
+    env.run(now=T0 - 3 * 86400)
+    b = finding(fid="GHSA-mnop-qrst-uvwx", aliases=("GHSA-abcd-efgh-ijkl",), fixed="2.1.0", severity="high")
+    b["sources"][0]["published_at"] = "2026-10-30T00:00:00Z"  # six days before T0
+    env.collector([b])  # B claims A's id; its page fails too
+    env.pages.put(other, "", status=503)
+    env.run()
+    assert "Claude Code|ghsa-mnop-qrst-uvwx" in env.state()["waiting"]
+    del env.pages.fixed[other]
+    _, summary, _ = env.run(now=T0 + 2 * 86400)  # B judged at six days, not eight
+    assert "aged=0" in summary and "roots=1" in summary
+
+
 def test_the_hold_counts_from_the_run_that_deferred_on_a_failed_fetch(env):  # dmmf review
     env.collector([finding(fixed=None, severity="high")])
     env.pages.put(GHSA, "", status=503)
