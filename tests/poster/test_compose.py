@@ -91,7 +91,7 @@ def test_no_usable_source_is_refused():
 
 def _all_text(c):
     text, adv = root(c)
-    reply = compose.reply_post(adv, c, {"level": "high"})
+    reply = compose.reply_post(dataclasses.replace(adv, level="high"), c, {"level": "critical"})  # a raise
     return text + reply + compose.digest([adv], "2026-11-05")
 
 
@@ -111,7 +111,8 @@ def test_rule_inputs_never_reach_post_text():
     c = cand(product_text="Claude Code 2.0.77 on a laptop",
              advisory_severity="CVSS 9.8, seen at 2.0.77", observed_at="2026-11-04")
     text, adv = compose.root_post(c, "critical", rules.scope_of("claude code"), posted_at=NOW)
-    out = text + compose.reply_post(adv, c, {"level": "high"}) + compose.digest([adv], "2026-11-05")
+    out = (text + compose.reply_post(dataclasses.replace(adv, level="high"), c, {"level": "critical"})
+           + compose.level_post(adv, "high") + compose.digest([adv], "2026-11-05"))
     assert "2.0.77" not in out and "CVSS" not in out and "laptop" not in out
 
 
@@ -123,10 +124,12 @@ def test_reply_only_carries_changed_fields():
     c = cand()
     _, prev = root(c)
     fixed = [{"name": "Claude Code", "ecosystem": "claude-code", "affected": "<2.1.1", "fixed": "2.1.1"}]
-    reply = compose.reply_post(prev, c, {"level": "critical", "products": fixed,
-                                         "expires_at": NOW + 10})
+    reply = compose.reply_post(prev, c, {"level": "critical", "products": fixed, "expires_at": None})
     block = _block(reply)
-    assert set(block) == {"products", "actions", "expires_at"}  # level unchanged; action follows fixed
+    assert set(block) == {"products", "actions"}  # level and expires_at unchanged; action follows fixed
+    for expiry in (NOW + 10, None):  # spec/wire.md: no relay-bot reply sets or clears an expiry
+        with pytest.raises(ValueError, match="carries no expires_at"):
+            compose.reply_post(dataclasses.replace(prev, expires_at=NOW + 5), c, {"products": fixed, "expires_at": expiry})
     assert block["actions"] == [{"verb": "upgrade", "target": "Claude Code", "value": "2.1.1"}]
     assert "Fixed in 2.1.1" in reply and "upgrade Claude Code to 2.1.1" in reply
     merged = compose.parse_reply(reply, prev)
@@ -166,8 +169,11 @@ def test_reply_is_held_to_root_publication_rules():
     many = compose.reply_post(prev, c, {"aliases": [f"CVE-2026-{1000 + i}" for i in range(60)]})
     assert len(_block(many)["aliases"]) == 50
     # A level change for an unverified critical says so.
-    unv = compose.reply_post(prev, c, {"level": "high"}, reason="unverified")
-    assert unv.split("\n")[0].startswith("Unverified") and "Level is now high." in unv
+    unv = compose.reply_post(dataclasses.replace(prev, level="high"), c, {"level": "critical"}, reason="unverified")
+    assert unv.split("\n")[0].startswith("Unverified") and "Level is now critical." in unv
+    # A lowering never shares a reply (spec/wire.md): it is level_post's.
+    with pytest.raises(ValueError, match="travels alone"):
+        compose.reply_post(prev, c, {"level": "high"})
 
 
 def test_digest_lists_every_item_once():
@@ -243,7 +249,9 @@ def test_synthetic_digest_and_reply_keep_one_mark():
         assert compose.digest([a], "2026-11-05") == "Daily digest for 2026-11-05: no advisories."
     assert adv.title in compose._titles("Claude Code", adv.id)
     assert legacy.title not in compose._titles("Claude Code", adv.id)
-    assert compose.reply_post(adv, c, {"level": "high"}).count("SYNTHETIC") == 0  # block: changed fields
+    assert compose.reply_post(dataclasses.replace(adv, level="high"), c,
+                              {"level": "critical"}).count("SYNTHETIC") == 0  # block: changed fields
+    assert compose.level_post(adv, "high").count("SYNTHETIC") == 0
     with pytest.raises(ValueError, match="template title"):  # the writer never sends an unmarked title
         compose.reply_post(adv, c, {"title": legacy.title})
 
