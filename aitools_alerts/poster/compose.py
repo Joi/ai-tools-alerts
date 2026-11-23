@@ -2,9 +2,10 @@
 
 Post text leaves the fleet, so it is built only from fields that are safe to
 publish: the candidate's id, aliases, fixed/affected versions and sources, the
-level, and the matched scope entry's display name. ``product_text``,
-``advisory_severity``, ``local_level_hint`` and ``observed_at`` are rule inputs
-and are never read here (B1: a version in them can be a locally observed one).
+level, the matched scope entry's display name and ``advisory_severity`` only as one
+word of SEVERITIES (0dvh). ``product_text``, ``local_level_hint`` and ``observed_at``
+are rule inputs and are never read here (B1: a version in them can be a locally
+observed one).
 Every composed post is refused if it names a fleet host, this machine, a local
 path or a kata ref.
 
@@ -78,18 +79,18 @@ def schema_affected(v) -> str | None:
     return s if out and schema._AFFECTED.fullmatch(s) else None
 
 
-def _words(affected: str | None) -> str:
-    if affected is None:
-        return ", versions not stated"
+def _words(affected: str | None, unexpressed: bool = False) -> str:
+    if affected is None:  # 0dvh: "not stated" only when the source gives no range
+        return ", affected versions: see the source" if unexpressed else ", versions not stated"
     if affected == "*":
         return ", all versions"
     parts = [_COMPARATOR.fullmatch(t).groups() for t in affected.split(",")]
     return " " + " and ".join(f"{_OPS[op]} {ver}" for op, ver in parts)
 
 
-def _words_ja(affected: str | None) -> str:
+def _words_ja(affected: str | None, unexpressed: bool = False) -> str:
     if affected is None:
-        return "（バージョン不明）"
+        return "（影響バージョンは出典を参照）" if unexpressed else "（バージョン不明）"
     if affected == "*":
         return "（全バージョン）"
     parts = [_COMPARATOR.fullmatch(t).groups() for t in affected.split(",")]
@@ -183,6 +184,8 @@ def _sources(raw) -> list[schema.Source]:
             continue
         if url not in seen:
             seen.add(url)
+            if isinstance(pub, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2} \d.*", pub):
+                pub = pub.replace(" ", "T", 1)  # 0dvh: an accepted input form; the date must survive
             pub = pub if isinstance(pub, str) and schema._DATE.fullmatch(pub) else None
             out.append(schema.Source(url, pub))
     out.sort(key=lambda s: not schema.is_primary(s.url))  # stable: primary first
@@ -197,12 +200,42 @@ def _kind(c, reason) -> str:
 
 def _exploited(adv: schema.Advisory) -> bool:
     """The title says known exploited (plain, unverified or synthetic, as _kind built it)."""
-    return adv.title.endswith(f"{_KINDS[0]} ({adv.id})")
+    return any(adv.title.endswith(f"{_KINDS[0]} ({i})") for i in {adv.id, public_form(adv.id)})
 
 
 def _titles(name: str, adv_id: str) -> set[str]:
+    """Every template title for this id: under its public form (0dvh) and, for a
+    thread posted before 0dvh, under the ledger key it was titled with."""
     mark = f"{SYNTHETIC}: " if is_synthetic(adv_id) else ""
-    return {f"{mark}{name}: {pre}{k} ({adv_id})" for k in _KINDS for pre in ("", "unverified ")}
+    return {f"{mark}{name}: {pre}{k} ({i})" for k in _KINDS for pre in ("", "unverified ")
+            for i in {adv_id, public_form(adv_id)}}
+
+
+# A poster ledger key (an id, a colon, a scope slug: CVE-2026-123158:openssh) is
+# identity, never a public alias (8ke5).
+_LEDGER_KEY = re.compile(r"(?:CVE-\d{4}-\d{4,}|GHSA(?:-[0-9a-z]{4}){3}):", re.I)
+
+
+def public_form(adv_id: str) -> str:
+    """The id a title names: a ledger key's id without its scope slug, else the id."""
+    m = _LEDGER_KEY.match(adv_id) if isinstance(adv_id, str) else None
+    return adv_id[:m.end() - 1] if m else adv_id
+
+
+# The upstream severity words the block may carry (0dvh), loudest first; any other value stays null.
+_SEVERITY_ORDER = ("critical", "high", "medium", "moderate", "low")
+SEVERITIES = frozenset(_SEVERITY_ORDER)
+
+
+def severity(v) -> str | None:
+    """The loudest allowed word of a candidate's severity (ledger.merge joins members' with "; ")."""
+    words = {w.strip().casefold() for w in v.split(";")} if isinstance(v, str) else set()
+    return next((w for w in _SEVERITY_ORDER if w in words), None)
+
+
+def range_unexpressed(c) -> bool:
+    """A range the schema cannot say is still a range: never "versions not stated"."""
+    return schema_affected(c.affected) is None and isinstance(c.affected, str) and c.affected.strip() != ""
 
 
 def public_id(a) -> bool:
@@ -253,8 +286,8 @@ def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, sc
     if not sources:
         raise ValueError("no https source the schema accepts: the advisory does not post")
     adv = schema.validate(asdict(schema.Advisory(
-        id=c.id, aliases=_ids(c.aliases, c.id)[:50], level=level, advisory_severity=None,
-        title=f"{scope.name}: {_kind(c, reason)} ({c.id})",
+        id=c.id, aliases=_ids(c.aliases, c.id)[:50], level=level, advisory_severity=severity(c.advisory_severity),
+        title=f"{scope.name}: {_kind(c, reason)} ({public_form(c.id)})",
         products=[schema.Product(scope.name, scope.ecosystem, schema_affected(c.affected), fixed)],
         actions=[schema.Action("upgrade", scope.name, fixed)] if fixed else [],
         sources=sources, posted_by=POSTED_BY,
@@ -272,7 +305,7 @@ def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, sc
              "so update now if a release is out." if c.exploited is True or _exploited(adv)
         else "Action: check the vendor for an update and apply it."]
     body = [f"{head}: {adv.title}", *([title] if title else []),
-            f"Affected: {p.name}{_words(p.affected)}."
+            f"Affected: {p.name}{_words(p.affected, range_unexpressed(c))}."
             + (f" Fixed in {fixed}." if fixed else " A fix is listed upstream; see the source."
                if unexpressed else " The source does not state a fixed version; check the vendor's advisory."),
             *action, f"Source: {_primary(adv.sources)}"]
@@ -290,13 +323,14 @@ def _ja_title(adv: schema.Advisory) -> str:
     mark = f"{SYNTHETIC}: " if is_synthetic(adv.id) else ""
     for k, jk in zip(_KINDS, _JA_KINDS):
         for pre in ("", "unverified "):
-            if adv.title == f"{mark}{name}: {pre}{k} ({adv.id})":
-                return f"{mark}{name}: {pre}{jk} ({adv.id})"
+            for i in {adv.id, public_form(adv.id)}:
+                if adv.title == f"{mark}{name}: {pre}{k} ({i})":
+                    return f"{mark}{name}: {pre}{jk} ({i})"
     return adv.title
 
 
 def root_post_ja(adv: schema.Advisory, reason: str | None = None, unexpressed: bool = False,
-                 title: str | None = None, *, exploited: bool = False) -> str:
+                 title: str | None = None, *, exploited: bool = False, range_unexpressed: bool = False) -> str:
     """root_post's body lines in Japanese, from the Advisory root_post returned; ``title``
     (``source_title``) stays in English on its own line after 原題:. ``exploited`` is the
     candidate's: a thread keeps its first title unless its level rises, so the title
@@ -311,17 +345,17 @@ def root_post_ja(adv: schema.Advisory, reason: str | None = None, unexpressed: b
         if exploited else "対応: ベンダーの更新情報を確認し、リリースがあれば適用してください。"]
     return _inline("\n".join([
         f"{head}: {_ja_title(adv)}", *([f"原題: {title}"] if title else []),
-        f"影響: {p.name}{_words_ja(p.affected)}。"
+        f"影響: {p.name}{_words_ja(p.affected, range_unexpressed)}。"
         + (f" 修正版: {fixed}。" if fixed else " 修正は上流で公開されています。出典を参照してください。"
            if unexpressed else " 出典には修正版の記載がありません。ベンダーのアドバイザリを確認してください。"),
         *action, f"出典: {_primary(adv.sources)}"]))
 
 
-def _change_line_ja(k: str, adv: schema.Advisory) -> str:
+def _change_line_ja(k: str, adv: schema.Advisory, unexpressed: bool = False) -> str:
     p = adv.products[0]
     return {
         "level": f"レベルは{_JA_LEVEL[adv.level]}になりました。",
-        "products": f"影響: {p.name}{_words_ja(p.affected)}。" + (f" 修正版: {p.fixed}。" if p.fixed else ""),
+        "products": f"影響: {p.name}{_words_ja(p.affected, unexpressed)}。" + (f" 修正版: {p.fixed}。" if p.fixed else ""),
         "actions": f"対応: {p.name} を {p.fixed} 以降に更新してください。" if adv.actions
         else "現在、記載された対応はありません。",
         "title": f"件名: {_ja_title(adv)}",
@@ -329,14 +363,15 @@ def _change_line_ja(k: str, adv: schema.Advisory) -> str:
         else "このアドバイザリには有効期限が設定されました。",
         "aliases": "別名: " + ", ".join(a for a in adv.aliases if public_id(a)) + "。",
         "sources": "新しい出典が追加されました。",
-        "advisory_severity": "深刻度の評価は解除されました。",
+        "advisory_severity": "深刻度の評価は解除されました。" if adv.advisory_severity is None
+        else f"上流の深刻度: {adv.advisory_severity}。",
     }[k]
 
 
 def reply_post_ja(merged: schema.Advisory, c, keys, *, reason: str | None = None) -> str:
     """reply_post's body lines in Japanese for the changed ``keys``; no block."""
     body = [UNVERIFIED[0].upper() + UNVERIFIED[1:] + "."] if reason == "unverified" else []
-    body += [_change_line_ja(k, merged) for k in sorted(keys)]
+    body += [_change_line_ja(k, merged, range_unexpressed(c)) for k in sorted(keys)]
     body.append(f"出典: {_primary(_sources(c.sources) or merged.sources)}")
     return _inline("\n".join(body))
 
@@ -384,7 +419,7 @@ def parse_reply(content: str, prev: schema.Advisory) -> schema.Advisory | None:
 def _publishable(prev: schema.Advisory, merged: schema.Advisory, patch: dict) -> None:
     """A relay-bot reply may say only what root_post could have said."""
     bad = set(patch) - _REPLY_KEYS
-    if bad or merged.advisory_severity is not None:
+    if bad or merged.advisory_severity not in (None, *SEVERITIES):  # 0dvh: an upstream word may be published
         raise ValueError(f"reply: not publishable by the relay bot {sorted(bad) or ['advisory_severity']}")
     p, was = merged.products, prev.products[0]
     if len(p) != 1 or (p[0].name, p[0].ecosystem) != (was.name, was.ecosystem):
@@ -397,17 +432,18 @@ def _publishable(prev: schema.Advisory, merged: schema.Advisory, patch: dict) ->
         raise ValueError("reply: a source fails the publication checks")
 
 
-def _change_line(k: str, adv: schema.Advisory) -> str:
+def _change_line(k: str, adv: schema.Advisory, unexpressed: bool = False) -> str:
     p = adv.products[0]
     return {
         "level": f"Level is now {adv.level}.",
-        "products": f"Affected: {p.name}{_words(p.affected)}." + (f" Fixed in {p.fixed}." if p.fixed else ""),
+        "products": f"Affected: {p.name}{_words(p.affected, unexpressed)}." + (f" Fixed in {p.fixed}." if p.fixed else ""),
         "actions": f"Action: upgrade {p.name} to {p.fixed} or later." if adv.actions else "No action listed now.",
         "title": f"Now: {adv.title}",
         "expires_at": "Expiry cleared." if adv.expires_at is None else "This advisory now expires.",
         "aliases": "Also known as: " + ", ".join(a for a in adv.aliases if public_id(a)) + ".",
         "sources": "New sources listed.",
-        "advisory_severity": "Severity rating cleared.",
+        "advisory_severity": "Severity rating cleared." if adv.advisory_severity is None
+        else f"Upstream severity: {adv.advisory_severity}.",
     }[k]
 
 
@@ -441,7 +477,7 @@ def reply_post(prev: schema.Advisory, c, changes: dict, *, reason: str | None = 
     merged = apply_patch(prev, patch)
     _publishable(prev, merged, patch)
     body = [UNVERIFIED[0].upper() + UNVERIFIED[1:] + "."] if reason == "unverified" else []
-    body += [_change_line(k, merged) for k in sorted(patch)]
+    body += [_change_line(k, merged, range_unexpressed(c)) for k in sorted(patch)]
     body.append(f"Source: {_primary(_sources(c.sources) or merged.sources)}")
     block = json.dumps(patch, indent=2, ensure_ascii=False)
     out = _inline("\n".join(body)) + f"\n\n```{schema.INFO_STRING}\n{block}\n```\n"
@@ -489,7 +525,7 @@ def _group_key(a: schema.Advisory):
     critical is always its own line; so is any title but the plain kind, so a shared
     catalog URL (every KEV entry) never reads as one release and "unverified" stays."""
     name = a.products[0].name
-    if a.level == "critical" or a.title != f"{name}: security advisory ({a.id})":
+    if a.level == "critical" or a.title not in {f"{name}: security advisory ({i})" for i in {a.id, public_form(a.id)}}:
         return None
     if a.id.startswith("CVE-"):
         return ("release", name, _primary(a.sources))

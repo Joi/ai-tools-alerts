@@ -1,0 +1,575 @@
+{
+ "source": "https://buzz.ai-tools.md/alerts/feed.json",
+ "generated_at": "2026-11-22T21:25:27Z",
+ "channel": "feed",
+ "events": [
+  {
+   "id": "c1bfb78bc879f90929d0c35fe85a3435bbd380fc6841850dc208e370c18a813b",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794018006,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: Claude Code: security advisory (CVE-2026-103435:claude-code)\nAffected: Claude Code, versions not stated. No fixed version is known yet.\nAction: no fix is published yet; watch this thread.\nSource: https://github.com/anthropics/claude-code/security/advisories/GHSA-5j29-h97v-84ch\n\n```aitools-alert\n{\n  \"id\": \"CVE-2026-103435:claude-code\",\n  \"aliases\": [\n    \"CVE-2026-103435\",\n    \"GHSA-5j29-h97v-84ch\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"Claude Code: security advisory (CVE-2026-103435:claude-code)\",\n  \"products\": [\n    {\n      \"name\": \"Claude Code\",\n      \"ecosystem\": \"claude-code\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/anthropics/claude-code/security/advisories/GHSA-5j29-h97v-84ch\",\n      \"published_at\": \"2026-10-05T12:45:33Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794018005,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "8f4e0a13da22e3e14c7d56f623ad7015566f5fd802e36596b427796130d04c64e169bad14de663a5bdf5c4dde41bfadbafbe783874419ed2c42f13b8c62fea69"
+  },
+  {
+   "id": "81a0c2f16dc3f83d832cf61df2e00c5b52cbbe8d885a7ce38425b07dbf79310b",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794018008,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: Claude Code: security advisory (CVE-2026-88968:claude-code)\nAffected: Claude Code, versions not stated. No fixed version is known yet.\nAction: no fix is published yet; watch this thread.\nSource: https://github.com/anthropics/claude-code/security/advisories/GHSA-5xjx-9qx6-jcrv\n\n```aitools-alert\n{\n  \"id\": \"CVE-2026-88968:claude-code\",\n  \"aliases\": [\n    \"CVE-2026-88968\",\n    \"GHSA-5xjx-9qx6-jcrv\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"Claude Code: security advisory (CVE-2026-88968:claude-code)\",\n  \"products\": [\n    {\n      \"name\": \"Claude Code\",\n      \"ecosystem\": \"claude-code\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/anthropics/claude-code/security/advisories/GHSA-5xjx-9qx6-jcrv\",\n      \"published_at\": \"2026-10-26T11:43:04Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794018005,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "55cb0b7d5821d8d005d862c6e8bedff4b1ebbe5f79489576dfed1a29e90e9c559701f162adb5bc2e4109f3fdb931046d3a7ca4c05f0c1ab1844ee0c216589bba"
+  },
+  {
+   "id": "cc37f5fb017f28155d2e5faeb67fdbb4d75a25cec0c80478b5db4bf105a54607",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794018010,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: Claude Code: security advisory (CVE-2026-86063:claude-code)\nAffected: Claude Code, versions not stated. No fixed version is known yet.\nAction: no fix is published yet; watch this thread.\nSource: https://github.com/anthropics/claude-code/security/advisories/GHSA-pq7j-f95f-qfcv\n\n```aitools-alert\n{\n  \"id\": \"CVE-2026-86063:claude-code\",\n  \"aliases\": [\n    \"CVE-2026-86063\",\n    \"GHSA-pq7j-f95f-qfcv\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"Claude Code: security advisory (CVE-2026-86063:claude-code)\",\n  \"products\": [\n    {\n      \"name\": \"Claude Code\",\n      \"ecosystem\": \"claude-code\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/anthropics/claude-code/security/advisories/GHSA-pq7j-f95f-qfcv\",\n      \"published_at\": \"2026-10-09T15:14:01Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794018005,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "0339e386372e5daab38b857e651cc393912c8512fbd74207a0d3f764540a8d3a7d584c2bcc014e6ad1eb5998835e8c37b7a84766155ff7da2dbcb952fd504cf8"
+  },
+  {
+   "id": "f83cf83837027840942396bed0b258f6bb51f6645b4e8d1b95dc80bb71668193",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794018011,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: MCP Inspector: security advisory (GHSA-4fc4-wcmh-4g86:modelcontextprotocol/inspector)\nAffected: MCP Inspector, versions not stated. No fixed version is known yet.\nAction: no fix is published yet; watch this thread.\nSource: https://github.com/modelcontextprotocol/inspector/security/advisories/GHSA-4fc4-wcmh-4g86\n\n```aitools-alert\n{\n  \"id\": \"GHSA-4fc4-wcmh-4g86:modelcontextprotocol/inspector\",\n  \"aliases\": [\n    \"GHSA-4fc4-wcmh-4g86\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"MCP Inspector: security advisory (GHSA-4fc4-wcmh-4g86:modelcontextprotocol/inspector)\",\n  \"products\": [\n    {\n      \"name\": \"MCP Inspector\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/modelcontextprotocol/inspector/security/advisories/GHSA-4fc4-wcmh-4g86\",\n      \"published_at\": \"2026-10-21T06:55:10Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794018005,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "734dce6e260b109fafa3682e39882e58f36b8ec1d870c8086a943ea8bc38deb4146e1db4a2e063a6446bdd3026690540eaee4d083302c918b9ebdf32572f0bba"
+  },
+  {
+   "id": "ba3d92ec621f721feaffd30505286d3ff593697c8e02728c3b30f38930c08e32",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794018013,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: MCP Inspector: security advisory (GHSA-6x67-4w4w-9f3w:modelcontextprotocol/inspector)\nAffected: MCP Inspector, versions not stated. No fixed version is known yet.\nAction: no fix is published yet; watch this thread.\nSource: https://github.com/modelcontextprotocol/inspector/security/advisories/GHSA-6x67-4w4w-9f3w\n\n```aitools-alert\n{\n  \"id\": \"GHSA-6x67-4w4w-9f3w:modelcontextprotocol/inspector\",\n  \"aliases\": [\n    \"GHSA-6x67-4w4w-9f3w\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"MCP Inspector: security advisory (GHSA-6x67-4w4w-9f3w:modelcontextprotocol/inspector)\",\n  \"products\": [\n    {\n      \"name\": \"MCP Inspector\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/modelcontextprotocol/inspector/security/advisories/GHSA-6x67-4w4w-9f3w\",\n      \"published_at\": \"2026-10-21T06:55:41Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794018005,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "cb77dccd13f6079bfff03a05fdc403f9b902f3bb468efae45bbaaedf9945c4e489fb947ffc9ff526de3677b1ab0516280eb7e88a1d80587775e00875002f1a57"
+  },
+  {
+   "id": "721ea6a0bd5c10e930c1b925636cac633f6cd2e6980cbe0f17f48abff8c20d37",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794018015,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: MCP Inspector: security advisory (GHSA-q978-78c7-phqw:modelcontextprotocol/inspector)\nAffected: MCP Inspector, versions not stated. No fixed version is known yet.\nAction: no fix is published yet; watch this thread.\nSource: https://github.com/modelcontextprotocol/inspector/security/advisories/GHSA-q978-78c7-phqw\n\n```aitools-alert\n{\n  \"id\": \"GHSA-q978-78c7-phqw:modelcontextprotocol/inspector\",\n  \"aliases\": [\n    \"GHSA-q978-78c7-phqw\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"MCP Inspector: security advisory (GHSA-q978-78c7-phqw:modelcontextprotocol/inspector)\",\n  \"products\": [\n    {\n      \"name\": \"MCP Inspector\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/modelcontextprotocol/inspector/security/advisories/GHSA-q978-78c7-phqw\",\n      \"published_at\": \"2026-10-21T18:31:35Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794018005,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "26ebf6cd13f5954db31dbbaf834454bd00ecbc438431b850370dcb1e7817315d2c75952be1ed54a054c812ad4bc17c757eeb7083bc25176231aabec53512217e"
+  },
+  {
+   "id": "09a8bb24100e67cf2d2b572b87bbc801fd7f8b5809849af8de878af9eba215ba",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794018016,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: MCP Inspector: security advisory (GHSA-vcc9-3xgm-p9v4:modelcontextprotocol/inspector)\nAffected: MCP Inspector, versions not stated. No fixed version is known yet.\nAction: no fix is published yet; watch this thread.\nSource: https://github.com/modelcontextprotocol/inspector/security/advisories/GHSA-vcc9-3xgm-p9v4\n\n```aitools-alert\n{\n  \"id\": \"GHSA-vcc9-3xgm-p9v4:modelcontextprotocol/inspector\",\n  \"aliases\": [\n    \"GHSA-vcc9-3xgm-p9v4\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"MCP Inspector: security advisory (GHSA-vcc9-3xgm-p9v4:modelcontextprotocol/inspector)\",\n  \"products\": [\n    {\n      \"name\": \"MCP Inspector\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/modelcontextprotocol/inspector/security/advisories/GHSA-vcc9-3xgm-p9v4\",\n      \"published_at\": \"2026-10-21T18:31:52Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794018005,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "482fbce24e5b70985686e9a9513f8b29f47865ef9e4d3113592d859531722e38babc8d5d236a63f6b4579b10329286c206f0711c0981e082dc5fa4cd5a7738ba"
+  },
+  {
+   "id": "51d03baa72707bd325987546ae36f8886aded87bf4a565f5c99f884475affd65",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794018018,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: MCP Inspector: security advisory (GHSA-wmjf-2m46-2352:modelcontextprotocol/inspector)\nAffected: MCP Inspector, versions not stated. No fixed version is known yet.\nAction: no fix is published yet; watch this thread.\nSource: https://github.com/modelcontextprotocol/inspector/security/advisories/GHSA-wmjf-2m46-2352\n\n```aitools-alert\n{\n  \"id\": \"GHSA-wmjf-2m46-2352:modelcontextprotocol/inspector\",\n  \"aliases\": [\n    \"GHSA-wmjf-2m46-2352\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"MCP Inspector: security advisory (GHSA-wmjf-2m46-2352:modelcontextprotocol/inspector)\",\n  \"products\": [\n    {\n      \"name\": \"MCP Inspector\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/modelcontextprotocol/inspector/security/advisories/GHSA-wmjf-2m46-2352\",\n      \"published_at\": \"2026-10-21T06:54:33Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794018005,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "521192210f334ebac74c124950c5fc04f17c73072ab64c75155800b2e412c357b3dbaca071a8a9e40e763bba9f26573016ac125edd923f1210c9b0dd43e5d230"
+  },
+  {
+   "id": "5e9cc972b2d2173db098dc93f838717d184469e0a676d7f3d606fcefaeef744a",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794018019,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: MCP Python SDK: security advisory (CVE-2026-59951:modelcontextprotocol/python-sdk)\nAffected: MCP Python SDK, versions not stated. No fixed version is known yet.\nAction: no fix is published yet; watch this thread.\nSource: https://github.com/modelcontextprotocol/python-sdk/security/advisories/GHSA-84m7-p3x7-pcfv\n\n```aitools-alert\n{\n  \"id\": \"CVE-2026-59951:modelcontextprotocol/python-sdk\",\n  \"aliases\": [\n    \"CVE-2026-59951\",\n    \"GHSA-84m7-p3x7-pcfv\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"MCP Python SDK: security advisory (CVE-2026-59951:modelcontextprotocol/python-sdk)\",\n  \"products\": [\n    {\n      \"name\": \"MCP Python SDK\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/modelcontextprotocol/python-sdk/security/advisories/GHSA-84m7-p3x7-pcfv\",\n      \"published_at\": \"2026-09-30T20:53:30Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794018005,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "9cfd3dc7bcac028b0f808e99c7cba90cc5f848ccde3c77353b385477a49489dc3252ab2c6fcd2ba765ac051d6ca1b78e7c9606a050e2f4c08e4afea3051787c8"
+  },
+  {
+   "id": "21e340d2b686f1c75ccb79f7e6eaf79daf6ff98968ab71e6e13e2c2f662cfee4",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794018021,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: MCP Python SDK: security advisory (CVE-2026-109527:modelcontextprotocol/python-sdk)\nAffected: MCP Python SDK, versions not stated. No fixed version is known yet.\nAction: no fix is published yet; watch this thread.\nSource: https://github.com/modelcontextprotocol/python-sdk/security/advisories/GHSA-fmmv-w9g8-j3gc\n\n```aitools-alert\n{\n  \"id\": \"CVE-2026-109527:modelcontextprotocol/python-sdk\",\n  \"aliases\": [\n    \"CVE-2026-109527\",\n    \"GHSA-fmmv-w9g8-j3gc\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"MCP Python SDK: security advisory (CVE-2026-109527:modelcontextprotocol/python-sdk)\",\n  \"products\": [\n    {\n      \"name\": \"MCP Python SDK\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/modelcontextprotocol/python-sdk/security/advisories/GHSA-fmmv-w9g8-j3gc\",\n      \"published_at\": \"2026-09-30T20:53:39Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794018005,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "8747a087bda9953bb5c523049978bbf908b2fc443e03d3c0b02205cc53c5d7f846220d0bc27d6df8d33a58af61145e6f3c32248f53d8af5b68ba194cd1ad444c"
+  },
+  {
+   "id": "2e095710cf8ddeaa978ea369f3261ae34bdeeb80217e738168a05884697284e3",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794018022,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: MCP Python SDK: security advisory (CVE-2026-115563:modelcontextprotocol/python-sdk)\nAffected: MCP Python SDK, versions not stated. No fixed version is known yet.\nAction: no fix is published yet; watch this thread.\nSource: https://github.com/modelcontextprotocol/python-sdk/security/advisories/GHSA-qx49-fqc8-xw99\n\n```aitools-alert\n{\n  \"id\": \"CVE-2026-115563:modelcontextprotocol/python-sdk\",\n  \"aliases\": [\n    \"CVE-2026-115563\",\n    \"GHSA-qx49-fqc8-xw99\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"MCP Python SDK: security advisory (CVE-2026-115563:modelcontextprotocol/python-sdk)\",\n  \"products\": [\n    {\n      \"name\": \"MCP Python SDK\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/modelcontextprotocol/python-sdk/security/advisories/GHSA-qx49-fqc8-xw99\",\n      \"published_at\": \"2026-09-28T20:06:03Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794018005,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "7a7cde567af7c4df3a5b8fad235b53a7c9bc2195ba5137d658388ef5c13371f82de332e03ffa98da53ac1dfe29a20682ef7a1854bb2fadda9f147f6927552677"
+  },
+  {
+   "id": "803f5082b84fd1c50cdf76e572a42a874fc960e05810635d6a7f8e7174f30898",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794018024,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: MCP TypeScript SDK: security advisory (CVE-2026-111767:modelcontextprotocol/typescript-sdk)\nAffected: MCP TypeScript SDK, versions not stated. No fixed version is known yet.\nAction: no fix is published yet; watch this thread.\nSource: https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-22jm-h49p-29qw\n\n```aitools-alert\n{\n  \"id\": \"CVE-2026-111767:modelcontextprotocol/typescript-sdk\",\n  \"aliases\": [\n    \"CVE-2026-111767\",\n    \"GHSA-22jm-h49p-29qw\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"MCP TypeScript SDK: security advisory (CVE-2026-111767:modelcontextprotocol/typescript-sdk)\",\n  \"products\": [\n    {\n      \"name\": \"MCP TypeScript SDK\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-22jm-h49p-29qw\",\n      \"published_at\": \"2026-10-02T20:54:41Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794018005,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "c919e0c39657c200182940e53103421916cb72fc51307a05f37fe1fde37cb8611988ca04fa8495abb0fa8ce270d3ced811a775d315fbbd271fc883ec56c410e1"
+  },
+  {
+   "id": "761da440cd00de045b46d91755446fc0a4caa3452191cdf22522106ca9d62c8f",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794018026,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: MCP TypeScript SDK: security advisory (CVE-2026-111768:modelcontextprotocol/typescript-sdk)\nAffected: MCP TypeScript SDK, versions not stated. No fixed version is known yet.\nAction: no fix is published yet; watch this thread.\nSource: https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-46jr-4wx8-v453\n\n```aitools-alert\n{\n  \"id\": \"CVE-2026-111768:modelcontextprotocol/typescript-sdk\",\n  \"aliases\": [\n    \"CVE-2026-111768\",\n    \"GHSA-46jr-4wx8-v453\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"MCP TypeScript SDK: security advisory (CVE-2026-111768:modelcontextprotocol/typescript-sdk)\",\n  \"products\": [\n    {\n      \"name\": \"MCP TypeScript SDK\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-46jr-4wx8-v453\",\n      \"published_at\": \"2026-10-15T13:10:32Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794018005,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "430548f99bcdc8c9c239a6b0318972d798ab43956f12138aa3b718dccd95f6bb437c50312b3931920ab922d8253c598fcfcb654807d422e24f516d31e562ae64"
+  },
+  {
+   "id": "eb4342402c5909a68c980aa931d976839d1acef55be8dbe60f00c6d3b5b839d8",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794018027,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: MCP TypeScript SDK: security advisory (CVE-2026-104850:modelcontextprotocol/typescript-sdk)\nAffected: MCP TypeScript SDK, versions not stated. No fixed version is known yet.\nAction: no fix is published yet; watch this thread.\nSource: https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-6qxp-vccf-f47h\n\n```aitools-alert\n{\n  \"id\": \"CVE-2026-104850:modelcontextprotocol/typescript-sdk\",\n  \"aliases\": [\n    \"CVE-2026-104850\",\n    \"GHSA-6qxp-vccf-f47h\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"MCP TypeScript SDK: security advisory (CVE-2026-104850:modelcontextprotocol/typescript-sdk)\",\n  \"products\": [\n    {\n      \"name\": \"MCP TypeScript SDK\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-6qxp-vccf-f47h\",\n      \"published_at\": \"2026-09-30T20:59:40Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794018005,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "693af3dbb629444b39834d8cebdfdf9019306aa797b715741902ea18ed3a1e024e82155a1f1fff3091f1035c75f3d0aa9ecc816e7c8ce87d5be494283d70cdc1"
+  },
+  {
+   "id": "c8e1a9c4e81f1c36c4acb348a1a89218dfed076c493bf7fd2af72d4468181f47",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794018028,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: MCP TypeScript SDK: security advisory (GHSA-f897-62hf-6gxq:modelcontextprotocol/typescript-sdk)\nAffected: MCP TypeScript SDK, versions not stated. No fixed version is known yet.\nAction: no fix is published yet; watch this thread.\nSource: https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-f897-62hf-6gxq\n\n```aitools-alert\n{\n  \"id\": \"GHSA-f897-62hf-6gxq:modelcontextprotocol/typescript-sdk\",\n  \"aliases\": [\n    \"GHSA-f897-62hf-6gxq\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"MCP TypeScript SDK: security advisory (GHSA-f897-62hf-6gxq:modelcontextprotocol/typescript-sdk)\",\n  \"products\": [\n    {\n      \"name\": \"MCP TypeScript SDK\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-f897-62hf-6gxq\",\n      \"published_at\": \"2026-10-15T13:10:21Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794018005,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "d95b6e2400469efdaef37b9c0d0246570faa4d57d8ab97cc256aacc70e7ee51d6fbedaf7ff13dfde753824000ee737b35c9cbb02612819e53c65d64af7fc8ba0"
+  },
+  {
+   "id": "1900c59e2767d0a0ecaab848c9204feb15a73cbc8bbb36765d2a281700c1fadc",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794018030,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: MCP TypeScript SDK: security advisory (CVE-2026-111770:modelcontextprotocol/typescript-sdk)\nAffected: MCP TypeScript SDK, versions not stated. No fixed version is known yet.\nAction: no fix is published yet; watch this thread.\nSource: https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-jm63-cq47-j5jp\n\n```aitools-alert\n{\n  \"id\": \"CVE-2026-111770:modelcontextprotocol/typescript-sdk\",\n  \"aliases\": [\n    \"CVE-2026-111770\",\n    \"GHSA-jm63-cq47-j5jp\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"MCP TypeScript SDK: security advisory (CVE-2026-111770:modelcontextprotocol/typescript-sdk)\",\n  \"products\": [\n    {\n      \"name\": \"MCP TypeScript SDK\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-jm63-cq47-j5jp\",\n      \"published_at\": \"2026-10-15T13:10:24Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794018005,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "e0b4e30719ebc73b15774e6852479301115b53414100fcb78216ec9d75933783d2a92d58ae1bcc6e3236fb27964dcc898dd96d54b0ad22bc94dd537acdb911dd"
+  },
+  {
+   "id": "542c9ba524ccba681a589e05171788abeffbe274b3cc4179b994855109c5203c",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794025204,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: OpenClaw: security advisory (CVE-2026-32846:openclaw)\nOpenClaw is vulnerable to Path Traversal through path validation bypass\nAffected: OpenClaw, versions not stated. Fixed in 2026.3.28.\nAction: upgrade OpenClaw to 2026.3.28 or later.\nSource: https://github.com/advisories/GHSA-hggm-x7r9-mm7v\n\n```aitools-alert\n{\n  \"id\": \"CVE-2026-32846:openclaw\",\n  \"aliases\": [\n    \"CVE-2026-32846\",\n    \"GHSA-hggm-x7r9-mm7v\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"OpenClaw: security advisory (CVE-2026-32846:openclaw)\",\n  \"products\": [\n    {\n      \"name\": \"OpenClaw\",\n      \"ecosystem\": \"openclaw\",\n      \"affected\": null,\n      \"fixed\": \"2026.3.28\"\n    }\n  ],\n  \"actions\": [\n    {\n      \"verb\": \"upgrade\",\n      \"target\": \"OpenClaw\",\n      \"value\": \"2026.3.28\"\n    }\n  ],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/advisories/GHSA-hggm-x7r9-mm7v\",\n      \"published_at\": \"2026-03-26T18:31:41Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794025203,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "323ca17e31c015a7424bcf0b1d64ec342084d0b7c5e0c2f1dc5e5b5ef53ee13c5427f51b7ac3d91d500c0fa8f2bc4532fc08e0225ecda08279dd4d1f6d46966c"
+  },
+  {
+   "id": "679e22eb601687196b3e2925e8463733055ab6642b39dc91ef5c2297f82cbc4b",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794025207,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ],
+    [
+     "e",
+     "c1bfb78bc879f90929d0c35fe85a3435bbd380fc6841850dc208e370c18a813b",
+     "",
+     "reply"
+    ]
+   ],
+   "content": "Action: upgrade Claude Code to 2.1.129 or later.\nAffected: Claude Code, versions not stated. Fixed in 2.1.129.\nSource: https://github.com/anthropics/claude-code/security/advisories/GHSA-5j29-h97v-84ch\n\n```aitools-alert\n{\n  \"products\": [\n    {\n      \"name\": \"Claude Code\",\n      \"ecosystem\": \"claude-code\",\n      \"affected\": null,\n      \"fixed\": \"2.1.129\"\n    }\n  ],\n  \"actions\": [\n    {\n      \"verb\": \"upgrade\",\n      \"target\": \"Claude Code\",\n      \"value\": \"2.1.129\"\n    }\n  ]\n}\n```\n",
+   "sig": "732dda8ca6311cd335dee9d8b6442671067e6dca64575912620935856e38ef0465abb1ed5daa7cad0449f6487c1cef7244ad9a5f7f9e270c8dfa58534707fc70"
+  },
+  {
+   "id": "c159fa4cff58dbfbab8ce0721221c8965103837f80a47ff05972f83ab51839d9",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794025208,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ],
+    [
+     "e",
+     "81a0c2f16dc3f83d832cf61df2e00c5b52cbbe8d885a7ce38425b07dbf79310b",
+     "",
+     "reply"
+    ]
+   ],
+   "content": "Action: upgrade Claude Code to 2.1.251 or later.\nAffected: Claude Code, versions not stated. Fixed in 2.1.251.\nSource: https://github.com/anthropics/claude-code/security/advisories/GHSA-5xjx-9qx6-jcrv\n\n```aitools-alert\n{\n  \"products\": [\n    {\n      \"name\": \"Claude Code\",\n      \"ecosystem\": \"claude-code\",\n      \"affected\": null,\n      \"fixed\": \"2.1.251\"\n    }\n  ],\n  \"actions\": [\n    {\n      \"verb\": \"upgrade\",\n      \"target\": \"Claude Code\",\n      \"value\": \"2.1.251\"\n    }\n  ]\n}\n```\n",
+   "sig": "2940c7a476efeb9083b490e55f894296e8b93ecdf86187934031a05602b02c6f49f8c557cbe70321d93db9819360907e5d258d09df8d464f7e78b50afaafbfbf"
+  },
+  {
+   "id": "476de57e21331fa03e54869799edf8c19a3daae43b7dbc4fd139d4096d07a90d",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794025210,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ],
+    [
+     "e",
+     "cc37f5fb017f28155d2e5faeb67fdbb4d75a25cec0c80478b5db4bf105a54607",
+     "",
+     "reply"
+    ]
+   ],
+   "content": "Action: upgrade Claude Code to 2.1.179 or later.\nAffected: Claude Code, versions not stated. Fixed in 2.1.179.\nSource: https://github.com/anthropics/claude-code/security/advisories/GHSA-pq7j-f95f-qfcv\n\n```aitools-alert\n{\n  \"products\": [\n    {\n      \"name\": \"Claude Code\",\n      \"ecosystem\": \"claude-code\",\n      \"affected\": null,\n      \"fixed\": \"2.1.179\"\n    }\n  ],\n  \"actions\": [\n    {\n      \"verb\": \"upgrade\",\n      \"target\": \"Claude Code\",\n      \"value\": \"2.1.179\"\n    }\n  ]\n}\n```\n",
+   "sig": "275f2483b523e5489b296c41833e4ec1f417e2fb4119f558e1b51a5923716f5528cb00dfa073a13fb96e0a5d1c2ef1cf12f6f2918b4c1b9b60d72b9ccca068e4"
+  },
+  {
+   "id": "14554d66ef1c67200c8f0e72ce5e31122dd773f7609093edfc23131fc20aec9e",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794025212,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ],
+    [
+     "e",
+     "f83cf83837027840942396bed0b258f6bb51f6645b4e8d1b95dc80bb71668193",
+     "",
+     "reply"
+    ]
+   ],
+   "content": "Action: upgrade MCP Inspector to 1.0.3 or later.\nAffected: MCP Inspector, versions not stated. Fixed in 1.0.3.\nSource: https://github.com/modelcontextprotocol/inspector/security/advisories/GHSA-4fc4-wcmh-4g86\n\n```aitools-alert\n{\n  \"products\": [\n    {\n      \"name\": \"MCP Inspector\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": \"1.0.3\"\n    }\n  ],\n  \"actions\": [\n    {\n      \"verb\": \"upgrade\",\n      \"target\": \"MCP Inspector\",\n      \"value\": \"1.0.3\"\n    }\n  ]\n}\n```\n",
+   "sig": "c1d74aaf44d668f43b7940d2b09917293249f3a5ff5bfec180f3e9cfcbf90dddf88441db9208c4e7889bc7b5a67c119a046a9944cacf340c7ae0fea3bb53945e"
+  },
+  {
+   "id": "ebc5d3c99382a5fa04b659ab06b75221d60a0b14ebb035aad516e901820f6246",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794025213,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ],
+    [
+     "e",
+     "ba3d92ec621f721feaffd30505286d3ff593697c8e02728c3b30f38930c08e32",
+     "",
+     "reply"
+    ]
+   ],
+   "content": "Action: upgrade MCP Inspector to 1.0.3 or later.\nAffected: MCP Inspector, versions not stated. Fixed in 1.0.3.\nSource: https://github.com/modelcontextprotocol/inspector/security/advisories/GHSA-6x67-4w4w-9f3w\n\n```aitools-alert\n{\n  \"products\": [\n    {\n      \"name\": \"MCP Inspector\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": \"1.0.3\"\n    }\n  ],\n  \"actions\": [\n    {\n      \"verb\": \"upgrade\",\n      \"target\": \"MCP Inspector\",\n      \"value\": \"1.0.3\"\n    }\n  ]\n}\n```\n",
+   "sig": "2d62909c68ffa4ca474508e503cecafeb2cd15d231f4590d1b0a4d77a22d132883e04fb96596abf053274d85c694f1e47ce83e1045b042a0875cc2976f7b3120"
+  },
+  {
+   "id": "bd1bbf53b9b12d36d84501e8967e9510f3aa94475cfb741245d60a89542a966b",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794025215,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ],
+    [
+     "e",
+     "721ea6a0bd5c10e930c1b925636cac633f6cd2e6980cbe0f17f48abff8c20d37",
+     "",
+     "reply"
+    ]
+   ],
+   "content": "Action: upgrade MCP Inspector to 2.12.0 or later.\nAffected: MCP Inspector, versions not stated. Fixed in 2.12.0.\nSource: https://github.com/modelcontextprotocol/inspector/security/advisories/GHSA-q978-78c7-phqw\n\n```aitools-alert\n{\n  \"products\": [\n    {\n      \"name\": \"MCP Inspector\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": \"2.12.0\"\n    }\n  ],\n  \"actions\": [\n    {\n      \"verb\": \"upgrade\",\n      \"target\": \"MCP Inspector\",\n      \"value\": \"2.12.0\"\n    }\n  ]\n}\n```\n",
+   "sig": "e2bf7906f3e5c37387175479c8cb11e067c7d8568f54580d01c2a75c29ffd11d41f5460e8b9f85f77d8bea0c2e342eac991b99d35fe73594faef5b63c52fb52d"
+  },
+  {
+   "id": "0f21e0335b7a5739320ce6072049a352d007441288b9e86ec09ef87f766d2ec9",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794025216,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ],
+    [
+     "e",
+     "09a8bb24100e67cf2d2b572b87bbc801fd7f8b5809849af8de878af9eba215ba",
+     "",
+     "reply"
+    ]
+   ],
+   "content": "Action: upgrade MCP Inspector to 2.12.0 or later.\nAffected: MCP Inspector, versions not stated. Fixed in 2.12.0.\nSource: https://github.com/modelcontextprotocol/inspector/security/advisories/GHSA-vcc9-3xgm-p9v4\n\n```aitools-alert\n{\n  \"products\": [\n    {\n      \"name\": \"MCP Inspector\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": \"2.12.0\"\n    }\n  ],\n  \"actions\": [\n    {\n      \"verb\": \"upgrade\",\n      \"target\": \"MCP Inspector\",\n      \"value\": \"2.12.0\"\n    }\n  ]\n}\n```\n",
+   "sig": "cb9bc191444e0e5ba68741d882532c12f4dafecedcd0ddd0e271b67d2267e391eeb41bf07f95620068ddb277aea8c96d6c43a6783e6434e0b09c82db2fdcf315"
+  },
+  {
+   "id": "0c190556dbbf5f0c382eab3b96b77c7784b6df1e99056fbaf4478b9ce1282dcd",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794025218,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ],
+    [
+     "e",
+     "51d03baa72707bd325987546ae36f8886aded87bf4a565f5c99f884475affd65",
+     "",
+     "reply"
+    ]
+   ],
+   "content": "Action: upgrade MCP Inspector to 1.0.3 or later.\nAffected: MCP Inspector, versions not stated. Fixed in 1.0.3.\nSource: https://github.com/modelcontextprotocol/inspector/security/advisories/GHSA-wmjf-2m46-2352\n\n```aitools-alert\n{\n  \"products\": [\n    {\n      \"name\": \"MCP Inspector\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": \"1.0.3\"\n    }\n  ],\n  \"actions\": [\n    {\n      \"verb\": \"upgrade\",\n      \"target\": \"MCP Inspector\",\n      \"value\": \"1.0.3\"\n    }\n  ]\n}\n```\n",
+   "sig": "adf4982393abed99cefb138563b54db43fd7740c249bce560f54b36b4655f981ba5f705252229d5f30968ecec2f42a6092dff3684eb262eb4dfd05bb3bb6b544"
+  },
+  {
+   "id": "a667151de30595d5694aa075a90b2032321006b1cb28e68557e3d3236000d704",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794025219,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ],
+    [
+     "e",
+     "803f5082b84fd1c50cdf76e572a42a874fc960e05810635d6a7f8e7174f30898",
+     "",
+     "reply"
+    ]
+   ],
+   "content": "Action: upgrade MCP TypeScript SDK to 1.32.0 or later.\nAffected: MCP TypeScript SDK, versions not stated. Fixed in 1.32.0.\nSource: https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-22jm-h49p-29qw\n\n```aitools-alert\n{\n  \"products\": [\n    {\n      \"name\": \"MCP TypeScript SDK\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": \"1.32.0\"\n    }\n  ],\n  \"actions\": [\n    {\n      \"verb\": \"upgrade\",\n      \"target\": \"MCP TypeScript SDK\",\n      \"value\": \"1.32.0\"\n    }\n  ]\n}\n```\n",
+   "sig": "df897ae903d3de272d166e88b791b05d0fe3e7eb8bfc81f2a787ff81409a148e40e7e0d33eb6cd4e12fdb6ebc4b0541577a0721e1ca81ba5744914c785f4de13"
+  },
+  {
+   "id": "0ea058fc4480742c02f8b8eb8efeabe22b894271bb6f5c61c053f2c8effde9cb",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794025221,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ],
+    [
+     "e",
+     "1900c59e2767d0a0ecaab848c9204feb15a73cbc8bbb36765d2a281700c1fadc",
+     "",
+     "reply"
+    ]
+   ],
+   "content": "Action: upgrade MCP TypeScript SDK to 2.3.0 or later.\nAffected: MCP TypeScript SDK, versions not stated. Fixed in 2.3.0.\nSource: https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-jm63-cq47-j5jp\n\n```aitools-alert\n{\n  \"products\": [\n    {\n      \"name\": \"MCP TypeScript SDK\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": \"2.3.0\"\n    }\n  ],\n  \"actions\": [\n    {\n      \"verb\": \"upgrade\",\n      \"target\": \"MCP TypeScript SDK\",\n      \"value\": \"2.3.0\"\n    }\n  ]\n}\n```\n",
+   "sig": "97e6eafa666ec3887d85e92b846387977e50a1a62ccb4582a9aa0668ac6ce6d4f8c9960e2447b26be467ddbf07855b903d231e517b46cc75e21f3aacf309757f"
+  },
+  {
+   "id": "1c603fcd8170e968eb7a5ed652dc213648d113141c98a5ad0f7468d4d2899d35",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794997207,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: MCP servers and clients: security advisory (GHSA-87qg-cmw8-jc5m:mcp-server)\nmcp-server-git: a repository's promisor configuration runs a program during a lazy fetch\nAffected: MCP servers and clients, versions not stated. The source does not state a fixed version; check the vendor's advisory.\nAction: check the vendor for an update and apply it.\nSource: https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-87qg-cmw8-jc5m\n\n```aitools-alert\n{\n  \"id\": \"GHSA-87qg-cmw8-jc5m:mcp-server\",\n  \"aliases\": [\n    \"GHSA-87qg-cmw8-jc5m\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"MCP servers and clients: security advisory (GHSA-87qg-cmw8-jc5m:mcp-server)\",\n  \"products\": [\n    {\n      \"name\": \"MCP servers and clients\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-87qg-cmw8-jc5m\",\n      \"published_at\": \"2026-11-18T09:22:44Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794997205,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "717e71c185cb8e639833a513f79ad2dff4b2ddcc62cc65aa26999edf43b8b829787d91c9943a16f73a006fefcade8d139ded32de6f942c846e016ae78c5b4888"
+  },
+  {
+   "id": "3518dadfe3c33b0cc0e16f93f3b1b1c69308806f8880839abc40653919f09134",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794997209,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: MCP servers and clients: security advisory (GHSA-9vjp-x34c-xg6v:mcp-server)\nmcp-server-git: a config include created by the merged branch runs a command during git_merge\nAffected: MCP servers and clients, versions not stated. The source does not state a fixed version; check the vendor's advisory.\nAction: check the vendor for an update and apply it.\nSource: https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-9vjp-x34c-xg6v\n\n```aitools-alert\n{\n  \"id\": \"GHSA-9vjp-x34c-xg6v:mcp-server\",\n  \"aliases\": [\n    \"GHSA-9vjp-x34c-xg6v\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"MCP servers and clients: security advisory (GHSA-9vjp-x34c-xg6v:mcp-server)\",\n  \"products\": [\n    {\n      \"name\": \"MCP servers and clients\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-9vjp-x34c-xg6v\",\n      \"published_at\": \"2026-11-18T09:23:38Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794997205,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "38e4087a4981ad5ee082e1fc1e6577327b456d34b9c9a1d2d0b8b5f8ca81a237b90776349e12b7d78bd939e9e19aecbec106214db376378d44d0f16fbf916604"
+  },
+  {
+   "id": "1f378af11410325cbaa0e21b872912e28047c46402d917b01861edd7404573b3",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1794997210,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: MCP servers and clients: security advisory (GHSA-h2g3-rwxm-xfm3:mcp-server)\nmcp-server-git 2026.11.11: git_merge runs gc.recentObjectsHook from the repository's own config\nAffected: MCP servers and clients, versions not stated. The source does not state a fixed version; check the vendor's advisory.\nAction: check the vendor for an update and apply it.\nSource: https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-h2g3-rwxm-xfm3\n\n```aitools-alert\n{\n  \"id\": \"GHSA-h2g3-rwxm-xfm3:mcp-server\",\n  \"aliases\": [\n    \"GHSA-h2g3-rwxm-xfm3\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"MCP servers and clients: security advisory (GHSA-h2g3-rwxm-xfm3:mcp-server)\",\n  \"products\": [\n    {\n      \"name\": \"MCP servers and clients\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": null\n    }\n  ],\n  \"actions\": [],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-h2g3-rwxm-xfm3\",\n      \"published_at\": \"2026-11-18T09:22:16Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1794997205,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "e423cbab539bdc8fcc0dd46b44b1247e76a4a0223e9a586ebe34f1bf4e0c0869d519e950846e6ed9e94906070e58825c6697c5850364d79050922e1bfd27f4db"
+  },
+  {
+   "id": "46cafd62b96a4af70005f4e2c5914246083a3f36b0c9c345fdad6fb9535135fb",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1795000809,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ],
+    [
+     "e",
+     "1c603fcd8170e968eb7a5ed652dc213648d113141c98a5ad0f7468d4d2899d35",
+     "",
+     "reply"
+    ]
+   ],
+   "content": "Action: upgrade MCP servers and clients to 2026.11.18 or later.\nAffected: MCP servers and clients, versions not stated. Fixed in 2026.11.18.\nSource: https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-87qg-cmw8-jc5m\n\n```aitools-alert\n{\n  \"products\": [\n    {\n      \"name\": \"MCP servers and clients\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": \"2026.11.18\"\n    }\n  ],\n  \"actions\": [\n    {\n      \"verb\": \"upgrade\",\n      \"target\": \"MCP servers and clients\",\n      \"value\": \"2026.11.18\"\n    }\n  ]\n}\n```\n",
+   "sig": "22e3577c5e0edec86fefd66b614aa230dc247d25b324f8bae8c345df68f2f0e0e58e9f4d7fb6ce4304bd1b1b97ddaa6f833b14f928d6d9bd507f4f889629a5c0"
+  },
+  {
+   "id": "a985bd0610c4d301b479ead68ce7b8dbad93c8e9a9be3f385c7d5bf0e27ac85f",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1795000810,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: MCP servers and clients: security advisory (GHSA-8wv7-r664-7594:mcp-server)\nmcp-server-git: a submodule's own configuration still runs programs on git_diff (with diff.submodule=diff) and on git_checkout / git_add\nAffected: MCP servers and clients, versions not stated. Fixed in 2026.11.18.\nAction: upgrade MCP servers and clients to 2026.11.18 or later.\nSource: https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-8wv7-r664-7594\n\n```aitools-alert\n{\n  \"id\": \"GHSA-8wv7-r664-7594:mcp-server\",\n  \"aliases\": [\n    \"GHSA-8wv7-r664-7594\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"MCP servers and clients: security advisory (GHSA-8wv7-r664-7594:mcp-server)\",\n  \"products\": [\n    {\n      \"name\": \"MCP servers and clients\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": \"2026.11.18\"\n    }\n  ],\n  \"actions\": [\n    {\n      \"verb\": \"upgrade\",\n      \"target\": \"MCP servers and clients\",\n      \"value\": \"2026.11.18\"\n    }\n  ],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-8wv7-r664-7594\",\n      \"published_at\": \"2026-11-18T09:24:57Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1795000805,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "a9cc88369e0e676f8cc6fd7712b4df1a4b56e0de4f834cad943a0e16bc0e5f7d2c7cf71820dc131d38ce60358665e55be1645120a83940f4595023e252c6d596"
+  },
+  {
+   "id": "32bbe54644f35fc60899036c8f576775bdf99c135c30a54b5a4a77a5b52a42e6",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1795000812,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ],
+    [
+     "e",
+     "3518dadfe3c33b0cc0e16f93f3b1b1c69308806f8880839abc40653919f09134",
+     "",
+     "reply"
+    ]
+   ],
+   "content": "Action: upgrade MCP servers and clients to 2026.11.18 or later.\nAffected: MCP servers and clients, versions not stated. Fixed in 2026.11.18.\nSource: https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-9vjp-x34c-xg6v\n\n```aitools-alert\n{\n  \"products\": [\n    {\n      \"name\": \"MCP servers and clients\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": \"2026.11.18\"\n    }\n  ],\n  \"actions\": [\n    {\n      \"verb\": \"upgrade\",\n      \"target\": \"MCP servers and clients\",\n      \"value\": \"2026.11.18\"\n    }\n  ]\n}\n```\n",
+   "sig": "9426cbc0f6dc76231470e29ff1b16ee3fd00e7f7f299e3e1b92bf7c40a8e0d1425c18e5725d0fb7b7105d5f88465be1f0865928a4e1c036afccadcd128ed4732"
+  },
+  {
+   "id": "13280a06234ea6485f595b9718899380ac858563adb760d101babc8da706f2c9",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1795000813,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ],
+    [
+     "e",
+     "1f378af11410325cbaa0e21b872912e28047c46402d917b01861edd7404573b3",
+     "",
+     "reply"
+    ]
+   ],
+   "content": "Action: upgrade MCP servers and clients to 2026.11.18 or later.\nAffected: MCP servers and clients, versions not stated. Fixed in 2026.11.18.\nSource: https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-h2g3-rwxm-xfm3\n\n```aitools-alert\n{\n  \"products\": [\n    {\n      \"name\": \"MCP servers and clients\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": \"2026.11.18\"\n    }\n  ],\n  \"actions\": [\n    {\n      \"verb\": \"upgrade\",\n      \"target\": \"MCP servers and clients\",\n      \"value\": \"2026.11.18\"\n    }\n  ]\n}\n```\n",
+   "sig": "f21889c69028d1ce94e1c7ab410faaaedcd75242e9604e0368ce01ebb19be815c8a2006a8f3d913bdc248cdf171b4771494f3bdb4c2c49e8bf04329b24f31098"
+  },
+  {
+   "id": "6a5fb953184bcadf695268f832ebd13b2e3a2ddf74b56a4bfb8fe0912d3f86d3",
+   "pubkey": "d4f04ff67b3fa209cefdce90ca6e07df8bcb1aea72b9d49f31935c55601839c1",
+   "created_at": 1795000814,
+   "kind": 9,
+   "tags": [
+    [
+     "h",
+     "599adb9f-4f9f-4b19-aee3-66667c3293e8"
+    ]
+   ],
+   "content": "HIGH: MCP servers and clients: security advisory (GHSA-pm7p-vphh-2cg7:mcp-server)\nmcp-server-git: a repository's own config runs a command, because the hardening misses an empty driver name\nAffected: MCP servers and clients, versions not stated. Fixed in 2026.11.18.\nAction: upgrade MCP servers and clients to 2026.11.18 or later.\nSource: https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-pm7p-vphh-2cg7\n\n```aitools-alert\n{\n  \"id\": \"GHSA-pm7p-vphh-2cg7:mcp-server\",\n  \"aliases\": [\n    \"GHSA-pm7p-vphh-2cg7\"\n  ],\n  \"level\": \"high\",\n  \"advisory_severity\": null,\n  \"title\": \"MCP servers and clients: security advisory (GHSA-pm7p-vphh-2cg7:mcp-server)\",\n  \"products\": [\n    {\n      \"name\": \"MCP servers and clients\",\n      \"ecosystem\": \"mcp\",\n      \"affected\": null,\n      \"fixed\": \"2026.11.18\"\n    }\n  ],\n  \"actions\": [\n    {\n      \"verb\": \"upgrade\",\n      \"target\": \"MCP servers and clients\",\n      \"value\": \"2026.11.18\"\n    }\n  ],\n  \"sources\": [\n    {\n      \"url\": \"https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-pm7p-vphh-2cg7\",\n      \"published_at\": \"2026-11-18T09:24:02Z\"\n    }\n  ],\n  \"posted_by\": \"relay-bot\",\n  \"posted_at\": 1795000805,\n  \"expires_at\": null\n}\n```\n",
+   "sig": "a9a30b6d5d7e1c44da40388c0db425194d003f013754f98a49772bcfbee9ef3538c045aa9da47a10818fd7f062065c0b0cc8c438a2d66e920f2ac65d784013b3"
+  }
+ ]
+}
