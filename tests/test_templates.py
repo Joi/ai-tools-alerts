@@ -23,7 +23,7 @@ SKILLS = {
     "hermes": ROOT / "skills" / "hermes" / "aitools-alerts" / "SKILL.md",
 }
 HOOK_LINE = "AITOOLS-ALERT: critical advisory matches this machine; run the aitools-alerts skill"
-STALE_HOOK_LINE = "AITOOLS-ALERT: alerts may be stale (no new signed post for over 3 days, or a trust manifest over 90 days old); run aitools-alerts check"
+STALE_HOOK_LINE = "AITOOLS-ALERT: alerts may be stale or unverified (no fresh signed checkpoint, or the last pull failed); run aitools-alerts check"
 
 
 # ------------------------------------------------------------------ schedules
@@ -328,9 +328,12 @@ STALE_JSON = """printf '%s\\n' '{' '  "stale_since": "2099-01-01T00:00:00Z",' ' 
     (2, STALE_JSON, HOOK_LINE + "\n" + STALE_HOOK_LINE + "\n"),
     (1, STALE_JSON, STALE_HOOK_LINE + "\n"),
     (0, """printf '%s\\n' '{"stale_since": null}'""", ""),
+    # this release's output: unverified beside a non-null stale_since, and a verified run
+    (0, """printf '%s\\n' '{' '  "stale_since": "2099-01-01T00:00:00Z",' '  "unverified": "the last pull failed (mirror incomplete)",' '  "matches": []' '}'""", STALE_HOOK_LINE + "\n"),
+    (0, """printf '%s\\n' '{' '  "stale_since": null,' '  "unverified": null,' '  "matches": []' '}'""", ""),
     # post text cannot forge it: a quote inside a JSON string is escaped
     (0, r"""printf '%s\n' '{"stale_since": null, "title": "\"stale_since\": \"x"}'""", ""),
-], ids=["stale", "stale-and-critical", "stale-pull-error", "fresh", "forged-title"])
+], ids=["stale", "stale-and-critical", "stale-pull-error", "fresh", "unverified", "verified", "forged-title"])
 def test_session_start_hook_stale_line(tmp_path, exit_code, out, expected):
     r = _run_hook(tmp_path, exit_code, out)
     assert (r.returncode, r.stdout, r.stderr) == (0, expected, "")

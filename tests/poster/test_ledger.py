@@ -121,22 +121,22 @@ def test_roots_replies_and_review(tmp_path):
         led.record_root(adv_for(c), "e1", {"critical": "e1", "feed": "f1"},
                         scope="Claude Code", exploited=True, now=T0)
         with pytest.raises(LedgerError):  # a known alias is a reply, never a new root
-            led.record_root(adv_for(cand(aliases=("CVE-2026-0001",), id="GHSA-q")), "e2",
+            led.record_root(adv_for(cand(aliases=("CVE-2026-0001",), id="GHSA-qqqq-qqqq-qqqq")), "e2",
                             {"feed": "e2"}, scope="Claude Code", exploited=False, now=T0)
         e = led.lookup(["cve-2026-0001"])
         assert e.root_event_id == "e1" and e.channel_ids == {"critical": "e1", "feed": "f1"}
         assert led.lookup(["CVE-2026-0001"], scope="Docker") is None
-        newer = adv_for(cand(aliases=("OSV-1",)), "high")
+        newer = adv_for(cand(aliases=("CVE-2026-0101",)), "high")
         led.record_reply("e1", newer, {"feed": "r1"}, now=T0 + 5)
         led.add_review(["Anthropic Widget\x07", "Anthropic Widget", "x" * 900], now=T0)
         led.add_review(["Anthropic Widget"], now=T0 + 9)
     assert sorted(f.name for f in p.parent.iterdir()) == ["l.json", "l.json.lock"]
     assert (p.stat().st_mode & 0o777) == 0o600
     with Ledger(p) as led:
-        e = led.lookup(["OSV-1"])
+        e = led.lookup(["CVE-2026-0101"])
         assert e.level == "high" and e.last_change == T0 + 5 and e.exploited is True
         assert e.replies == [{"feed": "r1"}] and e.advisory["level"] == "high"
-        assert {"CVE-2026-0001", "OSV-1"} <= set(e.aliases)
+        assert {"CVE-2026-0001", "CVE-2026-0101"} <= set(e.aliases)
         with pytest.raises(LedgerError):
             led.record_reply("nope", newer, {"feed": "r2"}, now=T0)
     review = json.loads(p.read_text())["review"]
@@ -181,7 +181,7 @@ def test_review_fixes_ledger(tmp_path, monkeypatch):
 
 def test_merge_keeps_severity_and_one_fix_in_either_order():
     a = cand(advisory_severity=None, fixed=None)
-    b = cand(id="GHSA-q", aliases=("CVE-2026-0001",), fixed="2.1.0", affected="<2.1.0",
+    b = cand(id="GHSA-qqqq-qqqq-qqqq", aliases=("CVE-2026-0001",), fixed="2.1.0", affected="<2.1.0",
              advisory_severity="remote code execution")
     for order in ([a, b], [b, a]):
         (m, s), = ledger.merge([pair(x) for x in order])
@@ -200,7 +200,7 @@ def test_merge_keeps_severity_tier1():
 
 def test_delta_fixes(tmp_path, monkeypatch):
     a = cand(affected="<2.0.0", fixed=None, advisory_severity="x" * 500)
-    b = cand(id="GHSA-q", aliases=("CVE-2026-0001",), fixed="2.0.0-rc.1", injection_exec=True,
+    b = cand(id="GHSA-qqqq-qqqq-qqqq", aliases=("CVE-2026-0001",), fixed="2.0.0-rc.1", injection_exec=True,
              advisory_severity="remote code execution")
     for order in ([a, b], [b, a]):
         (m, _), = ledger.merge([pair(x) for x in order])

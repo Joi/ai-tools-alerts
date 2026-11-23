@@ -23,7 +23,7 @@ import os
 import shlex
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from urllib.parse import quote
 
 from . import TRUST_ROOT_PUBKEY, __version__, check, config, curator, inventory, nostr, notify, pull, relay, schema
@@ -31,8 +31,10 @@ from .state import State, StateError
 
 TRUST_ROOT_ENV = "AITOOLS_ALERTS_TRUST_ROOT"
 EXIT_UNSEEN_CRITICAL = 2
-STALE_LINE = ("warning: alerts may be stale since {since}: no new signed post for over 3 days, "
-              "or a trust manifest over 90 days old; the mirror may be frozen or replayed")
+STALE_LINE = ("warning: alerts may be stale since {since}: no fresh signed checkpoint; "
+              "the mirror may be frozen, replayed or cut off from its signer")
+UNVERIFIED_LINE = "warning: alerts are unverified ({reason}); nothing is auto-applied"
+OTHER_ROOT = "no pull yet under this trust root"
 
 # ecosystem -> argv template for an upgrade; "{fixed}" is products[].fixed,
 # which the schema restricts to digits, dots and a lowercase suffix.
@@ -121,8 +123,16 @@ AHEAD_LINE = ("warning: {n} event(s) dated ahead of this machine's clock were no
               "if the clock is wrong, alerts are missing until it is set")
 
 
-def _pull(a, st: State, url: str) -> pull.PullResult:
-    res = pull.fetch(url, st, root_pubkey=a.root)
+def _second_origin(a, s: config.Settings) -> str | None:
+    """The second origin for this pull: the configured one; by default the
+    project's repository, for the pinned root only (it serves no test root)."""
+    if s.second_origin is not None:
+        return s.second_origin or None
+    return config.DEFAULT_SECOND_ORIGIN if a.root == TRUST_ROOT_PUBKEY else None
+
+
+def _pull(a, st: State, url: str, s: config.Settings) -> pull.PullResult:
+    res = pull.fetch(url, st, root_pubkey=a.root, second_origin=_second_origin(a, s))
     if res.dropped.get("future-dated"):  # a slow clock refuses genuine news: never silent
         _err(AHEAD_LINE.format(n=res.dropped["future-dated"]))
     return res
@@ -130,13 +140,16 @@ def _pull(a, st: State, url: str) -> pull.PullResult:
 
 def cmd_pull(a, st: State, s: config.Settings) -> int:
     url = config.check_mirror_url(a.mirror_url) if a.mirror_url else s.mirror_url
-    res = _pull(a, st, url)
+    res = _pull(a, st, url, s)
     if res.error:
         _err(res.error)
         return 1
     dropped = ", ".join(f"{k} {v}" for k, v in sorted(res.dropped.items())) or "none"
+    cp = st.checkpoint_for(a.root)
+    if reason := _unverified(a, st):  # the pull went through, but e.g. the mirror's checkpoint is out of date
+        _err(UNVERIFIED_LINE.format(reason=reason))
     print(f"pulled manifest v{res.manifest.version}: {len(res.new_events)} new events, "
-          f"{len(st.events)} stored, dropped: {dropped}")
+          f"{len(st.events)} stored, dropped: {dropped}; checkpoint {cp.seq} lists {len(cp.events)} events")
     return 0
 
 
@@ -242,10 +255,25 @@ def _match_json(t, m) -> dict:
             "translations": dict(t.translations)}
 
 
+def _unverified(a, st: State) -> str | None:
+    """pull.unverified for this trust root. State pulled under another root,
+    or none, is no verification under this one."""
+    if st.manifest_root != a.root:
+        return OTHER_ROOT if st.manifest_root is not None else pull.unverified(st) or OTHER_ROOT
+    return pull.unverified(st)
+
+
 def _stale_since(a, st: State) -> str | None:
-    """pull.stale_since as an ISO time, for state pulled under this root."""
-    since = pull.stale_since(st) if st.manifest_root == a.root else None
-    return None if since is None else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since))
+    """pull.stale_since as an ISO time: null only while this root's state is
+    verified. With no state under this root, the time of the last attempt."""
+    if _unverified(a, st) is None:
+        return None
+    if st.manifest_root == a.root:
+        since = pull.stale_since(st)
+    else:
+        since = st.last_pull.get("at")
+    since = since if isinstance(since, int) else int(time.time())
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(min(since, schema.MAX_TIMESTAMP)))
 
 
 def cmd_check(a, st: State, s: config.Settings) -> int:
@@ -255,8 +283,10 @@ def cmd_check(a, st: State, s: config.Settings) -> int:
         return 0
     if not st.last_pull.get("last_ok_at"):
         print("no successful pull yet; run: aitools-alerts pull")
-    if since := _stale_since(a, st):
-        print(STALE_LINE.format(since=since))
+    if reason := _unverified(a, st):
+        print(UNVERIFIED_LINE.format(reason=reason))
+        if reason == "checkpoint out of date":
+            print(STALE_LINE.format(since=_stale_since(a, st)))
     for t, m in pairs:
         ver = m.installed.version or "unknown version"
         print(f"{t.adv.level.upper()}: {_title(t, s)} [{m.installed.name} {ver}: {m.reason}] "
@@ -320,8 +350,13 @@ def cmd_plan(a, st: State, s: config.Settings) -> int:
         print(f"{_title(wanted[0], s)}: nothing installed here is affected")
         return 0
     cfg = s.check_config()
+    reason = _unverified(a, st)
+    if reason:  # completeness is not established: a retraction may be missing
+        print(UNVERIFIED_LINE.format(reason=reason))
     for t, m in hits:
         p = check.plan(m, cfg)
+        if reason:
+            p = replace(p, auto_apply=[], prepare=[*p.auto_apply, *p.prepare])
         print(f"{t.adv.level.upper()}: {_title(t, s)} [{m.installed.name} "
               f"{m.installed.version or 'unknown version'}] posted by {t.adv.posted_by}")
         tr = _tr(t, s)  # quoted with "> ": translated text, never a section or a command
@@ -350,14 +385,15 @@ def cmd_plan(a, st: State, s: config.Settings) -> int:
 def cmd_run(a, st: State, s: config.Settings) -> int:
     """pull, check, notify. --json prints one object; --quiet prints nothing
     on stdout. Exit 2 when a critical match was unseen at the start."""
-    res = _pull(a, st, s.mirror_url)
+    res = _pull(a, st, s.mirror_url, s)
     if res.error:
         _err(f"{res.error} (using the last good state)")
     _, pairs = _matches(a, st)  # one inventory collection per run (the hook's time budget)
     pending = _unseen_critical(a, st, pairs)
     if a.json:
         out = {"pull_error": res.error, "ignored_env": a.ignored_env,
-               "stale_since": _stale_since(a, st), "matches": [_match_json(t, m) for t, m in pairs],
+               "stale_since": _stale_since(a, st), "unverified": _unverified(a, st),
+               "matches": [_match_json(t, m) for t, m in pairs],
                "unseen_critical": sorted({r for t, _ in pending for r in t.root_ids})}
     elif not a.quiet:
         a.json = False

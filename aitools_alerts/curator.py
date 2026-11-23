@@ -168,7 +168,7 @@ def find_threads(st: State, root: str, ref: str, retracted_ok: bool = False) -> 
     the retracted threads too. Only state pulled under ``root`` is used."""
     if st.manifest_root != root or st.manifest is None:
         raise CuratorError("the stored state was not pulled under this trust root; run: aitools-alerts pull")
-    hits = [t for t in pull.advisories(st) if ref in (t.root_id, t.adv.id)]
+    hits = [t for t in pull.advisories(st, checkpointed=False) if ref in (t.root_id, t.adv.id)]
     if not hits:
         raise CuratorError(f"no thread {ref!r} in the pulled state; run: aitools-alerts pull")
     open_ = hits if retracted_ok else [t for t in hits if not t.retracted]
@@ -212,7 +212,7 @@ def _present(st: State, root_id: str, now: int, thread):
         return thread
     kept = {i: ev for i, ev in evs.items() if not (_ahead(ev, now) and pull._thread_ref(ev) == root_id)}
     view = State(dir=st.dir, roots={**st.roots, st.manifest_root: [m, kept]}, manifest_root=st.manifest_root)
-    return next((t for t in pull.advisories(view) if t.root_id == root_id), thread)
+    return next((t for t in pull.advisories(view, checkpointed=False) if t.root_id == root_id), thread)
 
 
 def _replayed(st: State, ev: dict, root_id: str):
@@ -220,7 +220,7 @@ def _replayed(st: State, ev: dict, root_id: str):
     m, evs = st.roots[st.manifest_root]
     view = State(dir=st.dir, roots={**st.roots, st.manifest_root: [m, {**evs, ev["id"]: ev}]},
                  manifest_root=st.manifest_root)
-    return next(t for t in pull.advisories(view) if t.root_id == root_id)
+    return next(t for t in pull.advisories(view, checkpointed=False) if t.root_id == root_id)
 
 
 def _one_line(text: str | None, what: str) -> str:
@@ -362,7 +362,7 @@ def cmd_curator(a, st: State) -> int:
                           channel=a.channel)
     else:
         if not a.no_pull:  # amend against the newest thread the mirror has
-            res = pull.fetch(config.load().mirror_url, st, root_pubkey=a.root)
+            res = pull.fetch(config.load().mirror_url, st, root_pubkey=a.root, checkpoint=False)  # a writer's pull
             if res.error:
                 raise CuratorError(f"pull failed ({res.error}); retry, or pass --no-pull")
         m = role_manifest(st, a.root)

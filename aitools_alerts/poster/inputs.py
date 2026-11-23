@@ -41,7 +41,8 @@ RUN_DIR = re.compile(r"\d{4}-\d{2}-\d{2}T\d{6}Z")
 
 _STATE_KEYS = {"schema_version", "since", "heartbeat", "collector", "kev_since",
                "digest_date", "digest_at", "digest_roots", "digest_ids", "held", "digested",
-               "outbox", "deferred", "withheld"}
+               "outbox", "deferred", "withheld", "gate"}
+GATE = 1  # h340: everything unpublished in the state was admitted by an authoritative source
 MAX_DIGEST_IDS = 10  # the event ids of the last digests sent, oldest first
 _ITEM_KEYS = {"key", "kind", "scope", "ids", "channel", "text", "adv", "exploited", "date", "sent", "root"}
 _CANDIDATE_FIELDS = frozenset(Candidate.__dataclass_fields__)
@@ -77,6 +78,11 @@ class Config:
     translate_curator: bool = False
     translate_mirror_url: str = _member_config.DEFAULT_MIRROR_URL
     secrets_helper: Path | None = None
+    # The feed checkpoint (ai-tools-alerts#nfm3): the file holding the checkpoint secret
+    # key on THIS machine (mode 600; one key, one poster, one ledger), and the absolute
+    # path on the relay VM of the command that stores a checkpoint. Both or neither.
+    checkpoint_key_file: Path | None = None
+    relay_put_wrapper: str | None = None
 
     def check_relay(self) -> None:
         """A run sends, so it needs the relay route; pending and resolve do not."""
@@ -101,6 +107,11 @@ class Config:
         return self.ledger.with_name(self.ledger.name + ".translate.json")
 
     @property
+    def owed_state(self) -> Path:
+        """The checkpoint number last used and the acknowledged posts not yet seen on the mirror."""
+        return self.ledger.with_name(self.ledger.name + ".checkpoint.json")
+
+    @property
     def mirror_dir(self) -> Path:
         """The verified mirror events the curator pass reads (a member-style state dir)."""
         return self.ledger.with_name(self.ledger.name + ".mirror")
@@ -108,12 +119,16 @@ class Config:
     def check_paths(self) -> None:
         """The ledger, its lock, the journal and the KEV cache are four distinct files."""
         files = [self.ledger, self.ledger.with_name(self.ledger.name + ".lock"), self.state, self.kev_cache,
-                 self.translate_state, self.mirror_dir]
+                 self.translate_state, self.owed_state]
+        if self.checkpoint_key_file is not None:  # a cache write must never land on the key
+            files.append(self.checkpoint_key_file)
+        files.append(self.mirror_dir)
         # Case-folded: APFS is case-insensitive, so ledger.json and LEDGER.json are one file.
         real = [os.path.realpath(p).casefold() for p in files]
         mirror = real[-1] + os.sep  # the mirror directory holds its own state files and lock
         if len(set(real)) != len(real) or any(r.startswith(mirror) for r in real[:-1]):
-            raise ConfigError("ledger, ledger lock, state, kev_cache and the translation files must differ")
+            raise ConfigError("ledger, ledger lock, state, kev_cache, the translation and checkpoint files "
+                              "and the checkpoint key file must differ")
 
 
 def load_config(path) -> Config:
@@ -165,6 +180,16 @@ def load_config(path) -> Config:
         if not isinstance(raw["secrets_helper"], str) or not os.path.isabs(raw["secrets_helper"]):
             raise ConfigError("secrets_helper must be an absolute path")
         out["secrets_helper"] = Path(raw["secrets_helper"])
+    if "checkpoint_key_file" in raw:
+        if not isinstance(raw["checkpoint_key_file"], str) or not os.path.isabs(raw["checkpoint_key_file"]):
+            raise ConfigError("checkpoint_key_file must be an absolute path")
+        out["checkpoint_key_file"] = Path(raw["checkpoint_key_file"])
+    if "relay_put_wrapper" in raw:
+        if not isinstance(raw["relay_put_wrapper"], str) or not _WRAPPER.fullmatch(raw["relay_put_wrapper"]):
+            raise ConfigError("relay_put_wrapper must be an absolute path")
+        out["relay_put_wrapper"] = raw["relay_put_wrapper"]
+    if ("checkpoint_key_file" in out) != ("relay_put_wrapper" in out):
+        raise ConfigError("checkpoint_key_file and relay_put_wrapper go together")
     if out.get("translate_curator") and "secrets_helper" not in out:
         raise ConfigError("translate_curator needs secrets_helper")
     cfg = Config(**out)
@@ -238,7 +263,7 @@ def new_state(now: int, backfill_days: int) -> dict:
     since = now - backfill_days * 86400
     return {"schema_version": 1, "since": since, "heartbeat": None, "collector": None,
             "kev_since": None, "digest_date": None, "digest_at": since, "digest_roots": [], "digest_ids": [],
-            "held": [], "digested": [], "outbox": [], "deferred": [], "withheld": []}
+            "held": [], "digested": [], "outbox": [], "deferred": [], "withheld": [], "gate": GATE}
 
 
 def _strs(v) -> bool:
@@ -341,12 +366,15 @@ def load_state(path: Path, now: int, backfill_days: int) -> dict:
         raise LedgerError(f"state {path} unreadable: {e}") from None
     if isinstance(st, dict) and "withheld" not in st:
         st["withheld"] = []  # a state file written before withheld existed (8acj)
+    if isinstance(st, dict) and "gate" not in st:
+        st["gate"] = 0  # written before the h340 gate: main.run migrates it once
     if isinstance(st, dict) and set(st) == _STATE_KEYS - {"digest_ids"}:
         st["digest_ids"] = []  # a state file written before digest_ids existed
     try:
         ok = (isinstance(st, dict) and set(st) == _STATE_KEYS
               and type(st["schema_version"]) is int and st["schema_version"] == 1
               and type(st["since"]) is int and type(st["digest_at"]) is int
+              and type(st["gate"]) is int and st["gate"] in (0, GATE)
               and isinstance(st["digest_roots"], list) and all(isinstance(i, str) for i in st["digest_roots"])
               and isinstance(st["digest_ids"], list) and len(st["digest_ids"]) <= MAX_DIGEST_IDS
               and all(isinstance(i, str) and _HEX64.fullmatch(i) for i in st["digest_ids"])

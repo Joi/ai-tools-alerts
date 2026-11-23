@@ -25,10 +25,14 @@ what to do. It never runs anything itself. Follow these rules exactly.
      then the last good state; tell the person the alerts may be stale.
    - `ignored_env`: environment variables the CLI refused to obey; if not
      empty, tell the person something tried to change the trust root.
-   - `stale_since`: null, or a time: the newest trusted post when it is
-     over 3 days old, else the trust manifest's issue time when it is over
-     90 days old; tell the person the mirror may be frozen and the alerts
-     may be stale.
+   - `stale_since`: null while the alerts are verified, else a time: the
+     last signed checkpoint the CLI accepted (or, with none, the newest
+     trusted post or the time of the last attempt); tell the person the
+     alerts may be stale or incomplete.
+   - `unverified`: null, or why the CLI cannot vouch that the alerts are
+     complete right now (the last pull failed, no fresh signed checkpoint,
+     an expired certificate). While it is not null, `plan` lists nothing
+     under auto-apply: ask before running anything, and tell the person.
    - `matches`: one object per advisory that matches this machine:
      `thread` (the advisory id to pass to `plan`), `threads` (every root
      of the advisory: a critical is posted once per channel, which is

@@ -96,10 +96,11 @@ class Advisory:
 
 
 @dataclass(frozen=True)
-class ScopeComponent:  # a public product identity inside a scope entry (version 4)
+class ScopeComponent:  # a public product identity inside a scope entry
     name: str
     match: tuple[str, ...]
-    not_match: tuple[str, ...] = ()
+    # Its own authority prefixes; None means the entry's.
+    authority: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -107,13 +108,11 @@ class ScopeEntry:
     name: str
     ecosystem: str
     tier: int
+    # Exact identities: a product text resolves here only when it equals one (h340).
     match: list[str]
-    # How ``match`` patterns are tested: "word" (bounded) or "substring". Set from
-    # the scope file's version and match_mode; never a key of a JSON entry.
-    match_mode: str = "word"
-    # The entry does not match where any of these hits, by the same mode.
-    not_match: tuple[str, ...] = ()
-    # Tried before ``match``; rules.scope_of returns the entry resolved to the one picked.
+    # URL prefixes (host/ or host/path/) where this product's own vendor publishes advisories.
+    authority: tuple[str, ...] = ()
+    # rules.scope_of returns the entry resolved to the component whose identity matched.
     components: tuple[ScopeComponent, ...] = ()
 
 
@@ -359,14 +358,15 @@ def _load_json(path: Path):
         return json.load(f, object_pairs_hook=_no_duplicates)
 
 
-SCOPE_VERSION = 4  # the only version load_scope reads
-SCOPE_MATCH_MODES = ("word", "substring")
-_SCOPE_KEYS = frozenset({"version", "description", "match_mode", "entries"})
-_SCOPE_OPTIONAL = frozenset({"match", "not_match", "components"})
+SCOPE_VERSION = 5  # the only version load_scope reads
+_SCOPE_KEYS = frozenset({"version", "description", "entries"})
+_SCOPE_OPTIONAL = frozenset({"match", "authority", "components"})
+_UNICODE_DASH = re.compile("[\u2010-\u2015\u2212]")  # the lookup reads these as "-"
+_AUTHORITY = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?/(?:[a-z0-9][a-z0-9._-]*/)*")
 
 
-def _scope_mode(data) -> str:
-    """The match mode (default "word") of a version-4 file; any other version is refused."""
+def _scope_head(data) -> None:
+    """A version-5 file with no unknown top-level key; any other is refused."""
     if not isinstance(data, dict):
         _fail("scope", "not an object")
     if type(data.get("version")) is not int or data["version"] != SCOPE_VERSION:
@@ -376,19 +376,34 @@ def _scope_mode(data) -> str:
         _fail("scope", f"unknown keys {sorted(extra)}")
     if "description" in data and not isinstance(data["description"], str):
         _fail("scope.description", "not a string")
-    mode = data.get("match_mode", "word")
-    if mode not in SCOPE_MATCH_MODES:
-        _fail("scope.match_mode", f"not one of {list(SCOPE_MATCH_MODES)}")
-    return mode
 
 
-def _scope_patterns(v, at: str) -> list[str]:
+def _scope_identities(v, at: str, seen: set) -> list[str]:
+    """Exact identities: lowercase, trimmed, single-spaced, each listed once in the file."""
     out = _list(v, at, 1, 100)
     for j, m in enumerate(out):
         _text(m, f"{at}[{j}]", 1, 200)
-        if m != m.lower() or m != m.strip():
-            _fail(f"{at}[{j}]", "not lowercase and trimmed")
+        if m != " ".join(unicodedata.normalize("NFKC", m).lower().split()) or _UNICODE_DASH.search(m):
+            _fail(f"{at}[{j}]", "not normalised: lowercase, trimmed, single spaces, ASCII hyphens")
+        if m in seen:
+            _fail(f"{at}[{j}]", "listed twice: an identity belongs to one product")
+        seen.add(m)
     return list(out)
+
+
+def _scope_authority(v, at: str, domains: dict) -> tuple[str, ...]:
+    """Prefixes inside the primary-source list; on github.com exactly one repository of a
+    listed owner, since an owner's other repositories are other products."""
+    out = _list(v, at, 0, 20)
+    for j, a in enumerate(out):
+        if not isinstance(a, str) or len(a) > 200 or not _AUTHORITY.fullmatch(a):
+            _fail(f"{at}[{j}]", "not host/ or host/path/ in lowercase")
+        host, *segs = a[:-1].split("/")
+        if host not in domains:
+            _fail(f"{at}[{j}]", "host not in primary-domains.json")
+        if host == "github.com" and (len(segs) != 2 or segs[0] not in domains[host]["owners"]):
+            _fail(f"{at}[{j}]", "a github.com prefix is github.com/<listed owner>/<repository>/")
+    return tuple(out)
 
 
 def _scope_keys(v, at: str, required: set, optional: frozenset) -> dict:
@@ -404,10 +419,11 @@ def _scope_name(v, at: str, names: set, own: str | None = None) -> str:
     return name
 
 
-def load_scope(path: Path | None = None) -> list[ScopeEntry]:
+def load_scope(path: Path | None = None, domains: dict | None = None) -> list[ScopeEntry]:
     data = _load_json(path or SPEC_DIR / "scope.json")
-    mode = _scope_mode(data)
-    entries, names = [], set()
+    _scope_head(data)
+    domains = _default_domains() if domains is None else domains
+    entries, names, seen = [], set(), set()
     for i, e in enumerate(_list(data.get("entries"), "scope.entries", 1, 1000)):
         at = f"scope.entries[{i}]"
         e = _scope_keys(e, at, {"name", "ecosystem", "tier"}, _SCOPE_OPTIONAL)
@@ -420,21 +436,18 @@ def load_scope(path: Path | None = None) -> list[ScopeEntry]:
         for j, c in enumerate(_list(e["components"], at + ".components", 1, 50)
                               if "components" in e else []):
             cat = f"{at}.components[{j}]"
-            c = _scope_keys(c, cat, {"name", "match"}, frozenset({"not_match"}))
+            c = _scope_keys(c, cat, {"name", "match"}, frozenset({"authority"}))
             cname = _scope_name(c["name"], cat + ".name", names, own=None if name in own else name)
             own.add(cname)
             components.append(ScopeComponent(
-                name=cname, match=tuple(_scope_patterns(c["match"], cat + ".match")),
-                not_match=tuple(_scope_patterns(c["not_match"], cat + ".not_match"))
-                if "not_match" in c else ()))
+                name=cname, match=tuple(_scope_identities(c["match"], cat + ".match", seen)),
+                authority=_scope_authority(c["authority"], cat + ".authority", domains) if "authority" in c else None))
         entries.append(ScopeEntry(
             name=name,
             ecosystem=_pattern(e["ecosystem"], at + ".ecosystem", _ECOSYSTEM),
             tier=e["tier"],
-            match=_scope_patterns(e["match"], at + ".match") if "match" in e else [],
-            match_mode=mode,
-            not_match=tuple(_scope_patterns(e["not_match"], at + ".not_match"))
-            if "not_match" in e else (),
+            match=_scope_identities(e["match"], at + ".match", seen) if "match" in e else [],
+            authority=_scope_authority(e["authority"], at + ".authority", domains) if "authority" in e else (),
             components=tuple(components),
         ))
     return entries

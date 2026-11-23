@@ -19,6 +19,7 @@ from aitools_alerts import schema
 from aitools_alerts.poster import compose, main
 from aitools_alerts.poster.candidates import Candidate
 
+from pages import advisory_page
 from test_main import FakeSSH, env  # noqa: F401  (env is a fixture)
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "poster" / "live-feed-2026-11-07-to-11.json"
@@ -98,6 +99,11 @@ def test_live_feed_replay(env, monkeypatch):  # noqa: F811
     sent = []  # (time, channel, reply-to, text)
     for t, cands in steps:
         feeding[:] = [cands]
+        for c in cands:  # h340: the vendor's page states what the live thread then said
+            if c.id == CLAUDE:
+                env.pages.put(c.sources[0].url, advisory_page(
+                    "GHSA-5xjx-9qx6-jcrv", cve="CVE-2026-88968", affected=None, patched=c.fixed,
+                    title="TOCTOU Race in Edit Tool Allows File Writes Outside the Workspace"))
         code, summary, ssh = env.run(now=t)
         assert code == 0, summary
         sent += [(t, *c) for c in ssh.calls]
@@ -123,14 +129,15 @@ def test_live_feed_replay(env, monkeypatch):  # noqa: F811
     assert "fixed in 2.1.251" in out["2026-11-08"]
 
 
-@pytest.mark.parametrize("lang", ["en", "ja"])
-def test_live_digests_leads_recomposed(lang):
-    """The live 11-10 and 11-11 digests' leads, composed again, print no line."""
+def test_live_digests_leads_are_never_composed():
+    """The live 11-10 and 11-11 digests listed leads. A lead has no CVE or GHSA id, so the
+    poster composes no post for one (h340), and its run drops it before any hold."""
     for d in (e for e in EVENTS if e["content"].startswith("Daily digest")):
-        advs = []
-        for c in _leads(d["content"]):
+        leads = _leads(d["content"])
+        assert leads
+        for c in leads:
             scope = main.rules.scope_of(c.product_text)
-            advs.append(compose.root_post(c, ("notice", "notice"), scope, posted_at=d["created_at"])[1])
-        assert advs
-        text = compose.digest(advs, "2026-11-10", lang=lang)
-        assert "LEAD-" not in text and "unrated" not in text and "未評価" not in text, text
+            assert scope is not None, c.product_text
+            with pytest.raises(ValueError, match="not a CVE or GHSA id"):
+                compose.root_post(c, ("notice", "notice"), scope, posted_at=d["created_at"])
+            assert not main.rules.evidence(c, scope, lambda url, allow: (200, "")).ok

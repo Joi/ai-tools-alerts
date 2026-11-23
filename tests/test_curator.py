@@ -463,10 +463,46 @@ def test_amendment_is_written_against_the_thread_without_future_patches(mirror):
     mirror.events["feed.json"][:] = [root]
     st = pulled(mirror)
     st.events.update({far["id"]: far, edge["id"]: edge})  # as an older reader stored them
-    (t,) = [t for t in pull.advisories(st) if t.root_id == root["id"]]
+    (t,) = [t for t in pull.advisories(st, checkpointed=False) if t.root_id == root["id"]]  # the curator's view
     assert t.adv.title == "Updated"
     up = curator.amend_event(mirror.cur_sec, st.manifest, mirror.root, st, t, root, now=NOW + 1, level="notice")
     assert NOW + 1 <= up["created_at"] <= NOW + 1 + pull.MAX_AHEAD_S
     st.events[up["id"]] = up
-    (after,) = [t for t in pull.advisories(st) if t.root_id == root["id"]]
+    (after,) = [t for t in pull.advisories(st, checkpointed=False) if t.root_id == root["id"]]
     assert after.adv.level == "notice" and after.adv.title == "Original"  # the bot's later patches are discussion
+
+
+def test_curator_amends_and_retracts_a_thread_no_checkpoint_lists_yet(mirror, capsys, monkeypatch):
+    """ai-tools-alerts#6whv: the curator command reads every verified event (the writers'
+    view), so a thread posted a minute ago can be corrected before the signer's next
+    checkpoint lists it. On that machine the member commands then show what the curator
+    pull stored, unverified; a member machine, which never pulls as a writer, does not."""
+    first = publish(mirror, *post(mirror))
+    st = State.load()
+    assert pull.fetch("https://mirror.example.invalid/alerts", st, fetch=mirror.fetch, root_pubkey=mirror.root).error is None
+    mirror.checkpoint()  # the signer ran: it lists the first thread only
+    late = publish(mirror, *post(mirror, title="Posted after the checkpoint", adv_id="AITA-TEST-0077"))
+    monkeypatch.setattr(pull, "default_fetch", mirror.fetch)
+    monkeypatch.setenv(cli.TRUST_ROOT_ENV, mirror.root)
+    config.write_default(force=True)
+    config.config_path().write_text('trust_root_override = true\nmirror_url = "https://mirror.example.invalid/alerts/"\n')
+    write_key(nostr.nsec(mirror.cur_sec))
+    capsys.readouterr()
+    assert cli.main(["curator", "amend", late["id"], "--dry-run", "--level", "notice"]) == 0  # pulls first, writer mode
+    assert cli.main(["curator", "retract", late["id"], "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert '"content": "level: notice' in out and '"content": "retract"' in out
+    st = State.load()
+    assert late["id"] in st.events and st.last_pull["writer"] is True
+    assert {t.root_id for t in pull.advisories(st)} == {first["id"], late["id"]}  # this machine pulled as a writer
+    assert pull.unverified(st) == "the last pull checked no checkpoint"
+    # a member pull afterwards keeps what the curator pull stored (its own retraction, say) applied
+    assert pull.fetch("https://mirror.example.invalid/alerts", st, fetch=mirror.fetch, root_pubkey=mirror.root).error is None
+    st = State.load()
+    assert late["id"] in st.applied_for(mirror.root) and st.last_pull["writer"] is False
+    # while a machine that only ever pulled as a member does not see the unlisted thread
+    import shutil
+    shutil.rmtree(config.state_dir())
+    st = State.load()
+    assert pull.fetch("https://mirror.example.invalid/alerts", st, fetch=mirror.fetch, root_pubkey=mirror.root).error is None
+    assert [t.root_id for t in pull.advisories(State.load())] == [first["id"]] and late["id"] not in State.load().events

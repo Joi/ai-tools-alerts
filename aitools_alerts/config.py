@@ -25,6 +25,7 @@ __all__ = ["DEFAULT_MIRROR_URL", "CHANNELS", "ConfigError", "Settings", "config_
            "config_path", "home", "key_path", "state_dir", "load", "write_default"]
 
 DEFAULT_MIRROR_URL = "https://buzz.ai-tools.md/alerts/"
+DEFAULT_SECOND_ORIGIN = "https://raw.githubusercontent.com/Joi/ai-tools-alerts/main/trust/"
 CHANNELS = ("desktop", "imessage", "signal", "telegram", "webhook")
 LANGS = ("en", "ja")
 _RECIPIENT = re.compile(r"[A-Za-z0-9+@._:][A-Za-z0-9+@._:-]{0,127}")
@@ -82,6 +83,10 @@ class Settings:
     webhook_url: str | None = None
     telegram_token_file: str | None = None
     trust_root_override: bool = False  # a test setting: honour AITOOLS_ALERTS_TRUST_ROOT
+    # A second place, run by another operator than the mirror, that serves the trust
+    # manifest and the checkpoint key certificate. None: the default for the pinned
+    # root; "": none.
+    second_origin: str | None = None
     lang: str = "en"
 
     def check_config(self) -> Config:
@@ -91,6 +96,16 @@ class Settings:
 def check_mirror_url(url) -> str:
     if not isinstance(url, str) or not url.startswith(("https://", "file://")) or len(url) > 2048:
         raise ConfigError("mirror_url must be an https:// or file:// URL")
+    return url
+
+
+def check_second_origin(url) -> str:
+    """"" (off), or an https:// URL prefix ending in "/"."""
+    if url == "":
+        return url
+    if (not isinstance(url, str) or not url.startswith("https://") or not url.endswith("/")
+            or len(url) > 2048 or any(c in url for c in " \t\r\n\"'<>\\")):
+        raise ConfigError('second_origin must be "" or an https:// URL ending in /')
     return url
 
 
@@ -118,6 +133,8 @@ def load(path: Path | None = None) -> Settings:
     out: dict = {}
     if "mirror_url" in raw:
         out["mirror_url"] = check_mirror_url(raw["mirror_url"])
+    if "second_origin" in raw:
+        out["second_origin"] = check_second_origin(raw["second_origin"])
     if "notify" in raw:
         out["notify"] = tuple(dict.fromkeys(c for c in _strings(raw["notify"], "notify")
                                             if c in CHANNELS))
@@ -166,6 +183,12 @@ TEMPLATE = f"""\
 
 # Where the signed mirror lives.
 mirror_url = "{DEFAULT_MIRROR_URL}"
+
+# A second place that serves the trust manifest and the checkpoint key
+# certificate, run by another operator than the mirror (default: this
+# project's repository). A mirror that serves an old manifest is overruled by
+# it. "" turns it off.
+# second_origin = "{DEFAULT_SECOND_ORIGIN}"
 
 # Where critical alerts go: any of "desktop", "imessage", "signal",
 # "telegram", "webhook".
