@@ -47,7 +47,7 @@ Readings. A reading is `(source, fields)`; `source` is `kev`, `ghsa` or `osv`. E
 | `ghsa` | `ghsa_id`, `type` (`reviewed`, `unreviewed`, `malware`), `withdrawn_at`, `repository` (`owner/repo`, lowercase, of the repository advisory it came from), `severity`, `cvss_vector`, `cwes` (`CWE-<n>`, sorted), `packages` |
 | `osv` | `osv_id`, `withdrawn`, `packages` |
 
-`packages` is a list of `{ecosystem, name, range, first_patched}`; `ecosystem` is lowercase and may be empty (a "Software" block names no registry). The order is total: ascending by the tuple (`ecosystem`, `name`, `range`, `first_patched`) compared by code point, a `null` counting as the empty string (a stated value is never empty). Two entries equal in all four are one entry: a list that repeats one is malformed. A builder sorts and drops repeats; a reader refuses a list that is not in this order. `cwes` likewise: ascending by code point, each once, and an advisory with no CWE data has `[]`, never `null`.
+`packages` is a list of `{ecosystem, name, range, first_patched}`; `ecosystem` is the registry as the source names it, in lowercase (`npm`, `crates.io`, `debian:12`), and may be empty (a "Software" block names no registry). `withdrawn_at` and `withdrawn` are `null` or the UTC time the source states (`YYYY-MM-DDTHH:MM:SS[.fraction]Z`); any other text is a malformed reading, never a withdrawal. `cvss_vector` is `null` or a complete CVSS 3.0, 3.1 or 4.0 vector: the version's base metrics first, each once, in order, with a value the version defines; a vector cut short or stating a metric twice is malformed. The order is total: ascending by the tuple (`ecosystem`, `name`, `range`, `first_patched`) compared by code point, a `null` counting as the empty string (a stated value is never empty). Two entries equal in all four are one entry: a list that repeats one is malformed. A builder sorts and drops repeats; a reader refuses a list that is not in this order. `cwes` likewise: ascending by code point, each once, and an advisory with no CWE data has `[]`, never `null`.
 
 Binding (D2). A reading supports a product only by exact identity through the scope file, the same lookup h340 built: `kev` by `name`; `ghsa` and `osv` by `ecosystem:name`, or `name` alone when the ecosystem is empty. Nothing is matched in prose. A reading that binds no scope product supports nothing.
 
@@ -87,7 +87,7 @@ The loader refuses a ruleset whose version it does not know, an unknown key, an 
 
 `{id, source, fields, ruleset, level, confirmed_at, checked_at}`. `id` is the advisory id the source is looked up by and equals the fields' own id; its shape decides the source (`CVE-` reads kev, `GHSA-` reads ghsa, anything else that is an OSV id reads osv). `ruleset` is the integer version. `level` is `critical`, `high`, `notice` or `none`. The two times are integer Unix seconds, `confirmed_at <= checked_at`.
 
-Canonical form: the JSON object serialised with keys sorted by code point at every depth, no whitespace, non-ASCII characters literal, UTF-8; integers only (no float), strings in NFC, no control characters. That is the form the manifest and the checkpoint already sign. `ruleset.canonical(claim)` returns the bytes; `claim-vectors.json` carries them with their SHA-256.
+Canonical form: the JSON object serialised with keys sorted by code point at every depth, no whitespace, non-ASCII characters literal, UTF-8; integers only (no float), strings in NFC with no control, format, surrogate or private-use character (Unicode categories Cc, Cf, Cs, Co; unassigned code points are not in the rule, since they differ between Unicode versions). That is the form the manifest and the checkpoint already sign. `ruleset.canonical(claim)` returns the bytes; `claim-vectors.json` carries them with their SHA-256.
 
 The product is not in the tuple: it is the product of the alert the claim is signed with. `check_claim(claim, product)` is the offline check of the revised design's rule 4.
 
@@ -133,7 +133,7 @@ The CLI always computes with its own ruleset. A claim that names an older versio
 
 ## Blast radius and rollback
 
-Poster behaviour changes in one way: a candidate whose only critical clause was a model flag posts `high`. No wire format, state file, manifest or fetch changes. `ruleset.py`, the two spec files and `Candidate.claims` are additive. Rollback is a revert of the merge commit; the state file needs nothing.
+Poster behaviour changes in one way: a candidate whose only critical clause was a model flag posts `high`. No wire format, state file, manifest or fetch changes. `ruleset.py`, the two spec files and `Candidate.readings` are additive. Rollback is a revert of the merge commit; the state file needs nothing.
 
 No release or install is part of this slice. The poster host runs from a checkout; picking this up there is a rollout issue.
 

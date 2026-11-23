@@ -57,6 +57,8 @@ def kev(name="Anthropic Claude Code", cve="CVE-2026-0001"):
 
 
 VENDOR = "anthropics/claude-code"
+V31 = "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H"
+V40 = "CVSS:4.0/AV:A/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
 
 
 # ------------------------------------------------------------------ the file
@@ -81,6 +83,14 @@ def test_the_shipped_ruleset_loads():
     changed(["sources", 5, "second"], True),           # nothing adds readings up
     changed(["sources", 5, "with_second"], "critical"),
     changed(["sources", 4, "when"], {"type": "unreviewed"}),  # ghsa has no catch-all row left
+    changed(["sources"], [RAW["sources"][i] for i in (0, 4, 1, 2, 3, 5, 6)]),  # the catch-all ahead of the rest
+    changed(["sources", 1, "when"], {"type": []}),
+    changed(["sources", 1, "source"], []),
+    changed(["rules", 0, "class"], []),
+    changed(["rules", 3, "when", "severity_in"], ["High"]),
+    changed(["rules", 2, "when", "cwe_any"], ["506"]),
+    changed(["rules", 4, "when", "cvss_av"], ["network"]),
+    changed(["rules", 1, "when", "tier"], [3]),
     changed(["sources", 1, "class"], "kev"),
     changed(["rules", 0, "level"], "extreme"),
     changed(["rules", 0, "class"], "nobody"),
@@ -208,6 +218,21 @@ def test_a_package_with_no_ecosystem_binds_by_name():
     ghsa(cwes=["CWE-78", "CWE-506"]),
     ghsa(cwes=["CWE-78", "CWE-78"]),
     ghsa(cvss_vector="AV:N"),
+    ghsa(cvss_vector="CVSS:4.0/AV:N"),  # cut short: the base metrics are missing
+    ghsa(cvss_vector=V31 + "/AV:L"),    # a metric stated twice
+    ghsa(cvss_vector=V31.replace("AV:N", "AV:X")),
+    ghsa(cvss_vector=V31.replace("/AC:L", "")),
+    ghsa(cvss_vector=V31.replace("CVSS:3.1", "CVSS:2.0")),
+    ghsa(cvss_vector=V31 + "/"),
+    ghsa(cvss_vector=["CVSS:3.1"]),
+    ghsa(type=[]), ghsa(type={}), ghsa(severity={}), ghsa(severity=["high"]), ghsa(severity=1),
+    ghsa(withdrawn_at="not-a-date"), ghsa(withdrawn_at="2026-11-20"), ghsa(withdrawn_at="2026-13-40T00:00:00Z"),
+    ghsa(withdrawn_at="2026-11-20T00:00:00+09:00"), ghsa(withdrawn_at=True), ghsa(withdrawn_at=""),
+    osv(withdrawn="yes"), osv(withdrawn=1795000000), osv(withdrawn=[]),
+    ("kev", {"cve_id": "CVE-2026-0001", "name": "x", 1: 2}),
+    ("kev", {"cve_id": ["CVE-2026-0001"], "name": "x"}),
+    ("kev", ["cve_id", "name"]),
+    (["kev"], {"cve_id": "CVE-2026-0001", "name": "x"}),
     ghsa(repository="Anthropics/claude-code"),
     ghsa(packages=[pkg(ecosystem="NPM")]),
     ghsa(packages=[pkg(range="< 2"), pkg(range="< 1")]),
@@ -222,6 +247,70 @@ def test_a_package_with_no_ecosystem_binds_by_name():
 def test_a_malformed_reading_is_refused(reading):
     with pytest.raises(RulesetError):
         RS.read(*reading)
+
+
+def test_a_malformed_reading_never_raises_anything_but_a_refusal():
+    """Every public path refuses with RulesetError or the verdict "refused": a poster
+    run and a member's check never meet a TypeError from a hostile value."""
+    good = RS.claim(*ghsa(repository=VENDOR, severity="high"), CC, 1795000000, 1795000000)
+    for key, bad in (("type", []), ("type", {}), ("severity", {}), ("severity", []), ("cvss_vector", {}),
+                     ("withdrawn_at", "not-a-date"), ("withdrawn_at", []), ("cwes", "CWE-78"), ("packages", {}),
+                     ("repository", []), ("ghsa_id", None)):
+        claim = copy.deepcopy(good)
+        claim["fields"][key] = bad
+        with pytest.raises(RulesetError):
+            ruleset.parse_claim(claim)
+        assert ruleset.check_claim(claim, CC) == "refused", (key, bad)
+        assert ruleset.check_claim(dict(claim, level="none"), CC) == "refused", (key, bad)
+    for bad in (None, [], {}, 7, "kev"):
+        assert ruleset.check_claim(dict(good, fields=bad), CC) == "refused"
+        assert ruleset.check_claim(dict(good, source=bad), CC) == "refused"
+        assert ruleset.check_claim(bad, CC) == "refused"
+    assert ruleset.check_claim(good, None) == ruleset.check_claim(good, ["Claude Code"]) == "refused"
+    assert ruleset.check_claim(good, CC) == "ok"
+
+
+def test_a_withdrawal_is_a_time_the_source_states_and_nothing_else():
+    """Arbitrary text in the withdrawal field is malformed data, never leave to lower."""
+    mal = RS.claim(*osv(), CC, 1795000000, 1795000000)
+    forged = copy.deepcopy(mal)
+    forged["fields"]["withdrawn"], forged["level"] = "not-a-date", "none"
+    assert ruleset.check_claim(forged, CC) == "refused"
+    for when in ("2026-11-20T00:00:00Z", "2026-11-20T00:00:00.123456Z"):
+        assert RS.read(*osv(withdrawn=when))[CC].level == NONE
+        assert RS.read(*ghsa(type="malware", withdrawn_at=when))[CC].level == NONE
+
+
+def test_only_a_complete_cvss_vector_has_an_attack_vector():
+    assert ruleset.cvss_metrics(V31)["AV"] == "N" and ruleset.cvss_metrics(V40)["AV"] == "A"
+    assert ruleset.cvss_metrics(V31.replace("3.1", "3.0"))["S"] == "U"
+    full = V40 + "/E:A/CR:H/MAV:N/S:P/AU:Y/R:I/V:C/RE:M/U:Green"  # FIRST's own supplemental values
+    assert ruleset.cvss_metrics(full)["U"] == "Green"
+    assert ruleset.cvss_metrics(V31 + "/E:P/RL:O/RC:C/CR:H/MAV:L")["MAV"] == "L"
+    for bad in ("CVSS:4.0/AV:N", V31 + "/AV:L", V40 + "/E:A/E:P", V31.replace("AV:N/AC:L", "AC:L/AV:N"),
+                V40.replace("AT:N/", ""), V31.lower(), " " + V31, V31 + "/x:y", V31 + "/E:", None, 7, "x" * 400):
+        assert ruleset.cvss_metrics(bad) is None, bad
+    cwe = dict(cwes=["CWE-78"], type="reviewed")
+    assert RS.level([ghsa(cvss_vector=V40, **cwe)], CC) == "high"  # adjacent, patched, command injection
+    assert RS.level([ghsa(cvss_vector=V40.replace("AV:A", "AV:P"), **cwe)], CC) == "notice"
+    assert RS.level([ghsa(cvss_vector=full, **cwe)], CC) == "high"
+
+
+def test_registries_as_the_sources_name_them_fit_the_form():
+    for eco in ("npm", "pip", "crates.io", "debian:12", "github actions", "go", ""):
+        RS.read(*osv(packages=[pkg("some-package", ecosystem=eco, range=None, first_patched=None)]))
+    for eco in ("NPM", "npm ", " npm", "-npm", "npm:", "n" * 65):
+        with pytest.raises(RulesetError):
+            RS.read(*osv(packages=[pkg("some-package", ecosystem=eco)]))
+    many = ruleset.ordered(pkg(f"p{i}", range=None, first_patched=None) for i in range(600))
+    assert RS.read(*osv(packages=many)) == {}  # a long advisory is read, and binds nothing here
+    with pytest.raises(RulesetError):
+        RS.read(*osv(packages=ruleset.ordered(pkg(f"p{i}") for i in range(1001))))
+
+
+def test_an_unassigned_code_point_is_not_part_of_the_rule():
+    """Unassigned differs between Unicode versions; two readers must agree on a claim."""
+    assert ruleset.canonical({"v": "a" + chr(0x50000) + "b"})  # plane 5: unassigned in every version so far
 
 
 def test_ordered_puts_a_builders_packages_in_the_one_order():
@@ -253,7 +342,7 @@ def test_the_vectors_cover_what_the_form_has_to_settle():
     assert len({(p["ecosystem"], p["name"]) for p in two["packages"]}) == 1
 
 
-@pytest.mark.parametrize("value", [1.0, float("nan"), 2**53, "é", "a\u0000b", "a‎b", b"x", (1,),
+@pytest.mark.parametrize("value", [1.0, float("nan"), 2**53, "é", "a\u0000b", "a‎b", "a" + chr(0xE000) + "b", "a" + chr(0xD800), b"x", (1,),
                                    {"kéy": 1}, {1: 1}], ids=lambda v: "")
 def test_canonical_refuses_what_two_readers_could_write_differently(value):
     with pytest.raises(RulesetError):

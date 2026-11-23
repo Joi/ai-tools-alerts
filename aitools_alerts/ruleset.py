@@ -23,27 +23,40 @@ import json
 import re
 import unicodedata
 from dataclasses import dataclass, replace
+from datetime import datetime
 
 from . import schema
 
 __all__ = ["VERSION", "NONE", "RulesetError", "Support", "Ruleset", "Pin", "load", "canonical",
            "parse_claim", "parse_pin", "check_claim", "source_of", "ordered",
-           "norm", "tier_of", "index"]
+           "cvss_metrics", "norm", "tier_of", "index"]
 
 VERSION = 1  # the only ruleset version this reader evaluates
 NONE = "none"  # no reading supports the product: unlisted, withdrawn or not bound
 SOURCES = ("kev", "ghsa", "osv")
 MAX_INT = 2**53 - 1
 MAX_TEXT = 1001  # kev.name: two fields of 500 and a space
-MAX_LIST = 50
+MAX_LIST = 50  # cwes
+MAX_PACKAGES = 1000  # an advisory lists every affected package and range
 _CLAIM_KEYS = frozenset({"id", "source", "fields", "ruleset", "level", "confirmed_at", "checked_at"})
 _CVE = re.compile(r"CVE-[0-9]{4}-[0-9]{4,19}")
 _GHSA = re.compile(r"GHSA(?:-[0-9a-z]{4}){3}")
 _OSV = re.compile(r"[A-Za-z][A-Za-z0-9]{0,15}-[A-Za-z0-9][A-Za-z0-9._:-]{0,95}")
 _CWE = re.compile(r"CWE-[0-9]{1,6}")
 _REPOSITORY = re.compile(r"[a-z0-9][a-z0-9._-]{0,99}/[a-z0-9._-]{1,100}")
-_ECOSYSTEM = re.compile(r"[a-z0-9][a-z0-9-]{0,31}|")
-_CVSS = re.compile(r"CVSS:(?:3\.0|3\.1|4\.0)(?:/[A-Za-z]{1,4}:[A-Za-z]{1,4}){1,40}")
+# A registry as the source names it, in lowercase: "npm", "crates.io", "debian:12", "github actions".
+_ECOSYSTEM = re.compile(r"[a-z0-9](?:[a-z0-9 .:-]{0,62}[a-z0-9.])?|")
+_METRIC = re.compile(r"[A-Z]{1,3}:[A-Za-z]{1,12}")
+_WHEN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z")
+# The base metrics every vector of a version states, in the order it states them, with
+# the values each takes (FIRST's CVSS 3.1 and 4.0 specifications).
+_NAL, _LH, _NLH = ("N", "A", "L", "P"), ("L", "H"), ("N", "L", "H")
+_CVSS_BASE = {
+    "3": (("AV", _NAL), ("AC", _LH), ("PR", _NLH), ("UI", ("N", "R")), ("S", ("U", "C")),
+          ("C", _NLH), ("I", _NLH), ("A", _NLH)),
+    "4": (("AV", _NAL), ("AC", _LH), ("AT", ("N", "P")), ("PR", _NLH), ("UI", ("N", "P", "A")),
+          ("VC", _NLH), ("VI", _NLH), ("VA", _NLH), ("SC", _NLH), ("SI", _NLH), ("SA", _NLH)),
+}
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _GHSA_TYPES = frozenset({"reviewed", "unreviewed", "malware"})
 _SEVERITIES = frozenset({"low", "medium", "high", "critical"})
@@ -55,8 +68,11 @@ _TOP_KEYS = frozenset({"version", "description", "levels", "ttl_days", "tier_cap
 _FIELDS = {"kev": ("cve_id", "name"),
            "ghsa": ("ghsa_id", "type", "withdrawn_at", "repository", "severity", "cvss_vector", "cwes", "packages"),
            "osv": ("osv_id", "withdrawn", "packages")}
-_DASHES = re.compile("[‐-―−]")
+_DASHES = re.compile("[\u2010-\u2015\u2212]")
 _SPACES = re.compile(r"\s+")
+# Refused in every string. Unassigned (Cn) is not in the rule: it differs between Unicode
+# versions, and two readers must agree on whether a claim is well formed.
+_NO_CHAR = frozenset({"Cc", "Cf", "Cs", "Co"})
 
 
 class RulesetError(ValueError):
@@ -111,8 +127,8 @@ def _plain(v, depth: int = 0) -> None:
             _fail("an integer outside the exact range")
         return
     if type(v) is str:
-        if not unicodedata.is_normalized("NFC", v) or any(unicodedata.category(c)[0] == "C" for c in v):
-            _fail("a string that is not NFC or carries a control character")
+        if not unicodedata.is_normalized("NFC", v) or any(unicodedata.category(c) in _NO_CHAR for c in v):
+            _fail("a string that is not NFC or carries a control, format, surrogate or private-use character")
         return
     if depth >= 12:  # a claim nests 4 deep; the digest's input (the scope file) 8
         _fail("nested too deeply")
@@ -158,9 +174,45 @@ def _opt_text(v, what: str, limit: int = MAX_TEXT):
     return v
 
 
+def _one_of(v, allowed: frozenset, what: str):
+    if v is not None and not (type(v) is str and v in allowed):
+        _fail(f"{what} must be null or one of {sorted(allowed)}")
+
+
+def _when(v, what: str):
+    """null, or the RFC 3339 UTC time the source states: only a real time is a withdrawal."""
+    if v is None:
+        return
+    try:
+        if type(v) is not str or not _WHEN.fullmatch(v):
+            raise ValueError
+        datetime.strptime(v[:19], "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        _fail(f"{what} must be null or a UTC time, YYYY-MM-DDTHH:MM:SS[.fraction]Z")
+
+
+def cvss_metrics(vector) -> dict[str, str] | None:
+    """{metric: value} of a CVSS 3.0, 3.1 or 4.0 vector, or None when it is not one:
+    the version's base metrics first, each once, in order, with a value the version
+    defines; then any further metrics, each named once. A vector that is cut short or
+    states a metric twice has no attack vector to read."""
+    if type(vector) is not str or len(vector) > 300:
+        return None
+    head, *parts = vector.split("/")
+    base = _CVSS_BASE.get({"CVSS:3.0": "3", "CVSS:3.1": "3", "CVSS:4.0": "4"}.get(head, ""))
+    if base is None or len(parts) < len(base) or not all(_METRIC.fullmatch(x) for x in parts):
+        return None
+    pairs = [tuple(x.split(":")) for x in parts]
+    if len({k for k, _ in pairs}) != len(pairs):
+        return None
+    if any(k != name or v not in values for (k, v), (name, values) in zip(pairs, base)):
+        return None
+    return dict(pairs)
+
+
 def _packages(v) -> list[dict]:
-    if type(v) is not list or len(v) > MAX_LIST:
-        _fail(f"packages must be a list of at most {MAX_LIST}")
+    if type(v) is not list or len(v) > MAX_PACKAGES:
+        _fail(f"packages must be a list of at most {MAX_PACKAGES}")
     for p in v:
         if type(p) is not dict or set(p) != _PACKAGE_KEYS:
             _fail(f"a package must have exactly the keys {sorted(_PACKAGE_KEYS)}")
@@ -186,7 +238,7 @@ def _reading(source, fields) -> dict:
     """The fields of one reading, checked against the source's exact key set and types."""
     if source not in SOURCES:
         _fail(f"source must be one of {list(SOURCES)}")
-    if type(fields) is not dict or tuple(sorted(fields)) != tuple(sorted(_FIELDS[source])):
+    if type(fields) is not dict or set(fields) != set(_FIELDS[source]):
         _fail(f"{source} fields must be exactly {list(_FIELDS[source])}")
     _plain(fields)
     f = fields
@@ -197,15 +249,13 @@ def _reading(source, fields) -> dict:
     elif source == "ghsa":
         if type(f["ghsa_id"]) is not str or not _GHSA.fullmatch(f["ghsa_id"]):
             _fail("ghsa_id must be a GHSA id (GHSA- then lowercase)")
-        if f["type"] is not None and f["type"] not in _GHSA_TYPES:
-            _fail(f"type must be null or one of {sorted(_GHSA_TYPES)}")
-        _opt_text(f["withdrawn_at"], "withdrawn_at", 40)
+        _one_of(f["type"], _GHSA_TYPES, "type")
+        _when(f["withdrawn_at"], "withdrawn_at")
         if f["repository"] is not None and not (type(f["repository"]) is str and _REPOSITORY.fullmatch(f["repository"])):
             _fail("repository must be null or owner/repo in lowercase")
-        if f["severity"] is not None and f["severity"] not in _SEVERITIES:
-            _fail(f"severity must be null or one of {sorted(_SEVERITIES)}")
-        if f["cvss_vector"] is not None and not (type(f["cvss_vector"]) is str and _CVSS.fullmatch(f["cvss_vector"])):
-            _fail("cvss_vector must be null or a CVSS 3.0, 3.1 or 4.0 vector")
+        _one_of(f["severity"], _SEVERITIES, "severity")
+        if f["cvss_vector"] is not None and cvss_metrics(f["cvss_vector"]) is None:
+            _fail("cvss_vector must be null or a complete CVSS 3.0, 3.1 or 4.0 vector")
         c = f["cwes"]
         if type(c) is not list or len(c) > MAX_LIST or any(type(x) is not str or not _CWE.fullmatch(x) for x in c) \
                 or c != sorted(set(c)):
@@ -214,7 +264,7 @@ def _reading(source, fields) -> dict:
     else:
         if source_of(f["osv_id"]) != "osv":
             _fail("osv_id must be an OSV id that is not a CVE or GHSA id")
-        _opt_text(f["withdrawn"], "withdrawn", 40)
+        _when(f["withdrawn"], "withdrawn")
         _packages(f["packages"])
     return f
 
@@ -224,10 +274,7 @@ def _id_of(source: str, fields: dict) -> str:
 
 
 def _attack_vector(vector) -> str | None:
-    if not isinstance(vector, str):
-        return None
-    hits = [p[3:] for p in vector.split("/")[1:] if p.startswith("AV:")]
-    return hits[0] if len(hits) == 1 else None
+    return (cvss_metrics(vector) or {}).get("AV")
 
 
 # ------------------------------------------------------------------ the ruleset
@@ -274,9 +321,10 @@ class Ruleset:
             _fail("fields must list each source's keys as this reader knows them")
         self._sources = [self._source_row(r) for r in self._rows(data["sources"], "sources")]
         classes = [r["class"] for r in self._sources]
-        if len(set(classes)) != len(classes) or \
-                {r["source"] for r in self._sources if not r["when"]} != set(SOURCES):
-            _fail("sources must name each class once and end every source with a row that has no condition")
+        last = {r["source"]: r for r in self._sources}  # each source's last row: its catch-all
+        if len(set(classes)) != len(classes) or set(last) != set(SOURCES) or any(r["when"] for r in last.values()) \
+                or sum(not r["when"] for r in self._sources) != len(SOURCES):
+            _fail("sources must name each class once and end every source with its one row that has no condition")
         self._rules = [self._rule_row(r, set(classes)) for r in self._rows(data["rules"], "rules")]
         self._index = index(entries)
         self.digest: str = hashlib.sha256(canonical({"ruleset": data, "scope": scope})).hexdigest()
@@ -292,11 +340,11 @@ class Ruleset:
         if not need <= set(r) <= need | {"when"}:
             _fail("a sources row has unknown or missing keys")
         when = r.get("when", {})
-        if type(r["class"]) is not str or r["source"] not in SOURCES or r["alone"] not in self.levels \
+        if type(r["class"]) is not str or type(r["source"]) is not str or r["source"] not in SOURCES or r["alone"] not in self.levels \
                 or type(r["lowers"]) is not bool \
                 or type(when) is not dict or not set(when) <= _SOURCE_WHEN:
             _fail(f"sources row {r.get('class')!r} is malformed or has an unknown condition")
-        if "type" in when and when["type"] not in _GHSA_TYPES or "vendor_own" in when and when["vendor_own"] is not True \
+        if "type" in when and not (type(when["type"]) is str and when["type"] in _GHSA_TYPES) or "vendor_own" in when and when["vendor_own"] is not True \
                 or "id_prefix" in when and not (type(when["id_prefix"]) is str and when["id_prefix"]):
             _fail(f"sources row {r['class']!r} has a malformed condition")
         if not r["lowers"] and r["alone"] != "notice":
@@ -305,13 +353,17 @@ class Ruleset:
 
     def _rule_row(self, r: dict, classes: set) -> dict:
         when = r.get("when", {})
-        if not {"class", "level"} <= set(r) <= {"class", "level", "when"} or r["class"] not in classes \
+        if not {"class", "level"} <= set(r) <= {"class", "level", "when"} or type(r["class"]) is not str \
+                or r["class"] not in classes \
                 or r["level"] not in self.levels or type(when) is not dict or not set(when) <= _RULE_WHEN:
             _fail(f"rules row {r.get('class')!r} is malformed or has an unknown condition")
-        for key in ("tier", "cwe_any", "severity_in", "cvss_av"):
-            v = when.get(key, ["x"] if key != "tier" else [1])
-            if type(v) is not list or not v or any(type(x) is not (int if key == "tier" else str) for x in v):
-                _fail(f"rules row {r['class']!r}: {key} must be a non-empty list")
+        known = {"tier": lambda x: type(x) is int and x in (1, 2),
+                 "cwe_any": lambda x: type(x) is str and _CWE.fullmatch(x) is not None,
+                 "severity_in": lambda x: type(x) is str and x in _SEVERITIES,
+                 "cvss_av": lambda x: type(x) is str and x in _NAL}
+        for key, ok in known.items():
+            if key in when and not (type(when[key]) is list and when[key] and all(ok(x) for x in when[key])):
+                _fail(f"rules row {r['class']!r}: {key} must be a non-empty list of values this reader knows")
         if when.get("patched", True) is not True:
             _fail(f"rules row {r['class']!r}: patched must be true")
         return dict(r, when=dict(when))
@@ -467,6 +519,8 @@ def check_claim(claim, product: str, pin: Pin | None = None, rs: Ruleset | None 
     claim citing an older rule under which the level was lower is a mismatch.
     """
     rs = rs or load()
+    if type(product) is not str:
+        return "refused"
     if pin is not None and (rs.version < pin.min_version
                             or rs.version == pin.version and rs.digest != pin.sha256):
         return "outdated"

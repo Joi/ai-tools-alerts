@@ -879,9 +879,10 @@ def test_rule_of_fields_is_the_level_of_every_claim_the_poster_builds():
             members.append(cand(id="CVE-2026-0001", product_text=text, trojanized=True))
         c = ledger.merge([(m, scope) for m in members])[0][0] if len({m.id for m in members}) == 1 or \
             all("CVE-2026-0001" in (m.id, *m.aliases) for m in members) else members[0]
-        want = len(c.readings)
+        if c is members[0] and len(members) > 1:  # not merged: only the first member's readings count
+            want = len(members[0].readings)
         claims = rules.claims_for(c, scope, T + n)
-        assert len(claims) == want and (want > 0 or not any(m.readings for m in members))
+        assert len(claims) == want, (members, claims)  # counted from what went in, not from the builder's output
         for claim in claims:
             assert ruleset.check_claim(claim, scope.name) == "ok"
             assert claim["level"] == rs.level([(claim["source"], claim["fields"])], scope.name)

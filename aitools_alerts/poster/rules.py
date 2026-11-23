@@ -5,10 +5,10 @@ identity only (``scope_of``): never by a word in free text, so a third-party
 package cannot resolve to a tier-1 product (h340). A candidate posts only when a
 source authoritative for that product says so (``evidence``): the CISA KEV catalog
 this run fetched, or a page under the product's own ``authority`` prefixes that
-answers 200 and names the advisory's id. Critical fires only by rule: the product
-is in scope tier 1 and (KEV lists it as exploited, or a confirmed page and a
-trojanized release, or an injection-to-execution path with a fix). Tier 2 never
-posts critical. Items outside both tiers do not post.
+answers 200 and names the advisory's id. Critical fires only by rule and only by a
+field: the product is in scope tier 1 and KEV lists the CVE as exploited, or a
+reading of a source's own fields gives critical. Tier 2 never posts critical.
+Items outside both tiers do not post.
 
 The level table itself is spec/ruleset.json, evaluated by ``aitools_alerts.ruleset``
 (s6mt): ``level_for`` takes what the candidate's readings support, and a model's
@@ -24,7 +24,6 @@ import json
 import re
 import threading
 import time
-import unicodedata
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -191,13 +190,15 @@ def basis(c: Candidate, scope: schema.ScopeEntry, level: str) -> str:
     return "fields" if level == "notice" or rs.rank(held) >= rs.rank(level) else "reading"
 
 
-def reading_text(source: str, fields: dict) -> str | None:
-    """The reading's fields as canonical JSON text (a frozen Candidate stays hashable),
-    or None when they are not a reading the ruleset accepts."""
+def reading_text(source: str, fields) -> str | None:
+    """The reading's fields (or a function that builds them) as canonical JSON text
+    (a frozen Candidate stays hashable), or None when they are not a reading the
+    ruleset accepts."""
     try:
+        fields = fields() if callable(fields) else fields
         ruleset.load().read(source, fields)
         return ruleset.canonical(fields).decode("utf-8")
-    except ruleset.RulesetError:
+    except (ruleset.RulesetError, TypeError, ValueError):  # no value a page states may stop the run
         return None
 
 
@@ -210,7 +211,7 @@ def readings_for(c: Candidate, ev: "Evidence") -> tuple:
     not show are null or empty."""
     out = [r for r in getattr(c, "readings", ()) if r[0] == "kev" and ev.kev]
     if ev.structured and ev.ghsa and ev.repository:
-        text = reading_text("ghsa", {
+        text = reading_text("ghsa", lambda: {
             "ghsa_id": "GHSA" + ev.ghsa.lower()[4:], "type": None, "withdrawn_at": None,
             "repository": ev.repository, "severity": {"moderate": "medium"}.get(ev.severity, ev.severity),
             "cvss_vector": None, "cwes": [],
