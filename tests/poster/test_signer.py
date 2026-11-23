@@ -15,30 +15,34 @@ from aitools_alerts import nostr, pull
 from aitools_alerts.poster import inputs, main, signer
 from aitools_alerts.state import State
 from mirror_helpers import CHANNELS, Mirror, advisory
-from test_main import T0, FakeSSH, env, finding  # noqa: F401 - env is a fixture
+from test_main import T0, FakeRelay, env, finding  # noqa: F401 - env is a fixture
 
 DAY = 86400
 PUT = "/opt/relay/bin/mirror-put"
+HOST = "op@relay.example.net"
 FEED = frozenset(CHANNELS.values())
 
 
-class PutSSH(FakeSSH):
-    """FakeSSH that also takes the checkpoint delivery: ``puts`` holds each
-    document; ``put_ok`` False makes the storing command refuse."""
+class PutRelay(FakeRelay):
+    """FakeRelay that is also the checkpoint route's ssh: posts arrive as sends, a
+    checkpoint as ``<PUT> checkpoint`` over ssh. ``puts`` holds each document;
+    ``put_ok`` False makes the storing command refuse. Anything else over ssh fails
+    the test: the route carries checkpoints only."""
 
     def __init__(self, *outcomes, put_ok=True, **kw):
         super().__init__(*outcomes, **kw)
         self.puts, self.put_ok, self.argvs = [], put_ok, []
 
-    def __call__(self, argv, **kw):
+    def __call__(self, *args, **kw):
+        if "input" not in kw:  # a post: send(channel_id, text, reply_to)
+            return super().__call__(*args, **kw)
+        argv = args[0]
         self.argvs.append(list(argv))
-        remote = shlex.split(argv[-1])
-        if remote == [PUT, "checkpoint"]:
-            self.puts.append(kw["input"])
-            if not self.put_ok:
-                return subprocess.CompletedProcess(argv, 1, b"", b'{"error":"user_error","message":"mirror-put: x"}\n')
-            return subprocess.CompletedProcess(argv, 0, b'{"stored":true,"bytes":1}\n', b"")
-        return super().__call__(argv, **kw)
+        assert shlex.split(argv[-1]) == [PUT, "checkpoint"], argv
+        self.puts.append(kw["input"])
+        if not self.put_ok:
+            return subprocess.CompletedProcess(argv, 1, b"", b'{"error":"user_error","message":"mirror-put: x"}\n')
+        return subprocess.CompletedProcess(argv, 0, b'{"stored":true,"bytes":1}\n', b"")
 
     def last(self):
         return cp.load_checkpoint(self.puts[-1])
@@ -53,7 +57,7 @@ def signing(env, tmp_path):  # noqa: F811
     key = tmp_path / "checkpoint.nsec"
     key.write_text(nostr.nsec(m.ck_sec) + "\n")
     key.chmod(0o600)
-    env.config = replace(env.config, checkpoint_key_file=key, relay_put_wrapper=PUT)
+    env.config = replace(env.config, checkpoint_key_file=key, relay_ssh_host=HOST, relay_put_wrapper=PUT)
     signer.init_owed(env.config.owed_state)  # as checkpoint-keygen does for a new key
     env.key = key
     return env
@@ -150,10 +154,11 @@ def test_config_keys_go_together_and_are_absolute(tmp_path):
         p.write_text(f'ledger = "{tmp_path}/l.json"\nkev_cache = "{tmp_path}/k.json"\n' + text)
         return inputs.load_config(p)
     assert load("").checkpoint_key_file is None
-    cfg = load(f'checkpoint_key_file = "{tmp_path}/c.nsec"\nrelay_put_wrapper = "{PUT}"\n')
+    cfg = load(f'checkpoint_key_file = "{tmp_path}/c.nsec"\nrelay_ssh_host = "{HOST}"\nrelay_put_wrapper = "{PUT}"\n')
     assert str(cfg.checkpoint_key_file) == f"{tmp_path}/c.nsec" and cfg.relay_put_wrapper == PUT
-    for bad in (f'checkpoint_key_file = "{tmp_path}/c.nsec"\n', f'relay_put_wrapper = "{PUT}"\n',
-                f'checkpoint_key_file = "c.nsec"\nrelay_put_wrapper = "{PUT}"\n',
+    for bad in (f'checkpoint_key_file = "{tmp_path}/c.nsec"\n', f'relay_ssh_host = "{HOST}"\nrelay_put_wrapper = "{PUT}"\n',
+                f'checkpoint_key_file = "{tmp_path}/c.nsec"\nrelay_put_wrapper = "{PUT}"\n',  # no route host
+                f'checkpoint_key_file = "c.nsec"\nrelay_ssh_host = "{HOST}"\nrelay_put_wrapper = "{PUT}"\n',
                 f'checkpoint_key_file = "{tmp_path}/c.nsec"\nrelay_put_wrapper = "mirror-put x"\n'):
         with pytest.raises(inputs.ConfigError):
             load(bad)
@@ -164,7 +169,7 @@ def test_checkpoint_keygen_command_prints_only_the_npub(tmp_path, capsys):
     cfg.write_text(f'ledger = "{tmp_path}/l.json"\nkev_cache = "{tmp_path}/k.json"\n')
     assert main.main(["checkpoint-keygen", "--config", str(cfg)]) == 2  # not configured
     assert "checkpoint_key_file" in capsys.readouterr().err
-    cfg.write_text(cfg.read_text() + f'checkpoint_key_file = "{tmp_path}/c.nsec"\nrelay_put_wrapper = "{PUT}"\n')
+    cfg.write_text(cfg.read_text() + f'checkpoint_key_file = "{tmp_path}/c.nsec"\nrelay_ssh_host = "{HOST}"\nrelay_put_wrapper = "{PUT}"\n')
     assert main.main(["checkpoint-keygen", "--config", str(cfg)]) == 0
     out = capsys.readouterr()
     sec = signer.read_key(tmp_path / "c.nsec")
@@ -333,7 +338,7 @@ def test_a_run_signs_and_delivers_a_checkpoint(signing, capsys):
     a = on_mirror(m, "On the mirror", T0 - 500)
     gone = m.reply(m.cur_sec, a, "retract", created_at=T0 - 400)
     signing.collector([finding()])
-    code, summary, ssh = signing.run(ssh=PutSSH())
+    code, summary, ssh = signing.run(relay=PutRelay())
     assert code == 0 and summary.endswith(" checkpoint=sent") and len(ssh.puts) == 1
     c = ssh.last()
     cert = cp.load_cert(json.dumps(m.cert).encode())
@@ -352,7 +357,7 @@ def test_a_run_signs_and_delivers_a_checkpoint(signing, capsys):
 
 def test_without_the_config_keys_nothing_changes(env):  # noqa: F811
     env.collector([finding()])
-    code, summary, ssh = env.run(ssh=PutSSH())
+    code, summary, ssh = env.run(relay=PutRelay())
     assert code == 0 and "checkpoint" not in summary and ssh.puts == []
     assert not env.config.owed_state.exists()
 
@@ -366,7 +371,7 @@ def test_no_usable_certificate_means_nothing_is_sent(signing, case):
         m.publish_cert(key=nostr.keygen()[1])
     else:
         m.publish_cert(issued=T0 - 10 * DAY, days=1)
-    code, summary, ssh = signing.run(ssh=PutSSH())
+    code, summary, ssh = signing.run(relay=PutRelay())
     assert code == 0 and summary.endswith(" checkpoint=no-certificate") and ssh.puts == []
 
 
@@ -379,44 +384,44 @@ def test_a_renewed_certificate_on_the_mirror_is_picked_up(signing, monkeypatch):
     monkeypatch.setattr(signer, "TRUST_ROOT_PUBKEY", m.root)
     monkeypatch.setattr(pull, "bundled_cert", lambda: old)
     m.publish_cert(issued=T0 - 600)
-    _, summary, ssh = signing.run(ssh=PutSSH())
+    _, summary, ssh = signing.run(relay=PutRelay())
     assert summary.endswith(" checkpoint=sent")
     m.publish_manifest(issued=T0 - 300)  # a new manifest, with its certificate
-    _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + 60)
+    _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + 60)
     assert summary.endswith(" checkpoint=sent") and ssh.last().manifest_id == m.manifest["id"]
 
 
 def test_failures_never_change_the_runs_exit_code(signing, monkeypatch):
-    _, summary, ssh = signing.run(ssh=PutSSH(put_ok=False))
+    _, summary, ssh = signing.run(relay=PutRelay(put_ok=False))
     assert summary.endswith(" checkpoint=failed") and len(ssh.puts) == 1
     signing.mirror.raw["manifest.json"] = None
-    code, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + 60)
+    code, summary, ssh = signing.run(relay=PutRelay(), now=T0 + 60)
     assert code == 0 and summary.endswith(" checkpoint=no-mirror") and ssh.puts == []
     signing.mirror.raw.pop("manifest.json")
     signing.key.chmod(0o644)
-    code, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + 120)
+    code, summary, ssh = signing.run(relay=PutRelay(), now=T0 + 120)
     assert code == 0 and summary.endswith(" checkpoint=error") and ssh.puts == []
 
 
 def test_two_runs_in_one_second_and_a_lost_state_file(signing):
-    _, _, ssh = signing.run(ssh=PutSSH())
+    _, _, ssh = signing.run(relay=PutRelay())
     first = ssh.last()
-    _, _, ssh = signing.run(ssh=PutSSH())  # the same second
+    _, _, ssh = signing.run(relay=PutRelay())  # the same second
     second = ssh.last()
     assert (first.seq, second.seq) == (T0, T0 + 1)
     signing.mirror.raw["checkpoint.json"] = json.dumps(second.event).encode()  # the mirror publishes it
     signing.config.owed_state.unlink()  # the record is lost while the count is ahead of the clock
-    _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + 1)
+    _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + 1)
     assert summary.endswith(" checkpoint=held") and ssh.puts == []  # what was owed is unknown: nothing is signed
-    _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + signer.OWED_S)
+    _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + signer.OWED_S)
     assert summary.endswith(" checkpoint=held") and ssh.puts == []
     signing.mirror.clock = T0 + signer.OWED_S + 2
-    _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + signer.OWED_S + 1)
+    _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + signer.OWED_S + 1)
     third = ssh.last()  # the hold is over; the published checkpoint supplied the floor for the number
     assert summary.endswith(" checkpoint=sent") and third.seq == T0 + signer.OWED_S + 1
     assert cp.checkpoint_order(third, second) is None
     signing.config.owed_state.write_text(json.dumps({"last_seq": 0, "owed": [], "hold_until": 0, "gone": {}}))
-    _, _, ssh = signing.run(ssh=PutSSH(), now=T0 + 1)  # a fresh record, the clock behind the published number
+    _, _, ssh = signing.run(relay=PutRelay(), now=T0 + 1)  # a fresh record, the clock behind the published number
     assert ssh.last().seq == T0 + 2
 
 
@@ -439,7 +444,7 @@ def test_an_acknowledged_post_stays_owed_until_the_mirror_shows_it(signing, tmp_
     if how == "the pull fails in that run":
         real = signer.run_checkpoint
         monkeypatch.setattr(signer, "run_checkpoint", lambda *a, **k: "no-mirror")
-        signing.run(ssh=PutSSH())
+        signing.run(relay=PutRelay())
         monkeypatch.setattr(signer, "run_checkpoint", real)
     elif how == "the run dies after the acknowledgement":
         class Dies(BaseException):
@@ -450,20 +455,20 @@ def test_an_acknowledged_post_stays_owed_until_the_mirror_shows_it(signing, tmp_
         monkeypatch.setattr(signer, "run_checkpoint", die)
         monkeypatch.setattr(main.Run, "_record", die)  # right after the send, before the ledger learns it
         with pytest.raises(Dies):
-            signing.run(ssh=PutSSH())
+            signing.run(relay=PutRelay())
         monkeypatch.undo()
     else:
-        signing.run(ssh=PutSSH())
+        signing.run(relay=PutRelay())
     withheld = owed_ids(signing)
     assert withheld  # written at the acknowledgement
     for hour in (1, 2, 3):
-        _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + hour * 3600)
+        _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + hour * 3600)
         assert summary.split(" checkpoint=")[1] == "sent" and set(withheld) <= ssh.last().events
     m.clock = T0 + 3 * 3600
     m.stored_checkpoint = ssh.last().event
     res, st = _reader_pull(m, tmp_path, T0 + 3 * 3600 + 60)
     assert res.error == "mirror incomplete"
-    _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + signer.OWED_S + 3600)
+    _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + signer.OWED_S + 3600)
     assert "checkpoint=sent,owed_dropped=" in summary and not set(withheld) & ssh.last().events
     assert not set(withheld) & set(owed_ids(signing))
 
@@ -471,23 +476,23 @@ def test_an_acknowledged_post_stays_owed_until_the_mirror_shows_it(signing, tmp_
 def test_a_post_seen_on_the_mirror_is_no_longer_owed(signing):
     m = signing.mirror
     signing.collector([finding()])
-    _, _, ssh = signing.run(ssh=PutSSH())
+    _, _, ssh = signing.run(relay=PutRelay())
     (sent,) = [i for i in owed_ids(signing)][:1]
     ev = on_mirror(m, "Stand-in", T0 + 10)
     rec = signer.load_owed(signing.config.owed_state, T0)
     rec["owed"] = [dict(rec["owed"][0], id=ev["id"])]  # as if the relay exported what was sent
     signer.save_owed(signing.config.owed_state, rec)
-    signing.run(ssh=PutSSH(), now=T0 + 3600)
+    signing.run(relay=PutRelay(), now=T0 + 3600)
     assert owed_ids(signing) == [] and sent
 
 
 def test_a_crowded_run_lists_every_acknowledged_post_or_signs_nothing(signing, monkeypatch):
     for i in range(200):
         signer.record_sent(signing.config.owed_state, f"{i:064x}", 300, None, T0)
-    _, summary, ssh = signing.run(ssh=PutSSH())
+    _, summary, ssh = signing.run(relay=PutRelay())
     assert summary.endswith(" checkpoint=sent") and {f"{i:064x}" for i in range(200)} <= ssh.last().events
     monkeypatch.setattr(signer, "MAX_LISTED", 150)
-    _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + 60)
+    _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + 60)
     assert summary.endswith(" checkpoint=too-large") and ssh.puts == []
     assert len(owed_ids(signing)) == 200  # none forgotten
 
@@ -501,7 +506,7 @@ def test_default_second_origin_is_not_consulted_by_the_poster(signing):
     def fetch(url, timeout=None):
         seen.append(url)
         return m.fetch(url)
-    signing.run(ssh=PutSSH(), mirror_fetch=fetch)
+    signing.run(relay=PutRelay(), mirror_fetch=fetch)
     assert seen and all(u.startswith(signing.config.translate_mirror_url) for u in seen)
 
 
@@ -549,10 +554,10 @@ def test_a_debt_that_cannot_be_written_stops_the_run_from_signing(signing, monke
     def fails(*a, **k):
         raise OSError(28, "No space left on device")
     monkeypatch.setattr(signer, "record_sent", fails)
-    code, summary, ssh = signing.run(ssh=PutSSH())
+    code, summary, ssh = signing.run(relay=PutRelay())
     assert code == 1 and summary.split(" checkpoint=")[1].startswith("owed-unrecorded") and ssh.puts == []
     monkeypatch.setattr(signer, "record_sent", real)
-    code, summary, ssh2 = signing.run(ssh=PutSSH(), now=T0 + 60)
+    code, summary, ssh2 = signing.run(relay=PutRelay(), now=T0 + 60)
     assert " checkpoint=sent" in summary and set(ssh.ids) <= ssh2.last().events
     assert set(ssh.ids) <= set(owed_ids(signing))
 
@@ -574,7 +579,7 @@ def test_a_mirror_that_drips_bytes_cannot_hold_the_run(signing, monkeypatch):
     def fetch(url, timeout=None):
         fetched.append((url.rsplit("/", 1)[1], len(seen)))
         return m.fetch(url)
-    signing.run(ssh=PutSSH(), mirror_fetch=fetch)
+    signing.run(relay=PutRelay(), mirror_fetch=fetch)
     inside = [name for name, depth in fetched if name in ("checkpoint-key.json", "checkpoint.json")]
     assert "checkpoint-key.json" in inside and "checkpoint.json" in inside
     import inspect
@@ -587,7 +592,7 @@ def test_a_mirror_that_drips_bytes_cannot_hold_the_run(signing, monkeypatch):
             raise translate.CallError("timeout")
         return m.fetch(url)
     monkeypatch.setattr(translate, "bounded", lambda fn, deadline: (_ for _ in ()).throw(translate.CallError("timeout")))
-    code, summary, ssh = signing.run(ssh=PutSSH(), mirror_fetch=stalls, now=T0 + 60)
+    code, summary, ssh = signing.run(relay=PutRelay(), mirror_fetch=stalls, now=T0 + 60)
     assert code == 0 and " checkpoint=no-mirror" in summary and ssh.puts == []
 
 
@@ -604,7 +609,7 @@ def test_curator_roots_in_test_salvage_are_listed_first(monkeypatch):
 def test_keygen_command_starts_the_owed_record_without_a_hold(tmp_path, capsys):
     cfg = tmp_path / "poster.toml"
     cfg.write_text(f'ledger = "{tmp_path}/l.json"\nkev_cache = "{tmp_path}/k.json"\n'
-                   f'checkpoint_key_file = "{tmp_path}/c.nsec"\nrelay_put_wrapper = "{PUT}"\n')
+                   f'checkpoint_key_file = "{tmp_path}/c.nsec"\nrelay_ssh_host = "{HOST}"\nrelay_put_wrapper = "{PUT}"\n')
     assert main.main(["checkpoint-keygen", "--config", str(cfg)]) == 0
     rec = signer.load_owed(inputs.load_config(cfg).owed_state, T0)
     assert rec == {"last_seq": 0, "owed": [], "hold_until": 0, "gone": {}}
@@ -619,10 +624,10 @@ def test_a_post_stamped_after_the_run_began_stays_owed_until_it_can_be_listed(si
     m = signing.mirror
     late = on_mirror(m, "Stamped five seconds after the run began", T0 + 5, sec=m.bot_sec)
     signer.record_sent(signing.config.owed_state, late["id"], 100, None, T0)
-    _, summary, ssh = signing.run(ssh=PutSSH())
+    _, summary, ssh = signing.run(relay=PutRelay())
     assert summary.endswith(" checkpoint=sent")
     assert late["id"] in ssh.last().events and late["id"] in owed_ids(signing)  # listed as owed, still owed
-    _, _, ssh = signing.run(ssh=PutSSH(), now=T0 + 3600)
+    _, _, ssh = signing.run(relay=PutRelay(), now=T0 + 3600)
     assert late["id"] in ssh.last().events and late["id"] not in owed_ids(signing)  # listed from the mirror
 
 
@@ -633,18 +638,18 @@ def test_an_event_that_leaves_the_mirror_is_listed_for_three_days_then_given_up(
     m = signing.mirror
     stays = on_mirror(m, "Stays", T0 - 600)
     goes = on_mirror(m, "Goes", T0 - 500)
-    signing.run(ssh=PutSSH())
+    signing.run(relay=PutRelay())
     for name in m.events:
         m.events[name] = [e for e in m.events[name] if e["id"] != goes["id"]]
     for hours in (1, 30, 71):
-        _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + hours * 3600)
+        _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + hours * 3600)
         assert goes["id"] in ssh.last().events and "gone_dropped" not in summary
-    _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + 74 * 3600)
+    _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + 74 * 3600)
     assert "checkpoint=sent,gone_dropped=1" in summary
     assert goes["id"] not in ssh.last().events and stays["id"] in ssh.last().events
     assert goes["id"] not in State.load(signing.config.mirror_dir).events
     m.events["feed.json"].append(goes)  # it comes back: it is simply an event on the mirror again
-    _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + 75 * 3600)
+    _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + 75 * 3600)
     assert goes["id"] in ssh.last().events and "gone_dropped" not in summary
 
 
@@ -652,7 +657,7 @@ def test_an_owed_reply_records_the_root_of_its_own_channel(signing):
     """A critical has one root per channel; an update's reply in the feed is owed with the
     feed root, not the critical channel's."""
     from test_main import FakeKEV, kev_item
-    signing.run(ssh=PutSSH(), kev=FakeKEV(catalog={"vulnerabilities": [kev_item()]}))
+    signing.run(relay=PutRelay(), kev=FakeKEV(catalog={"vulnerabilities": [kev_item()]}))
     entries, _ = signing.ledger()
     (entry,) = entries.values() if isinstance(entries, dict) else entries
     roots = entry["channel_ids"]
@@ -665,7 +670,7 @@ def test_an_owed_reply_records_the_root_of_its_own_channel(signing):
     it = {"kind": "reply", "sent": "e" * 64, "text": "x", "ids": entry["aliases"], "scope": entry["scope"],
           "channel": "feed", "root": roots["critical"]}
     with main.Ledger(signing.config.ledger) as led:
-        run = main.Run(T0, signing.config, led, {"outbox": []}, CHANNELS, PutSSH(), None)
+        run = main.Run(T0, signing.config, led, {"outbox": []}, CHANNELS, PutRelay(), None)
         run._owe(it)
     assert {o["id"]: o for o in signer.load_owed(signing.config.owed_state, T0)["owed"]}["e" * 64]["root"] == roots["feed"]
 
@@ -682,12 +687,12 @@ def test_a_crash_between_the_journal_and_the_owed_record_is_made_good_on_replay(
     def die(self, it):
         raise Dies
     monkeypatch.setattr(main.Run, "_owe", die)
-    ssh = PutSSH()
+    ssh = PutRelay()
     with pytest.raises(Dies):
-        signing.run(ssh=ssh)
+        signing.run(relay=ssh)
     assert owed_ids(signing) == [] and ssh.ids  # acknowledged, journaled, not yet owed
     monkeypatch.setattr(main.Run, "_owe", real)
-    _, summary, ssh2 = signing.run(ssh=PutSSH(), now=T0 + 60)
+    _, summary, ssh2 = signing.run(relay=PutRelay(), now=T0 + 60)
     assert ssh.ids[0] in owed_ids(signing) and ssh.ids[0] in ssh2.last().events
 
 
@@ -704,7 +709,7 @@ def test_any_failure_inside_the_signer_leaves_the_runs_exit_code_alone(signing, 
     def boom(*a, **k):
         raise error
     monkeypatch.setattr(signer, "window", boom)
-    code, summary, ssh = signing.run(ssh=PutSSH())
+    code, summary, ssh = signing.run(relay=PutRelay())
     assert code == 0 and summary.endswith(" checkpoint=error") and ssh.puts == []
 
 
@@ -712,7 +717,7 @@ def test_a_published_checkpoint_by_another_key_is_no_floor_for_the_number(signin
     m = signing.mirror
     other = cp.build_checkpoint(nostr.keygen()[0], m.man, T0 + 10**6, [], T0 - 60)
     m.raw["checkpoint.json"] = json.dumps(other).encode()
-    _, _, ssh = signing.run(ssh=PutSSH())
+    _, _, ssh = signing.run(relay=PutRelay())
     assert ssh.last().seq == T0  # a checkpoint anyone could have written does not move the number
 
 
@@ -722,7 +727,7 @@ def test_settled_debts_are_saved_even_when_nothing_is_signed(signing, monkeypatc
     signer.record_sent(signing.config.owed_state, seen["id"], 10, None, T0 - 50)
     signer.record_sent(signing.config.owed_state, "d" * 64, 10, None, T0 - 50)
     monkeypatch.setattr(signer, "MAX_LISTED", 0)
-    _, summary, ssh = signing.run(ssh=PutSSH())
+    _, summary, ssh = signing.run(relay=PutRelay())
     assert summary.endswith(" checkpoint=too-large") and owed_ids(signing) == ["d" * 64]
 
 
@@ -736,19 +741,19 @@ def test_a_vanished_curator_reply_is_never_given_up_its_thread_is_left_out(signi
     other = on_mirror(m, "Another alert", T0 - 700)
     root = on_mirror(m, "Retracted", T0 - 600)
     gone = m.reply(m.cur_sec, root, "retract", created_at=T0 - 500)
-    _, _, ssh = signing.run(ssh=PutSSH())
+    _, _, ssh = signing.run(relay=PutRelay())
     assert {root["id"], gone["id"]} <= ssh.last().events
     m.events["feed.json"].remove(gone)
-    _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + 3600)
+    _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + 3600)
     assert {root["id"], gone["id"]} <= ssh.last().events  # still listed: readers refuse the mirror
     for hours in (74, 200):
-        _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + hours * 3600)
+        _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + hours * 3600)
         listed = ssh.last().events
         assert "threads_suppressed=1" in summary and "gone_dropped" not in summary
         assert root["id"] not in listed and gone["id"] not in listed and other["id"] in listed
         assert gone["id"] in State.load(signing.config.mirror_dir).events  # never forgotten
     m.events["feed.json"].append(gone)  # the mirror serves it again: the thread is back, retracted
-    _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + 201 * 3600)
+    _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + 201 * 3600)
     assert {root["id"], gone["id"]} <= ssh.last().events and "threads_suppressed" not in summary
 
 
@@ -758,13 +763,25 @@ def test_a_bare_id_or_a_broken_copy_does_not_count_as_served(signing):
     m = signing.mirror
     stays = on_mirror(m, "Stays", T0 - 600)
     goes = on_mirror(m, "Goes", T0 - 500)
-    signing.run(ssh=PutSSH())
+    signing.run(relay=PutRelay())
     broken = dict(goes, sig="0" * 128)
     for fake in ({"id": goes["id"]}, broken):
         for name in m.events:  # the event was posted to both channel files
             m.events[name] = [e for e in m.events[name] if e.get("id") != goes["id"]] + [fake]
-        _, summary, _ = signing.run(ssh=PutSSH(), now=T0 + 3600)
+        _, summary, _ = signing.run(relay=PutRelay(), now=T0 + 3600)
         rec = signer.load_owed(signing.config.owed_state, T0 + 3600)
         assert goes["id"] in rec["gone"] and stays["id"] not in rec["gone"], summary
-    _, summary, ssh = signing.run(ssh=PutSSH(), now=T0 + 80 * 3600)
+    _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + 80 * 3600)
     assert "gone_dropped=1" in summary and goes["id"] not in ssh.last().events
+
+
+@pytest.mark.parametrize("drop", ["relay_ssh_host", "relay_put_wrapper", "checkpoint_key_file"])
+def test_a_config_built_in_code_with_two_of_the_three_checkpoint_keys_never_posts(signing, drop, capsys):
+    """check_relay applies load_config's all-or-none rule (vzc3, after nfm3): a run stops
+    before it posts instead of posting with the checkpoint silently off."""
+    signing.collector([finding()])
+    signing.config = replace(signing.config, **{drop: None})
+    relay = PutRelay()
+    code, summary, _ = signing.run(relay=relay)
+    assert code == 2 and "error=config" in summary and relay.calls == [] and relay.puts == []
+    assert "go together" in capsys.readouterr().err

@@ -4,6 +4,7 @@ import dataclasses
 import json
 import threading
 import time
+from pathlib import Path
 from collections import Counter
 
 import pytest
@@ -70,22 +71,45 @@ def test_deployment_keys_default_empty_and_load(tmp_path):
     cfg = tmp_path / "config.toml"
     cfg.write_text("")
     c = inputs.load_config(cfg)
-    assert (c.strip_hosts, c.internal_host_suffixes, c.relay_ssh_host, c.relay_send_wrapper) == ((), (), None, None)
-    with pytest.raises(inputs.ConfigError, match="relay_ssh_host and relay_send_wrapper"):
+    assert (c.strip_hosts, c.internal_host_suffixes, c.relay_key_secret) == ((), (), None)
+    assert c.relay_url == "https://buzz.ai-tools.md"
+    with pytest.raises(inputs.ConfigError, match="relay_key_secret and secrets_helper"):
         c.check_relay()
     cfg.write_text('strip_hosts = ["HostAlpha", "hostbeta"]\ninternal_host_suffixes = [".corp.example"]\n'
-                   'relay_ssh_host = "op@relay.example.net"\nrelay_send_wrapper = "/opt/relay/bin/buzz-send"\n')
+                   'relay_url = "https://relay.example.net"\nrelay_key_secret = "RELAY_TEST_NSEC"\n'
+                   'secrets_helper = "/opt/secrets/secrets.sh"\n')
     c = inputs.load_config(cfg)
     assert c.strip_hosts == ("hostalpha", "hostbeta") and c.internal_host_suffixes == (".corp.example",)
-    assert (c.relay_ssh_host, c.relay_send_wrapper) == ("op@relay.example.net", "/opt/relay/bin/buzz-send")
+    assert (c.relay_url, c.relay_key_secret) == ("https://relay.example.net", "RELAY_TEST_NSEC")
     c.check_relay()
+
+
+def test_the_retired_send_wrapper_is_refused_by_name(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('relay_send_wrapper = "x"\n')
+    with pytest.raises(inputs.ConfigError, match="relay_send_wrapper.*retired"):
+        inputs.load_config(cfg)
+
+
+def test_the_ssh_host_serves_only_the_checkpoint_route(tmp_path):
+    """relay_ssh_host names the put-only route for the checkpoint (nfm3), so it comes with
+    the checkpoint key and the put command or not at all; posts never use it."""
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('relay_ssh_host = "op@relay.example.net"\n')
+    with pytest.raises(inputs.ConfigError, match="go together"):
+        inputs.load_config(cfg)
+    cfg.write_text('relay_ssh_host = "-oProxyCommand=x"\n')
+    with pytest.raises(inputs.ConfigError, match="ssh host"):
+        inputs.load_config(cfg)
 
 
 @pytest.mark.parametrize("text", ['strip_hosts = "hostalpha"\n', 'strip_hosts = [""]\n', "strip_hosts = [3]\n",
                                   'strip_hosts = ["a b"]\n', 'internal_host_suffixes = ["corp.example"]\n',
-                                  'relay_ssh_host = "-oProxyCommand=x"\n', 'relay_ssh_host = "a b"\n',
-                                  'relay_ssh_host = ""\n', 'relay_send_wrapper = "bin/buzz-send"\n',
-                                  'relay_send_wrapper = "~/bin/buzz-send"\n', 'relay_send_wrapper = "/a;b"\n',
+                                  'relay_url = "http://relay.example.net"\n', 'relay_url = "https://relay.example.net/x"\n',
+                                  'relay_url = "https://u@relay.example.net"\n', 'relay_url = "https://relay:444"\n',
+                                  'relay_url = "https://Relay.example.net"\n', 'relay_url = 3\n',
+                                  'relay_key_secret = "lower"\n', 'relay_key_secret = "A B"\n',
+                                  'relay_key_secret = ""\n', 'relay_key_secret = 3\n',
                                   'strip_hosts = ["a"]\n', 'strip_hosts = [".."]\n', 'strip_hosts = [".corp"]\n',
                                   'internal_host_suffixes = ["."]\n', 'internal_host_suffixes = ["..io"]\n'])
 def test_deployment_keys_bad_values_are_errors(tmp_path, text):
@@ -350,17 +374,13 @@ def test_read_kev_file_never_fetches_or_caches(tmp_path, monkeypatch):
         inputs.read_kev_file(f)  # duplicate keys are refused, as every strict read
 
 
-def test_ssh_alias_with_underscore_loads(tmp_path):
-    cfg = tmp_path / "config.toml"
-    cfg.write_text('relay_ssh_host = "relay_vm"\nrelay_send_wrapper = "/opt/relay/bin/buzz-send"\n')
-    inputs.load_config(cfg).check_relay()
-
-
-@pytest.mark.parametrize("host, wrapper", [("-oProxyCommand=x", "/opt/w"), ("relay.example.net", "~/w"),
-                                           ("relay.example.net", "w"), (3, "/opt/w")])
-def test_check_relay_validates_a_config_built_in_code(host, wrapper):
+@pytest.mark.parametrize("kw", [dict(relay_key_secret="lower", secrets_helper=Path("/h")),
+                                dict(relay_key_secret="K", secrets_helper=Path("h")),
+                                dict(relay_key_secret="K", secrets_helper=Path("/h"), relay_url="http://x.example"),
+                                dict(relay_key_secret=3, secrets_helper=Path("/h"))])
+def test_check_relay_validates_a_config_built_in_code(kw):
     with pytest.raises(inputs.ConfigError):
-        inputs.Config(relay_ssh_host=host, relay_send_wrapper=wrapper).check_relay()
+        inputs.Config(**kw).check_relay()
 
 
 def test_two_letter_suffix_loads(tmp_path):

@@ -50,8 +50,14 @@ _KINDS = {"root", "copy", "reply", "digest", "ja"}
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,252}")  # three or more: compose skips shorter names
 _SUFFIX = re.compile(r"\.[A-Za-z0-9][A-Za-z0-9.-]{0,252}")
+_SECRET_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 _SSH_HOST = re.compile(r"(?:[A-Za-z0-9][A-Za-z0-9._-]{0,63}@)?[A-Za-z0-9][A-Za-z0-9._-]{0,252}")
 _WRAPPER = re.compile(r"/[A-Za-z0-9._/-]{1,255}")
+DEFAULT_RELAY_URL = "https://buzz.ai-tools.md"
+# Posting through the relay VM's ssh wrapper (ai-tools-alerts#w75s) retired with vzc3: the
+# poster signs here and posts over HTTPS. A config that still names the wrapper is refused
+# by name. relay_ssh_host stays, for the checkpoint's put-only route (nfm3) and nothing else.
+RETIRED_KEYS = ("relay_send_wrapper",)
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
@@ -69,31 +75,50 @@ class Config:
     backfill_days: int = 2
     # Deployment detail lives here, never in the public code: host names that drop a
     # field or item (candidates.FLEET_HOSTS), extra internal source-host suffixes, and
-    # the relay route (ssh destination, absolute wrapper path on the relay VM).
+    # the name of the relay key in the secrets helper.
     strip_hosts: tuple[str, ...] = ()
     internal_host_suffixes: tuple[str, ...] = ()
-    relay_ssh_host: str | None = None
-    relay_send_wrapper: str | None = None
+    relay_url: str = DEFAULT_RELAY_URL
+    relay_key_secret: str | None = None  # the secrets helper's name for jibot's key
     # Curator translation (ai-tools-alerts#bq8v): off by default; the helper is get_secret's.
     translate_curator: bool = False
     translate_mirror_url: str = _member_config.DEFAULT_MIRROR_URL
     secrets_helper: Path | None = None
     # The feed checkpoint (ai-tools-alerts#nfm3): the file holding the checkpoint secret
-    # key on THIS machine (mode 600; one key, one poster, one ledger), and the absolute
-    # path on the relay VM of the command that stores a checkpoint. Both or neither.
+    # key on THIS machine (mode 600; one key, one poster, one ledger), the ssh destination
+    # of the put-only route on the relay VM, and the absolute path there of the command
+    # that stores a checkpoint. All three or none.
     checkpoint_key_file: Path | None = None
+    relay_ssh_host: str | None = None
     relay_put_wrapper: str | None = None
 
     def check_relay(self) -> None:
-        """A run sends, so it needs the relay route; pending and resolve do not."""
-        if not self.relay_ssh_host or not self.relay_send_wrapper:
-            raise ConfigError("relay_ssh_host and relay_send_wrapper must be set")
+        """A run sends, so it needs the relay and its key; pending and resolve do not."""
+        if not self.relay_key_secret or not self.secrets_helper:
+            raise ConfigError("relay_key_secret and secrets_helper must be set")
         # Checked here too, so a Config built in code meets the load_config rules
         # before anything is marked pending.
+        _check_relay_url(self.relay_url)
+        if not isinstance(self.relay_key_secret, str) or not _SECRET_NAME.fullmatch(self.relay_key_secret):
+            raise ConfigError("relay_key_secret must be a secret name (A-Z, 0-9, _)")
+        if not os.path.isabs(str(self.secrets_helper)):
+            raise ConfigError("secrets_helper must be an absolute path")
+        self.check_checkpoint()
+
+    def check_checkpoint(self) -> None:
+        """The checkpoint's three keys: all or none, each well formed. load_config and
+        check_relay both call this, so a Config built in code meets the same rule."""
+        keys = (self.checkpoint_key_file, self.relay_ssh_host, self.relay_put_wrapper)
+        if any(k is None for k in keys) and any(k is not None for k in keys):
+            raise ConfigError("checkpoint_key_file, relay_ssh_host and relay_put_wrapper go together")
+        if self.checkpoint_key_file is None:
+            return
+        if not os.path.isabs(str(self.checkpoint_key_file)):
+            raise ConfigError("checkpoint_key_file must be an absolute path")
         if not isinstance(self.relay_ssh_host, str) or not _SSH_HOST.fullmatch(self.relay_ssh_host):
             raise ConfigError("relay_ssh_host must be an ssh host ([user@]host)")
-        if not isinstance(self.relay_send_wrapper, str) or not _WRAPPER.fullmatch(self.relay_send_wrapper):
-            raise ConfigError("relay_send_wrapper must be an absolute path")
+        if not isinstance(self.relay_put_wrapper, str) or not _WRAPPER.fullmatch(self.relay_put_wrapper):
+            raise ConfigError("relay_put_wrapper must be an absolute path")
 
     @property
     def state(self) -> Path:
@@ -131,12 +156,25 @@ class Config:
                               "and the checkpoint key file must differ")
 
 
+def _check_relay_url(url) -> str:
+    from aitools_alerts.poster import transport  # here: transport imports nothing of inputs
+    try:
+        transport.check_url(url)
+    except ValueError:
+        raise ConfigError("relay_url must be https://<host>") from None
+    return url
+
+
 def load_config(path) -> Config:
     """The TOML config; unknown keys and wrong types are a ConfigError."""
     try:
         raw = tomllib.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
         raise ConfigError(f"cannot read {path}: {e}") from None
+    retired = sorted(set(raw) & set(RETIRED_KEYS))
+    if retired:
+        raise ConfigError(f"{retired} retired: the poster signs locally and posts over HTTPS; "
+                          "set relay_key_secret and secrets_helper instead")
     bad = set(raw) - set(Config.__dataclass_fields__)
     if bad:
         raise ConfigError(f"unknown keys {sorted(bad)}")
@@ -161,12 +199,12 @@ def load_config(path) -> Config:
             if not isinstance(v, list) or not all(isinstance(h, str) and ok.fullmatch(h) for h in v):
                 raise ConfigError(f"{k} must be a list of host names" + (" each starting with '.'" if dot else ""))
             out[k] = tuple(h.lower() for h in v)
-    for k, pattern, what in (("relay_ssh_host", _SSH_HOST, "an ssh host ([user@]host)"),
-                             ("relay_send_wrapper", _WRAPPER, "an absolute path")):
-        if k in raw:
-            if not isinstance(raw[k], str) or not pattern.fullmatch(raw[k]):
-                raise ConfigError(f"{k} must be {what}")
-            out[k] = raw[k]
+    if "relay_url" in raw:
+        out["relay_url"] = _check_relay_url(raw["relay_url"])
+    if "relay_key_secret" in raw:
+        if not isinstance(raw["relay_key_secret"], str) or not _SECRET_NAME.fullmatch(raw["relay_key_secret"]):
+            raise ConfigError("relay_key_secret must be a secret name (A-Z, 0-9, _)")
+        out["relay_key_secret"] = raw["relay_key_secret"]
     if "translate_curator" in raw:
         if type(raw["translate_curator"]) is not bool:
             raise ConfigError("translate_curator must be true or false")
@@ -188,11 +226,14 @@ def load_config(path) -> Config:
         if not isinstance(raw["relay_put_wrapper"], str) or not _WRAPPER.fullmatch(raw["relay_put_wrapper"]):
             raise ConfigError("relay_put_wrapper must be an absolute path")
         out["relay_put_wrapper"] = raw["relay_put_wrapper"]
-    if ("checkpoint_key_file" in out) != ("relay_put_wrapper" in out):
-        raise ConfigError("checkpoint_key_file and relay_put_wrapper go together")
+    if "relay_ssh_host" in raw:
+        if not isinstance(raw["relay_ssh_host"], str) or not _SSH_HOST.fullmatch(raw["relay_ssh_host"]):
+            raise ConfigError("relay_ssh_host must be an ssh host ([user@]host)")
+        out["relay_ssh_host"] = raw["relay_ssh_host"]
     if out.get("translate_curator") and "secrets_helper" not in out:
         raise ConfigError("translate_curator needs secrets_helper")
     cfg = Config(**out)
+    cfg.check_checkpoint()
     cfg.check_paths()
     return cfg
 

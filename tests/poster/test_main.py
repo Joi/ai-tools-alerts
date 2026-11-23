@@ -1,16 +1,14 @@
-"""The hourly poster run (Task B4). Fake ssh, fake KEV fetch, fake source fetch: no network."""
+"""The hourly poster run (Task B4). Fake relay, fake KEV fetch, fake source fetch: no network."""
 
 import datetime as dt
 import itertools
 import json
-import shlex
-import subprocess
 from dataclasses import replace
 
 import pytest
 from pathlib import Path
 
-from aitools_alerts.poster import inputs, main
+from aitools_alerts.poster import inputs, main, transport
 from mirror_helpers import Mirror, advisory
 from pages import Pages, advisory_page
 from aitools_alerts.poster.ledger import Ledger, LedgerError
@@ -22,7 +20,7 @@ GHSA = "https://github.com/anthropics/claude-code/security/advisories/GHSA-abcd-
 GHSA2 = "https://github.com/anthropics/claude-code/security/advisories/GHSA-mnop-qrst-uvwx"
 APPLE = "https://support.apple.com/en-us/120001"
 TOKYO = dt.timezone(dt.timedelta(hours=9))
-_EVENT_IDS = (f"{i:064x}" for i in itertools.count(1))  # unique across every FakeSSH in a test
+_EVENT_IDS = (f"{i:064x}" for i in itertools.count(1))  # unique across every FakeRelay in a test
 
 
 def at(day, hour, minute=20):
@@ -32,35 +30,34 @@ def at(day, hour, minute=20):
 T0 = at(5, 6)  # 06:20 Tokyo: runs a few hours later stay before the digest hour
 
 
-class FakeSSH:
-    """Answers each send from a queue: ok, fail (exit 5, never sent), unknown (timeout).
-    Japanese ``lang: ja`` replies go to ``ja`` and answer from ``ja_queue`` (default ok)."""
+class FakeRelay:
+    """``send(channel_id, text, reply_to)`` answering from a queue: ok, fail (certainly
+    not stored), unknown (may be stored), refuse (the relay rejected the event itself,
+    ai-tools-alerts#8acj). Japanese ``lang: ja`` replies go to ``ja`` and answer from
+    ``ja_queue`` (default ok)."""
 
     def __init__(self, *outcomes, ja=()):
         self.queue, self.ja_queue = list(outcomes), list(ja)
         self.calls, self.ja = [], []
 
-    def __call__(self, argv, **kw):
-        remote = shlex.split(argv[-1])
-        ch = NAME[remote[remote.index("--channel") + 1]]
-        reply = remote[remote.index("--reply-to") + 1] if "--reply-to" in remote else None
-        text = kw["input"].decode()
+    def __call__(self, channel_id, text, reply_to=None):
+        transport.check_send(channel_id, text, reply_to)  # what the real sender checks first
+        ch = NAME[channel_id]
         is_ja = text.startswith("lang: ja\n")
-        (self.ja if is_ja else self.calls).append((ch, reply, text))
+        (self.ja if is_ja else self.calls).append((ch, reply_to, text))
         queue = self.ja_queue if is_ja else self.queue
         outcome = queue.pop(0) if queue else "ok"
         if outcome == "unknown":
-            raise subprocess.TimeoutExpired("ssh", 120)
+            return transport.SendResult(False, None, None, "no response before the deadline", "unknown")
         if outcome == "fail":
-            return subprocess.CompletedProcess(argv, 5, b"", b"conflict: write refused")
-        if outcome == "refuse":  # the relay's user_error, not retryable (ai-tools-alerts#8acj)
-            return subprocess.CompletedProcess(argv, 1, b"", json.dumps(
-                {"error": "user_error", "message": "relay error: blocked\nmention", "retryable": False}).encode())
+            return transport.SendResult(False, None, 429, "429", "failed")
+        if outcome == "refuse":
+            msg = "relay error: blocked mention"
+            return transport.SendResult(False, None, 400, msg, "refused", msg)
         eid = next(_EVENT_IDS)
         if not is_ja:
             self.ids = getattr(self, "ids", []) + [eid]  # event ids of the English sends, in order
-        return subprocess.CompletedProcess(
-            argv, 0, json.dumps({"accepted": True, "event_id": eid}).encode(), b"")
+        return transport.SendResult(True, eid, 200, "", "ok")
 
 
 class FakeKEV:
@@ -96,8 +93,8 @@ def finding(fid="GHSA-abcd-efgh-ijkl", product="Claude Code", severity="remote c
 MAC = finding(fid="CVE-2026-5000", product="macOS", severity=None, fixed=None, sources=(APPLE,))
 
 
-RELAY = {"relay_ssh_host": "relay.example.net", "relay_send_wrapper": "/opt/relay/bin/buzz-send"}
-RELAY_TOML = "".join(f'{k} = "{v}"\n' for k, v in RELAY.items())
+RELAY = {"relay_key_secret": "RELAY_TEST_NSEC", "secrets_helper": Path("/opt/secrets/secrets.sh")}
+RELAY_TOML = "".join(f'{k} = "{v}"\n' for k, v in RELAY.items())  # str() of the Path
 
 
 @pytest.fixture
@@ -126,12 +123,13 @@ def env(tmp_path):
             if feeds is not None:
                 (d / "feeds.json").write_text(json.dumps(feeds))
 
-        def run(self, now=T0, ssh=None, kev=None, **kw):
-            ssh = ssh if ssh is not None else FakeSSH()
+        def run(self, now=T0, relay=None, kev=None, **kw):
+            relay = relay if relay is not None else FakeRelay()
             kw = {"mirror_fetch": self.mirror.fetch, "root": self.mirror.root, "page": self.pages, **kw}
-            code, summary = main.run(now, self.config, ssh=ssh, kev_fetch=kev or self.kev,
+            kw.setdefault("ssh", relay)  # the checkpoint route; a test's PutRelay takes both
+            code, summary = main.run(now, self.config, send=relay, kev_fetch=kev or self.kev,
                                      channels=CHANNELS, **kw)
-            return code, summary, ssh
+            return code, summary, relay
 
         def state(self):
             return json.loads(self.config.state.read_text())
@@ -145,8 +143,8 @@ def env(tmp_path):
     return Env()
 
 
-def chans(ssh):
-    return [(c[0], c[1]) for c in ssh.calls]
+def chans(relay):
+    return [(c[0], c[1]) for c in relay.calls]
 
 
 # ---------------------------------------------------------------- the eight named tests
@@ -154,25 +152,25 @@ def chans(ssh):
 
 def test_send_failure_leaves_advisory_unposted(env):
     env.collector([finding()])
-    code, summary, ssh = env.run(ssh=FakeSSH("fail"))
-    assert code == 1 and "failed=1" in summary and chans(ssh) == [("feed", None)]
+    code, summary, relay = env.run(relay=FakeRelay("fail"))
+    assert code == 1 and "failed=1" in summary and chans(relay) == [("feed", None)]
     assert env.ledger() == ([], [])
     assert [it["kind"] for it in env.state()["outbox"]] == ["root"]  # kept for the next hour
-    code, _, ssh = env.run(now=T0 + 3600)
-    assert code == 0 and chans(ssh) == [("feed", None)]
+    code, _, relay = env.run(now=T0 + 3600)
+    assert code == 0 and chans(relay) == [("feed", None)]
     entries, pending = env.ledger()
     assert len(entries) == 1 and pending == [] and env.state()["outbox"] == []
     env.collector([finding()])
-    _, _, ssh = env.run(now=T0 + 7200)
-    assert ssh.calls == []  # posted once, never again
+    _, _, relay = env.run(now=T0 + 7200)
+    assert relay.calls == []  # posted once, never again
 
 
 def test_critical_posts_to_both_channels_in_order(env):
     env.kev.catalog = {"vulnerabilities": [kev_item()]}
-    code, summary, ssh = env.run()
+    code, summary, relay = env.run()
     assert code == 0, summary
-    assert chans(ssh) == [("critical", None), ("feed", None)]
-    assert ssh.calls[0][2] == ssh.calls[1][2] and ssh.calls[0][2].startswith("CRITICAL: Claude Code")
+    assert chans(relay) == [("critical", None), ("feed", None)]
+    assert relay.calls[0][2] == relay.calls[1][2] and relay.calls[0][2].startswith("CRITICAL: Claude Code")
     (e,), _ = env.ledger()
     assert set(e["channel_ids"]) == {"critical", "feed"} and e["level"] == "critical"
     assert e["root_event_id"] == e["channel_ids"]["critical"]
@@ -180,23 +178,23 @@ def test_critical_posts_to_both_channels_in_order(env):
 
 def test_high_posts_to_feed_only(env):
     env.collector([finding()])
-    code, summary, ssh = env.run()
+    code, summary, relay = env.run()
     assert code == 0 and "roots=1" in summary
-    assert chans(ssh) == [("feed", None)] and ssh.calls[0][2].startswith("HIGH: Claude Code")
+    assert chans(relay) == [("feed", None)] and relay.calls[0][2].startswith("HIGH: Claude Code")
 
 
 def test_notice_waits_for_digest(env):
     env.collector([MAC])
-    code, summary, ssh = env.run()
-    assert code == 0 and ssh.calls == [] and "held=1" in summary
-    code, summary, ssh = env.run(now=at(5, 9))
-    assert code == 0 and chans(ssh) == [("feed", None)]
-    assert "Daily digest for 2026-11-05" in ssh.calls[0][2] and "CVE-2026-5000" in ssh.calls[0][2]
-    _, _, ssh = env.run(now=at(5, 10))
-    assert ssh.calls == []  # one digest a day
+    code, summary, relay = env.run()
+    assert code == 0 and relay.calls == [] and "held=1" in summary
+    code, summary, relay = env.run(now=at(5, 9))
+    assert code == 0 and chans(relay) == [("feed", None)]
+    assert "Daily digest for 2026-11-05" in relay.calls[0][2] and "CVE-2026-5000" in relay.calls[0][2]
+    _, _, relay = env.run(now=at(5, 10))
+    assert relay.calls == []  # one digest a day
     env.collector([MAC])  # seen again: never held again
-    _, _, ssh = env.run(now=at(6, 9))
-    assert len(ssh.calls) == 1 and "CVE-2026-5000" not in ssh.calls[0][2]
+    _, _, relay = env.run(now=at(6, 9))
+    assert len(relay.calls) == 1 and "CVE-2026-5000" not in relay.calls[0][2]
 
 
 def replace_fixed(f, fixed):
@@ -210,30 +208,30 @@ def test_duplicate_alias_is_learned_and_rides_the_next_real_reply(env):  # 8ke5
     root = e["channel_ids"]["feed"]
     twin = finding(fid="CVE-2026-0002", aliases=("GHSA-abcd-efgh-ijkl",), sources=(GHSA, GHSA2))
     env.collector([twin])
-    code, summary, ssh = env.run(now=T0 + 3600)  # only an alias and a source are new: no post
-    assert code == 0 and "replies=0" in summary and "roots=0" in summary and ssh.calls == []
+    code, summary, relay = env.run(now=T0 + 3600)  # only an alias and a source are new: no post
+    assert code == 0 and "replies=0" in summary and "roots=0" in summary and relay.calls == []
     (e,), _ = env.ledger()
     assert e["replies"] == [] and "CVE-2026-0002" in e["aliases"]  # the identity is learned
     # h340: the twin's other URL is a page nobody read for this advisory, so it is not learned
     assert "learned_sources" not in e and e["listed_at"] == e["posted_at"]
     env.collector([finding(fixed="2.1.1")])  # a real change, from a record without the twin
-    code, summary, ssh = env.run(now=T0 + 7200)
-    assert code == 0 and "replies=1" in summary and chans(ssh) == [("feed", root)]
-    text = ssh.calls[0][2]
+    code, summary, relay = env.run(now=T0 + 7200)
+    assert code == 0 and "replies=1" in summary and chans(relay) == [("feed", root)]
+    text = relay.calls[0][2]
     assert "Fixed in 2.1.1" in text and "Also known as: CVE-2026-0002." in text and "New sources listed." not in text
     block = json.loads(text.split("```aitools-alert\n")[1].split("```")[0])
     assert block["aliases"] == ["CVE-2026-0002"] and "sources" not in block
     (e,), _ = env.ledger()
     assert len(e["replies"]) == 1 and not e.get("learned_sources") and e["listed_at"] == T0 + 7200
     env.collector([replace_fixed(twin, "2.1.1")])
-    _, _, ssh = env.run(now=T0 + 9000)
-    assert ssh.calls == []
+    _, _, relay = env.run(now=T0 + 9000)
+    assert relay.calls == []
 
 
 def test_watermark_advances_only_on_success(env):
     env.heartbeat("2026-11-05T000000Z", [])
     env.collector([finding()], name="2026-11-05T000000Z")
-    code, _, _ = env.run(ssh=FakeSSH("fail"))
+    code, _, _ = env.run(relay=FakeRelay("fail"))
     st = env.state()
     assert code == 1 and (st["heartbeat"], st["collector"], st["kev_since"]) == (None, None, None)
     code, _, _ = env.run(now=T0 + 3600)
@@ -249,24 +247,24 @@ def test_kev_fetch_not_modified_uses_cache(env):
     env.config.kev_cache.write_text(json.dumps({"last_modified": lm,
                                                 "catalog": {"vulnerabilities": [kev_item()]}}))
     kev = FakeKEV(status=304)
-    code, _, ssh = env.run(kev=kev)
+    code, _, relay = env.run(kev=kev)
     assert code == 0 and kev.headers == [{"If-Modified-Since": lm}]
-    assert chans(ssh) == [("critical", None), ("feed", None)]
+    assert chans(relay) == [("critical", None), ("feed", None)]
 
 
 def test_unknown_outcome_keeps_pending(env):
     env.collector([finding()])
-    code, summary, ssh = env.run(ssh=FakeSSH("unknown"))
+    code, summary, relay = env.run(relay=FakeRelay("unknown"))
     assert code == 1 and "unknown=1" in summary
     entries, pending = env.ledger()
     assert entries == [] and len(pending) == 1 and len(env.state()["outbox"]) == 1
     env.collector([finding()])
-    code, summary, ssh = env.run(now=T0 + 3600)
-    assert code == 0 and ssh.calls == [] and "busy=2" in summary  # the item, then the candidate
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and relay.calls == [] and "busy=2" in summary  # the item, then the candidate
     with Ledger(env.config.ledger) as led:  # a human found it was not delivered
         led.expire_pending(pending[0]["key"], "checked the channel: not delivered", now=T0 + 90000)
-    code, _, ssh = env.run(now=T0 + 90000)
-    assert code == 0 and chans(ssh)[0] == ("feed", None)  # resent from the journal, no new input
+    code, _, relay = env.run(now=T0 + 90000)
+    assert code == 0 and chans(relay)[0] == ("feed", None)  # resent from the journal, no new input
     assert len(env.ledger()[0]) == 1
 
 
@@ -279,7 +277,7 @@ def test_pending_on_an_empty_journal(env):
 
 def _unknown_root(env):
     env.collector([finding()])
-    env.run(ssh=FakeSSH("unknown"))
+    env.run(relay=FakeRelay("unknown"))
     (it,) = env.state()["outbox"]
     return it
 
@@ -301,8 +299,8 @@ def test_resolve_delivered_records_as_a_send_would(env):
     assert pending == [] and [it["kind"] for it in env.state()["outbox"]] == ["ja"]  # sent next run
     assert entries[0]["root_event_id"] == eid and entries[0]["channel_ids"] == {"feed": eid}
     env.collector([finding()])
-    code, _, ssh = env.run(now=T0 + 3600)  # neither resent nor re-recorded
-    assert code == 0 and ssh.calls == [] and len(env.ledger()[0]) == 1
+    code, _, relay = env.run(now=T0 + 3600)  # neither resent nor re-recorded
+    assert code == 0 and relay.calls == [] and len(env.ledger()[0]) == 1
 
 
 def test_resolve_refuses_a_bad_id_or_a_key_not_pending(env):
@@ -322,8 +320,8 @@ def test_resolve_not_delivered_waits_24_hours_then_resends(env):
     assert main.resolve(T0 + 90000, env.config, it["key"], reason="not in the channel")[0] == 0
     with Ledger(env.config.ledger) as led:
         assert led.pending_entries() == [] and led._state()["expired"][0]["reason"] == "not in the channel"
-    code, _, ssh = env.run(now=T0 + 90000)
-    assert code == 0 and chans(ssh) == [("feed", None)] and len(env.ledger()[0]) == 1
+    code, _, relay = env.run(now=T0 + 90000)
+    assert code == 0 and chans(relay) == [("feed", None)] and len(env.ledger()[0]) == 1
 
 
 def test_resolve_not_delivered_refuses_when_the_journal_says_sent(env):
@@ -361,7 +359,7 @@ def test_resolve_delivered_refuses_what_would_not_record(env):
 def test_resolve_delivered_acknowledges_a_digest(env):
     env.collector([MAC])
     env.run()
-    env.run(now=at(5, 9), ssh=FakeSSH("unknown"))
+    env.run(now=at(5, 9), relay=FakeRelay("unknown"))
     (it,) = env.state()["outbox"]
     assert main.resolve(at(5, 10), env.config, it["key"], delivered="ab" * 32)[0] == 0
     st = env.state()
@@ -389,8 +387,8 @@ def test_pending_and_resolve_from_the_command_line(env, tmp_path, capsys, monkey
 
 def test_one_failure_stops_further_sends(env):
     env.collector([finding(), finding(fid="GHSA-zzzz-zzzz-zzzz"), MAC])
-    code, _, ssh = env.run(now=at(5, 9), ssh=FakeSSH("fail"))
-    assert code == 1 and len(ssh.calls) == 1  # no second high, no digest
+    code, _, relay = env.run(now=at(5, 9), relay=FakeRelay("fail"))
+    assert code == 1 and len(relay.calls) == 1  # no second high, no digest
     st = env.state()
     assert st["collector"] is None and st["digest_date"] is None and st["withheld"] == []  # 8acj
 
@@ -403,25 +401,25 @@ def test_ledger_error_stops_sends_and_replays_without_sending(env, monkeypatch):
         raise LedgerError("disk full")
 
     monkeypatch.setattr(Ledger, "record_root", boom)
-    code, summary, ssh = env.run()
-    assert code == 1 and len(ssh.calls) == 1 and "error=ledger" in summary
+    code, summary, relay = env.run()
+    assert code == 1 and len(relay.calls) == 1 and "error=ledger" in summary
     (it,) = [i for i in env.state()["outbox"] if i["sent"]]
     monkeypatch.setattr(Ledger, "record_root", real)
-    code, _, ssh = env.run(now=T0 + 3600)
+    code, _, relay = env.run(now=T0 + 3600)
     assert code == 0
     entries, pending = env.ledger()
     assert it["sent"] in {e["root_event_id"] for e in entries} and pending == []
-    assert chans(ssh) == [("feed", None)]  # only the second advisory: the first was not resent
+    assert chans(relay) == [("feed", None)]  # only the second advisory: the first was not resent
 
 
 def test_feed_failure_after_critical_completes_next_run(env):
     env.kev.catalog = {"vulnerabilities": [kev_item()]}
-    code, _, ssh = env.run(ssh=FakeSSH("ok", "fail"))
-    assert code == 1 and chans(ssh) == [("critical", None), ("feed", None)]
+    code, _, relay = env.run(relay=FakeRelay("ok", "fail"))
+    assert code == 1 and chans(relay) == [("critical", None), ("feed", None)]
     (e,), pending = env.ledger()
     assert set(e["channel_ids"]) == {"critical"} and pending == []
-    code, _, ssh = env.run(now=T0 + 3600)
-    assert code == 0 and chans(ssh) == [("feed", None)]
+    code, _, relay = env.run(now=T0 + 3600)
+    assert code == 0 and chans(relay) == [("feed", None)]
     (e,), _ = env.ledger()
     assert set(e["channel_ids"]) == {"critical", "feed"}
 
@@ -431,12 +429,12 @@ def test_partial_reply_retried_in_failed_channel_only(env):
     env.run()
     (e,), _ = env.ledger()
     env.collector([finding(fid="CVE-2026-0001", sources=(GHSA2,))])  # a fix and a new source
-    code, _, ssh = env.run(now=T0 + 3600, ssh=FakeSSH("ok", "fail"))
+    code, _, relay = env.run(now=T0 + 3600, relay=FakeRelay("ok", "fail"))
     assert code == 1
-    assert chans(ssh) == [("critical", e["channel_ids"]["critical"]), ("feed", e["channel_ids"]["feed"])]
-    text = ssh.calls[0][2]
-    code, _, ssh = env.run(now=T0 + 7200)
-    assert code == 0 and chans(ssh) == [("feed", e["channel_ids"]["feed"])] and ssh.calls[0][2] == text
+    assert chans(relay) == [("critical", e["channel_ids"]["critical"]), ("feed", e["channel_ids"]["feed"])]
+    text = relay.calls[0][2]
+    code, _, relay = env.run(now=T0 + 7200)
+    assert code == 0 and chans(relay) == [("feed", e["channel_ids"]["feed"])] and relay.calls[0][2] == text
     (e2,), _ = env.ledger()
     assert len(e2["replies"]) == 2
 
@@ -444,7 +442,7 @@ def test_partial_reply_retried_in_failed_channel_only(env):
 def test_a_refused_reply_is_fixed_and_requeued_when_its_sibling_recorded(env, tmp_path):  # 8acj
     env.kev.catalog = {"vulnerabilities": [kev_item()]}
     env.run(), env.collector([finding(fid="CVE-2026-0001", sources=(GHSA2,))])
-    assert "withheld=1" in env.run(now=T0 + 3600, ssh=FakeSSH("refuse"))[1]  # critical refused, feed recorded
+    assert "withheld=1" in env.run(now=T0 + 3600, relay=FakeRelay("refuse"))[1]  # critical refused, feed recorded
     (w,) = env.state()["withheld"]
     assert main.resolve(T0, env.config, w["key"], requeue=True, text="no alert block")[0] == 2
     fixed = w["items"][0]["text"].replace("\n", " \n", 1)
@@ -454,13 +452,13 @@ def test_a_refused_reply_is_fixed_and_requeued_when_its_sibling_recorded(env, tm
 
 def test_busy_candidate_learns_ids(env):
     env.collector([finding(fid="GHSA-aaaa-aaaa-aaaa")])
-    env.run(ssh=FakeSSH("unknown"))
+    env.run(relay=FakeRelay("unknown"))
     env.collector([finding(fid="GHSA-aaaa-aaaa-aaaa", aliases=("CVE-2026-0009",))])
     env.run(now=T0 + 3600)
     assert "CVE-2026-0009" in env.state()["outbox"][0]["ids"]
     env.collector([finding(fid="CVE-2026-0009")])
-    code, summary, ssh = env.run(now=T0 + 7200)
-    assert ssh.calls == [] and "busy=2" in summary
+    code, summary, relay = env.run(now=T0 + 7200)
+    assert relay.calls == [] and "busy=2" in summary
 
 
 def test_high_becoming_critical_under_another_id(env):
@@ -469,10 +467,10 @@ def test_high_becoming_critical_under_another_id(env):
     (e,), _ = env.ledger()
     feed_root = e["channel_ids"]["feed"]
     env.kev.catalog = {"vulnerabilities": [kev_item()]}  # KEV knows it only as the CVE, with no fix
-    code, summary, ssh = env.run(now=T0 + 3600)
+    code, summary, relay = env.run(now=T0 + 3600)
     assert code == 0, summary
-    assert chans(ssh) == [("critical", None), ("feed", feed_root)]
-    copy, reply = ssh.calls[0][2], ssh.calls[1][2]
+    assert chans(relay) == [("critical", None), ("feed", feed_root)]
+    copy, reply = relay.calls[0][2], relay.calls[1][2]
     assert copy.startswith("CRITICAL: Claude Code") and "(GHSA-abcd-efgh-ijkl)" in copy
     assert "Fixed in 2.1.0." in copy  # the stored fix is kept
     assert "Level is now critical." in reply
@@ -489,8 +487,8 @@ def test_compose_value_error_sends_nothing(env, monkeypatch):
         raise ValueError("composed post names a host; refusing to publish it")
 
     monkeypatch.setattr(main.compose, "reply_post", refuse)
-    code, summary, ssh = env.run(now=T0 + 3600)
-    assert code == 0 and ssh.calls == [] and "withheld=1" in summary  # not even the critical copy
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and relay.calls == [] and "withheld=1" in summary  # not even the critical copy
     assert env.state()["outbox"] == []
 
 
@@ -506,21 +504,21 @@ def test_digest_includes_ledger_posts(env):
     env.collector([finding()])
     env.run()
     assert env.state()["held"] == []
-    code, _, ssh = env.run(now=at(5, 9))
-    assert code == 0 and "GHSA-abcd-efgh-ijkl" in ssh.calls[0][2]
+    code, _, relay = env.run(now=at(5, 9))
+    assert code == 0 and "GHSA-abcd-efgh-ijkl" in relay.calls[0][2]
 
 
 def test_backfill_floor_drops_old_candidates(env):
     env.collector([finding(observed="2026-10-01T00:00:00Z")])
-    code, summary, ssh = env.run()
-    assert ssh.calls == [] and "old=1" in summary
+    code, summary, relay = env.run()
+    assert relay.calls == [] and "old=1" in summary
 
 
 def test_collector_record_skipped_unless_validate_ok(env):
     env.collector([finding()], validate="failed")
     (env.col / "2026-11-05").mkdir()  # the collector's date-only copy: never read
-    code, summary, ssh = env.run()
-    assert code == 0 and ssh.calls == [] and "candidates=0" in summary
+    code, summary, relay = env.run()
+    assert code == 0 and relay.calls == [] and "candidates=0" in summary
 
 
 def test_heartbeat_feeds_json_never_reaches_from_kev(env, monkeypatch):
@@ -528,8 +526,8 @@ def test_heartbeat_feeds_json_never_reaches_from_kev(env, monkeypatch):
     seen = []
     real = main.candidates.from_kev
     monkeypatch.setattr(main.candidates, "from_kev", lambda cat, since: seen.append(cat) or real(cat, since))
-    code, _, ssh = env.run()
-    assert code == 0 and ssh.calls == [] and seen == [env.kev.catalog]
+    code, _, relay = env.run()
+    assert code == 0 and relay.calls == [] and seen == [env.kev.catalog]
 
 
 def test_kev_unavailable_holds_kev_watermark(env):
@@ -541,8 +539,8 @@ def test_malformed_state_refuses_to_send(env):
     env.config.state.parent.mkdir(parents=True)
     env.config.state.write_text("{not json")
     env.collector([finding()])
-    code, summary, ssh = env.run()
-    assert code == 1 and ssh.calls == [] and "error=ledger" in summary
+    code, summary, relay = env.run()
+    assert code == 1 and relay.calls == [] and "error=ledger" in summary
 
 
 def test_config_unknown_key_exits_2(tmp_path, capsys):
@@ -557,7 +555,7 @@ def test_main_prints_one_summary_line(tmp_path, monkeypatch, capsys):
     cfg.write_text(f'ledger = "{tmp_path / "s" / "ledger.json"}"\nkev_cache = "{tmp_path / "s" / "kev.json"}"\n'
                    + RELAY_TOML)
     monkeypatch.setattr(main.run, "__kwdefaults__",
-                        {**main.run.__kwdefaults__, "kev_fetch": FakeKEV(), "ssh": FakeSSH()})
+                        {**main.run.__kwdefaults__, "kev_fetch": FakeKEV(), "relay": FakeRelay()})
     assert main.main(["run", "--config", str(cfg)]) == 0
     out = capsys.readouterr().out.splitlines()
     assert len(out) == 1 and out[0].startswith("aitools-alerts-poster: candidates=0")
@@ -566,20 +564,20 @@ def test_main_prints_one_summary_line(tmp_path, monkeypatch, capsys):
 def test_unknown_digest_is_journaled_once_and_acknowledges_its_snapshot(env):
     env.collector([MAC])
     env.run()
-    code, _, ssh = env.run(now=at(5, 9), ssh=FakeSSH("unknown"))
-    assert code == 1 and len(ssh.calls) == 1
+    code, _, relay = env.run(now=at(5, 9), relay=FakeRelay("unknown"))
+    assert code == 1 and len(relay.calls) == 1
     env.collector([finding(fid="CVE-2026-5001", product="macOS", severity=None, fixed=None, sources=(APPLE,))])
     for h in (10, 11):
-        _, _, ssh = env.run(now=at(5, h))
-        assert ssh.calls == []
+        _, _, relay = env.run(now=at(5, h))
+        assert relay.calls == []
     st = env.state()
     assert [it["kind"] for it in st["outbox"]] == ["digest"] and len(st["held"]) == 2
     with Ledger(env.config.ledger) as led:
         (p,) = led._state()["pending"]
         led.expire_pending(p["key"], "checked the channel: not delivered", now=at(6, 12))
-    code, _, ssh = env.run(now=at(6, 12))
-    assert code == 0 and len(ssh.calls) == 2  # the journaled 11-05 digest, then today's
-    assert "CVE-2026-5001" not in ssh.calls[0][2] and "CVE-2026-5001" in ssh.calls[1][2]
+    code, _, relay = env.run(now=at(6, 12))
+    assert code == 0 and len(relay.calls) == 2  # the journaled 11-05 digest, then today's
+    assert "CVE-2026-5001" not in relay.calls[0][2] and "CVE-2026-5001" in relay.calls[1][2]
     assert env.state()["held"] == []
 
 
@@ -591,18 +589,18 @@ def test_affected_range_correction_posts_a_reply(env):
     fixed_range = finding()
     fixed_range["affected"] = "<2.1.0"
     env.collector([fixed_range])
-    code, summary, ssh = env.run(now=T0 + 3600)
-    assert code == 0 and "replies=1" in summary and "below 2.1.0" in ssh.calls[0][2]
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "replies=1" in summary and "below 2.1.0" in relay.calls[0][2]
 
 
 def test_busy_update_survives_its_source_being_replaced(env):
     env.collector([finding(fixed=None, severity=None, fid="CVE-2026-0001")])
     env.kev.catalog = {"vulnerabilities": [kev_item()]}
-    env.run(ssh=FakeSSH("ok", "unknown"))  # critical root ok, feed copy unknown
+    env.run(relay=FakeRelay("ok", "unknown"))  # critical root ok, feed copy unknown
     env.kev.catalog = {"vulnerabilities": []}
     env.collector([finding(fid="CVE-2026-0001", sources=(GHSA2,))])  # the fix arrives while busy
-    code, _, ssh = env.run(now=T0 + 3600)
-    assert code == 0 and ssh.calls == []
+    code, _, relay = env.run(now=T0 + 3600)
+    assert code == 0 and relay.calls == []
     st = env.state()
     assert [d["id"] for d in st["deferred"]] == ["CVE-2026-0001"]
     assert st["collector"] == "2026-11-05T010000Z"  # deferral, not the source, keeps the update
@@ -610,10 +608,10 @@ def test_busy_update_survives_its_source_being_replaced(env):
     with Ledger(env.config.ledger) as led:
         (p,) = led._state()["pending"]
         led.expire_pending(p["key"], "checked the channel: not delivered", now=T0 + 90000)
-    code, summary, ssh = env.run(now=T0 + 90000)
+    code, summary, relay = env.run(now=T0 + 90000)
     assert code == 0, summary
-    assert [c[0] for c in ssh.calls] == ["feed", "critical", "feed"]  # the copy, then the fix replies
-    assert all("Fixed in 2.1.0." in c[2] for c in ssh.calls[1:])
+    assert [c[0] for c in relay.calls] == ["feed", "critical", "feed"]  # the copy, then the fix replies
+    assert all("Fixed in 2.1.0." in c[2] for c in relay.calls[1:])
     assert env.state()["deferred"] == []
 
 
@@ -637,9 +635,9 @@ def test_range_correction_without_a_fix_posts_a_reply(env):
     corrected = finding(fid="CVE-2026-0001", fixed=None)
     corrected["affected"] = "<2.5.0"
     env.collector([corrected])
-    code, summary, ssh = env.run(now=T0 + 3600)
+    code, summary, relay = env.run(now=T0 + 3600)
     assert code == 0 and "replies=2" in summary  # the thread is in both channels
-    assert all("below 2.5.0" in c[2] for c in ssh.calls)
+    assert all("below 2.5.0" in c[2] for c in relay.calls)
 
 
 def test_only_ids_the_vendor_page_assigns_are_learned(env):  # h340 (was: ids learned past the alias cap)
@@ -648,16 +646,16 @@ def test_only_ids_the_vendor_page_assigns_are_learned(env):  # h340 (was: ids le
     env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", package="Claude Code", ecosystem=None,
                                       cve="CVE-2026-0777", severity="High"))
     env.collector([finding(aliases=[f"A-{i:03d}" for i in range(8)] + ["CVE-2026-0555", "GHSA-mnop-qrst-uvwx"])])
-    _, _, ssh = env.run()
+    _, _, relay = env.run()
     (e,), _ = env.ledger()
-    assert e["advisory"]["aliases"] == ["CVE-2026-0777"] and "A-000" not in ssh.calls[0][2]
+    assert e["advisory"]["aliases"] == ["CVE-2026-0777"] and "A-000" not in relay.calls[0][2]
     assert {a.casefold() for a in e["aliases"]} == {"ghsa-abcd-efgh-ijkl", "cve-2026-0777"}
     env.collector([finding(fid="CVE-2026-0777", sources=(GHSA,))])  # the page's own CVE: the same thread
-    _, summary, ssh = env.run(now=T0 + 3600)
-    assert "roots=0" in summary and len(env.ledger()[0]) == 1 and ssh.calls == []
+    _, summary, relay = env.run(now=T0 + 3600)
+    assert "roots=0" in summary and len(env.ledger()[0]) == 1 and relay.calls == []
     env.collector([finding(fid="CVE-2026-0555", sources=(GHSA,))])  # an id the page does not assign
-    _, summary, ssh = env.run(now=T0 + 7200)
-    assert "roots=0" in summary and len(env.ledger()[0]) == 1 and ssh.calls == []
+    _, summary, relay = env.run(now=T0 + 7200)
+    assert "roots=0" in summary and len(env.ledger()[0]) == 1 and relay.calls == []
     assert "cve-2026-0555" not in {a.casefold() for a in env.ledger()[0][0]["aliases"]}
 
 
@@ -672,14 +670,14 @@ def test_alias_reply_survives_a_stop_after_ids_were_learned(env, monkeypatch):
         raise LedgerError("stopped before journaling")
 
     monkeypatch.setattr(main.Run, "enqueue", stop)
-    code, _, ssh = env.run(now=T0 + 3600)
-    assert code == 1 and ssh.calls == []
+    code, _, relay = env.run(now=T0 + 3600)
+    assert code == 1 and relay.calls == []
     (e,), _ = env.ledger()
     assert "CVE-2026-0002" in e["aliases"]  # learned before the stop
     monkeypatch.setattr(main.Run, "enqueue", real)
     env.collector([twin])
-    code, summary, ssh = env.run(now=T0 + 7200)
-    assert code == 0 and "replies=1" in summary and "CVE-2026-0002" in ssh.calls[0][2]
+    code, summary, relay = env.run(now=T0 + 7200)
+    assert code == 0 and "replies=1" in summary and "CVE-2026-0002" in relay.calls[0][2]
 
 
 def test_reply_keeps_its_thread_when_ids_bridge_two_threads(env):
@@ -690,14 +688,14 @@ def test_reply_keeps_its_thread_when_ids_bridge_two_threads(env):
     e2 = next(e for e in entries if "GHSA-abcd-efgh-ijkl" in e["aliases"])
     fix = finding(fixed="2.2.0")
     env.collector([fix])
-    env.run(now=T0 + 3600, ssh=FakeSSH("unknown"))  # e2's reply: outcome unknown
+    env.run(now=T0 + 3600, relay=FakeRelay("unknown"))  # e2's reply: outcome unknown
     env.collector([finding(aliases=("CVE-2026-1111",), fixed="2.2.0")])  # bridges e2 to e1
     env.run(now=T0 + 7200)
     with Ledger(env.config.ledger) as led:
         (p,) = led._state()["pending"]
         led.expire_pending(p["key"], "checked the channel: not delivered", now=T0 + 90000)
-    _, _, ssh = env.run(now=T0 + 90000)
-    assert ssh.calls[0][1] == e2["channel_ids"]["feed"]  # still e2's thread
+    _, _, relay = env.run(now=T0 + 90000)
+    assert relay.calls[0][1] == e2["channel_ids"]["feed"]  # still e2's thread
     entries, _ = env.ledger()
     assert next(e for e in entries if e["root_event_id"] == e1["root_event_id"])["advisory"]["id"] == "CVE-2026-1111"
 
@@ -706,21 +704,21 @@ def test_widened_root_never_starts_a_second_thread(env):
     env.collector([finding(fid="CVE-2026-1111", sources=(GHSA2,))])
     env.run()
     env.collector([finding()])
-    env.run(now=T0 + 3600, ssh=FakeSSH("unknown"))  # a new root for the GHSA: unknown
+    env.run(now=T0 + 3600, relay=FakeRelay("unknown"))  # a new root for the GHSA: unknown
     env.collector([finding(aliases=("CVE-2026-1111",))])  # the GHSA is the CVE's thread after all
     env.run(now=T0 + 7200)
     with Ledger(env.config.ledger) as led:
         (p,) = led._state()["pending"]
         led.expire_pending(p["key"], "checked the channel: not delivered", now=T0 + 90000)
-    _, _, ssh = env.run(now=T0 + 90000)
-    assert all(c[1] is not None for c in ssh.calls)  # replies only, never a new root
+    _, _, relay = env.run(now=T0 + 90000)
+    assert all(c[1] is not None for c in relay.calls)  # replies only, never a new root
     assert len(env.ledger()[0]) == 1
 
 
 def test_unsendable_channel_never_marks_pending(env):
     env.collector([finding()])
     bad = dict(CHANNELS, feed="NOT-A-UUID")
-    code, summary = main.run(T0, env.config, ssh=FakeSSH(), kev_fetch=env.kev,
+    code, summary = main.run(T0, env.config, send=FakeRelay(), kev_fetch=env.kev,
                              page=env.pages, channels=bad)
     assert code == 1 and "withheld=1" in summary and env.ledger()[1] == []
 
@@ -731,9 +729,9 @@ def test_oversized_digest_posts_what_fits_and_keeps_the_rest(env, monkeypatch):
     env.run()
     assert len(env.state()["held"]) == 6
     monkeypatch.setattr(main.transport, "MAX_CONTENT", 400)  # room for a few items only
-    code, _, ssh = env.run(now=at(5, 9))
-    assert code == 0 and len(ssh.calls) == 1 and len(ssh.calls[0][2]) <= 400
-    listed = {f"CVE-2026-50{i:02d}" for i in range(6) if f"CVE-2026-50{i:02d}" in ssh.calls[0][2]}
+    code, _, relay = env.run(now=at(5, 9))
+    assert code == 0 and len(relay.calls) == 1 and len(relay.calls[0][2]) <= 400
+    listed = {f"CVE-2026-50{i:02d}" for i in range(6) if f"CVE-2026-50{i:02d}" in relay.calls[0][2]}
     st = env.state()
     assert 0 < len(listed) < 6 and len(st["held"]) == 6 - len(listed)  # only what was posted is acknowledged
     left = {h["adv"]["id"] for h in st["held"]}
@@ -743,16 +741,16 @@ def test_oversized_digest_posts_what_fits_and_keeps_the_rest(env, monkeypatch):
 def test_fresh_correction_wins_over_a_deferred_fix(env):
     env.collector([finding(fid="CVE-2026-0001")])
     env.kev.catalog = {"vulnerabilities": [kev_item()]}
-    env.run(ssh=FakeSSH("ok", "unknown"))  # critical root ok, feed copy unknown: busy
+    env.run(relay=FakeRelay("ok", "unknown"))  # critical root ok, feed copy unknown: busy
     env.collector([finding(fid="CVE-2026-0001", fixed="2.1.5", sources=(GHSA2,))])
     env.run(now=T0 + 3600)  # deferred with 2.1.5
     with Ledger(env.config.ledger) as led:
         (p,) = led._state()["pending"]
         led.expire_pending(p["key"], "checked the channel: not delivered", now=T0 + 90000)
     env.collector([finding(fid="CVE-2026-0001", fixed="2.2.0", sources=(GHSA2,))])  # the correction
-    code, _, ssh = env.run(now=T0 + 90000)
-    assert code == 0 and ssh.calls
-    assert all("2.2.0" in c[2] and "2.1.5" not in c[2] for c in ssh.calls[1:])
+    code, _, relay = env.run(now=T0 + 90000)
+    assert code == 0 and relay.calls
+    assert all("2.2.0" in c[2] and "2.1.5" not in c[2] for c in relay.calls[1:])
 
 
 def test_digest_backlog_moves_forward_day_by_day(env, monkeypatch):
@@ -762,9 +760,9 @@ def test_digest_backlog_moves_forward_day_by_day(env, monkeypatch):
     monkeypatch.setattr(main.transport, "MAX_CONTENT", 700)
     seen = set()
     for day in (5, 6, 7, 8, 9, 10):
-        _, _, ssh = env.run(now=at(day, 9))
-        if ssh.calls:
-            seen |= {f"GHSA-aaaa-aaaa-aa{i:02d}" for i in range(6) if f"aa{i:02d})" in ssh.calls[0][2]}
+        _, _, relay = env.run(now=at(day, 9))
+        if relay.calls:
+            seen |= {f"GHSA-aaaa-aaaa-aa{i:02d}" for i in range(6) if f"aa{i:02d})" in relay.calls[0][2]}
     assert seen == {f"GHSA-aaaa-aaaa-aa{i:02d}" for i in range(6)}
 
 
@@ -772,7 +770,7 @@ def test_new_roots_copy_stays_on_its_thread(env):
     env.collector([finding(fid="GHSA-zzzz-zzzz-zzzz")])  # an older feed thread A
     env.run()
     env.kev.catalog = {"vulnerabilities": [kev_item()]}  # a new critical thread B
-    env.run(now=T0 + 3600, ssh=FakeSSH("ok", "unknown"))
+    env.run(now=T0 + 3600, relay=FakeRelay("ok", "unknown"))
     entries, _ = env.ledger()
     b = next(e for e in entries if "CVE-2026-0001" in e["aliases"])
     env.collector([finding(fid="GHSA-zzzz-zzzz-zzzz", aliases=("CVE-2026-0001",))])
@@ -801,8 +799,8 @@ def test_ledger_error_keeps_unplanned_candidates(env, monkeypatch):
     assert {d["id"] for d in env.state()["deferred"]} == {"GHSA-abcd-efgh-ijkl", "GHSA-zzzz-zzzz-zzzz"}
     monkeypatch.setattr(Ledger, "record_root", real)
     env.collector([])  # the collector's newest record no longer names either
-    code, summary, ssh = env.run(now=T0 + 3600)
-    assert code == 0 and len(env.ledger()[0]) == 2 and len(ssh.calls) == 1
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and len(env.ledger()[0]) == 2 and len(relay.calls) == 1
 
 
 # ---------------------------------------------------------------- akq9: inputs, digest ids, flags
@@ -864,11 +862,11 @@ def test_rejected_heartbeat_holds_watermark(env):
     env.heartbeat("2026-11-05T010000Z", [])
     (env.hb / "2026-11-05T010000Z" / "run.json").write_text("{not json")
     env.heartbeat("2026-11-05T020000Z", [{"id": "CVE-2026-5000", "product": "macOS", "source": APPLE}])
-    code, summary, ssh = env.run(now=T0 + 3600)
+    code, summary, relay = env.run(now=T0 + 3600)
     assert code == 0 and "heartbeat:1/2" in summary and "held=1" in summary  # the good dir is still read
     assert env.state()["heartbeat"] == "2026-11-05T000000Z"  # held before the rejected dir
     (env.hb / "2026-11-05T010000Z" / "run.json").write_text(json.dumps({"schema": 1, "findings": []}))
-    code, summary, ssh = env.run(now=T0 + 7200)
+    code, summary, relay = env.run(now=T0 + 7200)
     assert "heartbeat:2/2" in summary and "held=0" in summary  # re-read: nothing is held twice
     assert env.state()["heartbeat"] == "2026-11-05T020000Z"
 
@@ -877,12 +875,12 @@ def test_digest_id_recorded_and_printed(env, capsys):
     env.collector([MAC])
     env.run()
     st = env.state()
-    base = 1 << 252  # far from FakeSSH's counter, whatever ran before
+    base = 1 << 252  # far from FakeRelay's counter, whatever ran before
     st["digest_ids"] = [f"{i:064x}" for i in range(base, base + 10)]  # ten already
     env.config.state.write_text(json.dumps(st))
-    code, _, ssh = env.run(now=at(5, 9))
+    code, _, relay = env.run(now=at(5, 9))
     st = env.state()
-    assert code == 0 and len(ssh.calls) == 1 and len(st["digest_ids"]) == 10
+    assert code == 0 and len(relay.calls) == 1 and len(st["digest_ids"]) == 10
     assert st["digest_ids"][0] == f"{base + 1:064x}"  # the oldest dropped
     sent = st["digest_ids"][-1]
     assert f"digest 2026-11-05 sent: {sent}" in capsys.readouterr().err
@@ -914,58 +912,58 @@ def test_digest_replay_records_id_once(env, monkeypatch):
         return real(self, it)
 
     monkeypatch.setattr(main.Run, "_record", boom)
-    code, _, ssh = env.run(now=at(5, 9))
-    assert code == 1 and len(ssh.calls) == 1
+    code, _, relay = env.run(now=at(5, 9))
+    assert code == 1 and len(relay.calls) == 1
     monkeypatch.setattr(main.Run, "_record", real)
-    code, _, ssh = env.run(now=at(5, 10))
-    assert code == 0 and ssh.calls == [] and len(env.state()["digest_ids"]) == 1
+    code, _, relay = env.run(now=at(5, 10))
+    assert code == 0 and relay.calls == [] and len(env.state()["digest_ids"]) == 1
 
 
 def test_digest_now_once_per_date(env, capsys):
     env.collector([MAC])
-    code, _, ssh = env.run(digest_now=True)  # 06:20 Tokyo, before the digest hour
-    assert code == 0 and len(ssh.calls) == 1 and "Daily digest for 2026-11-05" in ssh.calls[0][2]
+    code, _, relay = env.run(digest_now=True)  # 06:20 Tokyo, before the digest hour
+    assert code == 0 and len(relay.calls) == 1 and "Daily digest for 2026-11-05" in relay.calls[0][2]
     assert env.state()["digest_date"] == "2026-11-05"
-    code, _, ssh = env.run(now=T0 + 600, digest_now=True)
-    assert code == 0 and ssh.calls == []
+    code, _, relay = env.run(now=T0 + 600, digest_now=True)
+    assert code == 0 and relay.calls == []
     assert "digest for 2026-11-05 already sent; --digest-now does nothing" in capsys.readouterr().err
-    _, _, ssh = env.run(now=at(5, 9))
-    assert ssh.calls == []  # the 09:00 run sends no second digest
-    _, _, ssh = env.run(now=at(6, 6))
-    assert ssh.calls == []  # without the flag, the next date still waits for the hour
+    _, _, relay = env.run(now=at(5, 9))
+    assert relay.calls == []  # the 09:00 run sends no second digest
+    _, _, relay = env.run(now=at(6, 6))
+    assert relay.calls == []  # without the flag, the next date still waits for the hour
 
 
 def test_kev_file_bypasses_fetch_and_marks_posts(env):
     kev = FakeKEV()
     catalog = inputs.read_kev_file(SYNTHETIC)
-    code, summary, ssh = env.run(now=at(20, 6), kev=kev, kev_catalog=catalog)  # dateAdded long past
+    code, summary, relay = env.run(now=at(20, 6), kev=kev, kev_catalog=catalog)  # dateAdded long past
     assert code == 0, summary
     assert kev.headers == [] and not env.config.kev_cache.exists()
     assert "inputs=kev:file," in summary and "roots=1" in summary
-    assert chans(ssh) == [("critical", None), ("feed", None)]
+    assert chans(relay) == [("critical", None), ("feed", None)]
     assert all(c[2].startswith("CRITICAL (SYNTHETIC TEST): SYNTHETIC TEST: Claude Code") and "CVE-2099-0010" in c[2]
-               for c in ssh.calls)  # the root and its feed copy
+               for c in relay.calls)  # the root and its feed copy
     assert env.state()["kev_since"] is None  # the real catalog was not read
-    code, summary, ssh = env.run(now=at(20, 7), kev=kev, kev_catalog=catalog)
-    assert code == 0 and ssh.calls == [] and "withheld=1" in summary  # known: never a reply
+    code, summary, relay = env.run(now=at(20, 7), kev=kev, kev_catalog=catalog)
+    assert code == 0 and relay.calls == [] and "withheld=1" in summary  # known: never a reply
 
 
 def test_kev_file_candidate_never_deferred(env):
     catalog = inputs.read_kev_file(SYNTHETIC)
-    code, _, _ = env.run(ssh=FakeSSH("unknown"), kev_catalog=catalog)
+    code, _, _ = env.run(relay=FakeRelay("unknown"), kev_catalog=catalog)
     assert code == 1
     assert env.state()["deferred"] == []
-    code, summary, ssh = env.run(now=T0 + 3600, kev_catalog=catalog)
-    assert code == 0 and ssh.calls == [] and env.state()["deferred"] == []  # busy: dropped
+    code, summary, relay = env.run(now=T0 + 3600, kev_catalog=catalog)
+    assert code == 0 and relay.calls == [] and env.state()["deferred"] == []  # busy: dropped
 
 
 def test_kev_file_notice_is_withheld(env, tmp_path):
     catalog = {"vulnerabilities": [{"cveID": "CVE-2099-0002", "vendorProject": "Apple", "product": "macOS",
                                     "vulnerabilityName": "SYNTHETIC TEST", "dateAdded": "2026-11-05"}]}
-    code, summary, ssh = env.run(kev_catalog=catalog)
+    code, summary, relay = env.run(kev_catalog=catalog)
     # macOS is tier 2: an exploited tier-2 entry is high, so it posts marked; never held
     assert code == 0 and env.state()["held"] == []
-    assert all(c[2].startswith("HIGH (SYNTHETIC TEST)") for c in ssh.calls)
+    assert all(c[2].startswith("HIGH (SYNTHETIC TEST)") for c in relay.calls)
 
 
 @pytest.mark.parametrize("body", [
@@ -992,13 +990,13 @@ def test_synthetic_fixture_says_so():
 
 def test_synthetic_advisory_is_left_out_of_the_digest(env):
     catalog = inputs.read_kev_file(SYNTHETIC)
-    code, summary, ssh = env.run(kev_catalog=catalog, digest_now=True)  # the same run digests it
+    code, summary, relay = env.run(kev_catalog=catalog, digest_now=True)  # the same run digests it
     assert code == 0 and "digest=1" in summary
-    (body,) = [c[2] for c in ssh.calls if c[2].startswith("Daily digest")]
+    (body,) = [c[2] for c in relay.calls if c[2].startswith("Daily digest")]
     assert body == "Daily digest for 2026-11-05: no advisories."  # ai-tools-alerts#d3f6
     env.kev.catalog = {"vulnerabilities": [kev_item(cve="CVE-2099-0003")]}  # any input: the id decides
-    _, _, ssh = env.run(now=at(6, 6))
-    assert ssh.calls and all(c[2].startswith("CRITICAL (SYNTHETIC TEST)") for c in ssh.calls)
+    _, _, relay = env.run(now=at(6, 6))
+    assert relay.calls and all(c[2].startswith("CRITICAL (SYNTHETIC TEST)") for c in relay.calls)
 
 
 def test_kev_floor_without_watermark_is_the_state_floor(env):
@@ -1007,18 +1005,18 @@ def test_kev_floor_without_watermark_is_the_state_floor(env):
         env.run(now=at(day, 6), kev=FakeKEV(status=503))
     assert env.state()["kev_since"] is None
     env.kev.catalog = {"vulnerabilities": [kev_item(added="2026-11-04")]}
-    code, _, ssh = env.run(now=at(10, 6))
-    assert code == 0 and chans(ssh) == [("critical", None), ("feed", None)]  # not lost to the outage
+    code, _, relay = env.run(now=at(10, 6))
+    assert code == 0 and chans(relay) == [("critical", None), ("feed", None)]  # not lost to the outage
 
 
 def test_digest_now_while_a_digest_is_journaled(env, capsys):
     env.collector([MAC])
     env.run()
-    code, _, ssh = env.run(now=at(5, 9), ssh=FakeSSH("unknown"))
+    code, _, relay = env.run(now=at(5, 9), relay=FakeRelay("unknown"))
     assert code == 1 and len(env.state()["outbox"]) == 1
     capsys.readouterr()
-    code, summary, ssh = env.run(now=at(5, 10), digest_now=True)
-    assert ssh.calls == [] and "busy=1" in summary
+    code, summary, relay = env.run(now=at(5, 10), digest_now=True)
+    assert relay.calls == [] and "busy=1" in summary
     assert "a digest is journaled and waits to send; --digest-now does nothing" in capsys.readouterr().err
     assert env.state()["digest_ids"] == []
 
@@ -1034,12 +1032,12 @@ def test_digest_ids_longer_than_ten_refused(env):
 
 def test_reserved_alias_never_marks_or_silences_a_real_advisory(env):
     env.collector([finding(aliases=("CVE-2099-1234",))])
-    code, _, ssh = env.run()
-    assert code == 0 and ssh.calls[0][2].startswith("HIGH: Claude Code")  # not marked
+    code, _, relay = env.run()
+    assert code == 0 and relay.calls[0][2].startswith("HIGH: Claude Code")  # not marked
     (e,), _ = env.ledger()
     assert "CVE-2099-1234" not in e["aliases"]
     env.collector([finding(aliases=("CVE-2099-1234",), fixed="2.2.0")])
-    code, summary, ssh = env.run(now=T0 + 3600)
+    code, summary, relay = env.run(now=T0 + 3600)
     assert code == 0 and "replies=1" in summary  # its update still posts
 
 
@@ -1055,10 +1053,10 @@ def test_synthetic_never_merges_with_a_real_advisory(env, order, capsys):
     real = finding()
     fake = finding(fid="CVE-2099-0010", aliases=("GHSA-abcd-efgh-ijkl",), fixed=None)
     env.collector([real, fake] if order == 0 else [fake, real])
-    code, summary, ssh = env.run(kev_catalog=inputs.read_kev_file(SYNTHETIC))
+    code, summary, relay = env.run(kev_catalog=inputs.read_kev_file(SYNTHETIC))
     assert code == 0, summary
     assert "reserved synthetic id=1" in capsys.readouterr().err
-    texts = [c[2] for c in ssh.calls]
+    texts = [c[2] for c in relay.calls]
     assert any(t.startswith("HIGH: Claude Code") and "GHSA-abcd-efgh-ijkl" in t and "CVE-2099" not in t
                for t in texts)  # the real advisory: unmerged, unmarked, not promoted
     assert all(t.startswith("CRITICAL (SYNTHETIC TEST)") for t in texts if "CVE-2099" in t)
@@ -1073,8 +1071,8 @@ def test_kev_added_on_the_floor_day_is_not_old(env):
     start = int(dt.datetime(2026, 11, 5, 10, tzinfo=dt.timezone.utc).timestamp())
     env.run(now=start)
     env.kev.catalog = {"vulnerabilities": [kev_item(added="2026-11-05")]}
-    code, summary, ssh = env.run(now=start + 5 * 3600)
-    assert code == 0 and "old=0" in summary and len(ssh.calls) == 2
+    code, summary, relay = env.run(now=start + 5 * 3600)
+    assert code == 0 and "old=0" in summary and len(relay.calls) == 2
 
 
 def test_deferred_candidate_dropped_by_scope_reaches_the_review_list(env, monkeypatch):
@@ -1089,8 +1087,8 @@ def test_deferred_candidate_dropped_by_scope_reaches_the_review_list(env, monkey
     st["deferred"][0]["product_text"] = "Npm package System Information Library for Node.JS"
     env.config.state.write_text(json.dumps(st))
     env.collector([], name="2026-11-05T020000Z")
-    code, _, ssh = env.run(now=T0 + 3600)
-    assert code == 0 and ssh.calls == [] and env.state()["deferred"] == []
+    code, _, relay = env.run(now=T0 + 3600)
+    assert code == 0 and relay.calls == [] and env.state()["deferred"] == []
     with Ledger(env.config.ledger) as led:
         texts = [r["text"] for r in led._state()["review"]]
     assert "Npm package System Information Library for Node.JS" in texts
@@ -1103,12 +1101,12 @@ def test_deferred_candidate_dropped_by_scope_reaches_the_review_list(env, monkey
 def test_root_gets_a_japanese_reply_in_each_channel(env, critical):
     env.kev.catalog = {"vulnerabilities": [kev_item()] if critical else []}
     env.collector([] if critical else [finding()])
-    code, summary, ssh = env.run()
+    code, summary, relay = env.run()
     chs = ["critical", "feed"] if critical else ["feed"]
     assert code == 0 and f"ja={len(chs)} ja_failed=0" in summary and env.state()["outbox"] == []
-    assert [(c[0], c[1]) for c in ssh.ja] == list(zip(chs, ssh.ids))  # each replies to its own root
+    assert [(c[0], c[1]) for c in relay.ja] == list(zip(chs, relay.ids))  # each replies to its own root
     head = "緊急" if critical else "重要"
-    assert all(c[2].startswith(f"lang: ja\n\n{head}: Claude Code: ") and "```" not in c[2] for c in ssh.ja)
+    assert all(c[2].startswith(f"lang: ja\n\n{head}: Claude Code: ") and "```" not in c[2] for c in relay.ja)
 
 
 def test_change_reply_japanese_names_it_in_of(env):
@@ -1121,9 +1119,9 @@ def test_change_reply_japanese_names_it_in_of(env):
     corrected = finding(fid="CVE-2026-0001", fixed=None)
     corrected["affected"] = "<2.5.0"
     env.collector([corrected])
-    code, summary, ssh = env.run(now=T0 + 3600)
+    code, summary, relay = env.run(now=T0 + 3600)
     assert code == 0 and "replies=2" in summary and "ja=2" in summary
-    for (ch, reply_to, text), (ech, _, _), eid in zip(ssh.ja, ssh.calls, ssh.ids):
+    for (ch, reply_to, text), (ech, _, _), eid in zip(relay.ja, relay.calls, relay.ids):
         assert ch == ech and reply_to == roots[ch]
         assert text.startswith(f"lang: ja\nof: {eid}\n\n") and "（2.5.0 未満）" in text
         assert "\n\n緊急: Claude Code: 悪用が確認された脆弱性 (CVE-2026-0001)\n" in text  # the current version
@@ -1132,47 +1130,47 @@ def test_change_reply_japanese_names_it_in_of(env):
 def test_digest_gets_a_japanese_reply(env):
     env.collector([MAC])
     env.run()
-    code, _, ssh = env.run(now=at(5, 9))
-    assert code == 0 and len(ssh.calls) == 1
-    ((ch, reply_to, text),) = ssh.ja
-    assert (ch, reply_to) == ("feed", ssh.ids[0])
+    code, _, relay = env.run(now=at(5, 9))
+    assert code == 0 and len(relay.calls) == 1
+    ((ch, reply_to, text),) = relay.ja
+    assert (ch, reply_to) == ("feed", relay.ids[0])
     assert text.startswith("lang: ja\n\n2026-11-05 のデイリーダイジェスト: 1 件。") and "CVE-2026-5000" in text
 
 
 def test_failed_japanese_send_retries_next_hour_without_the_english(env):
     env.collector([finding()])
-    code, summary, ssh = env.run(ssh=FakeSSH(ja=["fail"]))
+    code, summary, relay = env.run(relay=FakeRelay(ja=["fail"]))
     assert code == 0 and "roots=1" in summary and "ja=0 ja_failed=1" in summary
     (it,) = env.state()["outbox"]
     assert it["kind"] == "ja" and it["key"] == "root:Claude Code:GHSA-abcd-efgh-ijkl:feed:ja"
     assert env.ledger()[1] == []  # a failed send is not in flight
     code, summary, ssh2 = env.run(now=T0 + 3600)
     assert code == 0 and ssh2.calls == [] and "ja=1" in summary
-    assert ssh2.ja == [("feed", ssh.ids[0], it["text"])] and env.state()["outbox"] == []
+    assert ssh2.ja == [("feed", relay.ids[0], it["text"])] and env.state()["outbox"] == []
 
 
 def test_unknown_japanese_send_never_holds_english_work(env):
     env.collector([finding()])
-    code, summary, ssh = env.run(ssh=FakeSSH(ja=["unknown"]))
+    code, summary, relay = env.run(relay=FakeRelay(ja=["unknown"]))
     assert code == 0 and "ja_failed=1" in summary
     (p,) = env.ledger()[1]
     assert p["key"].endswith(":ja") and p["aliases"] == []  # matches no advisory id
     # A new alias arrives (one spelled like the journal's id too): the English reply still posts.
     env.collector([finding(fid="CVE-2026-0002", aliases=("GHSA-abcd-efgh-ijkl", f"ja {p['key']}"),
                            sources=(GHSA, GHSA2), fixed="2.1.1")])  # 8ke5: a reply needs a real change
-    code, summary, ssh = env.run(now=T0 + 3600)
+    code, summary, relay = env.run(now=T0 + 3600)
     assert code == 0 and "replies=1" in summary and "busy=1" in summary  # the unknown ja waits
-    assert [c[2].startswith("lang: ja\nof: ") for c in ssh.ja] == [True]
+    assert [c[2].startswith("lang: ja\nof: ") for c in relay.ja] == [True]
 
 
 def test_journal_item_from_before_rd8t_loads_and_sends(env):
     env.collector([finding()])
-    env.run(ssh=FakeSSH("fail"))
+    env.run(relay=FakeRelay("fail"))
     st = env.state()
     del st["outbox"][0]["ja"]  # the shape the poster before rd8t journals
     env.config.state.write_text(json.dumps(st))
-    code, summary, ssh = env.run(now=T0 + 3600)
-    assert code == 0 and "roots=1" in summary and ssh.ja == []
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "roots=1" in summary and relay.ja == []
 
 
 def test_each_english_reply_keeps_its_own_japanese_reply(env):
@@ -1180,9 +1178,9 @@ def test_each_english_reply_keeps_its_own_japanese_reply(env):
     env.run()
     env.collector([finding(fid="CVE-2026-0002", aliases=("GHSA-abcd-efgh-ijkl",), sources=(GHSA, GHSA2),
                            fixed="2.1.1")])  # 8ke5: a reply needs a real change
-    _, _, ssh1 = env.run(now=T0 + 3600, ssh=FakeSSH(ja=["fail"]))
+    _, _, ssh1 = env.run(now=T0 + 3600, relay=FakeRelay(ja=["fail"]))
     env.collector([finding(fid="CVE-2026-0003", aliases=("GHSA-abcd-efgh-ijkl",), fixed="2.1.2")])
-    _, summary, ssh2 = env.run(now=T0 + 7200, ssh=FakeSSH(ja=["fail"]))  # the older one fails again
+    _, summary, ssh2 = env.run(now=T0 + 7200, relay=FakeRelay(ja=["fail"]))  # the older one fails again
     ja = [o for o in env.state()["outbox"] if o["kind"] == "ja"]  # a refused one goes last in line
     assert [o["text"].split("\n")[1] for o in ja] == [f"of: {ssh2.ids[0]}", f"of: {ssh1.ids[0]}"]
     st = env.state()
@@ -1194,7 +1192,7 @@ def test_each_english_reply_keeps_its_own_japanese_reply(env):
 
 def test_japanese_sends_start_after_marks_and_deferred_are_saved(env, monkeypatch):
     env.collector([finding()])
-    env.run(ssh=FakeSSH("unknown"))  # the root is in flight: the next candidate is deferred
+    env.run(relay=FakeRelay("unknown"))  # the root is in flight: the next candidate is deferred
     env.collector([finding()])
     seen = []
     monkeypatch.setattr(main.Run, "drain_ja", lambda self: seen.append(env.state()))
@@ -1205,32 +1203,77 @@ def test_japanese_sends_start_after_marks_and_deferred_are_saved(env, monkeypatc
 def test_japanese_backlog_is_bounded(env, monkeypatch):
     monkeypatch.setattr(main, "MAX_JA", 1)
     env.collector([finding()])
-    env.run(ssh=FakeSSH(ja=["fail"]))
+    env.run(relay=FakeRelay(ja=["fail"]))
     env.collector([finding(fid="CVE-2026-0002", aliases=("GHSA-abcd-efgh-ijkl",), sources=(GHSA, GHSA2),
                            fixed="2.1.1")])  # 8ke5: a reply needs a real change
-    _, summary, _ = env.run(now=T0 + 3600, ssh=FakeSSH(ja=["fail"]))
+    _, summary, _ = env.run(now=T0 + 3600, relay=FakeRelay(ja=["fail"]))
     assert [o["kind"] for o in env.state()["outbox"]] == ["ja"]
     assert env.state()["outbox"][0]["key"].startswith("reply:")  # the older root one was dropped
     monkeypatch.setattr(main, "MAX_JA_BYTES", 10)  # over the byte budget, all in flight: not journaled
     env.collector([finding(fid="CVE-2026-0003", aliases=("GHSA-abcd-efgh-ijkl",), fixed="2.1.2")])
-    _, summary, ssh = env.run(now=T0 + 7200, ssh=FakeSSH(ja=["unknown"]))
+    _, summary, relay = env.run(now=T0 + 7200, relay=FakeRelay(ja=["unknown"]))
     assert "ja_failed=2" in summary and env.ledger()[1] == []  # the waiting one dropped, the new one declined
-    assert env.state()["outbox"] == [] and ssh.ja == []
+    assert env.state()["outbox"] == [] and relay.ja == []
 
 
-@pytest.mark.parametrize("missing", ["relay_ssh_host", "relay_send_wrapper"])
-def test_no_relay_route_refuses_to_run(tmp_path, capsys, missing):
+@pytest.mark.parametrize("missing", ["relay_key_secret", "secrets_helper"])
+def test_no_relay_key_refuses_to_run(tmp_path, capsys, missing):
     keep = {k: v for k, v in RELAY.items() if k != missing}
     cfg = tmp_path / "config.toml"
     cfg.write_text(f'ledger = "{tmp_path / "ledger.json"}"\nkev_cache = "{tmp_path / "kev.json"}"\n'
                    + "".join(f'{k} = "{v}"\n' for k, v in keep.items()))
     assert main.main(["run", "--config", str(cfg)]) == 2
-    assert "relay_ssh_host and relay_send_wrapper must be set" in capsys.readouterr().err
-    ssh = FakeSSH()
+    assert "relay_key_secret and secrets_helper must be set" in capsys.readouterr().err
+    relay = FakeRelay()
     config = inputs.Config(ledger=tmp_path / "ledger.json", kev_cache=tmp_path / "kev.json", **keep)
-    code, summary = main.run(T0, config, ssh=ssh, kev_fetch=FakeKEV(), channels=CHANNELS)
-    assert code == 2 and summary.endswith(" error=config") and ssh.calls == []
+    code, summary = main.run(T0, config, send=relay, kev_fetch=FakeKEV(), channels=CHANNELS)
+    assert code == 2 and summary.endswith(" error=config") and relay.calls == []
     assert not (tmp_path / "ledger.json").exists()
+
+
+@pytest.mark.parametrize("key", ["relay_send_wrapper"])
+def test_a_config_naming_the_retired_ssh_route_is_refused_by_name(tmp_path, capsys, key):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(f'ledger = "{tmp_path / "ledger.json"}"\n' + RELAY_TOML + f'{key} = "x"\n')
+    assert main.main(["run", "--config", str(cfg)]) == 2
+    err = capsys.readouterr().err
+    assert key in err and "retired" in err and not (tmp_path / "ledger.json").exists()
+
+
+def test_the_real_sender_is_built_from_the_config_and_the_manifest(tmp_path, monkeypatch):
+    seen = {}
+
+    class Relay:
+        def __init__(self, url, key_source, *, expected_pubkey):
+            seen.update(url=url, pub=expected_pubkey, key_source=key_source)
+
+        def send(self, *a):
+            raise AssertionError("not sent in this test")
+    monkeypatch.setattr(main.transport, "Relay", Relay)
+    monkeypatch.setattr(main.translate, "read_key",
+                        lambda helper, *, name: seen.update(helper=helper, name=name) or "00")
+    config = inputs.Config(ledger=tmp_path / "l.json", relay_url="https://relay.example.net", **RELAY)
+    main.relay_sender(config)
+    assert seen["url"] == "https://relay.example.net"
+    bot = [p.pubkey for p in main.pull.bundled_manifest().posters if p.role == "relay-bot"]
+    assert [seen["pub"]] == bot
+    seen["key_source"]()
+    assert seen["helper"] == RELAY["secrets_helper"] and seen["name"] == "RELAY_TEST_NSEC"
+
+
+def test_a_key_helper_failure_reaches_the_sender_as_key_unavailable(tmp_path, monkeypatch):
+    def broken(helper, *, name):
+        raise main.translate.CallError("api key unavailable (get_secret exit 1)")
+    monkeypatch.setattr(main.translate, "read_key", broken)
+    send = main.relay_sender(inputs.Config(ledger=tmp_path / "l.json", **RELAY))
+    r = send(CHANNELS["feed"], "x")
+    assert r.outcome == "failed" and "relay key unavailable" in r.stderr
+
+
+def test_a_manifest_without_one_relay_bot_is_a_config_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(main.pull, "bundled_manifest", lambda: None)
+    with pytest.raises(inputs.ConfigError, match="relay-bot"):
+        main.relay_sender(inputs.Config(ledger=tmp_path / "l.json", **RELAY))
 
 
 def test_run_sets_strip_hosts_from_config(env, monkeypatch):
@@ -1242,20 +1285,19 @@ def test_run_sets_strip_hosts_from_config(env, monkeypatch):
     assert main.candidates.INTERNAL_SUFFIXES == (".corp.example",)
 
 
-def test_loaded_config_sets_route_and_strip_hosts(env, monkeypatch):
+def test_loaded_config_sets_relay_and_strip_hosts(env, monkeypatch):
     monkeypatch.setattr(main.candidates, "FLEET_HOSTS", ())
     cfg = env.hb.parent / "config.toml"
     cfg.write_text(f'ledger = "{env.config.ledger}"\nkev_cache = "{env.config.kev_cache}"\n'
                    f'collector_runs = "{env.col}"\nstrip_hosts = ["hostalpha"]\n'
-                   'relay_ssh_host = "op@relay.example.net"\nrelay_send_wrapper = "/opt/relay/bin/buzz-send"\n')
+                   'relay_url = "https://relay.example.net"\n' + RELAY_TOML)
     env.collector([finding(), finding(fid="GHSA-zzzz-zzzz-zzzz", product="Claude Code on hostalpha")])
-    fake, argvs = FakeSSH(), []
-    code, _ = main.run(T0, cfg, ssh=lambda argv, **kw: argvs.append(argv) or fake(argv, **kw),
-                       kev_fetch=env.kev, page=env.pages, channels=CHANNELS)
-    assert code == 0 and argvs
-    for argv in argvs:
-        assert argv[-2] == "op@relay.example.net" and argv[-3] == "--"
-        assert shlex.split(argv[-1])[0] == "/opt/relay/bin/buzz-send"
+    built = []
+    fake = FakeRelay()
+    monkeypatch.setattr(main, "relay_sender", lambda c: built.append(c) or fake)
+    code, _ = main.run(T0, cfg, kev_fetch=env.kev, page=env.pages, channels=CHANNELS)
+    assert code == 0 and fake.calls
+    assert (built[0].relay_url, built[0].relay_key_secret) == ("https://relay.example.net", "RELAY_TEST_NSEC")
     assert not any("GHSA-zzzz-zzzz-zzzz" in text or "hostalpha" in text for _, _, text in fake.calls)
 
 
@@ -1273,8 +1315,8 @@ def test_digest_leaves_out_withdrawn_ledger_posts(env, monkeypatch):
     env.collector([finding()])
     env.run()  # a high root, digested at 09:00
     env.mirror.publish_manifest(retracted=["ghsa-ABCD-efgh-ijkl"])
-    _, _, ssh = env.run(now=at(5, 9))
-    assert [c[2] for c in ssh.calls] == ["Daily digest for 2026-11-05: no advisories."]
+    _, _, relay = env.run(now=at(5, 9))
+    assert [c[2] for c in relay.calls] == ["Daily digest for 2026-11-05: no advisories."]
     m = env.mirror  # a curator thread, retracted by a reply or expired by its amendment
     r = m.root_post(m.cur_sec, advisory(aliases=["CVE-2026-7777"]), created_at=T0 - 300)  # not ahead of the run
     m.reply(m.cur_sec, r, "retract\nwrong", created_at=T0 - 200)
@@ -1282,7 +1324,7 @@ def test_digest_leaves_out_withdrawn_ledger_posts(env, monkeypatch):
                       created_at=T0 - 100)
     with main.Ledger(env.config.ledger) as led:
         ids, roots = main.Run(T0, env.config, led, inputs.load_state(env.config.state, T0, 3),
-                              CHANNELS, FakeSSH(), None)._withdrawn(m.root, m.fetch)
+                              CHANNELS, FakeRelay(), None)._withdrawn(m.root, m.fetch)
     assert ids == {"ghsa-abcd-efgh-ijkl"} and roots == {r["id"], old["id"]}  # a thread: by root only
     env.collector([finding(fid="GHSA-mnop-qrst-uvwx", sources=(GHSA2,)),  # one id, two products, each
                    finding(fid="GHSA-mnop-qrst-uvwx", product="OpenSSH", severity="high",  # on its own vendor's page
@@ -1290,8 +1332,8 @@ def test_digest_leaves_out_withdrawn_ledger_posts(env, monkeypatch):
     env.run(now=at(6, 6))
     e = next(e for e in env.ledger()[0] if e["aliases"][0] == "GHSA-mnop-qrst-uvwx" and e["scope"] == "Claude Code")
     monkeypatch.setattr(main.Run, "_withdrawn", lambda self, root, fetch: (set(), {e["channel_ids"]["feed"]}))
-    _, _, ssh = env.run(now=at(6, 9))  # the poster's own root, by its thread; the other product's stays
-    assert ssh.calls[0][2].startswith("Daily digest for 2026-11-06: 1 advisory.") and "OpenSSH" in ssh.calls[0][2]
+    _, _, relay = env.run(now=at(6, 9))  # the poster's own root, by its thread; the other product's stays
+    assert relay.calls[0][2].startswith("Daily digest for 2026-11-06: 1 advisory.") and "OpenSSH" in relay.calls[0][2]
 
 
 def test_failed_mirror_pull_holds_the_digest(env, capsys):
@@ -1300,11 +1342,11 @@ def test_failed_mirror_pull_holds_the_digest(env, capsys):
 
     def down(url):
         raise OSError("down")
-    code, summary, ssh = env.run(now=at(5, 9), mirror_fetch=down)
-    assert code == 0 and ssh.calls == [] and " digest_held=1 " in summary and env.state()["digest_date"] != "2026-11-05"
+    code, summary, relay = env.run(now=at(5, 9), mirror_fetch=down)
+    assert code == 0 and relay.calls == [] and " digest_held=1 " in summary and env.state()["digest_date"] != "2026-11-05"
     assert "digest held: mirror pull: unreachable" in capsys.readouterr().err
-    _, _, ssh = env.run(now=at(5, 10))
-    assert "GHSA-abcd-efgh-ijkl" in ssh.calls[0][2]
+    _, _, relay = env.run(now=at(5, 10))
+    assert "GHSA-abcd-efgh-ijkl" in relay.calls[0][2]
 
 
 # ---------------------------------------------------------------- r7hr: the source title
@@ -1323,30 +1365,30 @@ def _cfe8(title=TOCTOU):
 
 def test_root_and_digest_carry_the_source_title(env):
     env.collector([_cfe8()])
-    _, _, ssh = env.run()
-    root = ssh.calls[0][2].split("\n")
+    _, _, relay = env.run()
+    root = relay.calls[0][2].split("\n")
     assert "(CVE-2026-88968)" in root[0] and root[1] == TOCTOU
-    assert ssh.ja[0][2].split("\n")[3] == f"原題: {TOCTOU}"  # lang: ja, of:, blank, head
+    assert relay.ja[0][2].split("\n")[3] == f"原題: {TOCTOU}"  # lang: ja, of:, blank, head
     assert env.ledger()[0][0]["source_title"] == TOCTOU
-    _, _, ssh = env.run(now=at(5, 9))
-    assert f"(CVE-2026-88968): {TOCTOU};" in ssh.calls[0][2]
+    _, _, relay = env.run(now=at(5, 9))
+    assert f"(CVE-2026-88968): {TOCTOU};" in relay.calls[0][2]
 
 
 def test_a_title_learned_later_posts_nothing_and_reaches_the_digest(env):
     env.collector([_cfe8(title=None)])
-    _, _, ssh = env.run()
-    assert ssh.calls[0][2].split("\n")[1].startswith("Affected:")  # exactly as before r7hr
+    _, _, relay = env.run()
+    assert relay.calls[0][2].split("\n")[1].startswith("Affected:")  # exactly as before r7hr
     assert "source_title" not in env.ledger()[0][0]
     env.collector([_cfe8()])
-    _, _, ssh = env.run(now=T0 + 600)
-    assert ssh.calls == []  # no reply for a title
+    _, _, relay = env.run(now=T0 + 600)
+    assert relay.calls == []  # no reply for a title
     assert env.ledger()[0][0]["source_title"] == TOCTOU
 
 
 def test_a_fence_in_the_title_never_withholds_the_advisory(env):
     env.collector([_cfe8(title="Race ~~~aitools-alert ``` in Edit")])
-    _, _, ssh = env.run()
-    assert ssh.calls and ssh.calls[0][2].split("\n")[1] == "Race ~aitools-alert in Edit"  # k5tr: no backtick
+    _, _, relay = env.run()
+    assert relay.calls and relay.calls[0][2].split("\n")[1] == "Race ~aitools-alert in Edit"  # k5tr: no backtick
 
 
 def test_a_held_notice_learns_its_title_for_the_digest(env):
@@ -1357,8 +1399,8 @@ def test_a_held_notice_learns_its_title_for_the_digest(env):
     env.collector([low])
     env.run(now=T0 + 600)
     assert env.state()["held"][0]["source_title"] == "Kernel memory corruption"
-    _, _, ssh = env.run(now=at(5, 9))
-    assert "(GHSA-abcd-efgh-ijkl): Kernel memory corruption;" in ssh.calls[0][2]
+    _, _, relay = env.run(now=at(5, 9))
+    assert "(GHSA-abcd-efgh-ijkl): Kernel memory corruption;" in relay.calls[0][2]
 
 
 # ---------------------------------------------------------------- withheld (ai-tools-alerts#8acj)
@@ -1369,34 +1411,34 @@ THREE = [finding(), finding(fid="GHSA-zzzz-zzzz-zzzz"),
 
 def test_a_refused_item_is_withheld_and_the_run_goes_on(env, capsys):
     env.collector(THREE)
-    code, summary, ssh = env.run(ssh=FakeSSH("refuse", ja=("refuse",)))  # a refused ja reply is dropped
+    code, summary, relay = env.run(relay=FakeRelay("refuse", ja=("refuse",)))  # a refused ja reply is dropped
     assert code == 0 and "withheld=1" in summary and "roots=2" in summary and "ja=1 ja_failed=1" in summary
     st, (entries, pending) = env.state(), env.ledger()
     assert st["collector"] and len(entries) == 2 and not pending and not st["outbox"] and len(st["deferred"]) == 1
     assert st["withheld"][0]["message"] == "relay error: blocked mention" and "GHSA-abcd" in st["withheld"][0]["key"]
     assert capsys.readouterr().err.count("withheld=1 refused by the relay") == 1
     env.collector([finding()])
-    code, summary, ssh = env.run(now=T0 + 3600)  # never resent; its advisory waits
-    assert code == 0 and ssh.calls == [] and "busy=1" in summary and len(env.state()["deferred"]) == 1
+    code, summary, relay = env.run(now=T0 + 3600)  # never resent; its advisory waits
+    assert code == 0 and relay.calls == [] and "busy=1" in summary and len(env.state()["deferred"]) == 1
     assert "withheld=1 refused by the relay" in capsys.readouterr().err
 
 
 def test_a_refused_root_withholds_its_copy(env):
     env.kev.catalog = {"vulnerabilities": [kev_item()]}
-    code, summary, ssh = env.run(ssh=FakeSSH("refuse"))
-    assert code == 0 and chans(ssh) == [("critical", None)] and "withheld=1" in summary
+    code, summary, relay = env.run(relay=FakeRelay("refuse"))
+    assert code == 0 and chans(relay) == [("critical", None)] and "withheld=1" in summary
     assert [it["kind"] for it in env.state()["withheld"][0]["items"]] == ["root", "copy"] and not env.state()["outbox"]
 
 
 def test_a_refused_digest_blocks_new_digests_until_resolved(env):
     env.collector([MAC]), env.run()
-    assert "withheld=1" in env.run(now=at(5, 9), ssh=FakeSSH("refuse"))[1] and env.state()["digest_date"] is None
+    assert "withheld=1" in env.run(now=at(5, 9), relay=FakeRelay("refuse"))[1] and env.state()["digest_date"] is None
     assert env.run(now=at(5, 10))[2].calls == []  # neither resent nor rebuilt
 
 
 def test_pending_lists_and_resolve_requeues_or_drops_a_withheld_item(env, tmp_path, capsys, monkeypatch):
     env.collector(THREE[:2])
-    assert env.run(ssh=FakeSSH("refuse", "refuse"))[0] == 1  # a second refusal in one run stops it
+    assert env.run(relay=FakeRelay("refuse", "refuse"))[0] == 1  # a second refusal in one run stops it
     w, w2 = env.state()["withheld"]
     code, lines = main.pending(T0 + 60, env.config)
     assert code == 0 and lines[-1].endswith("orphan=0 withheld=2")
@@ -1408,8 +1450,8 @@ def test_pending_lists_and_resolve_requeues_or_drops_a_withheld_item(env, tmp_pa
     cfg.write_text(f'ledger = "{env.config.ledger}"\nkev_cache = "{env.config.kev_cache}"\n')
     assert main.main(["resolve", w["key"], "--config", str(cfg), "--requeue"]) == 0
     assert env.state()["withheld"] == [w2] and env.state()["outbox"][-1] == w["items"][0]
-    code, summary, ssh = env.run(now=T0 + 3600)  # requeued as the operator asked; w2's advisory still waits
-    assert code == 0 and "roots=1" in summary and ssh.calls[0][2] == w["items"][0]["text"]
+    code, summary, relay = env.run(now=T0 + 3600)  # requeued as the operator asked; w2's advisory still waits
+    assert code == 0 and "roots=1" in summary and relay.calls[0][2] == w["items"][0]["text"]
     assert main.main(["resolve", w2["key"], "--config", str(cfg), "--drop"]) == 0
     assert env.state()["withheld"] == [] and "dropped 1 item(s)" in capsys.readouterr().out
     assert "roots=1" in env.run(now=T0 + 7200)[1]  # its deferred candidate is planned anew
@@ -1418,7 +1460,7 @@ def test_pending_lists_and_resolve_requeues_or_drops_a_withheld_item(env, tmp_pa
 def test_a_withheld_reply_holds_its_thread_under_any_alias(env):
     env.collector([finding(aliases=("CVE-2026-0042",))]), env.run()
     env.collector([finding(fixed="2.2.0")])
-    assert "withheld=1" in env.run(now=T0 + 600, ssh=FakeSSH("refuse"))[1]
+    assert "withheld=1" in env.run(now=T0 + 600, relay=FakeRelay("refuse"))[1]
     env.collector([finding(fid="CVE-2026-0042", fixed="2.2.0")])  # the same update under the alias alone
     assert env.run(now=T0 + 1200)[2].calls == [] and len(env.state()["withheld"]) == 1
 
@@ -1442,9 +1484,9 @@ def test_japanese_roots_carry_the_candidates_exploited_state(env, monkeypatch): 
     corrected = finding(fid="CVE-2026-0001", fixed=None)
     corrected["affected"] = "<2.5.0"
     env.collector([corrected])
-    _, summary, ssh = env.run(now=T0 + 3600)
+    _, summary, relay = env.run(now=T0 + 3600)
     assert "replies=2" in summary and len(seen) == 2 and all(s is True for s in seen)  # the new root, then the reply
-    assert all("直ちに更新" in text for _, _, text in ssh.ja)
+    assert all("直ちに更新" in text for _, _, text in relay.ja)
 
 
 def test_kev_learned_at_the_same_level_makes_the_japanese_action_urgent(env):  # 4yr1
@@ -1458,11 +1500,11 @@ def test_kev_learned_at_the_same_level_makes_the_japanese_action_urgent(env):  #
     (e,), _ = env.ledger()
     assert e["advisory"]["title"] == "Claude Code: trojanized release (CVE-2026-0001)"
     env.kev.catalog = {"vulnerabilities": [kev_item()]}
-    code, summary, ssh = env.run(now=T0 + 3600)
+    code, summary, relay = env.run(now=T0 + 3600)
     assert code == 0 and "replies=2" in summary and "ja=2" in summary
     (e,), _ = env.ledger()
     assert e["advisory"]["title"] == "Claude Code: trojanized release (CVE-2026-0001)"  # kept
-    for _, _, text in ssh.ja:
+    for _, _, text in relay.ja:
         assert "改ざんされたリリース (CVE-2026-0001)" in text
         assert "悪用が確認されているため、リリースがあれば直ちに更新してください。" in text
 
@@ -1487,23 +1529,23 @@ def test_a_change_in_the_digest_run_is_listed_that_day_only(env):  # 8ke5
     env.collector([finding(fixed=None, severity="high")])
     assert "roots=1" in env.run()[1]
     env.collector([finding(fixed="2.1.0", severity="high")])  # the fix, in the 09:20 run
-    _, summary, ssh = env.run(now=at(5, 9))
-    assert "replies=1" in summary and [c[2].startswith("Daily digest") for c in ssh.calls] == [False, True]
-    assert "GHSA-abcd-efgh-ijkl" in ssh.calls[1][2]
-    _, _, ssh = env.run(now=at(6, 9))
-    assert len(ssh.calls) == 1 and "GHSA-abcd-efgh-ijkl" not in ssh.calls[0][2]
+    _, summary, relay = env.run(now=at(5, 9))
+    assert "replies=1" in summary and [c[2].startswith("Daily digest") for c in relay.calls] == [False, True]
+    assert "GHSA-abcd-efgh-ijkl" in relay.calls[1][2]
+    _, _, relay = env.run(now=at(6, 9))
+    assert len(relay.calls) == 1 and "GHSA-abcd-efgh-ijkl" not in relay.calls[0][2]
 
 
 def test_a_source_only_change_is_not_listed_again(env):  # 8ke5
     env.collector([finding()])
     env.run()
-    _, _, ssh = env.run(now=at(5, 9))
-    assert "GHSA-abcd-efgh-ijkl" in ssh.calls[0][2]
+    _, _, relay = env.run(now=at(5, 9))
+    assert "GHSA-abcd-efgh-ijkl" in relay.calls[0][2]
     env.collector([finding(sources=(GHSA, GHSA2))])
-    _, summary, ssh = env.run(now=at(5, 12))
-    assert "replies=0" in summary and ssh.calls == []
-    _, _, ssh = env.run(now=at(6, 9))
-    assert len(ssh.calls) == 1 and "GHSA-abcd-efgh-ijkl" not in ssh.calls[0][2]
+    _, summary, relay = env.run(now=at(5, 12))
+    assert "replies=0" in summary and relay.calls == []
+    _, _, relay = env.run(now=at(6, 9))
+    assert len(relay.calls) == 1 and "GHSA-abcd-efgh-ijkl" not in relay.calls[0][2]
 
 
 SOCIAL = "https://mastodon.social/@bot/1"
@@ -1514,15 +1556,15 @@ def test_an_unconfirmed_notice_is_never_held_and_the_vendors_own_is_listed_once(
     remembered; the vendor's own advisory for it, later, is held and listed."""
     env.collector([{**MAC, "sources": [{"url": SOCIAL, "published_at": None}]}])
     assert "held=0" in env.run()[1] and "no authoritative source=1" in capsys.readouterr().err
-    _, _, ssh = env.run(now=at(5, 9))
-    assert "CVE-2026-5000" not in ssh.calls[0][2]
+    _, _, relay = env.run(now=at(5, 9))
+    assert "CVE-2026-5000" not in relay.calls[0][2]
     st = env.state()
     assert st["held"] == [] and st["deferred"] == [] and not [k for k in st["digested"] if "cve-2026-5000" in k]
     env.collector([{**MAC, "fixed": "27.2"}])  # Apple's own advisory
     assert "held=1" in env.run(now=at(5, 12))[1]
-    _, _, ssh = env.run(now=at(6, 9))
-    assert "CVE-2026-5000" in ssh.calls[0][2] and APPLE in ssh.calls[0][2]
-    assert "27.2" not in ssh.calls[0][2]  # the record's version is not Apple's page's
+    _, _, relay = env.run(now=at(6, 9))
+    assert "CVE-2026-5000" in relay.calls[0][2] and APPLE in relay.calls[0][2]
+    assert "27.2" not in relay.calls[0][2]  # the record's version is not Apple's page's
 
 
 def test_a_primary_source_learned_while_held_reaches_the_digest(env):  # 8ke5
@@ -1532,8 +1574,8 @@ def test_a_primary_source_learned_while_held_reaches_the_digest(env):  # 8ke5
     env.run(now=T0 + 3600)
     (h,) = env.state()["held"]
     assert [s["url"] for s in h["adv"]["sources"]] == [APPLE]
-    _, _, ssh = env.run(now=at(5, 9))
-    assert "CVE-2026-5000" in ssh.calls[0][2] and APPLE in ssh.calls[0][2]
+    _, _, relay = env.run(now=at(5, 9))
+    assert "CVE-2026-5000" in relay.calls[0][2] and APPLE in relay.calls[0][2]
 
 
 def test_a_held_notice_keeps_the_ids_the_vendor_page_assigns(env):  # 8ke5 delta, h340
@@ -1556,13 +1598,13 @@ ROUTER = "https://github.com/musistudio/claude-code-router/security/advisories/G
 VENDOR_SITE = "https://www.anthropic.com/security/advisory-7"
 
 
-def _nothing_was_signed(env, ssh):
+def _nothing_was_signed(env, relay):
     """No post, no thread, no held notice, nothing kept for later, and an empty digest."""
     st = env.state()
-    assert ssh.calls == [] and ssh.ja == [] and env.ledger()[0] == []
+    assert relay.calls == [] and relay.ja == [] and env.ledger()[0] == []
     assert st["held"] == [] and st["deferred"] == [] and st["outbox"] == [] and st["digested"] == []
-    _, _, ssh = env.run(now=at(5, 9))
-    assert [c[2] for c in ssh.calls] == ["Daily digest for 2026-11-05: no advisories."]
+    _, _, relay = env.run(now=at(5, 9))
+    assert [c[2] for c in relay.calls] == ["Daily digest for 2026-11-05: no advisories."]
 
 
 def _router(**kw):
@@ -1590,17 +1632,17 @@ def test_claude_code_router_advisory_never_names_claude_code(env, variant):
     env.pages.put(ROUTER, advisory_page("GHSA-evil-evil-evil", package="claude-code-router", ecosystem="npm",
                                         affected="< 99.0.0", patched="99.0.0", repo="musistudio/claude-code-router"))
     env.collector([_router(**variant)])
-    code, summary, ssh = env.run()
+    code, summary, relay = env.run()
     assert code == 0 and "roots=0" in summary and "held=0" in summary, summary
-    _nothing_was_signed(env, ssh)
+    _nothing_was_signed(env, relay)
 
 
 def test_a_kev_entry_for_another_vendors_product_binds_to_no_tier1_product(env):
     env.kev.catalog = {"vulnerabilities": [{"cveID": "CVE-2026-0001", "vendorProject": "musistudio",
                                             "product": "claude-code-router", "dateAdded": "2026-11-04"}]}
-    code, summary, ssh = env.run()
+    code, summary, relay = env.run()
     assert code == 0 and "in_scope=0" in summary
-    _nothing_was_signed(env, ssh)
+    _nothing_was_signed(env, relay)
 
 
 def _poisoned():
@@ -1616,15 +1658,15 @@ def test_a_record_about_a_real_advisory_posts_what_the_vendor_page_says(env, sev
     env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", cve="CVE-2026-0007", affected=">= 1.0, < 2.1.251",
                                       patched="2.1.251", severity=severity, title="Race in the Edit tool"))
     env.collector([_poisoned()])
-    code, summary, ssh = env.run()
+    code, summary, relay = env.run()
     assert code == 0, summary
     if level == "notice":
         (h,), text = env.state()["held"], json.dumps(env.state())
         adv, title = h["adv"], h["source_title"]
-        assert ssh.calls == []
+        assert relay.calls == []
     else:
         (e,), _ = env.ledger()
-        adv, title, text = e["advisory"], e["source_title"], ssh.calls[0][2]
+        adv, title, text = e["advisory"], e["source_title"], relay.calls[0][2]
         assert text.split("\n")[:4] == ["HIGH: Claude Code: security advisory (CVE-2026-0007)", "Race in the Edit tool",
                                         "Affected: Claude Code from 1.0 and below 2.1.251. Fixed in 2.1.251.",
                                         "Action: upgrade Claude Code to 2.1.251 or later."]
@@ -1642,17 +1684,17 @@ def test_fixed_is_read_from_the_page_not_picked_from_it(env):
     on that page, as the fix changes nothing."""
     env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", affected=">= 1.0, <= 2.0", patched="3.0"))
     env.collector([{**finding(fixed="2.0"), "affected": "<2.0"}])
-    _, _, ssh = env.run()
-    assert "Action: upgrade Claude Code to 3.0 or later." in ssh.calls[0][2] and "to 2.0 or later" not in ssh.calls[0][2]
-    assert "Affected: Claude Code from 1.0 and up to 2.0. Fixed in 3.0." in ssh.calls[0][2]
+    _, _, relay = env.run()
+    assert "Action: upgrade Claude Code to 3.0 or later." in relay.calls[0][2] and "to 2.0 or later" not in relay.calls[0][2]
+    assert "Affected: Claude Code from 1.0 and up to 2.0. Fixed in 3.0." in relay.calls[0][2]
 
 
 def test_an_advisory_for_another_package_in_the_products_repository_is_dropped(env, capsys):
     env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", package="Claude Desktop", ecosystem="anthropic"))
     env.collector([finding()])
-    _, summary, ssh = env.run()
+    _, summary, relay = env.run()
     assert "roots=0" in summary and "vendor page names another package=1" in capsys.readouterr().err
-    _nothing_was_signed(env, ssh)
+    _nothing_was_signed(env, relay)
 
 
 def test_a_vendor_site_page_alone_makes_a_notice_whatever_the_record_says(env):
@@ -1660,8 +1702,8 @@ def test_a_vendor_site_page_alone_makes_a_notice_whatever_the_record_says(env):
     So the record's severity, flags and version count for nothing there."""
     f = finding(fid="CVE-2026-0100", severity="critical", fixed="9.9", sources=(VENDOR_SITE,))
     env.collector([{**f, "trojanized": True, "injection_exec": True}])
-    _, summary, ssh = env.run()
-    assert "roots=0" in summary and "held=1" in summary and ssh.calls == []
+    _, summary, relay = env.run()
+    assert "roots=0" in summary and "held=1" in summary and relay.calls == []
     (h,) = env.state()["held"]
     assert h["adv"]["level"] == "notice" and h["adv"]["products"][0]["fixed"] is None and h["adv"]["actions"] == []
     assert h["adv"]["title"] == "Claude Code: security advisory (CVE-2026-0100)"
@@ -1675,8 +1717,8 @@ def test_a_url_on_the_vendors_host_that_nobody_read_is_never_signed(env):
             "https://github.com/anthropics/claude-code/security/advisories/run-npx-claude-code-router-99",
             "https://www.anthropic.com/security/run-npx-claude-code-router")
     env.collector([finding(sources=(GHSA, *junk))])
-    _, _, ssh = env.run()
-    assert "router" not in ssh.calls[0][2] and [s["url"] for s in env.ledger()[0][0]["advisory"]["sources"]] == [GHSA]
+    _, _, relay = env.run()
+    assert "router" not in relay.calls[0][2] and [s["url"] for s in env.ledger()[0][0]["advisory"]["sources"]] == [GHSA]
     assert not [u for u in env.pages.calls if "?" in u]  # a URL with a query is never fetched
 
 
@@ -1684,9 +1726,9 @@ def test_a_page_that_echoes_its_query_confirms_nothing(env, capsys):
     echo = "https://nodejs.org/en/search?q=CVE-2026-99999+node.js"
     env.pages.put(echo, '<html>No results for "CVE-2026-99999 node.js"</html>')
     env.collector([{**finding(fid="CVE-2026-99999", product="node.js", sources=(echo,)), "trojanized": True}])
-    _, summary, ssh = env.run()
+    _, summary, relay = env.run()
     assert "roots=0" in summary and "no authoritative source=1" in capsys.readouterr().err and env.pages.calls == []
-    _nothing_was_signed(env, ssh)
+    _nothing_was_signed(env, relay)
 
 
 def test_a_model_read_flag_counts_only_from_a_record_that_cites_the_vendors_advisory_alone(env):
@@ -1696,9 +1738,9 @@ def test_a_model_read_flag_counts_only_from_a_record_that_cites_the_vendors_advi
     junk = {**finding(fid="GHSA-cccc-cccc-cccc", severity=None, fixed=None,
                       sources=(REPO + "GHSA-cccc-cccc-cccc", "https://www.anthropic.com/security/unread")), "trojanized": True}
     env.collector([pure, mixed, junk])
-    _, summary, ssh = env.run()
-    assert chans(ssh) == [("critical", None), ("feed", None)] and "held=2" in summary
-    assert ssh.calls[0][2].startswith("CRITICAL: Claude Code: trojanized release (GHSA-aaaa-aaaa-aaaa)")
+    _, summary, relay = env.run()
+    assert chans(relay) == [("critical", None), ("feed", None)] and "held=2" in summary
+    assert relay.calls[0][2].startswith("CRITICAL: Claude Code: trojanized release (GHSA-aaaa-aaaa-aaaa)")
     assert sorted(h["adv"]["id"] for h in env.state()["held"]) == ["GHSA-bbbb-bbbb-bbbb", "GHSA-cccc-cccc-cccc"]
 
 
@@ -1709,27 +1751,27 @@ def test_a_failed_fetch_or_an_unparsed_page_defers_and_never_drops(env, capsys, 
     env.pages.put(GHSA, body, status=status)
     env.collector([finding()])
     for hour in (0, 1, 24 * 9):  # still waiting nine days on: no age rule of the gate's own drops it
-        code, summary, ssh = env.run(now=T0 + 3600 * hour)
-        assert code == 0 and ssh.calls == [] and why in capsys.readouterr().err
+        code, summary, relay = env.run(now=T0 + 3600 * hour)
+        assert code == 0 and relay.calls == [] and why in capsys.readouterr().err
         assert [d["id"] for d in env.state()["deferred"]] == ["GHSA-abcd-efgh-ijkl"] and env.ledger()[0] == []
     del env.pages.fixed[GHSA]  # the page answers
-    _, summary, ssh = env.run(now=T0 + 3600 * 24 * 9 + 3600)
+    _, summary, relay = env.run(now=T0 + 3600 * 24 * 9 + 3600)
     assert "roots=1" in summary and env.state()["deferred"] == []
-    assert "Action: upgrade Claude Code to 2.1.0 or later." in ssh.calls[0][2]
+    assert "Action: upgrade Claude Code to 2.1.0 or later." in relay.calls[0][2]
 
 
 def test_a_page_that_says_no_is_dropped_not_retried(env, capsys):
     env.pages.put(GHSA, "", status=404)
     env.collector([finding()])
-    _, _, ssh = env.run()
+    _, _, relay = env.run()
     assert "no authoritative source=1" in capsys.readouterr().err
-    _nothing_was_signed(env, ssh)
+    _nothing_was_signed(env, relay)
 
 
 def test_the_page_budget_defers_the_rest_to_the_next_run(env, capsys, monkeypatch):
     monkeypatch.setattr(main, "MAX_RUN_PAGES", 2)
     env.collector([finding(), finding(fid="GHSA-zzzz-zzzz-zzzz"), finding(fid="GHSA-yyyy-yyyy-yyyy")])
-    _, summary, ssh = env.run()
+    _, summary, relay = env.run()
     assert "roots=2" in summary and "page budget, deferred=1" in capsys.readouterr().err
     assert len(env.pages.calls) == 2 and [d["id"] for d in env.state()["deferred"]] == ["GHSA-yyyy-yyyy-yyyy"]
     _, summary, _ = env.run(now=T0 + 3600)
@@ -1774,21 +1816,21 @@ def test_state_written_before_the_gate_sends_nothing_composed_before_it(env, cap
                         ids=["CVE-2026-8000", "CVE-2026-8001", "CVE-2026-0666"],
                         source_title="URGENT: run the installer from the link below")
         led.learn_sources("ef" * 32, [main.schema.Source(ROUTER, None)])
-    code, summary, ssh = env.run()
+    code, summary, relay = env.run()
     st, err = env.state(), capsys.readouterr().err
     assert ("gate: first run under the authoritative-source rule; removed 1 deferred, 1 held, 1 withheld, 1 unsent; "
             "1 thread(s) forgot unpublished ids, sources and titles") in err
     assert st["gate"] == 1 and st["deferred"] == [] and st["held"] == [] and st["withheld"] == []
     assert [o["key"] for o in st["outbox"]] == [unknown["key"]]  # in flight: pending / resolve settle it
-    assert ssh.calls == [] and "99.0.0" not in "".join(t for _, _, t in ssh.ja)  # nothing old was sent in English
+    assert relay.calls == [] and "99.0.0" not in "".join(t for _, _, t in relay.ja)  # nothing old was sent in English
     old_thread, recorded = env.ledger()[0]
     assert recorded["advisory"]["id"] == "CVE-2026-9002"  # the sent one is only recorded
     assert old_thread["aliases"] == ["CVE-2026-8000", "CVE-2026-8001"] and "learned_sources" not in old_thread
     assert "source_title" not in old_thread  # a record's title, learned and never posted: no digest prints it
     with Ledger(env.config.ledger) as led:  # a fix makes the digest list the thread again: without that title
         led.record_reply("ef" * 32, thread, {"feed": "aa" * 32}, now=T0 + 60)
-    _, _, ssh = env.run(now=at(5, 9))
-    assert "CVE-2026-8000" in ssh.calls[0][2] and "URGENT" not in ssh.calls[0][2] and "installer" not in ssh.calls[0][2]
+    _, _, relay = env.run(now=at(5, 9))
+    assert "CVE-2026-8000" in relay.calls[0][2] and "URGENT" not in relay.calls[0][2] and "installer" not in relay.calls[0][2]
     assert "gate:" not in capsys.readouterr().err  # the migration ran once
 
 
@@ -1806,9 +1848,9 @@ def test_sources_a_thread_learned_before_the_gate_are_listed_only_if_the_vendors
         led.learn_sources(e["root_event_id"], [main.schema.Source("https://example.org/write-up", None),
                                                main.schema.Source(ROUTER, None), main.schema.Source(GHSA2, None)])
     env.collector([finding(fixed="2.1.1")])  # a fix: a real reply, which carries the learned sources
-    _, summary, ssh = env.run(now=T0 + 3600)
+    _, summary, relay = env.run(now=T0 + 3600)
     assert "replies=1" in summary
-    reply = ssh.calls[0][2]
+    reply = relay.calls[0][2]
     assert "example.org" not in reply and "musistudio" not in reply and GHSA2 in reply
 
 
@@ -1817,8 +1859,8 @@ def test_an_unexpressible_vendor_fix_gets_no_action_line_through_a_whole_run(env
     names no version and has no action sentence, in English and in Japanese."""
     env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", affected="< 2.0.0", patched="2.0.0-rc.1"))
     env.collector([finding(fixed="2.0.0")])
-    _, summary, ssh = env.run()
-    text, ja = ssh.calls[0][2], ssh.ja[0][2]
+    _, summary, relay = env.run()
+    text, ja = relay.calls[0][2], relay.ja[0][2]
     assert "Affected: Claude Code below 2.0.0. A fix is listed upstream; see the source." in text.split("\n")
     assert "Action:" not in text and "rc.1" not in text and "unexpressed" not in text
     assert "修正は上流で公開されています" in ja and "対応:" not in ja
@@ -1844,6 +1886,6 @@ def test_failing_pages_ahead_never_starve_a_healthy_candidate(env, monkeypatch):
 def test_a_kev_entry_posts_though_the_page_budget_is_spent(env, monkeypatch):
     monkeypatch.setattr(main, "MAX_RUN_PAGES", 0)
     env.kev.catalog = {"vulnerabilities": [{**kev_item(), "notes": "https://www.anthropic.com/security/advisory-7"}]}
-    _, summary, ssh = env.run()
-    assert "roots=1" in summary and ssh.calls[0][2].startswith("CRITICAL: Claude Code: known exploited vulnerability")
+    _, summary, relay = env.run()
+    assert "roots=1" in summary and relay.calls[0][2].startswith("CRITICAL: Claude Code: known exploited vulnerability")
     assert env.state()["deferred"] == []

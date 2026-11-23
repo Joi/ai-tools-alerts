@@ -14,7 +14,7 @@ import pytest
 from aitools_alerts import schema
 from aitools_alerts.poster import main, translate
 from mirror_helpers import Mirror, advisory
-from test_main import CHANNELS, T0, FakeSSH, env, finding  # noqa: F401 - env is a fixture
+from test_main import CHANNELS, T0, FakeRelay, env, finding  # noqa: F401 - env is a fixture
 
 SRC = ("CRITICAL: Invented critical for tests\nAffected: Claude Code <99.0.0. Fixed in 99.0.0.\n"
        "Source: https://example.invalid/advisory")
@@ -117,6 +117,25 @@ def test_read_key_uses_a_throwaway_cache_and_never_argv(tmp_path, monkeypatch):
     assert "k-test" not in str(e.value)
 
 
+def test_read_key_reads_a_named_secret_and_drops_its_stale_copy(tmp_path, monkeypatch):  # vzc3
+    helper = tmp_path / "secrets.sh"
+    helper.write_text("")
+    monkeypatch.setenv("RELAY_TEST_NSEC", "stale")
+    calls = []
+
+    def runner(argv, env, **kw):
+        calls.append((argv, env))
+        return subprocess.CompletedProcess(argv, 0, b"k-relay\n", b"")
+    assert translate.read_key(helper, runner=runner, name="RELAY_TEST_NSEC") == "k-relay"
+    argv, env = calls[0]
+    assert env["AITOOLS_ALERTS_SECRET_NAME"] == "RELAY_TEST_NSEC" and "RELAY_TEST_NSEC" not in env
+    assert "k-relay" not in " ".join(argv) and "RELAY_TEST_NSEC" not in " ".join(argv)
+    for bad in ("lower", "A B", "", "A;B", 3):
+        with pytest.raises(translate.CallError):
+            translate.read_key(helper, runner=runner, name=bad)
+    assert len(calls) == 1
+
+
 # ------------------------------------------------------------ the poster pass
 
 def h(ch="feed"):
@@ -142,9 +161,9 @@ def root(m, sec=None, ch="feed", title="Invented critical for tests", at=T0 + 10
 def test_config_off_reads_nothing(env):  # noqa: F811
     env.mirror = Mirror()
     root(env.mirror)
-    code, summary, ssh = env.run(mirror_fetch=lambda url: pytest.fail("fetched"),
+    code, summary, relay = env.run(mirror_fetch=lambda url: pytest.fail("fetched"),
                                  translate_call=lambda s, t: pytest.fail("called"))
-    assert code == 0 and " translate=off " in summary and ssh.ja == []
+    assert code == 0 and " translate=off " in summary and relay.ja == []
 
 
 def test_curator_root_and_amendment_are_translated_once(cur):
@@ -155,23 +174,23 @@ def test_curator_root_and_amendment_are_translated_once(cur):
     cur.mirror.post(cur.mirror.cur_sec, "retract\nwrong", created_at=T0 + 300, tags=[h(), ("e", r["id"], "", "root")])
     root(cur.mirror, sec=cur.mirror.bot_sec, title="A relay-bot post")  # templated by rd8t: no call
     call = Call()
-    code, summary, ssh = cur.trun(call)
+    code, summary, relay = cur.trun(call)
     assert code == 0 and " translate=ok " in summary and len(call.texts) == 2
     assert call.texts[0] == SRC  # a change only in the block still reaches the Japanese text:
     assert call.texts[1].startswith("Amended: x\n\nCRITICAL: ") and "Fixed in 99.0.1." in call.texts[1]
-    (c1, to1, t1), (c2, to2, t2) = ssh.ja
+    (c1, to1, t1), (c2, to2, t2) = relay.ja
     assert (c1, to1, c2, to2) == ("feed", r["id"], "feed", r["id"])
     assert t1 == "lang: ja\n\n" + ja_of(SRC) + "\n\n" + translate.MARK
     assert t2.startswith(f"lang: ja\nof: {amend['id']}\n\n")
-    code, summary, ssh = cur.trun(Call(lambda t: pytest.fail("called twice")))
-    assert code == 0 and ssh.ja == []
+    code, summary, relay = cur.trun(Call(lambda t: pytest.fail("called twice")))
+    assert code == 0 and relay.ja == []
 
 
 def test_mismatch_is_skipped_counted_and_never_retried(cur):
     root(cur.mirror)
-    code, summary, ssh = cur.trun(Call(lambda t: "重大: テスト"))
-    assert code == 0 and " untranslated=1 " in summary and ssh.ja == []
-    code, summary, ssh = cur.trun(Call(lambda t: pytest.fail("retried")))
+    code, summary, relay = cur.trun(Call(lambda t: "重大: テスト"))
+    assert code == 0 and " untranslated=1 " in summary and relay.ja == []
+    code, summary, relay = cur.trun(Call(lambda t: pytest.fail("retried")))
     assert " untranslated=0 " in summary
 
 
@@ -180,14 +199,14 @@ def test_auth_failure_holds_until_a_human_clears_it(cur, capsys):
 
     def refused(system, text):
         raise translate.AuthError("http 401")
-    code, summary, ssh = cur.trun(refused)
-    assert code == 0 and " translate=held " in summary and ssh.ja == []
+    code, summary, relay = cur.trun(refused)
+    assert code == 0 and " translate=held " in summary and relay.ja == []
     assert "translate-clear-hold" in capsys.readouterr().err
     code, summary, _ = cur.trun(Call(lambda t: pytest.fail("called while held")))
     assert " translate=held " in summary
     assert main.clear_hold(cur.config)[0] == 0
-    code, summary, ssh = cur.trun(Call())
-    assert " translate=ok " in summary and len(ssh.ja) == 1
+    code, summary, relay = cur.trun(Call())
+    assert " translate=ok " in summary and len(relay.ja) == 1
 
 
 def test_budget_is_twenty_calls_a_utc_day(cur):
@@ -206,7 +225,7 @@ def test_english_is_sent_and_saved_before_any_translation_work(cur):
     root(cur.mirror)
     cur.collector([finding()])
     order = []
-    ssh = FakeSSH()
+    relay = FakeRelay()
 
     def broken(system, text):
         outbox = json.loads(cur.config.state.read_text())["outbox"]
@@ -214,9 +233,9 @@ def test_english_is_sent_and_saved_before_any_translation_work(cur):
         raise RuntimeError("boom")
 
     def fetch(url):
-        order.append(("fetch", len(ssh.calls)))
+        order.append(("fetch", len(relay.calls)))
         return cur.mirror.fetch(url)
-    code, summary, _ = cur.run(ssh=ssh, mirror_fetch=fetch, translate_call=broken, root=cur.mirror.root)
+    code, summary, _ = cur.run(relay=relay, mirror_fetch=fetch, translate_call=broken, root=cur.mirror.root)
     assert code == 0 and " roots=1 " in summary and " translate=error " in summary
     assert order[0] == ("fetch", 1) and order[-1] == ("call", True)  # English sent and saved first
 
@@ -240,14 +259,14 @@ def test_a_failing_event_is_given_up_after_three_runs(cur):
 
 def test_a_journaled_translation_is_never_requested_again(cur):
     r = root(cur.mirror)
-    cur.trun(Call(), ssh=FakeSSH(ja=["fail"]))  # journaled, its send failed: waits in the journal
+    cur.trun(Call(), relay=FakeRelay(ja=["fail"]))  # journaled, its send failed: waits in the journal
     tr = json.loads(cur.config.translate_state.read_text())
     tr["done"].pop(r["id"])  # as if the run stopped between the journal and this file
     cur.config.translate_state.write_text(json.dumps(tr))
-    code, summary, ssh = cur.trun(Call(lambda t: pytest.fail("called again")))
-    assert code == 0 and len(ssh.ja) == 1
-    code, summary, ssh = cur.trun(Call(lambda t: pytest.fail("called after the send")))
-    assert code == 0 and ssh.ja == []
+    code, summary, relay = cur.trun(Call(lambda t: pytest.fail("called again")))
+    assert code == 0 and len(relay.ja) == 1
+    code, summary, relay = cur.trun(Call(lambda t: pytest.fail("called after the send")))
+    assert code == 0 and relay.ja == []
 
 
 def test_redirects_are_refused_and_translation_paths_checked(tmp_path):
@@ -285,21 +304,21 @@ def test_a_translation_already_in_the_mirror_is_not_posted_again(cur):
     r = root(cur.mirror)
     cur.mirror.post(cur.mirror.bot_sec, "lang: ja\n\n既訳", created_at=T0 + 150, tags=[h(), ("e", r["id"], "", "root")])
     cur.mirror.post(cur.mirror.cur_sec, schema.render_post(advisory(), SRC), tags=[("h", "f" * 36)])  # no channel
-    code, summary, ssh = cur.trun(Call(lambda t: pytest.fail("translated again")))
-    assert code == 0 and ssh.ja == []
+    code, summary, relay = cur.trun(Call(lambda t: pytest.fail("translated again")))
+    assert code == 0 and relay.ja == []
 
 
 def test_recovery_needs_no_key_and_other_languages_do_not_count(cur):
     r = root(cur.mirror)
-    cur.trun(Call(), ssh=FakeSSH(ja=["fail"]))  # journaled, its send failed: waits in the journal
+    cur.trun(Call(), relay=FakeRelay(ja=["fail"]))  # journaled, its send failed: waits in the journal
     tr = json.loads(cur.config.translate_state.read_text())
     tr["done"].pop(r["id"])
     cur.config.translate_state.write_text(json.dumps(tr))
 
     def no_key(helper):
         raise translate.CallError("api key unavailable")
-    code, _, ssh = cur.run(mirror_fetch=cur.mirror.fetch, root=cur.mirror.root, read_key=no_key)
-    assert code == 0 and len(ssh.ja) == 1  # sent, and recorded before it was sent
+    code, _, relay = cur.run(mirror_fetch=cur.mirror.fetch, root=cur.mirror.root, read_key=no_key)
+    assert code == 0 and len(relay.ja) == 1  # sent, and recorded before it was sent
     assert json.loads(cur.config.translate_state.read_text())["done"][r["id"]] == "ok"
     r2 = root(cur.mirror, title="Second", at=T0 + 500)
     cur.mirror.post(cur.mirror.bot_sec, "lang: fr\n\nTraduit", created_at=T0 + 600, tags=[h(), ("e", r2["id"], "", "root")])
@@ -327,8 +346,8 @@ def relay_ok(reply):
 
 def test_a_scoped_package_in_a_curator_root_comes_back_wrapped(cur):
     root(cur.mirror, title=f"Path traversal in {PKG}")
-    code, summary, ssh = cur.trun(Call(echo))
-    [(_, _, text)] = ssh.ja
+    code, summary, relay = cur.trun(Call(echo))
+    [(_, _, text)] = relay.ja
     assert f"in `{PKG}`" in text and relay_ok(text) and " untranslated=0 " in summary
 
 
@@ -338,17 +357,17 @@ def test_a_scoped_product_in_an_amendment_comes_back_wrapped(cur):
     cur.mirror.post(cur.mirror.cur_sec, cur.mirror.patch_text(products=fixed).replace("Update.", "Amended: x"),
                     created_at=T0 + 200, tags=[h(), ("e", r["id"], "", "root")])
     call = Call(echo)
-    code, summary, ssh = cur.trun(call)
+    code, summary, relay = cur.trun(call)
     assert "Affected: @scope/pkg <99.0.1." in call.texts[1]  # _advisory_text: bare at the source
-    texts = [t for _, _, t in ssh.ja]
+    texts = [t for _, _, t in relay.ja]
     assert len(texts) == 2 and "Affected: `@scope/pkg` <99.0.1." in texts[1] and all(map(relay_ok, texts))
 
 
 def test_a_curator_code_span_and_a_harmless_lone_backtick_pass_unchanged(cur):
     root(cur.mirror, title="Run `npm i @scope/pkg --help` now")
     root(cur.mirror, title="A lone ` backtick", at=T0 + 150)
-    code, summary, ssh = cur.trun(Call(echo))
-    texts = [t for _, _, t in ssh.ja]
+    code, summary, relay = cur.trun(Call(echo))
+    texts = [t for _, _, t in relay.ja]
     assert len(texts) == 2 and all(map(relay_ok, texts))
     assert "Run `npm i @scope/pkg --help` now" in texts[0] and "A lone ` backtick" in texts[1]
     assert all(t.endswith(translate.MARK) and t.count("`") == s for t, s in zip(texts, (2, 1)))
@@ -357,7 +376,7 @@ def test_a_curator_code_span_and_a_harmless_lone_backtick_pass_unchanged(cur):
 def test_a_mention_that_cannot_be_wrapped_safely_is_not_posted(cur):
     root(cur.mirror)
     call = Call(lambda t: t + "\n` lone @x/y")
-    code, summary, ssh = cur.trun(call)
-    assert len(call.texts) == 1 and ssh.ja == [] and " untranslated=1 " in summary
-    code, summary, ssh = cur.trun(Call(lambda t: pytest.fail("retried")))
-    assert ssh.ja == []
+    code, summary, relay = cur.trun(call)
+    assert len(call.texts) == 1 and relay.ja == [] and " untranslated=1 " in summary
+    code, summary, relay = cur.trun(Call(lambda t: pytest.fail("retried")))
+    assert relay.ja == []

@@ -304,7 +304,7 @@ def run_checkpoint(config, now: int, *, ssh=None, fetch=None, root: str = TRUST_
     does not fit: nothing is signed), ``sent`` or ``failed``, with
     ``,owed_dropped=N`` appended when acknowledged posts were given up."""
     from aitools_alerts.poster import transport, translate
-    if config.checkpoint_key_file is None or config.relay_put_wrapper is None:
+    if config.checkpoint_key_file is None or config.relay_put_wrapper is None or config.relay_ssh_host is None:
         return "off"
     rec = load_owed(config.owed_state, now)
     if now < rec["hold_until"]:  # the record of what is owed was lost: see load_owed

@@ -1,8 +1,9 @@
-"""ops/vm/aitools-poster-shell: the poster user's login shell allows one command shape.
+"""ops/vm/aitools-poster-shell: the poster user's login shell allows one command shape,
+``mirror-put checkpoint`` (nfm3). Posting through it (buzz-send) retired with vzc3.
 
-The tracked guard runs under bash against a fake sudo and a fake buzz-send in
+The tracked guard runs under bash against a fake sudo and a fake mirror-put in
 a temporary directory. The test copy changes only the RELAY_USER_FILE= and
-WRAPPER= lines, so the checks it exercises are the installed ones.
+PUT= lines, so the checks it exercises are the installed ones.
 """
 
 import json
@@ -14,17 +15,13 @@ from pathlib import Path
 
 import pytest
 
-from aitools_alerts.poster.transport import remote_argv
-
 ROOT = Path(__file__).resolve().parent.parent
 VM = ROOT / "ops" / "vm"
 GUARD = VM / "aitools-poster-shell"
-WRAPPER_LINE = 'WRAPPER="/home/$RELAY_USER/bin/buzz-send"\n'
 PUT_LINE = 'PUT="/home/$RELAY_USER/bin/mirror-put"\n'
 USER_FILE_LINE = "RELAY_USER_FILE=/etc/aitools-poster/relay-user\n"
 DIR = object()  # relay_user=DIR puts a directory where the file goes
 CHANNEL = "599adb9f-4f9f-4b19-aee3-66667c3293e8"
-REPLY = "ab" * 32
 
 
 def _bash_major(path: str) -> int:
@@ -49,14 +46,6 @@ shift 4
 exec "$@"
 """
 
-FAKE_WRAPPER = r"""#!/usr/bin/env bash
-d="$(dirname "$0")"
-printf '%s\0' "$@" > "$d/wrapper-argv"
-cat > "$d/wrapper-stdin"
-echo '{"accepted":true,"event_id":"00"}'
-"""
-
-
 FAKE_PUT = r"""#!/usr/bin/env bash
 d="$(dirname "$0")"
 printf '%s\0' "$@" > "$d/put-argv"
@@ -74,16 +63,14 @@ def _make_guard(tmp_path, bash, relay_user="relayuser\n"):
         user_file.mkdir()
     elif relay_user is not None:
         user_file.write_text(relay_user)
-    for name, body in (("sudo", FAKE_SUDO), ("buzz-send", FAKE_WRAPPER), ("mirror-put", FAKE_PUT)):
+    for name, body in (("sudo", FAKE_SUDO), ("mirror-put", FAKE_PUT)):
         (fake / name).write_text(body)
         (fake / name).chmod(0o755)
-    wrapper = str(fake / "buzz-send")
     src = GUARD.read_text()
-    assert src.count(WRAPPER_LINE) == 1 and src.count(USER_FILE_LINE) == 1 and src.count(PUT_LINE) == 1
+    assert src.count(USER_FILE_LINE) == 1 and src.count(PUT_LINE) == 1
     copy = tmp_path / "aitools-poster-shell"
     put = str(fake / "mirror-put")
-    copy.write_text(src.replace(WRAPPER_LINE, f"WRAPPER={shlex.quote(wrapper)}\n")
-                    .replace(PUT_LINE, f"PUT={shlex.quote(put)}\n")
+    copy.write_text(src.replace(PUT_LINE, f"PUT={shlex.quote(put)}\n")
                     .replace(USER_FILE_LINE, f"RELAY_USER_FILE={shlex.quote(str(user_file))}\n"))
     env = {"PATH": f"{fake}:{os.environ['PATH']}", "HOME": str(tmp_path)}
 
@@ -93,7 +80,6 @@ def _make_guard(tmp_path, bash, relay_user="relayuser\n"):
                               cwd=tmp_path, capture_output=True, timeout=30)
 
     run.fake = fake
-    run.wrapper = wrapper
     run.put = put
     return run
 
@@ -120,8 +106,11 @@ def _refused(r, fake: Path, why: str):
     err = json.loads(lines[0])
     assert err["error"] == "user_error" and err["message"].startswith("aitools-poster-shell: refused")
     assert why in err["message"]
-    assert not (fake / "sudo-argv").exists() and not (fake / "wrapper-argv").exists()
-    assert not (fake / "put-argv").exists()
+    assert not (fake / "sudo-argv").exists() and not (fake / "put-argv").exists()
+
+
+def _put_cmd(guard):
+    return shlex.join([guard.put, "checkpoint"])
 
 
 def test_bash3_fails_closed(tmp_path):
@@ -129,10 +118,10 @@ def test_bash3_fails_closed(tmp_path):
     if _bash_major("/bin/bash") >= 4:
         pytest.skip("/bin/bash here is 4+")
     g = _make_guard(tmp_path, "/bin/bash")
-    r = g("-c", shlex.join(remote_argv(CHANNEL, wrapper=g.wrapper)))
+    r = g("-c", _put_cmd(g))
     assert r.returncode == 1
     assert "refused: unparsable command" in r.stderr.decode()
-    assert not (g.fake / "wrapper-argv").exists()
+    assert not (g.fake / "put-argv").exists()
 
 
 def test_tracked_guard_is_executable_and_names_no_relay_user():
@@ -140,6 +129,7 @@ def test_tracked_guard_is_executable_and_names_no_relay_user():
     src = GUARD.read_text()
     assert "RELAY_USER=\"RELAY_USER\"" not in src and src.count(USER_FILE_LINE) == 1
     assert "AITOOLS_" not in src  # the installed guard takes no path from its environment
+    assert "buzz-send" not in src.split("set +x", 1)[1]  # vzc3: no send shape in the code
 
 
 @pytest.mark.parametrize("content, why", [
@@ -153,104 +143,60 @@ def test_tracked_guard_is_executable_and_names_no_relay_user():
 ])
 def test_relay_user_file_refused(tmp_path, content, why):
     g = _bash_guard(tmp_path, content)
-    for args in (("-c", shlex.join(remote_argv(CHANNEL, wrapper=g.wrapper))), ()):
+    for args in (("-c", _put_cmd(g)), ()):
         _refused(g(*args), g.fake, why)
 
 
 @pytest.mark.parametrize("content", ["relayuser", "_r-1\n", "a" * 32 + "\n"])
 def test_relay_user_file_good_names(tmp_path, content):
     g = _bash_guard(tmp_path, content)
-    argv = remote_argv(CHANNEL, wrapper=g.wrapper)
-    r = g("-c", shlex.join(argv))
+    r = g("-c", _put_cmd(g))
     assert r.returncode == 0, r.stderr
     assert _argv(g.fake / "sudo-argv")[:3] == ["-n", "-u", content.strip()]
 
 
-@pytest.mark.parametrize("reply_to", [None, REPLY])
-def test_allowed_shape_reaches_the_wrapper(guard, reply_to):
-    argv = remote_argv(CHANNEL, reply_to, wrapper=guard.wrapper)
-    r = guard("-c", shlex.join(argv), stdin="日本語\n--relay x".encode())
-    assert r.returncode == 0, r.stderr
-    assert json.loads(r.stdout)["accepted"] is True
-    assert _argv(guard.fake / "sudo-argv") == ["-n", "-u", "relayuser", "--", *argv]
-    assert _argv(guard.fake / "wrapper-argv") == argv[1:]
-    assert (guard.fake / "wrapper-stdin").read_bytes() == "日本語\n--relay x".encode()
-
-
 def test_interactive_extra_and_empty_refused(guard):
-    cmd = shlex.join(remote_argv(CHANNEL, wrapper=guard.wrapper))
+    cmd = _put_cmd(guard)
     for args, why in (((), "interactive"), (("-l",), "interactive"),
                       (("-c", cmd, "extra"), "interactive"), (("-c", ""), "empty command")):
         _refused(guard(*args), guard.fake, why)
 
 
-def _cmd(guard, *rest):
-    return " ".join([shlex.quote(guard.wrapper), *rest])
-
-
 SEND = f"messages send --channel {CHANNEL} --content -"
 
 
-@pytest.mark.parametrize("tail, why", [
-    ("messages send --channel 'unbalanced", "unparsable command"),
-    (f"'messages\nsend' --channel {CHANNEL} --content -", "argument count 6"),
-    (SEND + " --reply-to", "argument count 8"),
-    (SEND + f" --reply-to {REPLY} extra", "argument count 10"),
-    ("channels delete --channel " + CHANNEL + " --content -", "subcommand"),
-    (f"messages send --relay {CHANNEL} --content -", "argument 4"),
-    (f"messages send --channel {CHANNEL.upper()} --content -", "channel id"),
-    ("messages send --channel 599adb9f4f9f4b19aee366667c3293e8xxxx --content -", "channel id"),
-    (f"messages send --channel {CHANNEL} --content hi", "content must come from stdin"),
-    (f"messages send --channel {CHANNEL} --private-key -", "content must come from stdin"),
-    (SEND + f" --relay {REPLY}", "argument 8"),
-    (SEND + " --reply-to " + REPLY[:-1], "reply-to id"),
-    (SEND + " --reply-to " + REPLY.upper(), "reply-to id"),
-    (SEND + " --reply-to " + shlex.quote(REPLY + "\n" + REPLY), "reply-to id"),
-])
-def test_other_shapes_refused(guard, tail, why):
-    _refused(guard("-c", _cmd(guard, tail)), guard.fake, why)
+@pytest.mark.parametrize("program", ["/home/relayuser/bin/buzz-send", "buzz-send", "~/bin/buzz-send", "/bin/sh", "ls"])
+def test_the_retired_send_shape_and_other_programs_are_refused(guard, program):
+    """vzc3: the poster posts over HTTPS; nothing can post through this route."""
+    _refused(guard("-c", f"{program} {SEND}"), guard.fake, "argument count")
+    _refused(guard("-c", f"{program} checkpoint"), guard.fake, "program")
 
 
-def test_python_failure_after_partial_output_refused(guard):
-    """python3 printing a valid prefix and then failing is a refusal, not a 7-argument send."""
-    argv = remote_argv(CHANNEL, wrapper=guard.wrapper)
-    fake = guard.fake / "python3"
-    fake.write_text("#!/bin/sh\nprintf '%s\\0' " + shlex.join(argv) + "\nexit 1\n")
+def test_unparsable_and_python_failure_refused(guard):
+    _refused(guard("-c", shlex.quote(guard.put) + " 'unbalanced"), guard.fake, "unparsable command")
+    fake = guard.fake / "python3"  # a valid prefix, then failure: a refusal, not a put
+    fake.write_text("#!/bin/sh\nprintf '%s\\0' " + _put_cmd(guard) + "\nexit 1\n")
     fake.chmod(0o755)
-    _refused(guard("-c", shlex.join(argv)), guard.fake, "unparsable command")
+    _refused(guard("-c", _put_cmd(guard)), guard.fake, "unparsable command")
 
 
-def test_non_utf8_argument_refused_under_utf8_locale(guard):
-    """A non-UTF-8 byte in argument 8 under a client-sent UTF-8 LANG (ai-tools-alerts#zeqm).
-
-    End-to-end only: which check refuses depends on the platform python's
-    locale handling. The fake-python test above is the deterministic one.
-    """
-    cmd = _cmd(guard, SEND).encode() + b" \xff " + REPLY.encode()
-    r = guard("-c", cmd, lang="en_US.UTF-8")
-    why = "unparsable command" if b"unparsable" in r.stderr else "argument 8"
-    _refused(r, guard.fake, why)
-
-
-@pytest.mark.parametrize("program", ["/bin/sh", "buzz-send", "~/bin/buzz-send", "ls"])
-def test_other_programs_refused(guard, program):
-    _refused(guard("-c", f"{program} {SEND}"), guard.fake, "program")
+def test_a_newline_cannot_rebuild_the_shape(guard):
+    _refused(guard("-c", shlex.quote(guard.put + "\ncheckpoint")), guard.fake, "argument count 1")
 
 
 @pytest.mark.parametrize("inject", ["; touch PWNED", "$(touch PWNED)", "`touch PWNED`", "&& touch PWNED"])
 def test_shell_metacharacters_never_run(guard, tmp_path, inject):
-    r = guard("-c", _cmd(guard, SEND, inject))
+    r = guard("-c", _put_cmd(guard) + " " + inject)
     assert r.returncode == 1
-    assert not (guard.fake / "wrapper-argv").exists()
+    assert not (guard.fake / "put-argv").exists()
     assert not list(tmp_path.rglob("PWNED"))
 
 
 def test_sudoers_reference_matches_the_guard():
     lines = [ln for ln in (VM / "sudoers-aitools-poster").read_text().splitlines()
              if ln and not ln.startswith("#")]
-    w = "/home/RELAY_USER/bin/buzz-send messages send --channel [0-9a-f]* --content -"
     p = "/home/RELAY_USER/bin/mirror-put checkpoint"  # no wildcard: sudo matches the command whole
-    assert lines == [f"aitools-poster ALL=(RELAY_USER) NOPASSWD: {w}, {w} --reply-to [0-9a-f]*, {p}"]
+    assert lines == [f"aitools-poster ALL=(RELAY_USER) NOPASSWD: {p}"]
 
 
 def test_sshd_match_reference():
@@ -264,7 +210,7 @@ def test_sshd_match_reference():
                      "DisableForwarding yes", "PermitUserRC no"]
 
 
-# ------------------------------------------- the second shape: mirror-put checkpoint (nfm3)
+# ------------------------------------------- the shape: mirror-put checkpoint (nfm3)
 
 def test_put_shape_reaches_mirror_put_with_stdin_intact(guard):
     from aitools_alerts.poster import transport
@@ -281,7 +227,6 @@ def test_put_shape_reaches_mirror_put_with_stdin_intact(guard):
     assert _argv(guard.fake / "sudo-argv") == ["-n", "-u", "relayuser", "--", guard.put, "checkpoint"]
     assert _argv(guard.fake / "put-argv") == ["checkpoint"]
     assert (guard.fake / "put-stdin").read_bytes() == doc
-    assert not (guard.fake / "wrapper-argv").exists()
 
 
 @pytest.mark.parametrize("tail", [
@@ -289,8 +234,10 @@ def test_put_shape_reaches_mirror_put_with_stdin_intact(guard):
     ["--help"], ["checkpoint", "--out", "/etc/passwd"], ["messages", "send"]])
 def test_other_put_shapes_refused(guard, tail):
     r = guard("-c", shlex.join([guard.put, *tail]))
+    if tail == ["manifest"]:  # the message ops/vm/README.md's checkpoint check expects
+        assert "refused: argument 2" in r.stderr.decode()
     assert r.returncode == 1 and not (guard.fake / "put-argv").exists()
-    assert not (guard.fake / "sudo-argv").exists() and not (guard.fake / "wrapper-argv").exists()
+    assert not (guard.fake / "sudo-argv").exists()
     assert json.loads(r.stderr.decode().splitlines()[0])["message"].startswith("aitools-poster-shell: refused")
 
 

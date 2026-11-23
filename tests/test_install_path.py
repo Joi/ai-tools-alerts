@@ -79,9 +79,11 @@ def test_ops_vm_readme_installs_only_from_the_verified_export():
     for want in (f"tag -v {em.RELEASE_TAG}", f"rev-parse '{em.RELEASE_TAG}^{{commit}}'", em.RELEASE_COMMIT,
                  f"archive -o \"$d/release.tar\" {em.RELEASE_COMMIT}"):
         assert want in files, want
-    assert 'scp "${rel:?}/ops/vm/buzz-send"' in OPS and 'shasum -a 256 "${rel:?}/ops/vm/buzz-send"' in OPS
     assert "scp ops/vm/" not in OPS and 'install-mirror.sh "${rel:?}"' in OPS
-    for f in ("aitools-poster-shell", "sudoers-aitools-poster", "sshd-match-aitools-poster.conf"):
+    # vzc3 retired posting through the VM: buzz-send is never installed. The route left is
+    # put-only (nfm3), and every file of it comes from the verified export.
+    assert "ops/vm/buzz-send" not in OPS.replace("history before vzc3 (`ops/vm/buzz-send`)", "")
+    for f in ("aitools-poster-shell", "sudoers-aitools-poster", "sshd-match-aitools-poster.conf", "mirror-put"):
         assert f"${{rel:?}}/ops/vm/{f}" in OPS, f
     assert not re.search(r'"\$rel[/"]', OPS), "an install step that runs on with $rel unset"
 
@@ -98,8 +100,8 @@ def test_ops_vm_release_block_sets_nothing_when_a_check_fails(tmp_path, case):
             pytest.skip(f"{tool} not found")
     repo = tmp_path / "checkout"
     (repo / "trust").mkdir(parents=True)
-    (repo / "ops" / "vm").mkdir(parents=True)
-    (repo / "ops" / "vm" / "buzz-send").write_text("x\n")
+    (repo / "mirror").mkdir(parents=True)
+    (repo / "mirror" / "export_mirror.py").write_text("x\n")
     key = tmp_path / "key"
     subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
     pub = key.with_suffix(".pub").read_text().split()
@@ -131,3 +133,19 @@ def test_security_policy_and_codeowners():
               if l.strip() and not l.startswith("#")}
     for path in ("/trust/", "/spec/", "/ops/", "/hooks/", "/skills/", "/snippets/", "/README.md", "/pyproject.toml"):
         assert path in owners, path
+
+
+def test_the_checkpoint_route_is_installed_only_from_a_release_that_has_it():
+    """v0.1.5, the pinned release, has the send guard and no mirror-put (vzc3, after nfm3):
+    the route's section makes the operator check the export before installing it."""
+    route = section(OPS, "## The poster's ssh route: the checkpoint only")
+    for want in ('test -f "${rel:?}/ops/vm/mirror-put"', "! grep -q 'bin/buzz-send' \"${rel:?}/ops/vm/aitools-poster-shell\"",
+                 "WRONG RELEASE: install nothing", "predates this route"):
+        assert want in route, want
+    guard = (ROOT / "ops" / "vm" / "aitools-poster-shell").read_text()
+    assert "bin/buzz-send" not in guard and "buzz-send" not in (ROOT / "ops" / "vm" / "sudoers-aitools-poster").read_text()
+    if shutil.which("git") and subprocess.run(["git", "cat-file", "-e", f"{em.RELEASE_COMMIT}:ops/vm/aitools-poster-shell"],
+                                              cwd=ROOT, capture_output=True).returncode == 0:
+        old = subprocess.run(["git", "show", f"{em.RELEASE_COMMIT}:ops/vm/aitools-poster-shell"],
+                             cwd=ROOT, capture_output=True, text=True).stdout
+        assert "bin/buzz-send" in old  # the check above would stop an install from the pin

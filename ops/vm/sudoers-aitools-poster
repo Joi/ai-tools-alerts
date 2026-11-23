@@ -1,9 +1,7 @@
-# sudoers drop-in for the poster's send-only route (ai-tools-alerts#w75s).
+# sudoers drop-in for the poster's put-only route (ai-tools-alerts#w75s, nfm3, vzc3).
 # Installed at /etc/sudoers.d/aitools-poster, root-owned, mode 440. Replace
-# RELAY_USER with the relay VM's login user (the owner of ~/bin/buzz-send),
+# RELAY_USER with the relay VM's login user (the owner of ~/bin/mirror-put),
 # check the file with `visudo -cf <file>`, then move it into place.
-# sudoers `*` also matches spaces, so this rule only pins the program and the
-# leading arguments; ops/vm/aitools-poster-shell is the strict check.
-# The last command (mirror-put checkpoint) has no wildcard: sudo matches it whole.
-# sudo resets the environment and sets HOME to RELAY_USER's home.
-aitools-poster ALL=(RELAY_USER) NOPASSWD: /home/RELAY_USER/bin/buzz-send messages send --channel [0-9a-f]* --content -, /home/RELAY_USER/bin/buzz-send messages send --channel [0-9a-f]* --content - --reply-to [0-9a-f]*, /home/RELAY_USER/bin/mirror-put checkpoint
+# The command has no wildcard: sudo matches it whole. ops/vm/aitools-poster-shell
+# is the strict check. sudo resets the environment and sets HOME to RELAY_USER's home.
+aitools-poster ALL=(RELAY_USER) NOPASSWD: /home/RELAY_USER/bin/mirror-put checkpoint
