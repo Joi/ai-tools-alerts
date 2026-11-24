@@ -289,8 +289,12 @@ def test_a_product_put_in_another_spelling_is_still_asked_about_by_its_first_nam
     mirror.reply(mirror.cur_sec, root, "level: notice\n" + mirror.patch_text(products=[loud]), created_at=AT)
     mirror.reply(mirror.bot_sec, root, mirror.patch_text(products=[loud]), created_at=AT + 10)
     t = thread(mirror)
-    assert [p.name for p in t.wide.products] == ["CLAUDE CODE"]
-    assert [(p.name, p.fixed) for p in pull.widest(t).products] == [("CLAUDE CODE", None), ("Claude Code", "99.0.0")]
+    assert [p.name for p in t.adv.products] == ["CLAUDE CODE"]  # the curator's held state
+    assert ("Claude Code", "99.0.0") in [(p.name, p.fixed) for p in pull.widest(t).products]
+    # Whatever the join's rule for names is, a name the widest state has lost is still asked about.
+    from dataclasses import replace
+    lost = replace(t, wide=replace(t.wide, products=list(t.adv.products)), held_products=(schema_product(),))
+    assert [(p.name, p.fixed) for p in pull.widest(lost).products] == [("CLAUDE CODE", None), ("Claude Code", "99.0.0")]
 
 
 def test_a_fix_and_an_alias_a_curator_supplied_are_part_of_what_is_asked(mirror):
