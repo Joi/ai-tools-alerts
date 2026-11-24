@@ -2411,7 +2411,7 @@ def test_a_fix_reply_never_raises_a_thread_whose_root_had_no_fix(env):
     assert code == 0 and "copies=0" in summary and "replies=1" in summary, summary
     assert all(c[0] == "feed" for c in relay.calls) and "Fixed in 2.1.0." in relay.calls[0][2]
     (e,), _ = env.ledger()
-    assert e["level"] == "high" and "root_fixed" not in e
+    assert e["level"] == "high" and e["root_fixed"] == ""  # the root stated no fix
 
 
 def test_a_journaled_critical_copy_with_no_action_never_posts(env):

@@ -675,16 +675,18 @@ class Run:
             # merged, before the journal drained, or kept in the state file) raises nothing.
             c = replace(c, exploited=False)
         level, reason = self.level(c, scope)
+        # 9kgk: a fix the thread already states counts as this candidate's (plan_known keeps it)
+        was = (entry.advisory.get("products") or [{}])[0].get("fixed") if entry is not None else None
+        known_fix = c.fixed if compose.schema_fixed(c.fixed) is not None else was
         # ny5g: what readings of prose alone give it, kept by the ledger at its highest: a
         # reading never justifies a lowering, so the recompute never goes below this.
         rs = ruleset.load()
-        floor = rules._prose_level(replace(c, exploited=False), scope,
+        floor = rules._prose_level(replace(c, exploited=False, fixed=known_fix), scope,
                                    any(self.confirmed.get(s.url, set()) & rules.advisory_ids(c) for s in c.sources), rs)[0]
         if entry is not None:
             self.led.learn_floor(entry.root_event_id, rs.highest(floor, recompute.floor(entry, rs)))
         if entry is not None and reason in ("no-action", "stop-using") and compose.schema_fixed(c.fixed) is None:
             # 9kgk: the thread already states a fix, which plan_known keeps; the upgrade is complete.
-            was = (entry.advisory.get("products") or [{}])[0].get("fixed")
             if compose.schema_fixed(was):
                 level, reason = self.level(replace(c, fixed=was), scope)
         if entry is None and not rules.starts(scope, level):  # wa6n: out of the community service

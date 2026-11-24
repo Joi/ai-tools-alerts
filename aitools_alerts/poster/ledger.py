@@ -54,8 +54,9 @@ class Entry:
     # 8ke5: sources learned with no reply (a source-only change posts nothing); the next
     # reply with a real change publishes them. [{"url", "published_at"}].
     learned_sources: list | None = None
-    # 9kgk: the fixed version the root stated. A reply that adds a fix where the root had
-    # none is held by every reader (tyje), so only this one makes a raise to critical complete.
+    # 9kgk: the fixed version the root stated, "" when it stated none. A reply that adds a
+    # fix where the root had none is held by every reader (tyje), so only this one makes a
+    # raise to critical complete. None: an entry written before, whose root is not known.
     root_fixed: str | None = None
 
     @property
@@ -63,8 +64,13 @@ class Entry:
         """The root's fixed version; for an entry written before root_fixed, the thread's
         when no reply has changed it."""
         if self.root_fixed is not None or self.replies:
-            return self.root_fixed
+            return self.root_fixed or None
         return ((self.advisory.get("products") or [{}])[0] or {}).get("fixed")
+
+    @property
+    def root_known(self) -> bool:
+        """Whether the root's fix is known: recorded, or inferable while no reply changed it."""
+        return self.root_fixed is not None or not self.replies
     # ny5g: the thread has had a lowering, so every later level change travels alone
     # (spec/wire.md rule 2); and when its level changed, within the last QUIET.
     lowered: bool | None = None
@@ -256,7 +262,7 @@ class Ledger:
                  aliases=ids, posted_at=now, last_change=now, listed_at=now, scope=scope,
                  exploited=exploited is True, advisory=asdict(adv), replies=[],
                  **({"source_title": source_title} if source_title else {}),
-                 **({"root_fixed": adv.products[0].fixed} if adv.products and adv.products[0].fixed else {}),
+                 root_fixed=(adv.products[0].fixed if adv.products else None) or "",
                  **({"floor": floor} if floor in schema.LEVELS else {}))
         self._state()["entries"].append(e)
         self._save()
@@ -336,8 +342,8 @@ class Ledger:
             raise LedgerError("reply_ids must map channel to event id")
         e = self._entry(root_event_id)
         was, new = e["advisory"], asdict(adv)
-        if "root_fixed" not in e and Entry(**e).fix_at_root:  # 9kgk: a legacy entry's root fix, kept
-            e["root_fixed"] = Entry(**e).fix_at_root
+        if "root_fixed" not in e and not e["replies"]:  # 9kgk: a legacy entry's root, kept before it changes
+            e["root_fixed"] = Entry(**e).fix_at_root or ""
         if adv.level != e["level"]:  # ny5g: counted once; a second channel's copy finds it equal
             e["changed"] = [t for t in e.get("changed", []) if now - t < QUIET][-49:] + [now]
             if wire.is_lowering({"level": adv.level}, e["level"]):

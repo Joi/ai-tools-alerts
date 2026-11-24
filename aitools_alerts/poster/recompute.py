@@ -240,7 +240,12 @@ def held(entry, scope, found: str, rs) -> str:
     KEV listing of a thread with no such fix supports high, not critical."""
     acts = [(a.get("verb"), a.get("target"), a.get("value")) for a in entry.advisory.get("actions") or []
             if isinstance(a, dict)]
-    return rs.action_level(found, acts, scope.name, entry.fix_at_root)
+    # a thread standing at the level by stop_using was admitted there by a reading that said so
+    stop = found == entry.level and any(v == "stop_using" and t == scope.name for v, t, _ in acts)
+    capped = rs.action_level(found, acts, scope.name, entry.fix_at_root, stop_using=stop or None)
+    if not entry.root_known:  # an entry from before root_fixed, already replied to: raise-only
+        return rs.highest(capped, min(found, entry.level, key=rs.rank))
+    return capped
 
 
 def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int):

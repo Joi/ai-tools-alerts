@@ -855,3 +855,21 @@ def test_a_critical_posted_with_no_fix_is_lowered_to_high_no_fix(env, monkeypatc
         assert env.run(now=T0)[0] == 0 and entry(env)["level"] == "critical"
     sent = hours(env, 1, 40, BACK)
     assert [lvl for _, lvl in sent] == ["high"] and entry(env)["level"] == "high"
+
+
+def test_held_caps_by_the_roots_fix_and_never_lowers_an_unknown_root_no_fix():
+    """9kgk, integration review: the source's level is held to what the thread can carry.
+    An entry from before root_fixed that has replies has an unknown root: raise-only."""
+    rs, scope = ruleset.load(), next(e for e in schema.load_scope() if e.name == "Claude Code")
+    up = [{"verb": "upgrade", "target": "Claude Code", "value": "2.1.0"}]
+    fixed = lambda e: (e.advisory["products"][0].update(fixed="2.1.0"), e.advisory.update(actions=up), e)[2]  # noqa: E731
+    assert recompute.held(_thread(level="high", root_fixed=""), scope, "critical", rs) == "high"
+    assert recompute.held(fixed(_thread(level="high", root_fixed="2.1.0")), scope, "critical", rs) == "critical"
+    assert recompute.held(fixed(_thread(level="high", root_fixed="")), scope, "critical", rs) == "high"  # a reply's fix
+    from dataclasses import replace
+    legacy = fixed(replace(_thread(level="critical"), replies=[{"feed": "b" * 64}]))  # root_fixed unknown
+    assert recompute.held(legacy, scope, "critical", rs) == "critical"  # never below where it stands
+    assert recompute.held(replace(_thread(level="high"), replies=[{"feed": "b" * 64}]), scope, "critical", rs) == "high"
+    stop = _thread(level="critical", root_fixed="")
+    stop.advisory["actions"] = [{"verb": "stop_using", "target": "Claude Code", "value": None}]
+    assert recompute.held(stop, scope, "critical", rs) == "critical"  # admitted there by a stop_using reading
