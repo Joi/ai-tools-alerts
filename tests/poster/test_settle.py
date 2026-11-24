@@ -435,6 +435,9 @@ def test_a_refused_reply_is_sent_once_more_whatever_the_thread_recorded_since(en
     assert entry(env)["advisory"]["products"][0]["fixed"] == "2.1.5"
     code, summary, relay = env.run(now=T0 + 26 * HOUR + 3 * DAY)
     assert levels(relay) == [{"level": "high"}] and env.state()["withheld"] == [] and "dropped" not in summary
+    e = entry(env)  # recorded on the thread as it is now: the old snapshot does not undo the fix
+    assert e["level"] == "high" and e["advisory"]["products"][0]["fixed"] == "2.1.5"
+    assert [json.loads(schema._last_block(c[2])) for c in replies(relay)] == [{"level": "high"}]  # and no reply repairs it
 
 
 def test_the_retry_mark_is_the_items_and_outlives_a_failed_send(env):
@@ -464,6 +467,18 @@ def test_a_refused_repeat_is_still_settled_by_the_first_attempts_event(env):
     code, summary, relay = run(env, T0 + 25 * HOUR)
     assert relay.calls == [] and env.ledger()[0][0]["root_event_id"] == ev["id"]
     assert env.state()["withheld"] == [] and "delivered:1" in summary
+
+
+def test_a_refused_repeat_with_a_leftover_pending_mark_is_settled_without_stopping_the_run(env):
+    first = unknown_root(env)
+    run(env, T0 + 24 * HOUR, relay=FakeRelay("refuse"))
+    (w,) = env.state()["withheld"]
+    with Ledger(env.config.ledger) as led:  # the run stopped between withholding it and clearing the mark
+        led.pending(w["key"], w["items"][0]["ids"], now=T0 + 24 * HOUR)
+    ev = show(env, first)
+    code, summary, relay = run(env, T0 + 25 * HOUR)
+    assert code == 0 and "error=" not in summary and env.ledger()[1] == []
+    assert env.ledger()[0][0]["root_event_id"] == ev["id"] and relay.calls == []
 
 
 def test_a_pull_that_times_out_keeps_what_an_earlier_pull_stored(env, monkeypatch):

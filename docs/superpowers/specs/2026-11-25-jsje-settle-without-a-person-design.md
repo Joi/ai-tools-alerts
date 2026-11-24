@@ -133,6 +133,13 @@ The independent pass rated three findings critical and three major. All six are 
 - **Fixed (major): a repeat the relay refused ended settlement of the first attempt.** `settle` matches withheld items that carry `tried`. Test: `test_a_refused_repeat_is_still_settled_by_the_first_attempts_event`.
 - **Fixed (major): a pull that timed out discarded the stored events.** Test: `test_a_pull_that_times_out_keeps_what_an_earlier_pull_stored`.
 
+## Review dispositions (delta pass over the fixes, `--since e63d990`, at 947f154, gpt-6-astra)
+
+One finding rated critical and one major; both fixed. No further pass follows (Review Cycle): the gate and the patrol are the next looks.
+
+- **Fixed (critical): a retried reply was recorded with the advisory snapshot it was planned on, undoing replies the thread recorded since.** A reply that carries `retried` or `tried` is recorded by applying its own block to the thread as it is now. Test: `test_a_refused_reply_is_sent_once_more_whatever_the_thread_recorded_since` (the fix the thread took meanwhile stays, and no reply has to repair it).
+- **Fixed (major): a withheld repeat settled from the mirror had its leftover pending mark cleared twice, which stopped the run.** Test: `test_a_refused_repeat_with_a_leftover_pending_mark_is_settled_without_stopping_the_run`.
+
 ## Open questions
 
 None that block. The three constants (24 hours with a mirror generated in the last hour, 72 hours without, three days withheld) are the decisions a reviewer may want to move.

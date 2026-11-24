@@ -455,7 +455,9 @@ class Run:
         for p in unknown + again:
             it, age = items.get(p["key"]), self.now - p["at"]
             if it is None:
-                if p["key"] in withheld:  # a run stopped between withholding it and clearing the mark
+                if not self.led.has_pending(p["key"]):
+                    pass  # cleared above, with a withheld repeat the mirror settled
+                elif p["key"] in withheld:  # a run stopped between withholding it and clearing the mark
                     self.led.clear_pending(p["key"])
                 elif age >= ledger.PENDING_EXPIRY:  # nothing to send again
                     self.led.expire_pending(p["key"], "no journal item 24 hours after the attempt", now=self.now)
@@ -819,6 +821,11 @@ class Run:
             e = self._entry(it)
             if not any(r.get(ch) == eid for r in e.replies):
                 adv = schema.validate(it["adv"])
+                if it.get("retried") or "tried" in it:
+                    # jsje: sent, or settled, long after it was planned; the thread may have
+                    # recorded other replies since. What it says on the wire is applied to
+                    # the thread as it is now: its snapshot would undo them.
+                    adv = compose.parse_reply(it["text"], schema.validate(e.advisory)) or adv
                 m = candidates.BOT_ID.fullmatch(adv.id)
                 low = [m.group(1) if m else adv.id, adv.level]
                 if RANK[adv.level] < RANK[e.level]:  # ny5g: a lowering, recorded for its first channel
