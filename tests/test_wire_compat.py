@@ -4,7 +4,7 @@ finding D12 of the design review on ai-tools-alerts#h29n).
 Each released reader is unpacked from its tag and run as a member would run it. The
 feed carries what the new format adds: a claim tag on roots and replies, a relay-bot
 lowering in a reply of its own, a raise after it in a reply of its own, and ``min_cli``
-in the checkpoint key certificate. Every alert must still be active there, now and a
+and the ruleset pin (ai-tools-alerts#ed7n) in the checkpoint key certificate. Every alert must still be active there, now and a
 month on, at the level this reader shows or a higher one, and must still match the
 installation it matches here.
 
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from aitools_alerts import check, nostr, pull, schema, wire
+from aitools_alerts import check, nostr, pull, ruleset, schema, wire
 from aitools_alerts.inventory import Installed, Inventory
 from aitools_alerts.poster import compose, rules
 from aitools_alerts.schema import Action, Product
@@ -72,8 +72,10 @@ def feed():
     the format must never do; 0006 a bot high for an MCP server, named by its package
     as the scope file's entry names it (wa6n), which a member with that server
     configured is told about. Every relay-bot root has ``expires_at`` null; no reply
-    names it."""
-    m, now = mirror_now(min_cli="99.0.0")
+    names it. The certificate names ``min_cli`` and pins this reader's own ruleset, so
+    this reader is not out of date and computes expiry as usual."""
+    rs = ruleset.load()
+    m, now = mirror_now(min_cli="99.0.0", ruleset_pin=ruleset.Pin(version=rs.version, sha256=rs.digest, min_version=1))
     t = now - 3600
     bot = lambda n, **kw: advisory(id=f"AITA-TEST-000{n}", posted_by="relay-bot", **kw)  # noqa: E731
     reply = lambda root, text, at, *tags: m.post(  # noqa: E731
@@ -118,7 +120,7 @@ def released(tmp_path, tag, m, now) -> dict:
     run = released_reader(tmp_path, tag=tag)
     got = run("pull", "--mirror-url", m.write(tmp_path / "mirror"), root=m.root)
     assert got.returncode == 0 and "Traceback" not in got.stderr, (got.stdout, got.stderr)
-    if tuple(map(int, tag[1:].split("."))) >= (0, 1, 6):  # a checked pull: the certificate, min_cli key and all, was accepted
+    if tuple(map(int, tag[1:].split("."))) >= (0, 1, 6):  # a checked pull: the certificate, min_cli, pin and all, was accepted
         assert "; checkpoint " in got.stdout and " lists " in got.stdout and "unverified" not in got.stderr, got
     out = run.py(DUMP, str(now), root=m.root)
     assert out.returncode == 0, out.stderr
@@ -205,6 +207,30 @@ def test_what_the_format_avoids_a_new_manifest_key_fails_the_released_pull(tmp_p
     st = State.load(tmp_path / "this-reader")
     assert pull.fetch("https://mirror.example.invalid/", st, fetch=m.fetch, root_pubkey=m.root,
                       now=now).error == "bad manifest"
+
+
+@pytest.mark.parametrize("tag", ("v0.1.6", "v0.1.7"))
+def test_a_pin_of_a_later_ruleset_does_not_disturb_a_released_reader(tmp_path, tag):
+    """The ruleset pin is in the certificate (ai-tools-alerts#ed7n). The root pins a
+    ruleset no reader here has: the released readers that read the certificate ignore
+    the key, pull checked and show the alert; this reader reads the pin, says it is out
+    of date, and still shows the alert at its level."""
+    m, now = mirror_now(ruleset_pin=ruleset.Pin(version=99, sha256="0" * 64, min_version=99))
+    m.root_post(m.bot_sec, advisory(posted_by="relay-bot"), created_at=now - 3600,
+                tags=[claim("AITA-TEST-0001", "critical", now - 3600)])
+    live = {"AITA-TEST-0001": ["critical", ["99.0.0"], True]}
+    theirs = released(tmp_path, tag, m, now)  # asserts the pull was a checked one
+    assert theirs[str(now)] == live and theirs[str(now + MONTH)] == live
+    st = State.load(tmp_path / "this-reader")
+    assert pull.fetch("https://mirror.example.invalid/", st, fetch=m.fetch, root_pubkey=m.root, now=now).error is None
+    pin = st.cert_for(m.root).ruleset
+    assert (pin.version, pin.min_version) == (99, 99) and ruleset.outdated(pin)
+    threads, head = pull.advisories(st), pull.head_clock(st)
+    assert shown(threads, now) == live
+    # a month on, under a head issued then: decayed by this reader's own table, kept when it judges nothing
+    assert shown(threads, now + MONTH) == {"AITA-TEST-0001": ["notice", ["99.0.0"], True]}
+    kept = pull.active(threads, now + MONTH, head[1], decay=False)
+    assert [(t.adv.id, t.adv.level) for t in kept] == [("AITA-TEST-0001", "critical")]
 
 
 def test_the_alert_block_schema_is_the_released_one(tmp_path):
