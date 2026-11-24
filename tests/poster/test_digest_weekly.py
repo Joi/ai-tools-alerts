@@ -256,3 +256,13 @@ def test_a_refused_summary_leaves_the_notices_for_the_next_digest(env, monkeypat
 def test_week_validation_refuses_a_week_that_does_not_exist():
     assert inputs.week_ok("2026-W53") and inputs.week_ok("2027-W01")
     assert not any(inputs.week_ok(w) for w in ("2026-W00", "2026-W99", "2025-W53", "0000-W01", "2026-48"))
+
+
+def test_the_digest_links_a_public_mirror_and_falls_back_to_the_default(monkeypatch):
+    from dataclasses import replace as _replace
+    cfg = test_main.inputs.Config(heartbeat_runs="/x", collector_runs="/x", ledger="/x/l.json", **test_main.RELAY)
+    custom = "https://mirror.example.org/alerts/"
+    assert test_main.main._mirror_link(_replace(cfg, translate_mirror_url=custom)) == custom
+    assert test_main.main._mirror_link(_replace(cfg, translate_mirror_url="file:///srv/alerts/")) == LINK
+    monkeypatch.setattr(compose.socket, "gethostname", lambda: "host-alpha")
+    assert test_main.main._mirror_link(_replace(cfg, translate_mirror_url="https://host-alpha/alerts/")) == LINK

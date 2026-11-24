@@ -51,7 +51,7 @@ _TOKYO = _dt.timezone(_dt.timedelta(hours=9))
 
 
 def week_ok(v) -> bool:
-    """A week string ``iso_week`` writes: a week that exists (2026-W53 does not)."""
+    """A week string ``iso_week`` writes: a week that exists (2025-W53 does not)."""
     if not (isinstance(v, str) and WEEK.fullmatch(v)):
         return False
     try:
