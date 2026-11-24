@@ -580,19 +580,25 @@ class Run:
         return compose.is_synthetic(c.id)
 
     def _former(self, scope, ids):
-        """wa6n: the scope under the product's earlier name when that name still holds this
-        advisory's thread, held notice, first sight or journaled work; else ``scope``. The
-        update then keeps that name, as the reply check requires, and nothing starts twice."""
+        """wa6n: the scope under the product's earlier name when that name holds this
+        advisory's thread or journaled work; else ``scope``. The update then keeps the
+        thread's name, as the reply check requires, and no second root starts. Anything
+        not yet posted keeps the current name, the one a member's installation matches."""
         if self.led.lookup(ids, scope=scope.name) is not None:
             return scope
         keys = _fold(ids)
         journal = [it for it in self.state["outbox"] + self._withheld_items() if it["kind"] != "ja"]
         for old in getattr(scope, "formerly", ()):
-            if self.led.lookup(ids, scope=old) is not None or self._held_for(old, ids) is not None \
-                    or any(f"{old}|{k}" in self.state["waiting"] or f"{old}|{k}" in self.state["digested"] for k in keys) \
+            if self.led.lookup(ids, scope=old) is not None \
                     or any(it["scope"] == old and _fold(it["ids"]) & keys for it in journal):
                 return replace(scope, name=old, formerly=())
         return scope
+
+    def _noticed_formerly(self, scope, ids) -> bool:
+        """wa6n: a notice for these ids is held, or was digested, under a former name."""
+        keys = _fold(ids)
+        return any(self._held_for(old, ids) is not None or any(f"{old}|{k}" in self.state["digested"] for k in keys)
+                   for old in getattr(scope, "formerly", ()))
 
     def one(self, c, scope):
         ids = [c.id, *c.aliases]
@@ -606,6 +612,8 @@ class Run:
         if entry is None and not rules.starts(scope, level):  # wa6n: out of the community service
             self.n["out"] += 1
             return
+        if entry is None and level == "notice" and self._noticed_formerly(scope, ids):
+            return  # wa6n: held or listed under its earlier name already; once is enough
         if entry is not None and (self.is_synthetic(c) or compose.is_synthetic(entry.advisory.get("id"))):
             # A synthetic entry only ever starts a thread, and a synthetic thread takes no
             # update (copy or reply) from any input: plan_known would compose it unmarked.

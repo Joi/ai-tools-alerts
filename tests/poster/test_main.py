@@ -2285,3 +2285,20 @@ def test_a_notice_held_under_a_former_name_is_not_held_twice(env):
     env.collector([f], name="2026-11-05T020000Z")
     env.run(now=T0 + 3600)
     assert [h["scope"] for h in env.state()["held"]] == ["MCP Inspector"]
+
+
+def test_a_root_after_a_notice_under_a_former_name_takes_the_current_name(env):
+    f = finding(fid="GHSA-4fc4-wcmh-4g86", product="npm:@modelcontextprotocol/inspector", severity=None,
+                fixed=None, sources=(INSPECTOR,))
+    env.collector([f])
+    env.run()
+    st = env.state()
+    st["held"][0]["scope"] = "MCP Inspector"
+    env.config.state.write_text(json.dumps(st))
+    rce = dict(f, fixed="1.0.3", advisory_severity="high")
+    rce["sources"] = [{"url": INSPECTOR, "published_at": None, "title": "Remote code execution through the proxy"}]
+    env.collector([rce], name="2026-11-05T020000Z")
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert "roots=1" in summary and relay.calls[0][2].startswith("HIGH: `@modelcontextprotocol/inspector`")
+    (e,), _ = env.ledger()
+    assert e["scope"] == "@modelcontextprotocol/inspector" and e["advisory"]["products"][0]["name"] == e["scope"]
