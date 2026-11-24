@@ -142,6 +142,7 @@ def env(tmp_path):
             relay = relay if relay is not None else FakeRelay()
             kw = {"mirror_fetch": self.mirror.fetch, "root": self.mirror.root, "page": self.pages, **kw}
             kw.setdefault("ssh", relay)  # the checkpoint route; a test's PutRelay takes both
+            kw.setdefault("catalog_channel", False)  # q03f: tests/poster/test_catalog.py turns it on
             code, summary = main.run(now, self.config, send=relay, kev_fetch=kev or self.kev,
                                      channels=CHANNELS, **kw)
             return code, summary, relay

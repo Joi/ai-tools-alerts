@@ -481,6 +481,11 @@ def test_the_pin():
     assert ruleset.check_claim(good, CC, pin(sha256="0" * 64)) == "outdated"
     assert ruleset.check_claim(good, CC, pin(version=4, sha256="0" * 64)) == "ok"  # a newer pin, still allowed
     assert ruleset.check_claim(claim(ruleset=4), CC, pin(version=4, sha256="0" * 64)) == "unknown"
+    # outdated(): the one definition, which check_claim and the CLI's line share (ed7n)
+    assert ruleset.outdated(pin(version=5, min_version=4)) and ruleset.outdated(pin(sha256="0" * 64), RS)
+    assert not ruleset.outdated(pin()) and not ruleset.outdated(pin(min_version=3))
+    assert not ruleset.outdated(pin(version=4, sha256="0" * 64))  # the root pins a later one; 3 is still allowed
+    assert not ruleset.outdated(pin(version=2, min_version=2, sha256="0" * 64))  # this reader is ahead of the pin
     for bad in ({"version": 1, "min_version": 2, "sha256": "0" * 64}, {"version": 1, "min_version": 0, "sha256": "0" * 64},
                 {"version": 1, "min_version": 1, "sha256": "ABC"}, {"version": True, "min_version": 1, "sha256": "0" * 64},
                 {"version": 1, "min_version": 1}, {"version": 1, "min_version": 1, "sha256": "0" * 64, "x": 1}, None):

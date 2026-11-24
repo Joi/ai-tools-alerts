@@ -33,7 +33,7 @@ from datetime import datetime
 from . import schema
 
 __all__ = ["VERSION", "NONE", "RulesetError", "Support", "Ruleset", "Pin", "load", "canonical",
-           "parse_claim", "parse_pin", "check_claim", "source_of", "ordered",
+           "parse_claim", "parse_pin", "outdated", "check_claim", "source_of", "ordered",
            "cvss_metrics", "norm", "class_of", "index", "UNCONFIRMED_DAYS"]
 
 VERSION = 3  # the only ruleset version this reader evaluates (9kgk: levels by consequence)
@@ -603,6 +603,14 @@ def parse_pin(obj) -> Pin:
     return Pin(version=v, sha256=h, min_version=m)
 
 
+def outdated(pin: Pin, rs: Ruleset | None = None) -> bool:
+    """Whether this reader's ruleset is out of date under ``pin``: below its
+    ``min_version``, or the pinned version with another digest. A reader above the
+    pinned version is not: a release may carry a ruleset before the root pins it."""
+    rs = rs or load()
+    return rs.version < pin.min_version or (rs.version == pin.version and rs.digest != pin.sha256)
+
+
 def check_claim(claim, product: str, pin: Pin | None = None, rs: Ruleset | None = None) -> str:
     """The offline check of a claim about ``product``. One of:
 
@@ -619,8 +627,7 @@ def check_claim(claim, product: str, pin: Pin | None = None, rs: Ruleset | None 
     rs = rs or load()
     if type(product) is not str:
         return "refused"
-    if pin is not None and (rs.version < pin.min_version
-                            or rs.version == pin.version and rs.digest != pin.sha256):
+    if pin is not None and outdated(pin, rs):
         return "outdated"
     try:
         claim = parse_claim(claim)

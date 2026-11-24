@@ -1278,7 +1278,8 @@ def standing(t: Thread, now: float | None = None, check=None) -> Thread:
     return base(t.offered if said is False else None)
 
 
-def active(threads: list[Thread], now: float | None = None, listed=None, check=None) -> list[Thread]:
+def active(threads: list[Thread], now: float | None = None, listed=None, check=None, *,
+           decay: bool = True) -> list[Thread]:
     """Threads check should see: not retracted, not expired, each at the level
     it holds at ``now``, as it stands (``standing``).
 
@@ -1298,7 +1299,9 @@ def active(threads: list[Thread], now: float | None = None, listed=None, check=N
     judges it. So every renewal is counted when the thread is judged, the
     root's among them, and no reply can end a thread sooner than the root
     alone would. Every other thread does not expire. A ruleset that cannot be
-    loaded expires nothing.
+    loaded expires nothing, and neither does ``decay=False``: a reader whose
+    ruleset the trust root calls out of date (``ruleset.outdated``) keeps the
+    level a thread's events give. A curator's ``expires_at`` still ends its thread.
 
     Each thread is taken as it stands (``standing``, with ``check``): a curator's hold
     on a relay-bot thread lapses by the same clock, under a checkpoint that lists the
@@ -1314,7 +1317,7 @@ def active(threads: list[Thread], now: float | None = None, listed=None, check=N
             if t.adv.expires_at is not None:
                 if now > t.adv.expires_at:
                     continue
-            elif t.enrolled_at is not None and not t.curated and all(at <= now for _, _, at in t.renewals):
+            elif decay and t.enrolled_at is not None and not t.curated and all(at <= now for _, _, at in t.renewals):
                 try:
                     rs = rs or ruleset.load()
                     level = rs.level_at(level, [(c, k) for c, k, _ in t.renewals], now)
