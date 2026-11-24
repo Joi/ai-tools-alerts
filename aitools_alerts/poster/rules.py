@@ -36,7 +36,7 @@ from urllib.parse import urljoin, urlsplit
 
 from aitools_alerts import ruleset, schema, versions
 from aitools_alerts.poster import compose
-from aitools_alerts.poster.candidates import BOT_ID, Candidate
+from aitools_alerts.poster.candidates import BOT_ID, MAX_SOURCE_TEXT, Candidate
 
 FETCH_TIMEOUT = 10
 MAX_REDIRECTS = 5
@@ -338,6 +338,7 @@ class AdvisoryPage:
     blocks: tuple[Block, ...]
     severity: str | None
     title: str | None
+    description: str | None = None  # c6ak: the advisory's own prose, for the model's wording only
 
 
 def _lines(text: str) -> list[str]:
@@ -396,8 +397,14 @@ def read_advisory(text: str) -> AdvisoryPage | None:
     m = _HTML_TITLE.search(text)
     title = " ".join(html.unescape(m.group(1)).split()) if m else ""
     title = title.rsplit(" · Advisory · ", 1)[0] if " · Advisory · " in title else ""
+    # c6ak: the description is the text between its heading and the sidebar's last
+    # "Severity" label; it words a post and is never read for a field.
+    d = lines.index("Description")
+    end = max((k for k in range(d + 1, len(lines)) if lines[k] == "Severity"), default=len(lines))
+    description = " ".join(lines[d + 1:end])[:MAX_SOURCE_TEXT].strip()
     return AdvisoryPage(ghsa=ghsa, cve=cve if _CVE.fullmatch(cve) else None, blocks=tuple(blocks),
-                        severity=severity if severity in _SEVERITIES else None, title=title or None)
+                        severity=severity if severity in _SEVERITIES else None, title=title or None,
+                        description=description or None)
 
 
 def _names(text: str, token: str) -> bool:
@@ -466,6 +473,7 @@ class Evidence:
     repository: str | None = None  # owner/repo of the page, lowercase
     packages: tuple = ()  # its blocks that are this product: (ecosystem or "", name, affected, patched) as stated
     other_package: bool = False  # the vendor's page for this id names only packages that are not this product
+    text: str | None = None  # c6ak: the confirming page's description, for wording only
 
     @property
     def ok(self) -> bool:
@@ -536,7 +544,7 @@ def evidence(c: Candidate, scope, page, entries=None) -> Evidence:
             if affected in (None, "*") and any(b.affected for b in mine):
                 affected = UNEXPRESSED  # dmmf: a range is stated, never "all": the post says "see the source"
             rank, found = 2, dict(url=u, ids=own, fixed=_highest(b.patched for b in mine),
-                                  affected=affected, title=p.title,
+                                  affected=affected, title=p.title, text=p.description,
                                   severity=p.severity, ghsa=p.ghsa,
                                   repository="/".join(urlsplit(u).path.split("/")[1:3]).lower(),
                                   packages=tuple((b.ecosystem if b.ecosystem in _REGISTRIES else "", b.name,
@@ -548,7 +556,8 @@ def evidence(c: Candidate, scope, page, entries=None) -> Evidence:
             rank, found = 1, dict(url=u, ids={base})
     ids = frozenset(found.get("ids", set()) | ({base} if kev else set()))
     return Evidence(kev=kev, url=found.get("url"), ids=ids, fixed=found.get("fixed"),
-                    affected=found.get("affected"), title=found.get("title"), severity=found.get("severity"),
+                    affected=found.get("affected"), title=found.get("title"), text=found.get("text"),
+                    severity=found.get("severity"),
                     retry=(retry or unparsed or budget) and not found and not kev,
                     unparsed=unparsed and not found, budget=budget and not found,
                     structured=rank == 2, other_package=other and not found, ghsa=found.get("ghsa"),

@@ -348,7 +348,18 @@ def _do(name, fixed, *, stop=False, unexpressed=False, exploited=False, ja=False
         + " the source's workaround, if it gives one, until a fixed release ships."
 
 
-def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, schema.Advisory]:
+def worded(head: str, name: str, wording) -> bool:
+    """The model's headline fits beside ``head`` whole: a model line is never cut (c6ak)."""
+    return wording is not None and "…" not in headline(head, name, wording.headline, wording.headline)
+
+
+def head_of(level: str, adv_id: str, reason: str | None = None) -> str:
+    """The head line's level and markers, as root_post writes them."""
+    return level.upper() + (f" ({SYNTHETIC})" if is_synthetic(adv_id) else "") \
+        + (f" ({UNVERIFIED})" if reason == "unverified" else "")
+
+
+def root_post(c, level, scope, *, posted_at: int | None = None, wording=None) -> tuple[str, schema.Advisory]:
     """(post text, Advisory) for a new thread: five body lines (headline, Affected, Do,
     Covers, Source; design section 6), then the block on one line.
     ``c.id`` must be a CVE or GHSA id, bare or as a thread key (``candidates.BOT_ID``).
@@ -358,7 +369,9 @@ def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, sc
     carries a complete action (9kgk): an upgrade to a stated version, or, with reason
     ``stop-using`` (``rules.level_for``), stop_using the product; any other critical
     raises ValueError and does not post, except a bare level (reason None): the level a
-    thread already stands at, which ``plan_known`` keeps."""
+    thread already stands at, which ``plan_known`` keeps. ``wording`` (``wording.Wording``,
+    c6ak) replaces the source title in the headline and adds a ``Who:`` line after it,
+    when its headline fits whole; it is body text only and never reaches the block."""
     if getattr(scope, "components", ()):  # rules.scope_of resolves an entry to its component
         raise ValueError("an unresolved scope entry would publish a group name")
     if not (isinstance(c.id, str) and candidates.BOT_ID.fullmatch(c.id)):
@@ -381,12 +394,14 @@ def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, sc
         sources=sources, posted_by=POSTED_BY,
         posted_at=int(time.time()) if posted_at is None else posted_at, expires_at=None)))
     p = adv.products[0]
-    head = adv.level.upper() + (f" ({SYNTHETIC})" if is_synthetic(adv.id) else "") \
-        + (f" ({UNVERIFIED})" if reason == "unverified" else "")
+    head = head_of(adv.level, adv.id, reason)
+    wording = wording if worded(head, p.name, wording) else None
     # No version is not no fix: a KEV entry carries no version data at all (4yr1). A fix
     # the schema cannot express is named by the source, never by a version here (h340).
     pkg, registry = package_of(scope)
-    body = [headline(head, p.name, source_title(c), f"{p.name}: {_kind(c, None)}"),  # the head marks unverified
+    body = [headline(head, p.name, wording.headline if wording else source_title(c),
+                     f"{p.name}: {_kind(c, None)}"),  # the head marks unverified
+            *([f"Who: {wording.who}"] if wording else []),
             f"Affected: {pkg}{_words(p.affected, range_unexpressed(c))}" + (f" ({registry})." if registry else "."),
             _do(p.name, fixed, stop=stop, unexpressed=fix_unexpressed(c),
                 exploited=c.exploited is True or _exploited(adv)),
@@ -432,12 +447,14 @@ def _ja_kind(adv: schema.Advisory) -> str:
 
 def root_post_ja(adv: schema.Advisory, reason: str | None = None, unexpressed: bool = False,
                  title: str | None = None, *, exploited: bool = False, range_unexpressed: bool = False,
-                 package: tuple[str, str | None] | None = None) -> str:
+                 package: tuple[str, str | None] | None = None, wording=None) -> str:
     """root_post's five body lines in Japanese, from the Advisory root_post returned. The
     headline is the same ``title`` (``source_title``), in English as the source wrote it.
     ``exploited`` is the candidate's: a thread keeps its first title unless its level
     rises, so the title alone can miss a KEV entry learned later. ``package`` is
-    ``package_of(scope)``; without it the product name and no registry."""
+    ``package_of(scope)``; without it the product name and no registry. ``wording``
+    is the one root_post used: its headline, in English; its Who line is not put
+    in the Japanese post, whose other lines are all the template's (c6ak)."""
     exploited = exploited or _exploited(adv)
     p, fixed = adv.products[0], adv.products[0].fixed
     head = _JA_LEVEL[adv.level] + (f" ({SYNTHETIC})" if is_synthetic(adv.id) else "") \
@@ -445,7 +462,8 @@ def root_post_ja(adv: schema.Advisory, reason: str | None = None, unexpressed: b
     stop = not fixed and any(a.verb == "stop_using" for a in adv.actions)
     pkg, registry = package or (p.name, None)
     return _inline("\n".join([
-        headline(head, p.name, _upstream(title), _ja_kind(adv)),
+        headline(head, p.name, wording.headline if worded(head, p.name, wording) else _upstream(title),
+                 _ja_kind(adv)),
         f"影響: {pkg}{_words_ja(p.affected, range_unexpressed)}" + (f"（{registry}）。" if registry else "。"),
         _do(p.name, fixed, stop=stop, unexpressed=unexpressed and not fixed, exploited=exploited, ja=True),
         *_covers_line(adv, ja=True), f"出典: {_primary(adv.sources)}"]))

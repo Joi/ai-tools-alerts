@@ -86,6 +86,9 @@ class Config:
     translate_curator: bool = False
     translate_mirror_url: str = _member_config.DEFAULT_MIRROR_URL
     secrets_helper: Path | None = None
+    # A model writes a root post's headline and Who line (ai-tools-alerts#c6ak): off by
+    # default; the same key, call path and hold as curator translation.
+    model_wording: bool = False
     # The feed checkpoint (ai-tools-alerts#nfm3): the file holding the checkpoint secret
     # key on THIS machine (mode 600; one key, one poster, one ledger), the ssh destination
     # of the put-only route on the relay VM, and the absolute path there of the command
@@ -245,6 +248,10 @@ def load_config(path) -> Config:
         if type(raw["translate_curator"]) is not bool:
             raise ConfigError("translate_curator must be true or false")
         out["translate_curator"] = raw["translate_curator"]
+    if "model_wording" in raw:
+        if type(raw["model_wording"]) is not bool:
+            raise ConfigError("model_wording must be true or false")
+        out["model_wording"] = raw["model_wording"]
     if "translate_mirror_url" in raw:
         try:
             out["translate_mirror_url"] = _member_config.check_mirror_url(raw["translate_mirror_url"])
@@ -268,6 +275,8 @@ def load_config(path) -> Config:
         out["relay_ssh_host"] = raw["relay_ssh_host"]
     if out.get("translate_curator") and "secrets_helper" not in out:
         raise ConfigError("translate_curator needs secrets_helper")
+    if out.get("model_wording") and "secrets_helper" not in out:
+        raise ConfigError("model_wording needs secrets_helper")
     cfg = Config(**out)
     cfg.check_checkpoint()
     cfg.check_paths()
@@ -440,7 +449,7 @@ def _item_ok(it) -> bool:
 
 def candidate_from(d) -> Candidate:
     """A Candidate rebuilt from Candidate.to_dict(); ValueError when it is not one."""
-    if not (isinstance(d, dict) and set(d) | {"source_title"} == _CANDIDATE_FIELDS - {"severity_word", "readings"}  # r7hr
+    if not (isinstance(d, dict) and set(d) | {"source_title"} == _CANDIDATE_FIELDS - {"severity_word", "readings", "source_text"}  # r7hr, c6ak
             and (d.get("source_title") is None or isinstance(d["source_title"], str))):
         raise ValueError("not a candidate")
     strs = ("id", "product_text")
