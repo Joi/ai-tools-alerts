@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import os
 import shlex
 import sys
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass, replace
 from urllib.parse import quote
 
@@ -44,6 +46,15 @@ OUTDATED_DIGEST_LINE = ("out of date: this aitools-alerts has a ruleset {have} t
                         "the trust root pins. {tail}")
 OUTDATED_UNREADABLE_LINE = ("out of date: the trust root pins a ruleset in a form this aitools-alerts "
                             "(ruleset {have}) cannot read. {tail}")
+# tavj (finding D8): an alert this machine could not verify interrupts at most this often per poster key
+MAX_UNVERIFIED = 2
+UNVERIFIED_WINDOW_S = 86400
+NOT_VERIFIED = "Not verified from this machine"
+UNVERIFIED_LINE_IDS = "not verified from this machine: {ids}"
+HELD_LINE = ("held, not notified (not verified from this machine; at most {n} unverified alerts from one poster "
+             "interrupt in 24 hours): CRITICAL: {title} (id {id})")
+WAITING_LINE = ("a lowering of {id} to {level} is published and not verified from this machine: "
+                "it applies once signed checkpoints 72 hours apart have listed it")
 OUTDATED_TAIL = ("It judges no level until it is upgraded: no source check, no computed expiry; "
                  "alerts are shown as posted. See the README to upgrade.")
 
@@ -174,6 +185,7 @@ class Entry:
     adv: schema.Advisory
     translations: dict  # lang -> text, of the first root
     refused: str | None = None  # c1g2: a lowering to this level was not applied (pull.standing)
+    waiting: str | None = None  # tavj: a relay-bot lowering to this level waits its 72 hours
 
 
 def _entries(threads: list, warned: set) -> list[Entry]:
@@ -195,7 +207,8 @@ def _entries(threads: list, warned: set) -> list[Entry]:
             warned.add(key)
             _err(f"copies of {copies[0][0].adv.id} differ; listing each")
         out += [Entry(c[0].root_id, tuple(t.root_id for t in c), c[0].adv, _merged(c),
-                      next((t.refused for t in c if t.refused), None)) for c in copies]
+                      next((t.refused for t in c if t.refused), None),
+                      next((t.waiting for t in c if t.waiting), None)) for c in copies]
     return out
 
 
@@ -239,8 +252,10 @@ def _matches(a, st: State) -> tuple[list, list]:
         _err("the stored state was pulled under another trust root; run: aitools-alerts pull")
         return [], []
     a.raw = pull.advisories(st)
-    threads = _entries(pull.active(a.raw, *pull.head_clock(st), _lowering_check(a, st),
-                                   decay=_ruleset_outdated(a, st) is None),
+    now, listed = pull.head_clock(st)
+    said = _lowering_check(a, st)
+    threads = _entries(pull.active(a.raw, now, listed, said, decay=_ruleset_outdated(a, st) is None,
+                                   since=_note_offers(a, st, now, listed, said)),
                        a.__dict__.setdefault("warned", set()))
     inv = inventory.collect()
     ms = check.match([t.adv for t in threads], inv)
@@ -249,8 +264,85 @@ def _matches(a, st: State) -> tuple[list, list]:
     # each with whether its widest state matches this machine (``verify = "matched"``).
     wide = [(t, pull.widest(t)) for t in a.raw if pull.asks(t)]
     here = {id(m.adv) for m in check.match([w for _, w in wide], inv)}
-    a.asked = [(verify.at_level(w, level), id(w) in here) for t, w in wide for level in pull.asks(t)]
+    a.asked = [(_asked(a, st, t, level, w), id(w) in here) for t, w in wide for level in pull.asks(t)]
     return threads, [(by_adv[id(m.adv)], m) for m in ms]
+
+
+def _pin(a, st: State):
+    """The ruleset pin of the stored certificate, or None."""
+    return getattr(st.cert_for(a.root), "ruleset", None)
+
+
+def _asked(a, st: State, t, level: str, wide=None):
+    """The state the sources are asked about for lowering thread ``t`` to ``level``:
+    its widest state, marked claimed when the thread's signed claims say every higher
+    level rested on the first id's fields (``verify.claimed``)."""
+    wide = wide if wide is not None else pull.widest(t)
+    return verify.at_level(wide, level, verify.claimed(wide, level, t.stated, None, _pin(a, st)))
+
+
+def _note_offers(a, st: State, now, listed, check):
+    """Bring the record of unchecked relay-bot lowerings (``pull.offers``) up to the
+    stored checkpoint, and return what ``pull.active`` may count: None for a CLI the
+    trust root calls too old or whose ruleset is out of date, which applies no lowering
+    unchecked.
+
+    A thread whose lowering this machine's check has refused is remembered by its root's
+    id (``State.refused``), and while it is remembered no wait of that thread runs. The
+    refusal ends only when the check confirms the thread's standing lowering, or when
+    whole reads of authorities give no more than its level
+    (``verify.lowering(whole=True)``). A state the sources were not yet asked about, a
+    failed read, a crowded request budget, a turned-off check, a raise and a new
+    lowering reply all leave it standing, so nothing the thread's signer posts turns a
+    known refusal into an unchecked lowering. A state directory that cannot be written
+    records nothing.
+
+    The record is rewritten under the state lock from the record and the source-check
+    results as they are on disk then, never from what this command read before it had
+    the lock: a command that started earlier must not write its older view over a
+    refusal, or a later start of a wait, that another command has saved since."""
+    def step(check) -> tuple[dict, set]:
+        want = pull.offers(a.raw, st.lowerings, now, listed)
+        refused = set(st.refused)
+        if now is not None and listed is not None:
+            refused &= {t.root_id for t in a.raw}
+            for t in a.raw:
+                if t.offered_by not in want:
+                    continue
+                said = check(pull.widest(t), t.offered, t.stated) if check is not None else None
+                if said is False:
+                    refused.add(t.root_id)
+                elif said is True or (check is not None and check.whole(pull.widest(t), t.offered, t.stated)):
+                    refused.discard(t.root_id)
+                if t.root_id in refused:
+                    want[t.offered_by] = int(now)  # the 72 hours start when the refusal ends
+        return want, refused
+
+    want, refused = step(check)
+    if (want, refused) != (st.lowerings, st.refused):
+        try:
+            with st.locked():
+                st.lowerings, st.refused = step(_lowering_check(a, st))
+                st.save_unverified()
+        except OSError:
+            st.lowerings, st.refused = want, refused  # for this command; nothing applies sooner for it
+    if _min_cli(a, st) is not None or _ruleset_outdated(a, st) is not None:
+        return None
+    held = {t.offered_by for t in a.raw if t.root_id in st.refused}
+    return {i: at for i, at in st.lowerings.items() if i not in held}
+
+
+class _Check:
+    """The ``check`` of pull.standing over the source-check results on disk."""
+
+    def __init__(self, cache, rs, pin):
+        self.cache, self.rs, self.pin = cache, rs, pin
+
+    def __call__(self, adv, level, stated=()):
+        return verify.lowering(adv, level, self.cache, time.time(), self.rs, stated, self.pin)
+
+    def whole(self, adv, level, stated=()) -> bool:
+        return verify.lowering(adv, level, self.cache, time.time(), self.rs, stated, self.pin, whole=True) is True
 
 
 def _lowering_check(a, st: State):
@@ -267,7 +359,25 @@ def _lowering_check(a, st: State):
         cache, rs = _cache(a, st, s), ruleset.load()
     except Exception:  # a damaged ruleset: nothing is settled, and every alert is still shown and notified
         return None
-    return lambda adv, level: verify.lowering(adv, level, cache, time.time(), rs)
+    return _Check(cache, rs, _pin(a, st))
+
+
+def _mend(st: State) -> None:
+    """Rebuild a damaged unverified.json, with nobody's help and on the safe side: every
+    wait starts again, every remembered refusal is asked again, and for one window no
+    unverified alert takes a slot (``State.reset_at``), since how many were used is
+    unknown. When the directory cannot be written the same holds for this command."""
+    if not st.unverified_damaged:
+        return
+    fresh = ({}, set(), {}, {}, int(time.time()))
+    try:
+        with st.locked():
+            if st.unverified_damaged:  # else a concurrent run has mended it
+                st.lowerings, st.refused, st.interrupts, st.held, st.reset_at = fresh
+                st.save_unverified()
+    except OSError:
+        st.lowerings, st.refused, st.interrupts, st.held, st.reset_at = fresh
+    _err("the record of unverified alerts was unreadable and has been started again")
 
 
 def _source(adv) -> tuple[str, bool]:
@@ -306,9 +416,12 @@ def _source_check(a, st: State, s: config.Settings, threads: list, pairs: list, 
         return
     wanted = [t.adv for t in threads] if s.verify == "all" else [t.adv for t, _ in pairs]
     wanted += [adv for adv, here in asked if here or s.verify == "all"]
+    # tavj: a confirmation a critical on this machine rests on is read again daily too: it
+    # exempts the alert from the cap on unverified interrupts only while it is fresh.
+    critical = [t.adv for t, _ in pairs if t.adv.level == "critical"]
     try:
         verify.run([t.adv for t in threads] + [adv for adv, _ in asked], wanted, st.dir,
-                   recheck=[adv for adv, _ in asked])
+                   recheck=[adv for adv, _ in asked] + critical)
     except Exception:
         _err(SOURCE_CHECK_FAILED)
 
@@ -340,7 +453,7 @@ def _source_lines(a, st: State, s: config.Settings, threads: list) -> list[str]:
         if t.refused is None or ident is None or t.root_id not in shown:
             continue
         what = f"a retraction of {ident}" if t.refused == pull.NONE else f"a lowering of {ident} to {t.refused}"
-        found = verify.result_for(verify.at_level(pull.widest(t), t.refused), cache) or {}
+        found = verify.result_for(_asked(a, st, t, t.refused), cache) or {}
         out += [f"source check: {what} is not applied: the source supports {r['source']} for {name}"
                 for name, r in sorted(found.items()) if r["why"] == "below-source" and name in scope]
     return list(dict.fromkeys(out))
@@ -369,7 +482,7 @@ def cmd_verify(a, st: State, s: config.Settings) -> int:
     print(f"source check: {found.count(verify.CONFIRMED)} confirmed, {found.count(verify.CONTRADICTED)} "
           f"contradicted, {found.count(verify.UNKNOWN)} not verified")
     if a.asked and (check := _lowering_check(a, st)) is not None:
-        said = [check(pull.widest(t), level) for t in a.raw for level in pull.asks(t)]
+        said = [check(pull.widest(t), level, t.stated) for t in a.raw for level in pull.asks(t)]
         print(f"source check: {len(said)} lowerings or retractions asked about: {said.count(True)} confirmed, "
               f"{said.count(False)} contradicted, {said.count(None)} not settled")
     for line in _source_lines(a, st, s, threads):
@@ -385,7 +498,7 @@ def _match_json(t, m, cache=None, judged: bool = True) -> dict:
             "installed": asdict(m.installed), "product": asdict(m.product) if m.product else None,
             "actions": [asdict(x) for x in m.actions_allowed],
             "translations": dict(t.translations), "source_check": _check_json(t, m, cache, judged),
-            "lowering_refused": t.refused}
+            "lowering_refused": t.refused, "lowering_waits": t.waiting}
 
 
 def _unverified(a, st: State) -> str | None:
@@ -469,6 +582,16 @@ def cmd_check(a, st: State, s: config.Settings, source_lines: bool = True) -> in
         ver = m.installed.version or "unknown version"
         print(f"{t.adv.level.upper()}: {_title(t, s)} [{m.installed.name} {ver}: {m.reason}] "
               f"(id {t.adv.id}, {_thread_ref(t)})")
+    cache = _results(a, st, s)
+    loose = [t.adv.id for t, m in pairs if _result(t, m, cache) == verify.UNKNOWN]
+    if loose:
+        print(UNVERIFIED_LINE_IDS.format(ids=", ".join(dict.fromkeys(loose))))
+    once = {t.root_id: t for t, _ in pairs}  # an entry matched through two installations is said once
+    for t in {t.root_id: t for t, _ in _interrupts(a, st, s, pairs)[1]}.values():
+        print(HELD_LINE.format(n=MAX_UNVERIFIED, title=_title(t, s), id=t.adv.id))
+    for t in once.values():
+        if t.waiting:
+            print(WAITING_LINE.format(id=t.adv.id, level=t.waiting))
     matched = {t.root_id for t, _ in pairs}
     other = [t for t in threads if t.adv.level == "critical" and t.root_id not in matched]
     if other:
@@ -488,10 +611,159 @@ def _unseen_critical(a, st: State, pairs: list | None = None) -> list:
             and not _seen(t, st)]
 
 
-def _notify(st: State, s: config.Settings, pending) -> int:
+def _results(a, st: State, s: config.Settings) -> dict | None:
+    """The source-check results an interrupt is judged by; None when this CLI verifies
+    nothing: ``verify = "off"``, a CLI the trust root calls too old or out of date, a
+    ruleset or cache that cannot be loaded. Never raises: an alert is still sent."""
+    try:
+        return None if _min_cli(a, st) is not None else _cache(a, st, s)
+    except Exception:
+        return None
+
+
+def _result(t: Entry, m, cache) -> str | None:
+    """The source-check result of the product a match rests on: None for an alert no
+    relay bot posted (it is not checked), unknown for a match with no product."""
+    if t.adv.posted_by != verify.BOT:
+        return None
+    r = (verify.result_for(t.adv, cache) or {}).get(m.product.name) if m.product is not None else None
+    return r["result"] if r is not None else verify.UNKNOWN
+
+
+def _confirmed_now(t: Entry, m, cache, now: int) -> bool:
+    """This machine read the source of the matched product no more than verify.FRESH_S
+    ago and it confirmed the alert. An older confirmation verifies nothing: the result
+    belongs to the published state, not to the post, and a new post that copies a state
+    confirmed last month must not pass as checked."""
+    if cache is None or _result(t, m, cache) != verify.CONFIRMED:
+        return False
+    held = cache["results"].get(verify.state_key(t.adv))
+    return held is not None and 0 <= now - held["at"] <= verify.FRESH_S
+
+
+def _poster(t: Entry, st: State) -> str:
+    """The key that signed the alert's root."""
+    ev = st.events.get(t.root_id)
+    return ev["pubkey"] if ev else "0" * 64
+
+
+def _slots(st: State, bucket: str, now: int) -> dict:
+    """{root id: time} of the interrupts counted against ``bucket`` inside the window, by
+    this machine's clock. One dated after the clock is not counted: a clock set back
+    must not silence alerts."""
+    return {r: at for r, at in st.interrupts.get(bucket, {}).items() if now - UNVERIFIED_WINDOW_S < at <= now}
+
+
+def _verified_bucket(t: Entry, m) -> str:
+    """The bucket of the one slot a confirmed alert takes: the advisory's first id as the
+    source is asked for it and the matched product, and nothing else of the post. The
+    aliases, the level, the title and the root are the signer's to vary; what this
+    machine read and confirmed is that id for that product."""
+    name = m.product.name if m.product is not None else ""
+    return hashlib.sha256(json.dumps([verify.norm_id(t.adv.id), name]).encode("utf-8")).hexdigest()
+
+
+def _interrupts(a, st: State, s: config.Settings, pairs: list | None = None) -> tuple[list, list, list, set]:
+    """(pending, held, grants, the root ids of the unverified among pending) of the
+    unseen critical matches (tavj, finding D8). Each alert is decided once, whatever
+    number of installations or products it matches through.
+
+    A relay-bot alert interrupts on a slot. One this machine's own read of the source
+    confirms, freshly (``_confirmed_now``, for any product it matches), takes the one
+    slot of that advisory and product (``_verified_bucket``) per UNVERIFIED_WINDOW_S:
+    copies of a confirmed post are not each confirmed. Any other is unverified and takes
+    one of the MAX_UNVERIFIED slots of its poster key per window. An alert that holds a
+    slot keeps interrupting until it is seen, so a notification that failed is tried
+    again; one that finds no slot is held: listed, not notified, not marked seen, no
+    exit 2, until its source confirms it or a slot is free. A free slot goes to the alert
+    held longest (``State.held``), before one never held and before one whose own slot
+    ran out, so nothing dated earlier or posted later keeps a held alert out for good.
+    ``grants``: (bucket, capacity, root id) for ``_reserve`` to record. Nothing is
+    written here: what a caller reports as an interrupt is what ``_reserve`` returns.
+    While a record rebuilt after damage is younger than the window, no poster-key slot
+    is free (``State.reset_at``). A curator's alert needs no slot."""
+    cache, now, taken = _results(a, st, s), int(time.time()), Counter()
+    pending, held, grants, loose = [], [], [], set()
+    rebuilt = st.reset_at is not None and now - UNVERIFIED_WINDOW_S < st.reset_at <= now
+
+    def take(bucket: str, cap: int, t: Entry) -> bool:
+        have = _slots(st, bucket, now)
+        if not have.keys().isdisjoint(t.root_ids):
+            return True
+        if len(have) + taken[bucket] >= cap:
+            return False
+        taken[bucket] += 1
+        grants.append((bucket, cap, t.root_id))
+        return True
+
+    groups: dict = {}
+    for t, m in _unseen_critical(a, st, pairs):
+        groups.setdefault(t.root_id, (t, []))[1].append(m)
+    never = float("inf")
+    for t, ms in sorted(groups.values(), key=lambda g: min(st.held.get(r, never) for r in g[0].root_ids)):
+        # the first confirmed match whose advisory-and-product slot this alert holds or can take
+        sure = next((m for m in ms if _confirmed_now(t, m, cache, now) and take(_verified_bucket(t, m), 1, t)), None)
+        if sure is not None:  # the confirming match first: it is the one a notification describes
+            pending += [(t, sure)] + [(t, m) for m in ms if m is not sure]
+        elif _result(t, ms[0], cache) is None:
+            pending += [(t, m) for m in ms]
+        elif not rebuilt and take(_poster(t, st), MAX_UNVERIFIED, t):
+            loose.update(t.root_ids)
+            pending += [(t, m) for m in ms]
+        else:
+            held += [(t, m) for m in ms]
+    return pending, held, grants, loose
+
+
+def _reserve(st: State, pending: list, held: list, grants: list) -> tuple[list, list]:
+    """Record the slots ``_interrupts`` granted, under the state lock and against the
+    record as it is then, and return (pending, held) as they stand after: an alert whose
+    slot a concurrent run took meanwhile is held, not pending. Called before a command
+    reports anything, so exit 2 and ``unseen_critical`` name only alerts that hold a
+    slot, and the slot is used by the report, whether or not a channel then delivers.
+    Also records since when each held alert has been held (``State.held``). Of the
+    alerts this command looked at (``pending`` and ``held``), one no longer held is
+    dropped from it; an entry for an alert this command did not look at (another command
+    pulled it since) is kept with its time, unless that alert is seen or its root is no
+    longer stored. Slots outside the window are dropped on the way. A state directory
+    that cannot be written grants them for this command: a critical is never lost to a
+    full disk."""
+    denied = set()
+    waiting = {t.root_id for t, _ in held}
+    looked = waiting | {t.root_id for t, _ in pending}
+    if not grants and not waiting and not st.held:
+        return pending, held
+    try:
+        with st.locked():
+            now, slots = int(time.time()), dict(st.interrupts)
+            for bucket, cap, root in grants:
+                have = _slots(st, bucket, now)
+                if root in have:
+                    continue
+                if len(have) >= cap:
+                    denied.add(root)
+                    continue
+                st.interrupts[bucket] = {**have, root: now}
+            if st.interrupts != slots:
+                st.interrupts = {b: live for b in st.interrupts if (live := _slots(st, b, now))}
+            was = dict(st.held)
+            others = {r: at for r, at in st.held.items()
+                      if r not in looked and r not in st.seen and r in st.events}
+            st.held = {**others, **{r: st.held[r] if 0 <= st.held.get(r, -1) <= now else now
+                                    for r in sorted(waiting | denied)}}
+            if st.interrupts != slots or st.held != was:
+                st.save_unverified()
+    except OSError:
+        pass
+    return ([x for x in pending if x[0].root_id not in denied],
+            held + [x for x in pending if x[0].root_id in denied])
+
+
+def _notify(st: State, s: config.Settings, pending, loose=frozenset()) -> int:
     """Send each pending advisory once, under the state lock: a concurrent
     run waits, then re-reads seen and skips what this one already sent. Every
-    root of an advisory is marked seen; one seen root makes it seen."""
+    root of an advisory is marked seen; one seen root makes it seen. An unverified
+    alert (its roots are in ``loose``) says so in the last line of its text."""
     if not pending:
         return 0
     if not s.notify:
@@ -503,6 +775,8 @@ def _notify(st: State, s: config.Settings, pending) -> int:
             if _seen(t, st):
                 continue  # sent already (by this run, or a concurrent one)
             text = notify.format_text(t.adv, m, _tr(t, s))
+            if not loose.isdisjoint(t.root_ids):
+                text += f"\n{NOT_VERIFIED}"
             accepted = False
             for ch in s.notify:
                 r = notify.send(ch, text, s)
@@ -517,7 +791,8 @@ def _notify(st: State, s: config.Settings, pending) -> int:
 
 
 def cmd_notify(a, st: State, s: config.Settings) -> int:
-    return _notify(st, s, _unseen_critical(a, st))
+    pending, held, grants, loose = _interrupts(a, st, s)
+    return _notify(st, s, _reserve(st, pending, held, grants)[0], loose)  # loose roots that end up held are not sent
 
 
 def cmd_plan(a, st: State, s: config.Settings) -> int:
@@ -572,34 +847,40 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
     if res.error:
         _err(f"{res.error} (using the last good state)")
     threads, pairs = _matches(a, st)  # one inventory collection per run (the hook's time budget)
-    pending = _unseen_critical(a, st, pairs)
+    pending, held, grants, loose = _interrupts(a, st, s, pairs)
+    pending, held = _reserve(st, pending, held, grants)  # before anything is reported
     if a.json:
         cache, old = _cache(a, st, s), _ruleset_outdated(a, st)
         out = {"pull_error": res.error, "ignored_env": a.ignored_env,
                "stale_since": _stale_since(a, st), "unverified": _unverified(a, st),
                "min_cli": _min_cli(a, st), "ruleset_outdated": old,
                "matches": [_match_json(t, m, cache, old is None) for t, m in pairs],
-               "unseen_critical": sorted({r for t, _ in pending for r in t.root_ids})}
+               "unseen_critical": sorted({r for t, _ in pending for r in t.root_ids}),
+               "held_critical": sorted({r for t, _ in held for r in t.root_ids})}
     elif not a.quiet:
         a.json = False
         cmd_check(a, st, s, source_lines=False)  # printed below, once the sources are read
-    def send(them) -> int:
+    def send(them, loose) -> int:
         if a.quiet or a.json:
             with contextlib.redirect_stdout(io.StringIO()):
-                return _notify(st, s, them)
-        return _notify(st, s, them)
-    status = send(pending)
+                return _notify(st, s, them, loose)
+        return _notify(st, s, them, loose)
+    status = send(pending, loose)
     if not a.json:  # the hourly job's form; the hook runs --json and must read no source.
         # After the notification: a critical never waits for a source.
         _source_check(a, st, s, threads, pairs, a.asked)
-        if a.asked and s.verify != "off":
+        if s.verify != "off":
             # c1g2: what the sources just said about a lowering counts in this run. A
-            # critical that a contradicted lowering had hidden is notified now.
+            # critical that a contradicted lowering had hidden is notified now, and so is
+            # one that was held unverified and that its source has just confirmed (tavj).
             before = sorted((t.root_id, t.adv.level) for t in threads)
-            threads, pairs = _matches(a, st)
+            if a.asked:
+                threads, pairs = _matches(a, st)
             tried = {r for t, _ in pending for r in t.root_ids}
-            late = [x for x in _unseen_critical(a, st, pairs) if tried.isdisjoint(x[0].root_ids)]
-            status = send(late) or status
+            again, held, grants, loose = _interrupts(a, st, s, pairs)
+            again, held = _reserve(st, again, held, grants)
+            late = [x for x in again if tried.isdisjoint(x[0].root_ids)]
+            status = send(late, loose) or status
             pending = pending + late
             if not a.quiet and before != sorted((t.root_id, t.adv.level) for t in threads):
                 print("After the source check:")  # what was listed above is no longer what stands
@@ -651,6 +932,7 @@ def main(argv: list[str] | None = None) -> int:
             return curator.cmd_curator(a, State.load())
         pull.channel_ids()  # a damaged package: one error line, before any command half-runs
         st = State.load()
+        _mend(st)
         try:
             return {"pull": cmd_pull, "check": cmd_check, "notify": cmd_notify,
                     "plan": cmd_plan, "run": cmd_run, "verify": cmd_verify}[a.cmd](a, st, s)

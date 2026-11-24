@@ -212,7 +212,9 @@ def test_with_verify_off_or_a_cli_too_old_nothing_is_confirmed_or_refused(feed, 
     assert "is not applied" not in out
     assert levels(capsys) == {G1: "critical", CVE: "notice"}  # the bot's waits, the curator's holds
     serve(m, reader_clock, AT + 15 * DAY)
-    assert levels(capsys) == {G1: "critical", CVE: "critical"}
+    # tavj: with the check off the bot's lowering applies once it has stood 72 hours in
+    # signed checkpoints; a CLI the trust root calls too old applies none unchecked
+    assert levels(capsys) == {G1: "high" if min_cli is None else "critical", CVE: "critical"}
 
 
 def test_matched_asks_only_about_a_thread_whose_widest_state_matches_this_machine(feed, monkeypatch, capsys, reader_clock):
