@@ -102,6 +102,10 @@ def test_fix_rce_tier1_is_high():
         assert level(cand(product_text="OpenAI Codex", advisory_severity=text)) == ("notice", "notice"), text
     assert level(cand(product_text="OpenAI Codex", fixed="1", advisory_severity="daemon crash; denial of service")) \
         == ("notice", "notice")
+    for text in ("users must run a command to upgrade", "lists files outside the workspace",
+                 "reads a token file outside the sandbox"):  # stage-1 review: no consequence stated
+        assert level(cand(product_text="OpenAI Codex", fixed="22.11.1", advisory_severity=text)) == \
+            ("notice", "notice"), text
     for text in ("High; remote code-execution", "lets an attacker execute arbitrary commands",
                  "\uff32\uff23\uff25 in the inspector"):
         assert level(cand(product_text="OpenAI Codex", fixed="22.11.1", advisory_severity=text)) == \
@@ -128,6 +132,20 @@ def test_channel_if_takes_remote_code_execution_only():
     assert level(cand(product_text="Node.js", fixed="22.11.1", advisory_severity="RCE")) == ("notice", "notice")
     assert level(cand(product_text="mcp inspector", fixed="1.0.3", advisory_severity="RCE")) == \
         ("high", "fix-rce-tier1")
+
+
+def test_a_malicious_release_is_critical_with_stop_using_unless_a_fix_is_stated():
+    """9kgk: no fix known, stop_using completes it; a fix the schema cannot say is still a
+    fix, so no "stop using" is written and it posts at high (stage-1 review)."""
+    g = "GHSA-aaaa-bbbb-cccc"
+    mal = ruleset.canonical({"ghsa_id": g, "type": "malware", "withdrawn_at": None, "repository": None,
+                             "severity": None, "cvss_vector": None, "cwes": [],
+                             "packages": [{"ecosystem": "npm", "name": "@anthropic-ai/claude-code", "range": None,
+                                           "first_patched": None}]}).decode()
+    c = cand(id=g, readings=(("ghsa", mal),))
+    assert level(c, True) == ("critical", "stop-using")
+    assert level(replace(c, fixed="2.0.0-rc.1"), True) == ("high", "no-action")
+    assert level(replace(c, fixed="2.1.0"), True) == ("critical", "fields")
 
 
 def test_the_severity_word_alone_is_a_notice():

@@ -170,8 +170,9 @@ class Run:
                                    and o["root"] is None and _fold(o["ids"]) & _fold(it["ids"])])
                 self.n["withheld"] += 1
                 return
-            if not _complete(it.get("adv")):
-                # 9kgk: a critical journaled before this rule (no fix, no action) never posts;
+            if it["kind"] == "root" and not _complete(it.get("adv")):
+                # 9kgk: a critical root journaled before this rule (no fix, no action) never posts;
+                # a reply keeps a thread's standing level, which a run never lowers (h29n does);
                 # the candidate is planned again from its sources next run. Its copies go too.
                 self._drop([it] + [o for o in self.state["outbox"] if o["kind"] == "copy"
                                    and o["root"] is None and _fold(o["ids"]) & _fold(it["ids"])])
@@ -628,7 +629,7 @@ class Run:
             return
         level, reason = self.level(c, scope)
         entry = self.led.lookup(ids, scope=scope.name)
-        if entry is not None and reason == "no-action" and compose.schema_fixed(c.fixed) is None:
+        if entry is not None and reason in ("no-action", "stop-using") and compose.schema_fixed(c.fixed) is None:
             # 9kgk: the thread already states a fix, which plan_known keeps; the upgrade is complete.
             was = (entry.advisory.get("products") or [{}])[0].get("fixed")
             if compose.schema_fixed(was):

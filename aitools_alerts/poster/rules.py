@@ -54,10 +54,10 @@ EXTRA_VENDOR_WORDS = frozenset({"anthropic", "openai", "anysphere", "nousresearc
 # approval bypass (9kgk: the design's high consequences, read from prose, never critical).
 _SEVERE = re.compile(
     r"code[ -]execution|\brce\b|command[ -](?:execution|injection)|arbitrary (?:code|commands?)"
-    r"|(?:attacker|malicious)[- ]controlled code|\bruns? (?:a |an |arbitrary )?(?:commands?|programs?|[\w.]*hook)\b"
+    r"|(?:attacker|malicious)[- ]controlled code|\bruns (?:a |an |arbitrary )?(?:commands?|programs?|[\w.]*hook)\b"
     r"|credential|token theft|secret exposure|data loss|data exfiltration"
     r"|sandbox (?:escape|bypass)|escapes? the sandbox|bypass(?:es|ed)? (?:the )?(?:sandbox|approval|permission)"
-    r"|(?:approval|permission) (?:check |prompt )?bypass|skips? approval|outside (?:the |its )?(?:workspace|sandbox)",
+    r"|(?:approval|permission) (?:check |prompt )?bypass|skips? approval|writes?(?: files?)? outside (?:the |its )?(?:workspace|sandbox)",
     re.I,
 )
 # What a catalog or out entry's channel_if needs from prose: remote code execution, said so.
@@ -169,8 +169,10 @@ def level_for(c: Candidate, scope: schema.ScopeEntry, source_ok: bool) -> tuple[
     if rs.rank(fields) > rs.rank(level):
         level, reason = fields, "fields"
     fixed = compose.schema_fixed(c.fixed)
-    action = ("upgrade", scope.name, fixed) if fixed else ("stop_using", scope.name, None)
-    held = rs.action_level(level, [action], scope.name, fixed, _readings(c))
+    # a fix the schema cannot say is still a fix: no "stop using" then, so a critical posts at high
+    action = ("upgrade", scope.name, fixed) if fixed else None if compose.fix_unexpressed(c) \
+        else ("stop_using", scope.name, None)
+    held = rs.action_level(level, [action] if action else [], scope.name, fixed, _readings(c))
     if held != level:
         return held, "no-action"
     if not fixed and rs.rank(level) > rs.rank(rs.action_cap):

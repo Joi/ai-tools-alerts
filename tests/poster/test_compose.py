@@ -457,6 +457,22 @@ def test_a_critical_carries_a_complete_action():
     assert kept.actions == []
 
 
+def test_a_stop_using_thread_keeps_its_action_until_a_fix():
+    """Stage-1 review: a reply on a stop_using critical thread that is not a fix keeps
+    stop_using and publishes; the fix replaces it with the upgrade."""
+    _, prev = root(cand(fixed=None), ("critical", "stop-using"))
+    rng = compose.reply_post(prev, cand(), {"products": [schema.Product("Claude Code", "claude-code", "<2.5.0", None)]})
+    merged = compose.parse_reply(rng, prev)
+    assert [(a.verb, a.value) for a in merged.actions] == [("stop_using", None)]
+    ids = compose.parse_reply(compose.reply_post(prev, cand(), {"aliases": ["CVE-2026-0009"]}), prev)
+    assert [a.verb for a in ids.actions] == ["stop_using"]
+    fix = compose.reply_post(prev, cand(), {"products": [schema.Product("Claude Code", "claude-code", "<2.5.0", "2.5.0")]})
+    assert [(a.verb, a.value) for a in compose.parse_reply(fix, prev).actions] == [("upgrade", "2.5.0")]
+    _, plain = root(cand(fixed=None), ("high", "fix-rce-tier1"))  # a thread that never had stop_using
+    with pytest.raises(ValueError):
+        compose.reply_post(plain, cand(), {"actions": [schema.Action("stop_using", "Claude Code", None)]})
+
+
 def test_reply_post_ja_names_the_changed_fields():
     c = cand(fixed=None)
     _, prev = root(c, ("high", "fix-rce-tier1"))

@@ -2371,3 +2371,30 @@ def test_a_kev_listing_of_a_thread_that_states_its_fix_is_critical(env):
     code, summary, relay = env.run(now=T0 + 3600)
     assert code == 0 and "copies=1" in summary and relay.calls[0][0] == "critical", summary
     assert "Action: upgrade Claude Code to 2.1.0 or later." in relay.calls[0][2]
+
+
+def test_a_standing_critical_with_no_fix_still_takes_its_updates(env, monkeypatch):
+    """Stage-1 review: a critical thread posted before this rule with no fix (the OpenSSH
+    case) keeps its standing level; a later reply that is not a fix is sent, not dropped."""
+    monkeypatch.setattr(main.rules, "level_for", lambda c, scope, ok: ("critical", None))  # as an older poster
+    monkeypatch.setattr(main, "_complete", lambda adv: True)  # posted before the outbox guard existed
+    env.collector([bare_high(fixed=None, affected="<2.0.0")])
+    assert "roots=1" in env.run()[1]
+    monkeypatch.undo()
+    env.collector([bare_high(fixed=None, affected="<2.5.0")])
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "replies=2" in summary and "withheld=0" in summary, summary
+    assert all("below 2.5.0" in c[2] for c in relay.calls)
+
+
+def test_a_stop_using_critical_with_the_threads_fix_raises_it(env, monkeypatch):
+    """Stage-1 review: the thread already states its fix, so the upgrade is complete."""
+    env.collector([finding(fid="GHSA-abcd-efgh-ijkl", affected="<2.1.0")])
+    assert "roots=1" in env.run()[1]
+    real = main.rules.level_for
+    monkeypatch.setattr(main.rules, "level_for", lambda c, scope, ok: (
+        ("critical", "stop-using") if not c.fixed else ("critical", "fields")) if c.trojanized else real(c, scope, ok))
+    env.collector([{**finding(fid="GHSA-abcd-efgh-ijkl", fixed=None, affected="<2.1.0"), "trojanized": True}])
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "copies=1" in summary and relay.calls[0][0] == "critical", summary
+    assert "Action: upgrade Claude Code to 2.1.0 or later." in relay.calls[0][2]

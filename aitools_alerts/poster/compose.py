@@ -436,7 +436,10 @@ def _publishable(prev: schema.Advisory, merged: schema.Advisory, patch: dict) ->
         raise ValueError("reply: the product is the scope entry's, one product")
     if patch.get("title", merged.title) not in _titles(was.name, prev.id):  # as sent, not as read
         raise ValueError("reply: the title is a template title")
-    if any((a.verb, a.target, a.value) != ("upgrade", was.name, p[0].fixed) for a in merged.actions):
+    # 9kgk: a stop_using the root carried stays while no fix is stated; nothing else is an action
+    kept = ("stop_using", was.name, None) if p[0].fixed is None and any(
+        (a.verb, a.target) == ("stop_using", was.name) for a in prev.actions) else None
+    if any((a.verb, a.target, a.value) not in (("upgrade", was.name, p[0].fixed), kept) for a in merged.actions):
         raise ValueError("reply: the only action is upgrade to products[0].fixed")
     if {s.url for s in _sources(asdict(s) for s in merged.sources)} != {s.url for s in merged.sources}:
         raise ValueError("reply: a source fails the publication checks")
@@ -482,7 +485,8 @@ def reply_post(prev: schema.Advisory, c, changes: dict, *, reason: str | None = 
     prods = patch.get("products")
     if "actions" not in changes and isinstance(prods, list) and prods and isinstance(prods[0], dict):
         fixed = prods[0].get("fixed")  # the upgrade action follows the fixed version
-        acts = [{"verb": "upgrade", "target": prev.products[0].name, "value": fixed}] if fixed else []
+        acts = [{"verb": "upgrade", "target": prev.products[0].name, "value": fixed}] if fixed else \
+            [a for a in old["actions"] if a["verb"] == "stop_using"]  # 9kgk: a malicious release's action stays
         if acts != old["actions"]:
             patch["actions"] = acts
     if not patch:
