@@ -48,9 +48,10 @@ INV = Inventory(products={"claude-code": [Installed("Claude Code", "2.0.0", "/in
 FIX = [Product("Claude Code", "claude-code", "<99.1.0", "99.1.0")]
 
 
-def claim(adv_id, level):
-    return wire.claim_tag({"id": adv_id, "source": "kev", "fields": {"listed": True}, "ruleset": 1,
-                           "level": level, "confirmed_at": 1, "checked_at": 2})
+def claim(adv_id, level, at):
+    """A claim the reader takes as a renewal (the test ids have the shape of OSV ids)."""
+    return wire.claim_tag({"id": adv_id, "source": "osv", "ruleset": 1, "level": level, "confirmed_at": at,
+                           "checked_at": at, "fields": {"osv_id": adv_id, "withdrawn": None, "packages": []}})
 
 
 def with_block_key(text: str, **extra) -> str:
@@ -73,15 +74,15 @@ def feed():
     bot = lambda n, **kw: advisory(id=f"AITA-TEST-000{n}", posted_by="relay-bot", **kw)  # noqa: E731
     reply = lambda root, text, at, *tags: m.post(  # noqa: E731
         m.bot_sec, text, created_at=at, tags=[["e", root["id"], "", "root"], *tags])
-    m.root_post(m.bot_sec, bot(1), created_at=t, tags=[claim("AITA-TEST-0001", "critical")])
+    m.root_post(m.bot_sec, bot(1), created_at=t, tags=[claim("AITA-TEST-0001", "critical", t)])
     r2 = m.root_post(m.bot_sec, bot(2, level="high"), created_at=t, files=("feed.json",),
-                     tags=[claim("AITA-TEST-0002", "high")])
+                     tags=[claim("AITA-TEST-0002", "high", t)])
     reply(r2, m.patch_text(level="critical", products=[asdict(p) for p in FIX]), t + 100,
-          claim("AITA-TEST-0002", "critical"))
-    r3 = m.root_post(m.bot_sec, bot(3), created_at=t, tags=[claim("AITA-TEST-0003", "critical")])
-    reply(r3, compose.level_post(bot(3), "notice"), t + 200, claim("AITA-TEST-0003", "notice"))
-    reply(r3, compose.level_post(bot(3, level="notice"), "high"), t + 250, claim("AITA-TEST-0003", "high"))
-    reply(r3, m.patch_text(products=[asdict(p) for p in FIX]), t + 300, claim("AITA-TEST-0003", "high"))
+          claim("AITA-TEST-0002", "critical", t + 100))
+    r3 = m.root_post(m.bot_sec, bot(3), created_at=t, tags=[claim("AITA-TEST-0003", "critical", t)])
+    reply(r3, compose.level_post(bot(3), "notice"), t + 200, claim("AITA-TEST-0003", "notice", t + 200))
+    reply(r3, compose.level_post(bot(3, level="notice"), "high"), t + 250, claim("AITA-TEST-0003", "high", t + 250))
+    reply(r3, m.patch_text(products=[asdict(p) for p in FIX]), t + 300, claim("AITA-TEST-0003", "high", t + 300))
     m.root_post(m.cur_sec, advisory(id="AITA-TEST-0004"), created_at=t)
     m.post(m.bot_sec, with_block_key(schema.render_post(bot(5), "Body line."), rule_version=1), created_at=t)
     return m, now
@@ -99,6 +100,7 @@ def this_reader(m, now, tmp_path) -> dict:
     st = State.load(tmp_path / "this-reader")
     res = pull.fetch("https://mirror.example.invalid/", st, fetch=m.fetch, root_pubkey=m.root, now=now)
     assert res.error is None, res.error
+    assert pull.head_clock(st)[0] is not None  # a head is held: expiry is judged, as the CLI judges it
     return {str(at): shown(pull.advisories(st), at) for at in (now, now + MONTH)}
 
 
@@ -126,8 +128,17 @@ def test_every_alert_still_appears_on_a_released_reader_at_the_same_or_a_higher_
             assert pull._RANK[theirs[at][adv_id][0]] >= pull._RANK[level], (adv_id, theirs[at][adv_id])
             assert matched and theirs[at][adv_id][2], adv_id  # the member with the tool installed is told
         # Level changes in replies of their own cost nothing else: the level stays, the fix arrives.
-        assert theirs[at]["AITA-TEST-0003"] == ["critical", ["99.1.0"], True] == mine[at]["AITA-TEST-0003"]
+        assert theirs[at]["AITA-TEST-0003"] == ["critical", ["99.1.0"], True]
         assert theirs[at]["AITA-TEST-0002"] == ["critical", ["99.1.0"], True]  # a raise applies, claim tag and all
+    assert mine[str(now)]["AITA-TEST-0003"] == ["critical", ["99.1.0"], True]
+    # The three relay-bot threads carry claims this reader takes (r0ra): with no renewal, a month
+    # on (as under a head issued then) they have decayed to notice here; the curator's has not.
+    # A released reader computes no expiry and still shows critical: the same or higher.
+    st = State.load(tmp_path / "this-reader")
+    assert sorted(t.adv.id for t in pull.advisories(st) if t.enrolled_at is not None) == [f"AITA-TEST-000{n}" for n in (1, 2, 3)]
+    assert {i: v[0] for i, v in mine[str(now + MONTH)].items()} == {
+        "AITA-TEST-0001": "notice", "AITA-TEST-0002": "notice", "AITA-TEST-0003": "notice", "AITA-TEST-0004": "critical"}
+    assert mine[str(now + MONTH)]["AITA-TEST-0003"][1] == ["99.1.0"]
 
 
 @pytest.mark.parametrize("tag", ("v0.1.4", "v0.1.6"))

@@ -30,10 +30,12 @@ A renewal is any event of a thread (the root or a reply, whatever its text) that
 
 - is signed by a relay-bot key of the current manifest;
 - carries a claim that `ruleset.parse_claim` accepts, whose level is not `none`;
-- whose claim id is one of the thread's ids (the root's id and aliases, the thread's current aliases), compared case-folded;
+- whose claim id is one of the ids the thread has held (the root's id and aliases, and every alias a patch gave it, kept after a later patch drops it), compared case-folded;
 - whose `checked_at` is not after the event's own `created_at`.
 
-`Thread` gains `renewals`, a tuple of `(confirmed_at, checked_at, created_at)`, `enrolled` (the root event itself is a renewal) and `curated` (a curator posted or amended the thread; the reader already tracks this). A reply's claim counts even when the reply is otherwise discussion or a refused lowering.
+A raise by the relay bot (a patch that is applied and sets a higher level) also counts as a renewal dated at its event, with or without a claim: the level it sets stands from then, never from an older confirmation of a lower level.
+
+`Thread` gains `renewals`, a tuple of `(confirmed_at, checked_at, created_at)`, `enrolled_at` (the root's date when the root event itself is a renewal, else None) and `curated` (a curator posted or amended the thread; the reader already tracks this). A reply's claim counts even when the reply is otherwise discussion or a refused lowering.
 
 **Only an enrolled thread decays.** A thread whose root carries no claim never expires, whatever its replies carry. Otherwise the relay-bot key could end any alert on today's feed, none of which has a claim, by replying with a claim confirmed in 1970: the first claim would turn "no expiry" into "expired". With the root's own claim as the floor, every later claim can only lengthen the thread's life (section 3 takes the maximum), and a root cannot be changed after it is signed.
 
@@ -51,7 +53,7 @@ In `ruleset.py`, with `UNCONFIRMED_DAYS = 45`:
 
 A confirmation keeps the level for its TTL. A check that could not confirm (`confirmed_at` unchanged, `checked_at` new) keeps it for a TTL from the check, and never past 45 days from the last confirmation: a blocked source does not start the decay, and the ceiling holds without the poster. A thread's value is the maximum over its renewals, so a shorter renewal changes nothing.
 
-`level_at(level, renewals, now)`: `level` while it stands; then `notice` while notice stands (90 days from the last confirmation); then `none`. This is h29n rule 4 as ruled: a critical "decays to notice then off".
+`level_at(level, renewals, now)`: the highest level, from `level` down, that still stands by its own TTL; `none` when none does. A critical with no renewal is critical for 14 days, high until day 30, notice until day 90, then gone. h29n rule 4 says a critical "decays to notice then off"; it passes through high here because the function must never give a lower answer for a higher level, or a raise would shorten what a thread shows (the code review's first finding).
 
 The 45 days is a constant in code, not a key of `spec/ruleset.json`: a new key changes the ruleset digest, which the trust root is to pin (ai-tools-alerts#ed7n), and that needs a ruleset version. Noted for the issue that adds version 2.
 
@@ -63,7 +65,7 @@ The 45 days is a constant in code, not a key of `spec/ruleset.json`: a new key c
 - `listed` is that head's event ids. A thread whose root the head does not list does not expire. `None`: every thread counts as listed (tests; the exporter does not call `active`).
 - A retracted thread is dropped, as before.
 - A thread with a curator's `expires_at` is dropped when `now > expires_at`.
-- Otherwise, when the thread is `enrolled` and not `curated`: its renewals dated at or before `now` are taken (a claim whose event is dated after the head is not counted until a head reaches that date; section 5). With none, the thread keeps its level. With some, it is shown at `level_at(...)` and dropped at `none`.
+- Otherwise, when the thread is enrolled and not `curated`: if any of its renewals is on an event dated after `now`, it is not judged and keeps its level (section 5). Else it is shown at `level_at(...)` of all its renewals and dropped at `none`.
 - Any other thread does not expire. Every thread on the feed today is one: the poster sends no claim yet.
 
 `pull.head_clock(state)` returns `(created_at, events)` of the stored head of the state's root, or `(None, None)` when there is none or when an event it lists is not in the store. The second case is an interrupted save: `_fetch` writes the head before the events, so a crash between the two leaves a later head over an earlier store, and a renewal that head lists would be missing. Nothing expires until a pull completes. The CLI calls `pull.active(pull.advisories(st), *pull.head_clock(st))`.
@@ -79,7 +81,7 @@ The issue asks that such an event be refused. It cannot be refused at the pull: 
 What a date ahead of the head could do is bounded instead:
 
 - An event dated more than 10 minutes ahead of the member's clock is not admitted (ek5q, unchanged), and a head dated that far ahead is refused.
-- A claim counts as a renewal only when its event is dated at or before the head (section 4), and its `checked_at` is not after its event. So no claim can state a confirmation later than the head the member judges by, and one event dated ahead keeps nothing alive.
+- A thread with a renewal on an event dated after the head is not judged under that head (section 4); the next head, which has reached that date, judges it with every renewal counted. So the root's own claim is always among those counted, a raise posted in the run shows at once, and an event dated ahead holds a thread only until the head passes its date, which the clock bound puts at most 10 minutes past the member's clock. A claim's `checked_at` is not after its event, so no claim states a confirmation later than its own date.
 
 ### 6. Retention by the head
 
@@ -109,7 +111,8 @@ Existing test that changes: `tests/test_wire_compat.py::test_what_the_format_avo
 
 - Refuse a head that lists an event dated after it, or skip the event: the first breaks the honest signer, the second needs a record of skipped ids so `unverified` does not read the store as incomplete, and both delay a retraction posted during a run.
 - Let any claim on a thread start its decay: see "Only an enrolled thread decays".
-- Decay one level at a time (critical, high, notice): reads the TTL table as cumulative. The ruling's words are "to notice then off"; kept.
+- Decay straight to notice, as the ruling's words say: not monotonic in the level, so a raise could lower what is shown.
+- Count only the renewals dated at or before the head (the first build): a reply dated before a held-back root could then be the only one counted, and a raise posted in the run showed at the old level for a cycle.
 - Count only claims at or above the thread's level: a thread whose level rests on a reading (the claim is lower) would decay at once, which is lowering by absence.
 
 ## Blast radius and rollback

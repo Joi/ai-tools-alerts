@@ -6,6 +6,7 @@ Lens: "Released readers (v0.1.4 to v0.1.7) must keep working"; "Nothing you buil
 Follow-up filed: ai-tools-alerts#gtw9 (the poster half: claims, renewals, the 45-day step down; blocked by ny5g)
 Last reviewed: spec fc1097db9b8a66ad609ecec1ae4144e1c56a2d72
 Last reviewed: plan 24a5e9cad1b4208c46864ffea52696efad01d057
+Last reviewed: code a4133f77eb70484b357556c4ea7a9d91b342d726 (the whole branch)
 Review tier: gpt-6-astra at high (h29n calls the work security-shaped)
 Spec: docs/superpowers/specs/2026-11-24-r0ra-expiry-against-signed-head-design.md   Plan: docs/superpowers/plans/2026-11-24-r0ra-expiry-against-signed-head.md
 Agency project: —
@@ -35,8 +36,22 @@ Plan findings and what was done:
 2. SUBSTANTIVE, `mirror.checkpoint(now=at)` lists no event dated after `at`, so case 4 could not be built as written. Fixed: explicit ids, as the tests already did.
 3. SUBSTANTIVE, case 5 gave confirmation dates, and retention reads event dates. Fixed: the roots are dated then too; the test fails when the retention clock is the local one (checked by putting the old line back).
 
+Pass 1 [code:reader]: 3B/5S/3C/0R · fixed -/- · velocity = (—→11, escalation no)
+code passes: 1 so far · Stage 2 gpt-6-astra on the whole branch at a4133f77eb70484b357556c4ea7a9d91b342d726 (fresheyes run 20261124-154853-11eed3) · Stage 1 a same-model reviewer on the same diff
+
+Code findings, pass 1, and what was done (the commit after a4133f7):
+1. BLOCKER (Stage 2; Stage 1 found the same from the honest side), a raise was judged by the older confirmation of the lower level, so a permitted raise could show lower than before it. Fixed: `level_at` steps down through each lower level and never answers lower for a higher level; a relay-bot raise is a renewal of its own date.
+2. BLOCKER (Stage 2), a patch that dropped an alias took away the renewals made under it. Fixed: the ids a claim may name are every id and alias the thread has held.
+3. BLOCKER (Stage 2), with the root's claim held back (root dated after the head) an ancient claim in an earlier-dated reply was the only one counted. Fixed: a thread with any renewal dated after the head is not judged under that head.
+4. SUBSTANTIVE (Stage 1), a raise posted in the run whose head is dated before it showed at the old level until the next head. Fixed by 1 and 3.
+5. SUBSTANTIVE (Stage 2), the wire-compat fixture's claims were malformed, so no released-reader comparison met an enrolled thread. Fixed: the claims are ones the reader takes, the test asserts three threads are enrolled and that a month on they show notice here and critical on every released reader.
+6. SUBSTANTIVE (Stage 1), the changelog said the release changes nothing a member sees; a curator's `expires_at` is now judged by the checkpoint. Fixed in CHANGELOG.md and spec/wire.md.
+7. SUBSTANTIVE (Stage 1), the web index marks a curator's expiry by the exporter's clock and the CLI by the checkpoint. Rebutted: the exporter is the operator's page and has no member checkpoint; the comment there now says so.
+8. SUBSTANTIVE (Stage 1), no test for `head_clock` with no state or after a writer's pull. Fixed. Its note that the compat helper passes a time and not `head_clock` is rebutted: the test must look a month ahead, which only a time can do; it now asserts a head is held.
+9. COSMETIC, fixed: the `advisories` docstring on which threads carry renewals. Left: a damaged ruleset is loaded once per enrolled thread; the "shown" half of the clock test cannot fail by itself (its stored-events assertion is the one that fails on the old code).
+
 ## Chunks
-- [ ] reader: computed expiry, the head as the clock, the listed-event date bound, tests, spec/wire.md, changelog
+- [x] reader: computed expiry, the head as the clock, retention by the head, tests, spec/wire.md, changelog: committed a4133f7, review fixes in the commit after it
 
 ## Notes
 - Prior work searched: `kata search "renew unknown step down 45 days poster claim"` (hit: h29n only); the run records of ek5q's slices (zb8b, 6whv, nfm3: the checkpoint is the signed head), s6mt (the claim, `ttl_days`) and t8jr (the claim tag; rule 3 of spec/wire.md: no expiry in a relay-bot block).
@@ -46,4 +61,5 @@ Plan findings and what was done:
 - The spec and plan fixes after the spec review, and the code, were applied with a script that asserts each replaced text occurs exactly once (it stops on a miss); the plan was rewritten whole with the write tool.
 - The plan was drafted and the tests written while the spec review ran; the code was written while the plan review ran. Both were revised to the reviewed text before the commit.
 - One existing test outside the plan's list changed: `tests/mirror/test_export.py::test_index_marks_expired` used a relay-bot block's `expires_at`, which is no longer read; it now uses a curator's and asserts the relay-bot one is not marked expired. `tests/test_pull.py::test_future_dated_event_is_refused` did not need to change once the pull-level rule was dropped.
+- Gate: `scripts/test-gate.sh` exit 0 at a4133f7 in a clone of this branch alone (1966 passed); in the shared clone the public scan stops on other sessions' refs, none of whose objects this branch reaches (`--hit-ids` against `git rev-list --objects HEAD`: none in common).
 - Split decided before the spec: the poster half of the issue (renew on `unknown`, step down after 45 days) goes to a follow-up issue. The poster sends no claim tag today and has no three-result source read (ai-tools-alerts#ny5g); every acceptance case of r0ra is a reader case.

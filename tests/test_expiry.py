@@ -56,12 +56,12 @@ def test_a_level_stands_for_its_ttl_after_a_confirmation():
     rs = ruleset.load()
     for level, days in (("critical", 14), ("high", 30), ("notice", 90)):
         assert rs.stands_until(level, T0, T0) == T0 + days * DAY
-    for level in ("critical", "high"):
-        last = rs.stands_until(level, T0, T0)
-        assert rs.level_at(level, [(T0, T0)], last) == level
-        assert rs.level_at(level, [(T0, T0)], last + 1) == "notice"
-        assert rs.level_at(level, [(T0, T0)], T0 + 90 * DAY) == "notice"
-        assert rs.level_at(level, [(T0, T0)], T0 + 90 * DAY + 1) == ruleset.NONE
+    one = [(T0, T0)]
+    steps = [(14, "critical"), (30, "high"), (90, "notice")]  # a critical steps down through each
+    for days, level in steps:
+        assert rs.level_at("critical", one, T0 + days * DAY) == level
+    assert [rs.level_at("critical", one, T0 + d * DAY + 1) for d, _ in steps] == ["high", "notice", ruleset.NONE]
+    assert [rs.level_at("high", one, T0 + d * DAY + 1) for d in (14, 30, 90)] == ["high", "notice", ruleset.NONE]
     assert rs.level_at("notice", [(T0, T0)], T0 + 90 * DAY + 1) == ruleset.NONE
     assert rs.level_at("critical", [], T0) == ruleset.NONE
 
@@ -76,12 +76,21 @@ def test_a_check_that_could_not_confirm_holds_the_level_to_day_45_and_no_further
     assert rs.level_at("critical", [(T0, T0 + 40 * DAY)], T0 + 45 * DAY + 1) == "notice"
 
 
+def test_a_higher_level_never_shows_lower():
+    """A raise must not shorten what a thread shows: the bot key can raise without a claim."""
+    rs = ruleset.load()
+    rank = {ruleset.NONE: 0, "notice": 1, "high": 2, "critical": 3}
+    for day in range(0, 100):
+        got = [rank[rs.level_at(lv, [(T0, T0)], T0 + day * DAY + 1)] for lv in ("notice", "high", "critical")]
+        assert got == sorted(got), day
+
+
 def test_the_longest_renewal_counts_and_a_shorter_one_changes_nothing():
     rs = ruleset.load()
     long, short = (T0 + 20 * DAY, T0 + 20 * DAY), (T0 - 50 * DAY, T0 - 50 * DAY)
     for renewals in ([long, short], [short, long]):
         assert rs.level_at("critical", renewals, T0 + 34 * DAY) == "critical"
-        assert rs.level_at("critical", renewals, T0 + 34 * DAY + 1) == "notice"
+        assert rs.level_at("critical", renewals, T0 + 34 * DAY + 1) == "high"
 
 
 # ---------------------------------------------------------------- what is a renewal
@@ -133,7 +142,7 @@ def test_a_thread_whose_root_has_no_claim_cannot_be_ended_by_a_reply(mirror):
     root = mirror.root_post(mirror.bot_sec, advisory(id=CVE, posted_by="relay-bot"), created_at=T0 + 100)
     renew(mirror, root, T0 + 200, claim(0))
     t = thread(mirror)
-    assert not t.enrolled and t.renewals == ()
+    assert t.enrolled_at is None and t.renewals == ()
     assert [x.adv.level for x in pull.active([t], T0 + 365 * DAY)] == ["critical"]
     assert pull_at(mirror, T0 + 30 * DAY).error is None and shown() == {CVE: "critical"}
 
@@ -142,7 +151,49 @@ def test_an_enrolled_thread_is_not_shortened_by_an_ancient_claim(mirror):
     root = bot_root(mirror)
     renew(mirror, root, T0 + 200, claim(0))
     t = thread(mirror)
-    assert t.enrolled and [x.adv.level for x in pull.active([t], T0 + 100 + 14 * DAY)] == ["critical"]
+    assert t.enrolled_at == T0 + 100
+    assert [x.adv.level for x in pull.active([t], T0 + 100 + 14 * DAY)] == ["critical"]
+
+
+def test_a_raise_counts_from_its_own_date_with_or_without_a_claim(mirror):
+    """The root's confirmation of high is 19 days old, past critical's 14: the raise
+    must not be judged by it."""
+    root = bot_root(mirror, tags=[claim(T0 + 100, level="high")], level="high")
+    level = lambda now: [t.adv.level for t in pull.active([thread(mirror)], now)]  # noqa: E731
+    assert level(T0 + 20 * DAY) == ["high"]
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(level="critical"), created_at=T0 + 19 * DAY)
+    assert level(T0 + 20 * DAY) == ["critical"]
+    assert level(T0 + 33 * DAY) == ["critical"] and level(T0 + 33 * DAY + 1) == ["high"]
+    assert level(T0 + 19 * DAY - 30) == ["critical"]  # posted in the run whose head is dated before it
+
+
+def test_no_state_or_a_writers_pull_gives_no_clock(mirror):
+    assert pull.head_clock(State.load()) == (None, None)
+    bot_root(mirror)
+    st = State.load()
+    assert pull.fetch(URL, st, fetch=mirror.fetch, root_pubkey=mirror.root, now=T0 + 365 * DAY, checkpoint=False).error is None
+    assert pull.head_clock(State.load()) == (None, None) and shown() == {CVE: "critical"}
+
+
+def test_dropping_an_alias_does_not_drop_the_renewal_made_under_it(mirror):
+    root = bot_root(mirror)
+    alias = "CVE-2098-0777"
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(aliases=[alias]), created_at=T0 + 200)
+    renew(mirror, root, T0 + 89 * DAY, claim(T0 + 89 * DAY, adv_id=alias))
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(aliases=[]), created_at=T0 + 90 * DAY)
+    t = thread(mirror)
+    assert t.adv.aliases == [] and (T0 + 89 * DAY, T0 + 89 * DAY, T0 + 89 * DAY) in t.renewals
+    assert [x.adv.level for x in pull.active([t], T0 + 95 * DAY)] == ["critical"]
+
+
+def test_a_reply_cannot_end_a_thread_whose_roots_claim_is_still_held_back(mirror):
+    """A checkpoint may list a root dated after it. Until a checkpoint reaches the
+    root's date, an ancient claim in a reply dated earlier must not count alone."""
+    root = bot_root(mirror, at=T0 + 950)
+    renew(mirror, root, T0 + 900, claim(0))
+    t = thread(mirror)
+    assert [x.adv.level for x in pull.active([t], T0 + 900)] == ["critical"]
+    assert [x.adv.level for x in pull.active([t], T0 + 950)] == ["critical"]
 
 
 def test_a_curated_thread_and_a_thread_without_a_claim_do_not_decay(mirror):
@@ -158,13 +209,13 @@ def test_a_curated_thread_and_a_thread_without_a_claim_do_not_decay(mirror):
     assert by_id(pull.active(ts, year)) == {"AITA-TEST-0002": "critical", CVE: "critical"}
 
 
-def test_a_renewal_dated_after_the_head_is_not_counted(mirror):
+def test_a_thread_with_a_renewal_dated_after_the_head_is_not_judged_yet(mirror):
     root = bot_root(mirror)
     renew(mirror, root, T0 + 30 * DAY, claim(T0 + 30 * DAY))
     ts = pull.threads_from(mirror.events["feed.json"], mirror.man)
     level = lambda now: [t.adv.level for t in pull.active(ts, now)]  # noqa: E731
-    assert level(T0 + 20 * DAY) == ["notice"]    # the head has not reached the renewal's date
-    assert level(T0 + 30 * DAY) == ["critical"]
+    assert level(T0 + 20 * DAY) == ["critical"]  # not judged: the head has not reached the renewal's date
+    assert level(T0 + 30 * DAY) == ["critical"] and level(T0 + 44 * DAY + 1) == ["high"]
 
 
 def test_a_damaged_ruleset_expires_nothing(mirror, monkeypatch):
@@ -230,15 +281,14 @@ def test_an_event_dated_ten_years_ahead_is_refused_and_the_stale_check_still_fir
 
 def test_a_renewal_dated_after_the_head_that_lists_it_is_held_back_not_refused(mirror):
     """The honest signer dates a checkpoint at the start of its run and lists the posts
-    of that run, so such an event is admitted; its claim waits for a head that has
-    reached its date."""
-    root = bot_root(mirror, at=T0 - 20 * DAY)                          # critical until T0 - 6 days
+    of that run, so such an event is admitted; the thread is judged by the next head."""
+    root = bot_root(mirror, at=T0 - 20 * DAY)                          # critical until T0 - 6 days, then high
     late = renew(mirror, root, T0 + 950, claim(T0 + 950))
     mirror.checkpoint(ids=mirror.honest_ids(T0 + 950), now=T0 + 900)   # lists it, 50 seconds early
     st = State.load()
     res = pull.fetch(URL, st, fetch=mirror.fetch, root_pubkey=mirror.root, now=T0 + 1000)
     assert res.error is None and late["id"] in State.load().events
-    assert shown() == {CVE: "notice"}
+    assert shown() == {CVE: "critical"}
     assert pull_at(mirror, T0 + 950).error is None and shown() == {CVE: "critical"}
 
 
@@ -267,7 +317,7 @@ def test_a_member_clock_a_year_out_expires_and_revives_nothing(mirror):
         return mirror.root_post(mirror.bot_sec, adv, created_at=at, tags=[claim(at, adv_id=adv.id)])
     old(1, 100), old(2, 20), old(3, 0)
     assert pull_at(mirror, T0 + 1000).error is None
-    want = {"CVE-2098-0002": "notice", "CVE-2098-0003": "critical"}  # 0001 is past notice's 90 days
+    want = {"CVE-2098-0002": "high", "CVE-2098-0003": "critical"}  # 0001 is past notice's 90 days
     assert shown() == want
     for clock in (T0 + 1000 + 365 * DAY, T0 + 1000 - 365 * DAY):
         st = State.load()
@@ -282,7 +332,9 @@ def test_a_critical_with_no_renewal_decays_under_a_fresh_head_that_lists_none(mi
     assert pull_at(mirror, T0 + 100 + 14 * DAY).error is None
     assert shown() == {CVE: "critical"}  # the last second of its 14 days
     assert pull_at(mirror, T0 + 101 + 14 * DAY).error is None
-    assert shown() == {CVE: "notice"}
+    assert shown() == {CVE: "high"}
+    assert pull_at(mirror, T0 + 100 + 30 * DAY).error is None and shown() == {CVE: "high"}
+    assert pull_at(mirror, T0 + 101 + 30 * DAY).error is None and shown() == {CVE: "notice"}
     assert pull_at(mirror, T0 + 100 + 90 * DAY).error is None and shown() == {CVE: "notice"}
     assert pull_at(mirror, T0 + 101 + 90 * DAY).error is None and shown() == {}
 
@@ -297,7 +349,7 @@ def test_check_prints_the_decayed_level(mirror, monkeypatch, capsys):
     monkeypatch.setattr(inventory, "collect", lambda *a, **k: inv)
     assert cli.main(["check"]) == 0
     out = capsys.readouterr().out
-    assert f"(id {CVE}, " in out and "NOTICE: " in out and "CRITICAL" not in out
+    assert f"(id {CVE}, " in out and "HIGH: " in out and "CRITICAL" not in out
 
 
 def test_a_pull_refused_for_size_ages_nothing_by_the_head_it_did_not_accept(mirror, monkeypatch):

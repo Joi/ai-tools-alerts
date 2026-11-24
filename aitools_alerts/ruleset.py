@@ -473,10 +473,11 @@ class Ruleset:
 
     def level_at(self, level: str, renewals, now: int) -> str:
         """The level a thread held at ``level`` shows at ``now``, given its renewals
-        [(confirmed_at, checked_at)]: ``level`` while any of them keeps it standing,
-        then notice while any keeps notice standing, then NONE. The longest counts;
-        a shorter one changes nothing."""
-        for lv in dict.fromkeys((level, "notice")):
+        [(confirmed_at, checked_at)]: the highest level, from ``level`` down, that any
+        of them keeps standing by that level's own TTL; NONE when none stands. The
+        longest renewal counts and a shorter one changes nothing. A higher ``level``
+        never gives a lower answer, so raising a thread cannot shorten what it shows."""
+        for lv in reversed(self.levels[:self.levels.index(level) + 1]):
             if any(self.stands_until(lv, c, k) >= now for c, k in renewals):
                 return lv
         return NONE

@@ -43,8 +43,9 @@ not. The poster and the curator command, which write the feed, pull with
 Expiry (ai-tools-alerts#r0ra) is computed, and judged by the checkpoint, never
 by this machine's clock: see ``active``. A relay-bot block's ``expires_at`` is
 not read. A thread whose root carries a claim stands for as long as its
-claims keep its level standing (``ruleset.Ruleset.level_at``), and it decays
-only under a stored checkpoint issued after that which lists its root. A
+claims keep a level standing (``ruleset.Ruleset.level_at``), and it decays
+only under a stored checkpoint issued after that which lists its root and
+has reached the date of each of its claims. A
 frozen mirror, a withheld renewal or a wrong clock therefore expire nothing;
 retention takes its clock from the checkpoint too (``_fetch``).
 """
@@ -115,10 +116,11 @@ class Thread:
     translations: dict = field(default_factory=dict)  # lang -> text of the current advisory
     translated_at: dict = field(default_factory=dict)  # lang -> created_at of that reply
     # What ``active`` computes expiry from (see _renewal): each (confirmed_at, checked_at,
-    # the event's created_at). ``enrolled``: the root itself carries one; only then can
-    # the thread decay. ``curated``: a curator posted or amended it; it never decays.
+    # the event's created_at), and one for each raise the relay bot made. ``enrolled_at``:
+    # the root's created_at when the root itself carries a claim, else None; only then
+    # can the thread decay. ``curated``: a curator posted or amended it; it never decays.
     renewals: tuple = ()
-    enrolled: bool = False
+    enrolled_at: int | None = None
     curated: bool = False
 
 
@@ -905,9 +907,10 @@ def advisories(state: State, dropped: Counter | None = None, checkpointed: bool 
     never read.
 
     A root from any role but curator has its ``expires_at`` dropped (counted
-    ``bot-expiry``): expiry is computed from claims, see ``active``. Each
-    thread carries its ``renewals`` (_renewal), from the root and from every
-    reply of a thread not retracted, discussion included.
+    ``bot-expiry``): expiry is computed from claims, see ``active``. A thread
+    whose root carries a claim has its ``renewals`` (_renewal): from the root,
+    from every reply while it is not retracted, discussion included, and one
+    for each raise the relay bot made. Any other thread has none.
     """
     m = effective_manifest(state)
     if m is None:
@@ -941,7 +944,7 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
             adv = replace(adv, expires_at=None)
         roots[ev["id"]] = [replace(adv, posted_by=role), False, ev["created_at"], role == "curator",
                            {i.casefold() for i in (adv.id, *adv.aliases)}, {}, [ev["id"]], False,
-                           [], _renewal(ev, role)]
+                           [], _renewal(ev, role), {i.casefold() for i in (adv.id, *adv.aliases)}]
     for ev, role, ref in sorted(replies, key=lambda r: (r[0]["created_at"], r[0]["id"])):
         t = roots.get(ref)
         if t is None or t[1]:
@@ -989,7 +992,12 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
                 if new == t[0]:
                     new = None
         if new is not None:
+            if role != "curator" and _RANK[new.level] > _RANK[t[0].level]:
+                # A raise is news of its own date, with or without a claim: the level it
+                # sets stands from then, never from an older confirmation of a lower one.
+                t[8].append((t[0].id.casefold(), ev["created_at"], ev["created_at"], ev["created_at"]))
             t[0], t[2], t[3] = new, ev["created_at"], t[3] or role == "curator"
+            t[10].update(i.casefold() for i in new.aliases)  # for renewals: an alias once held stays
             if t[6][-1] != ev["id"]:
                 t[6].append(ev["id"])
             t[7] = t[7] or "title" in p or "level" in p
@@ -997,13 +1005,15 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
                 t[4].update(i.casefold() for i in new.aliases)  # a bot's never list a thread
     listed = {i.casefold() for i in m.retracted}
     out = []
-    for rid, (a, r, u, cur, ids, tr, changes, retitled, rns, first) in sorted(
+    for rid, (a, r, u, cur, ids, tr, changes, retitled, rns, first, ok) in sorted(
             roots.items(), key=lambda kv: (kv[1][2], kv[0])):
         text, at = _composed(a, tr, changes, retitled)
-        ok = ids | {i.casefold() for i in (a.id, *a.aliases)}
+        # ``ok``: every id and alias the thread has held. A later patch that drops an
+        # alias must not take away a renewal made under it.
         enrolled = first is not None and first[0] in ok
         out.append(Thread(root_id=rid, adv=a, retracted=r or not ids.isdisjoint(listed), updated_at=u,
-                          translations=text, translated_at=at, enrolled=enrolled, curated=cur,
+                          translations=text, translated_at=at, curated=cur,
+                          enrolled_at=first[3] if enrolled else None,
                           renewals=tuple(sorted(x[1:] for x in [first, *rns] if x[0] in ok)) if enrolled else ()))
     return out
 
@@ -1050,11 +1060,14 @@ def active(threads: list[Thread], now: float | None = None, listed=None) -> list
 
     A curator's ``expires_at`` ends its thread once ``now`` is past it. A
     thread whose root carries a claim, and that no curator posted or amended,
-    is shown at ``ruleset.Ruleset.level_at`` of its renewals dated at or
-    before ``now`` (a claim on an event dated after the checkpoint counts
-    once a checkpoint reaches its date) and dropped when no level stands.
-    Every other thread does not expire. A ruleset that cannot be loaded
-    expires nothing."""
+    is shown at ``ruleset.Ruleset.level_at`` of its renewals and dropped when
+    no level stands. While any of its renewals is on an event dated after the
+    checkpoint (the poster's checkpoint lists the posts of its own run, which
+    are dated after it) the thread keeps its level: the next checkpoint
+    judges it. So every renewal is counted when the thread is judged, the
+    root's among them, and no reply can end a thread sooner than the root
+    alone would. Every other thread does not expire. A ruleset that cannot be
+    loaded expires nothing."""
     out, rs = [], None
     for t in threads:
         if t.retracted:
@@ -1064,11 +1077,10 @@ def active(threads: list[Thread], now: float | None = None, listed=None) -> list
             if t.adv.expires_at is not None:
                 if now > t.adv.expires_at:
                     continue
-            elif t.enrolled and not t.curated:
-                rn = [(c, k) for c, k, at in t.renewals if at <= now]
+            elif t.enrolled_at is not None and not t.curated and all(at <= now for _, _, at in t.renewals):
                 try:
                     rs = rs or ruleset.load()
-                    level = rs.level_at(level, rn, now) if rn else level
+                    level = rs.level_at(level, [(c, k) for c, k, _ in t.renewals], now)
                 except Exception:  # a damaged spec file must not end alerts
                     level = t.adv.level
                 if level == ruleset.NONE:

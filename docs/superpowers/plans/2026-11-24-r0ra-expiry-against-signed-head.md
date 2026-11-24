@@ -68,3 +68,7 @@ The six cases of the issue pass as tests (case 4 with the deviation the spec's s
 ## Rollback
 
 `git revert` of the merge. No state or wire format changed; the previous reader reads this reader's state.
+
+## After the code review
+
+Changed from the steps above (the reasons are in the run record): `level_at` steps down through each lower level; `Thread.enrolled` is `enrolled_at`; a thread with a renewal dated after the head is not judged; a relay-bot raise is a renewal of its own date; the ids a claim may name include every alias the thread has held. `tests/test_wire_compat.py`'s fixture carries claims the reader takes.
