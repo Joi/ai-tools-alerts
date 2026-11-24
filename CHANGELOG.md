@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.8 — 2026-11-24
 
 A curator's word on one of the relay bot's alerts is now checked and held for 14 days, and it no longer silences the bot (design review of 2026-11-23, finding D9, ai-tools-alerts#c1g2). Until now one curator signature lowered or retracted any alert for good with no check, and every later reply from the bot to that thread was ignored, so the thread could never be raised or corrected again. The one curator in the manifest is a shared key, and no curator has posted.
 
@@ -56,7 +56,7 @@ Expiry is computed by the reader and judged by the signed checkpoint, not by the
 
 Not done: the issue asked that an event dated after the checkpoint that lists it be refused. The poster's own checkpoint lists the posts of its run, which are dated after it, so the CLI does not judge an alert's expiry while one of its claims is dated after the checkpoint; the next checkpoint judges it.
 
-Nothing on the wire changes with this release: the poster sends no claim and no lowering yet.
+The poster sends no claim yet (ai-tools-alerts#3qyq). The one new event it sends is the level-only lowering described above. The relay was checked before this release: it stores and returns a 2048-byte claim tag, and the mirror exporter copies it, byte for byte (ai-tools-alerts#yw7r).
 
 ## 0.1.7 — 2026-11-24
 
