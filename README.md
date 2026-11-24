@@ -124,6 +124,36 @@ Linux or anything with cron:
 
 The `grep` removes only lines identical to the template's, so running it again replaces an earlier copy and keeps every other job.
 
+### Checking alerts against the source
+
+The relay bot's key signs every alert, so a stolen key could sign a false one. Once an hour, `aitools-alerts run` therefore reads the primary source itself and compares what it supports with what was posted. `aitools-alerts verify` does the same on demand. It reads three addresses and no other, whatever a post says:
+
+- `https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json` for a CVE id,
+- `https://api.github.com/advisories/<GHSA id>`,
+- `https://api.osv.dev/v1/vulns/<id>`.
+
+The id comes from the alert's own id and aliases and is used only when it has the exact form of a CVE id, a GHSA id or an OSV malware id (`MAL-`). Which other ids are the same advisory is taken from the source, never from the post. No link in a post is ever opened. Each request is https with no redirect followed, at most 10 seconds, at most 8 MB for the CISA file and 256 KB for an advisory; a run makes at most 10 requests in at most 30 seconds. Nothing a source says is printed, and nothing it says is stored except the response's ETag and the ids it names.
+
+Each product of each relay-bot alert gets one of three results:
+
+- **confirmed**: the source supports the posted level for that product.
+- **contradicted**: the source supports more than was posted, or does not support the alert for that product. A known-exploited CVE that CISA lists for another vendor's product, posted as an alert about Claude Code, is contradicted. `check` prints one `source check:` line for each.
+- **unknown**: the source could not be read (a timeout, a rate limit, a 404, a damaged body), or it is one anyone can write (an advisory GitHub has not reviewed), or CISA simply does not list the CVE, or the level rests on a reading of prose that no program can check. Unknown says nothing in either direction.
+
+The check compares the product and the level. It does not compare the affected versions or the fixed version a post states with the source's.
+
+In this release the result is reported and changes nothing: levels, matches and notifications are as posted. `check --json` and `run --json` carry it as `source_check` on each match.
+
+`verify` in `config.toml` chooses which alerts are read, and with that what other parties learn:
+
+| Value | What is read | What it tells others |
+|---|---|---|
+| `"matched"` (default) | Alerts that match a tool on this machine | GitHub or OSV sees, from your address, requests for the advisories that apply to you. The CISA file is one request, the same for every member |
+| `"all"` | Every alert, ten requests an hour | GitHub or OSV sees requests for every advisory on the feed, which does not show which apply to you. A new alert can wait some hours for its turn |
+| `"off"` | Nothing | Nothing. No alert is verified |
+
+GitHub allows 60 unauthenticated requests an hour from one address; the check uses at most 10 of them.
+
 ### Interrupt the next Claude Code session
 
 Copy `hooks/claude-code/session-start.sh` to `~/.claude/hooks/aitools-alerts-session-start.sh`, make it executable, and add it to `~/.claude/settings.json` with `/Users/you` replaced by your home directory (`echo ~`). Write the path out in full, not with `~`: a project can change `HOME` for the session, and the command's `~` would then expand into the project.
@@ -143,7 +173,7 @@ Copy `hooks/claude-code/session-start.sh` to `~/.claude/hooks/aitools-alerts-ses
 }
 ```
 
-The hook runs `aitools-alerts run --json`. When a critical advisory that matches your machine has not been shown before, it puts one line in the session's context:
+The hook runs `aitools-alerts run --json`. That form never reads a primary source (the hourly job's plain `run` does), so a session start makes no request to CISA, GitHub or OSV. If you write your own hook, keep `--json`. When a critical advisory that matches your machine has not been shown before, it puts one line in the session's context:
 
 ```
 AITOOLS-ALERT: critical advisory matches this machine; run the aitools-alerts skill
