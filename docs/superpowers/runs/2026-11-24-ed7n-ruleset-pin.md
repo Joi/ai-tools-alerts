@@ -18,6 +18,7 @@ Pass 2 [spec]: 0B/0S/0C/0R · fixed 2/2 prior · velocity ↓ (2→0, escalation
 Pass 1 [plan]: 1B/1S/0C/0R · fixed -/- · velocity = (—→2, escalation no)   (fresheyes gpt-6.1-sol, reviewed 473b94f45de878e706b81d503c423ab5c15d6eb5)
   B fixed: chunk 1's verification command named `tests/test_state.py`, which does not exist; it now names `tests/test_checkpoint_pull.py` and `tests/test_pull.py`, and chunk 2 names `tests/test_expiry.py` for the decay tests.
   S rebutted: the message of the reviewed commit is vague. It is the review snapshot, a dangling commit made to give the reviewer a fixed tree; it is on no branch and is never pushed.
+Pass 2 [plan]: 0B/0S/0C/0R · fixed 1/1 prior · velocity ↓ (2→0, escalation no)   (the delta, reviewed e015d6dfde1a7834653c1eadc29cf1c8b2204535; passed, the rebuttal stands)
 
 ## Chunks
 - [ ] pin in the certificate: `ruleset.outdated`, `checkpoint` parse, build and verify, the signing option
