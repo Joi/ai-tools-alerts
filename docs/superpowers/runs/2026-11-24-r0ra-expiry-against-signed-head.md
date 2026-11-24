@@ -1,6 +1,6 @@
 # Run: r0ra-expiry-against-signed-head
 Instruction: ai-tools-alerts#r0ra (starting rung floored at medium): expiry is computed and applies only against a fresh signed head; bound future-dated events (finding D5 of the design review on ai-tools-alerts#h29n)
-Stage: committing
+Stage: done
 Rung: medium (start-floor medium: constraint-lens, BR1 REV1 NOV1 INT1 FC1 = 5, hard trigger none; the dispatch brief floors it at medium too)
 Lens: "Released readers (v0.1.4 to v0.1.7) must keep working"; "Nothing you build may wait for a person to act; a curator is an optional override only"; "No rollout"
 Follow-up filed: ai-tools-alerts#gtw9 (the poster half: claims, renewals, the 45-day step down; blocked by ny5g)
@@ -68,7 +68,7 @@ Code findings, pass 2 (the delta), and what was done (the commit after ea88676, 
 - The spec and plan fixes after the spec review, and the code, were applied with a script that asserts each replaced text occurs exactly once (it stops on a miss); the plan was rewritten whole with the write tool.
 - The plan was drafted and the tests written while the spec review ran; the code was written while the plan review ran. Both were revised to the reviewed text before the commit.
 - One existing test outside the plan's list changed: `tests/mirror/test_export.py::test_index_marks_expired` used a relay-bot block's `expires_at`, which is no longer read; it now uses a curator's and asserts the relay-bot one is not marked expired. `tests/test_pull.py::test_future_dated_event_is_refused` did not need to change once the pull-level rule was dropped.
-- Gate: `scripts/test-gate.sh` exit 0 at a4133f7 in a clone of this branch alone (1966 passed); in the shared clone the public scan stops on other sessions' refs, none of whose objects this branch reaches (`--hit-ids` against `git rev-list --objects HEAD`: none in common).
+- Gate: `scripts/test-gate.sh` exit 0 in a clone of this branch alone at a4133f7 (1966 passed), ea88676 (1971) and cdb15d922eeef3c7e0133d07f67e1e6a3eef72d8 (1972); in the shared clone the public scan stops on other sessions' refs, none of whose objects this branch reaches (`--hit-ids` against `git rev-list --objects HEAD`: none in common).
 - The rung did not climb: no hard trigger, and no BLOCKER or SUBSTANTIVE finding survived its pass unfixed or unrebutted. The delta is the Review Cycle rule's, not heavy's.
-- Size: 245 lines of code and text, 370 of tests, outside docs/superpowers. Over the 600-line mark by the regression tests the reviews asked for; the poster half was split off before the build.
+- Size outside docs/superpowers: 203 changed lines of code and text, about 440 of tests. Over the 600-line mark by the regression tests the reviews asked for; the poster half was split off before the build.
 - Split decided before the spec: the poster half of the issue (renew on `unknown`, step down after 45 days) goes to a follow-up issue. The poster sends no claim tag today and has no three-result source read (ai-tools-alerts#ny5g); every acceptance case of r0ra is a reader case.
