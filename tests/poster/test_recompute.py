@@ -491,7 +491,7 @@ def test_a_thread_that_became_busy_after_it_was_judged_is_not_lowered_on_top_of_
     hours(env, 1, 24)
     busy, drain, late = main.Run.busy, main.Run.drain, []
     monkeypatch.setattr(main.Run, "drain", lambda self: late.append(1))
-    monkeypatch.setattr(main.Run, "busy", lambda self, ids, scope: bool(late) or busy(self, ids, scope))
+    monkeypatch.setattr(main.Run, "busy", lambda self, ids, scope, **kw: bool(late) or busy(self, ids, scope, **kw))
     assert replies(one(env, 25)) == [] and entry(env)["level"] == "critical"
     monkeypatch.setattr(main.Run, "drain", drain)
     monkeypatch.setattr(main.Run, "busy", busy)

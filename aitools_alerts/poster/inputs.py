@@ -444,8 +444,9 @@ def _adv_ok(v) -> bool:
 def _item_ok(it) -> bool:
     """A journal item that a later run can finish: every field its kind needs is there
     and well formed, so nothing fails after the post is public."""
-    if not (isinstance(it, dict) and _ITEM_KEYS <= set(it) <= _ITEM_KEYS | {"ja", "source_title", "floor", "tried"}  # rd8t, r7hr, ny5g, jsje
+    if not (isinstance(it, dict) and _ITEM_KEYS <= set(it) <= _ITEM_KEYS | {"ja", "source_title", "floor", "tried", "retried"}  # rd8t, r7hr, ny5g, jsje
             and ("tried" not in it or type(it["tried"]) is int)  # its first attempt with an unknown outcome, expired
+            and ("retried" not in it or (it["retried"] is True and it["kind"] == "reply"))  # refused once, sent once more
             and ("floor" not in it or (it["kind"] == "root" and it["floor"] in schema.LEVELS))
             and all(it.get(k) is None or isinstance(it[k], str) and it[k] for k in ("ja", "source_title"))
             and isinstance(it["kind"], str)

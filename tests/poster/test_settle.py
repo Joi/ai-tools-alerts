@@ -272,9 +272,11 @@ def test_a_raise_does_not_supersede_a_reply_with_a_fix_or_a_root(env):
     env.kev.catalog = {"vulnerabilities": [kev_item()]}  # KEV lists it: a raise to critical
     code, summary, relay = env.run(now=T0 + 2 * HOUR)
     assert relay.calls == [] and len(env.state()["withheld"]) == 1 and "superseded" not in summary
-    code, summary, relay = env.run(now=T0 + HOUR + 3 * DAY)  # the bound: dropped, and the raise goes
-    assert [c[0] for c in relay.calls][:1] == ["critical"] and "dropped:1" in summary
-    assert entry(env)["level"] == "critical" and env.state()["withheld"] == []
+    code, summary, relay = env.run(now=T0 + HOUR + 3 * DAY, relay=FakeRelay("refuse"))  # the bound
+    assert [c[0] for c in relay.calls] == ["feed", "critical", "feed"] and "dropped:1" in summary
+    assert "2.1.1" in relay.calls[0][2]  # sent once more, refused again, dropped; then the raise
+    assert entry(env)["level"] == "critical" and env.state()["dropped"] == 1
+    assert env.state()["withheld"] == [] and env.state()["outbox"] == []
 
 
 def test_a_raise_does_not_supersede_a_fix_reply_another_channel_has(env):
@@ -305,17 +307,23 @@ def test_a_source_only_reply_is_superseded_only_when_no_channel_can_have_it(env)
             "sent": None, "root": e["root_event_id"]}
 
     def yields(it, level="critical"):
+        """(may the raise be planned, is the item noted for replacement); nothing is removed."""
         st = {**env.state(), "outbox": [it]}
         with Ledger(env.config.ledger) as led:
             r = main.Run(T0, env.config, led, st, CHANNELS, None, None)
-            return r.yields(led.thread(e["root_event_id"]), level), st["outbox"]
+            ok = r.yields(led.thread(e["root_event_id"]), level)
+            assert st["outbox"] == [it] and r.busy(e["aliases"], "Claude Code") is True
+            assert r.busy(e["aliases"], "Claude Code", passing=True) is not ok
+            return ok, r._passing(it)
 
-    assert yields(item) == (True, [])
-    assert yields({**item, "tried": T0}) == (False, [{**item, "tried": T0}])  # a channel may have it
-    assert yields({**item, "adv": e["advisory"]})[0] is False  # another channel has it: the ledger records it
+    assert yields(item) == (True, True)
+    assert yields({**item, "tried": T0}) == (False, False)  # a channel may have it
+    assert yields({**item, "retried": True}) == (False, False)  # refused once, owed one more send
+    old = text.replace(json.dumps({"sources": more["sources"]}), json.dumps({"sources": e["advisory"]["sources"]}))
+    assert yields({**item, "text": old})[0] is False  # the thread records every source it lists: a channel has it
     fix = text.replace('{"sources"', '{"products": [], "sources"')
     assert yields({**item, "text": fix})[0] is False  # more than ids and sources
-    assert yields({**item, "kind": "copy"})[0] is False
+    assert yields({**item, "kind": "copy"})[0] is False and yields({**item, "sent": "ab" * 32})[0] is False
     level = {**item, "text": text.replace(json.dumps({"sources": more["sources"]}), '{"level": "notice"}')}
     assert yields(level, "high")[0] is True and yields({**level, "tried": T0}, "high")[0] is True
     assert yields(level, "notice")[0] is False  # not below the raise
@@ -391,4 +399,85 @@ def test_the_rollback_line_names_every_key_the_version_before_refuses(env):
     assert set(digest) - OLD_ITEM_KEYS == {"tried"} and set(digest["adv"]) - OLD_DIGEST_KEYS == {"dropped"}
     line = next(ln for ln in (inputs.Path(__file__).parents[2] / "CHANGELOG.md").read_text().splitlines()
                 if "ai-tools-alerts#jsje" not in ln and "del(.dropped)" in ln)
-    assert "del(.tried)" in line and "del(.adv.dropped)" in line and "mv state.json.new state.json" in line
+    assert "del(.tried, .retried)" in line and "del(.adv.dropped)" in line and "mv state.json.new state.json" in line
+
+
+# ---------------------------------------------------------------- found by the whole-branch review
+
+
+def test_superseded_work_stays_journaled_until_the_raise_is(env, monkeypatch):
+    """The feed's lowering is unsent and KEV lists the entry again, but the run stops
+    before the raise is journaled. Nothing was removed: the next run, whose catalog no
+    longer lists it, sends the lowering the feed still lacks."""
+    post(env)
+    hours(env, 1, 24)
+    one(env, 25, relay=FakeRelay("ok", "fail"), code=1)
+    before = env.state()["outbox"]
+    monkeypatch.setattr(main.Run, "recompute", lambda self: (_ for _ in ()).throw(main.LedgerError("stopped")))
+    env.kev = main_kev(26, OLD)
+    code, summary, relay = env.run(now=T0 + 26 * HOUR)
+    assert code == 1 and replies(relay) == [] and env.state()["outbox"] == before
+    monkeypatch.undo()
+    relay = one(env, 27)
+    assert levels(relay) == [{"level": "notice"}] and levels(relay, "critical") == []
+
+
+def test_a_refused_reply_is_sent_once_more_whatever_the_thread_recorded_since(env):
+    """On a lowered thread a raise and a fix are separate replies. The feed refuses the
+    raise and takes the fix; the critical channel takes both. The ledger then holds the
+    level and a newer fix than the refused reply's snapshot. It is still retried."""
+    post(env)
+    hours(env, 1, 25)
+    env.collector([finding(fid=CVE, sources=(GHSA_OF_CVE,), fixed="2.1.5")], name="2026-11-07T000000Z")
+    relay = one(env, 26, relay=FakeRelay("ok", "refuse"))
+    (w,) = env.state()["withheld"]
+    assert "#level:feed" in w["key"] and entry(env)["level"] == "high"
+    assert entry(env)["advisory"]["products"][0]["fixed"] == "2.1.5"
+    code, summary, relay = env.run(now=T0 + 26 * HOUR + 3 * DAY)
+    assert levels(relay) == [{"level": "high"}] and env.state()["withheld"] == [] and "dropped" not in summary
+
+
+def test_the_retry_mark_is_the_items_and_outlives_a_failed_send(env):
+    kev_fixed(env)
+    env.run()
+    env.collector([finding(fid="CVE-2026-0001", fixed="2.1.1", sources=(GHSA2,))])
+    env.run(now=T0 + HOUR, relay=FakeRelay("refuse"))
+    t = T0 + HOUR + 3 * DAY
+    code, _, relay = env.run(now=t, relay=FakeRelay("fail"))
+    (it,) = env.state()["outbox"]
+    assert code == 1 and it["retried"] is True  # on disk: the next run is another process
+    env.collector([finding(fid="CVE-2026-0001", fixed="2.1.2", sources=(GHSA2,))], name="2026-11-09T000000Z")
+    code, summary, relay = env.run(now=t + HOUR, relay=FakeRelay("ok", "ok", "refuse"))
+    # the retried reply lands; the newer fix under the same key is refused in the second channel: withheld, not dropped
+    assert env.state()["dropped"] == 0 and len(env.state()["withheld"]) == 1
+    assert "retried" not in env.state()["withheld"][0]["items"][0]
+    code, summary, relay = env.run(now=t + 2 * HOUR)
+    assert env.state()["dropped"] == 0
+
+
+def test_a_refused_repeat_is_still_settled_by_the_first_attempts_event(env):
+    first = unknown_root(env)
+    code, _, relay = run(env, T0 + 24 * HOUR, relay=FakeRelay("refuse"))
+    (w,) = env.state()["withheld"]
+    assert w["items"][0]["tried"] == T0 and env.ledger()[1] == []
+    ev = show(env, first)
+    code, summary, relay = run(env, T0 + 25 * HOUR)
+    assert relay.calls == [] and env.ledger()[0][0]["root_event_id"] == ev["id"]
+    assert env.state()["withheld"] == [] and "delivered:1" in summary
+
+
+def test_a_pull_that_times_out_keeps_what_an_earlier_pull_stored(env, monkeypatch):
+    ev = show(env, unknown_root(env))
+    from aitools_alerts import pull
+    from aitools_alerts.state import State
+    st = State.load(env.config.mirror_dir)
+    assert pull.fetch(env.config.translate_mirror_url, st, fetch=env.mirror.fetch, root_pubkey=env.mirror.root,
+                      now=T0 + 60, checkpoint=False).error is None  # an earlier pull stored the event
+    real = main.translate.bounded
+
+    def slow(fn, seconds):
+        raise main.translate.CallError("timed out")
+    monkeypatch.setattr(main.translate, "bounded", slow)
+    code, summary, relay = env.run(now=T0 + 72 * HOUR)
+    monkeypatch.setattr(main.translate, "bounded", real)
+    assert relay.calls == [] and env.ledger()[0][0]["root_event_id"] == ev["id"] and "delivered:1" in summary

@@ -31,9 +31,11 @@ settled by a later run from the mirror (``Run.settle``): an event under the rela
 key with the item's text and thread is its delivery; one that a fresh mirror does not
 show 24 hours after the attempt, or that no mirror has shown after 72, is sent again.
 A ``refused`` send never stops the run (a second one does): it waits in ``withheld``
-for three days, then is dropped and its advisory planned anew (``Run.expire_withheld``).
-A raise never waits behind an unsent lowering or source-only reply of its own thread
-(``Run.yields``); it does wait while a send of the thread is unknown. ``pending`` lists
+for three days; then a root, copy or digest is dropped and its advisory planned anew,
+and a reply is sent once more and dropped only when refused again (``Run.expire_withheld``).
+A raise never waits behind an unsent lowering or source-only reply of its own thread:
+that work leaves the journal in the save that journals the raise (``Run.yields``,
+``Run.enqueue``). It does wait while a send of the thread is unknown. ``pending`` lists
 what is in flight and ``resolve <key> --delivered <event id> | --not-delivered --reason
 <text> | --requeue | --drop`` settles one sooner, both under the ledger lock.
 
@@ -131,11 +133,6 @@ def _complete(adv) -> bool:
                for a in acts)
 
 
-def _same(a, b) -> bool:
-    """Two advisories as dicts, equal as the state file would write them."""
-    return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
-
-
 def _fold(ids) -> set[str]:
     return {i.casefold() for i in ids if isinstance(i, str)}
 
@@ -160,7 +157,9 @@ class Run:
         self.n = Counter()
         self.deferred: dict[tuple, dict] = {}  # (scope, id) -> candidate dict, for the next run
         self.groups: dict[tuple, list] = {}  # faxq: (scope, id) -> a fix group's members (ledger.merge)
-        self.retried: set[str] = set()  # jsje: refused replies this run sends once more (expire_withheld)
+        # jsje: thread root -> (journal items, withheld groups) a raise of that thread will
+        # replace (yields). They stay where they are until the raise is journaled (enqueue).
+        self.passed: dict[str, tuple] = {}
 
     def save(self):
         inputs.save_state(self.config.state, self.state)
@@ -212,7 +211,7 @@ class Run:
             if it not in self.state["outbox"] or it["kind"] == "ja":
                 continue  # dropped with a superseded root; Japanese replies go last (drain_ja)
             keys = _fold(it["ids"])
-            if it["sent"] is None and (keys & held_back or self.led.pending_for(it["ids"])):
+            if it["sent"] is None and (keys & held_back or self.led.pending_for(it["ids"]) or self._passing(it)):
                 held_back |= keys
                 self.n["busy"] += 1
                 continue
@@ -314,7 +313,7 @@ class Run:
         for o in group:
             self.state["outbox"].remove(o)
         keep = it["kind"] != "ja" and len(json.dumps(group + self._withheld_items())) <= MAX_JA_BYTES  # else dropped
-        if it["key"] in self.retried:  # jsje: refused twice, three days apart: nothing here can deliver it
+        if it.get("retried"):  # jsje: refused twice, three days apart: nothing here can deliver it
             keep = False
             self.state["dropped"] += 1
             self.n["dropped"] += 1
@@ -341,25 +340,24 @@ class Run:
     def expire_withheld(self):
         """A refused item leaves ``withheld`` WITHHELD_SECONDS after the relay refused it.
 
-        Dropped: nothing then holds its advisory, which is planned anew from its sources (a
-        candidate was deferred while it waited; the recompute and the digest plan their
-        own). The next digest counts it.
+        A root with its copies, a copy or a digest is dropped: nothing then holds its
+        advisory, which is planned anew from its sources (a candidate was deferred while
+        it waited; the digest plans its own). The next digest counts it.
 
-        Not a reply the thread already records from another channel: nothing would plan
-        that again, and the channel that refused it would lack the change for good. The
-        relay took the same text there, so it goes back to the journal and is sent once
-        more as it is; refused again, it is dropped and counted (``_withhold``)."""
+        A reply is not dropped yet. Another channel may have taken the same change, and
+        the ledger then records it, so nothing would plan it again and this channel would
+        lack it for good. It goes back to the journal marked ``retried`` and is sent once
+        more as it is; refused again, it is dropped and counted (``_withhold``). The mark
+        is the item's own and on disk: a restart, or a failed send, does not forget it."""
         for w in [w for w in self.state["withheld"] if self.now - w["at"] >= WITHHELD_SECONDS]:
             it, days = w["items"][0], (self.now - w["at"]) // 86400
-            e = self.led.thread(it["root"]) if it["kind"] == "reply" and it["root"] else None
             self._unwithhold(w)
-            if e is not None and _same(it["adv"], e.advisory) \
+            if it["kind"] == "reply" and not it.get("retried") and self.led.thread(it["root"] or "") is not None \
                     and all(o["key"] != it["key"] for o in self.state["outbox"]):
+                it["retried"] = True
                 self.state["outbox"].append(it)
-                self.retried.add(it["key"])
                 self.save()
-                _say(f"{w['key']} refused by the relay {days} days ago ({w['message']}); "
-                     "another channel has it, so it is sent once more")
+                _say(f"{w['key']} refused by the relay {days} days ago ({w['message']}); sent once more")
                 continue
             self.state["dropped"] += 1
             self.save()
@@ -379,15 +377,24 @@ class Run:
             return body
         try:
             st = State.load(self.config.mirror_dir)
+        except (ValueError, OSError):  # an unreadable mirror state
+            return None
+        try:
             res = translate.bounded(lambda: pull.fetch(self.config.translate_mirror_url, st, fetch=keep,
                                                        root_pubkey=root, now=self.now, checkpoint=False), 120)
-        except (translate.CallError, ValueError, OSError):  # a timeout, an unreadable mirror state
-            return None
+        except (translate.CallError, ValueError, OSError):
+            # The pull did not finish. What an earlier pull stored is still evidence of a
+            # delivery; read it again, since the abandoned pull may yet write to ``st``.
+            res = None
+            try:
+                st = State.load(self.config.mirror_dir)
+            except (ValueError, OSError):
+                return None
         m = st.accepted(root)
         if m is None:
             return None
         made = {}
-        if res.error is None:
+        if res is not None and res.error is None:
             for name in pull.FILES:
                 try:
                     at = _dt.datetime.strptime(json.loads(seen[name])["generated_at"], "%Y-%m-%dT%H:%M:%SZ")
@@ -430,8 +437,21 @@ class Run:
         # one may still show (no pending entry; the floor is the first attempt).
         again = [{"key": it["key"], "at": it["tried"], "idle": True} for it in self.state["outbox"]
                  if it["sent"] is None and "tried" in it and not self.led.has_pending(it["key"])]
-        mirror = self._mirror(root, fetch) if again or any(p["key"] in items for p in unknown) else None
+        # And one whose repeat the relay refused: the refusal says nothing of the first send.
+        refused = [w for w in self.state["withheld"] if "tried" in w["items"][0] and w["key"] not in items]
+        mirror = self._mirror(root, fetch) if again or refused or any(p["key"] in items for p in unknown) else None
         events, made = mirror if mirror is not None else ([], {})
+        for w in refused:
+            it = w["items"][0]
+            eid = self._delivery(it, {"key": it["key"], "at": it["tried"]}, events)
+            if eid is not None:
+                self._unwithhold(w)
+                self.state["outbox"] += w["items"]  # a root's copies follow it, as before the refusal
+                it["sent"] = eid
+                self.save()
+                self.deliver(it)
+                self.n["settled"] += 1
+                _say(f"{it['key']} settled: the mirror shows it as {eid}; recorded")
         for p in unknown + again:
             it, age = items.get(p["key"]), self.now - p["at"]
             if it is None:
@@ -461,18 +481,25 @@ class Run:
                 _say(f"{p['key']} {why}: sent again")
 
     def yields(self, e, level) -> bool:
-        """Make way for a raise of thread ``e`` to ``level``: True when no work of the
-        thread is in the way, after removing what a raise may supersede. That is a reply
-        of this thread, journaled or withheld, which the relay has not acknowledged and
-        whose block is a level below the raise's and nothing else (a lowering, whichever
+        """True when a raise of thread ``e`` to ``level`` may be planned although work
+        of the thread is journaled or withheld: all of it is work a raise may supersede.
+        That is a reply of this thread which the relay has not acknowledged and whose
+        block is a level below the raise's and nothing else (a lowering, whichever
         channels have it: the raise states the level in each), or ids, sources and a
-        severity word and nothing else when no channel can have it (a source-only reply:
-        its candidate brings them again). Nothing is superseded while any send under the
-        thread's ids has an unknown outcome, nor when anything else of the thread waits
-        (a copy, a reply with a fix, a source-only reply another channel has)."""
+        severity word and nothing else when no channel can have it (the thread records
+        none of them and the item was never attempted; its candidate brings them again).
+        Never while any send under the thread's ids has an unknown outcome, nor when
+        anything else of the thread waits (a copy, a reply with a fix).
+
+        Nothing is removed here. The work is noted in ``passed``: ``busy(passing=True)``
+        and the drain pass over it, and ``enqueue`` removes it in the same save that
+        journals the raise. A run that stops before then has lost nothing."""
+        self.passed.pop(e.root_event_id, None)
         if self.led.pending_for(e.aliases):
             return False
         want, minor = _fold(e.aliases), {"aliases", "sources", "advisory_severity"}
+        have = {s.get("url") for s in e.advisory.get("sources") or [] if isinstance(s, dict)}
+        known = _fold([e.advisory.get("id"), *(e.advisory.get("aliases") or [])])
 
         def mine(it):
             return it["kind"] != "ja" and it["scope"] == e.scope and bool(
@@ -489,21 +516,26 @@ class Run:
                 return False
             if set(patch) == {"level"}:  # the raise is a level reply in every channel: it says the level last
                 return patch["level"] in RANK and RANK[patch["level"]] < RANK[level]
-            # ids and sources only, and no channel can have it: not recorded, never attempted
-            return set(patch) <= minor and "tried" not in it and not _same(it["adv"], e.advisory)
+            if not set(patch) <= minor or "tried" in it or it.get("retried"):
+                return False
+            # Ids and sources only. The thread's lists only grow, so one it already holds in
+            # full was recorded from another channel, whatever was recorded after it.
+            urls = {x.get("url") for x in patch.get("sources") or [] if isinstance(x, dict)}
+            return not (urls <= have and _fold(patch.get("aliases") or []) <= known)
 
         out = [it for it in self.state["outbox"] if mine(it)]
         groups = [w for w in self.state["withheld"] if any(mine(it) for it in w["items"])]
         work = out + [it for w in groups for it in w["items"]]
         if not all(lesser(it) for it in work):
             return False
-        for w in groups:
-            self._unwithhold(w)
         if work:
-            self._drop(out)  # saves
-            self.n["superseded"] += len(work)
-            _say(f"{', '.join(it['key'] for it in work)} superseded: thread {e.root_event_id[:8]} is raised to {level}")
+            self.passed[e.root_event_id] = (out, groups, level)
         return True
+
+    def _passing(self, it) -> bool:
+        """This journal or withheld item is one a raise of its thread is about to replace."""
+        return any(it is o or any(it is x for w in groups for x in w["items"])
+                   for out, groups, _ in self.passed.values() for o in out or [None])
 
     def _clears(self, c, scope, entry) -> bool:
         """A candidate that raises its thread supersedes the lower-priority work in the
@@ -514,8 +546,9 @@ class Run:
         return RANK[level] > RANK[entry.level] and self.yields(entry, level)
 
     def make_way(self, merged):
-        """Before the journal drains: a candidate that raises its thread supersedes what
-        is unsent there, so a lowering is not sent only to be raised by the same run."""
+        """Before the journal drains: a candidate that raises its thread passes over what
+        is unsent there (``yields``), so the drain does not send a lowering only for the
+        same run to raise it."""
         for c, scope in merged:
             ids = [c.id, *c.aliases]
             scope = self._former(scope, ids)
@@ -810,19 +843,32 @@ class Run:
                               held=keep, digested=(self.state["digested"] + sorted(snap))[-MAX_DIGESTED:])
             _say(f"digest {it['date']} sent: {eid}")
 
-    def busy(self, ids, scope) -> bool:
+    def busy(self, ids, scope, passing=False) -> bool:
         """True when this advisory has journaled work or a send in flight. Its ids are
-        learned by the overlapping items, so a later candidate under any of them waits too."""
+        learned by the overlapping items, so a later candidate under any of them waits too.
+        ``passing``: asked for a raise, which passes over the work it will replace (yields)."""
         want, root = _fold(ids), getattr(self.led.lookup(ids, scope=scope), "root_event_id", None)
-        hits = [it for it in self.state["outbox"] + self._withheld_items()  # withheld: waits for a human
-                if it["kind"] != "ja" and it["scope"] == scope and (_fold(it["ids"]) & want or root and it["root"] == root)]
+        hits = [it for it in self.state["outbox"] + self._withheld_items()  # withheld: until expire_withheld
+                if it["kind"] != "ja" and it["scope"] == scope and (_fold(it["ids"]) & want or root and it["root"] == root)
+                and not (passing and self._passing(it))]
         for it in hits:
             it["ids"] = list(dict.fromkeys(it["ids"] + [i for i in ids if i.casefold() not in _fold(it["ids"])]))
         if hits:
             self.save()
         return bool(hits) or bool(self.led.pending_for(ids))
 
-    def enqueue(self, items):
+    def enqueue(self, items, instead=None):
+        """Journal ``items`` and send them. ``instead``: what ``yields`` noted for the
+        thread these items raise; it leaves the journal and the withheld list in the same
+        save that journals the raise, so no run can stop between the two."""
+        if instead is not None:
+            out, groups, level = instead
+            for w in [w for w in groups if w in self.state["withheld"]]:
+                self._unwithhold(w)
+            work = out + [it for w in groups for it in w["items"]]
+            self.state["outbox"] = [o for o in self.state["outbox"] if not any(o is it for it in out)]
+            self.n["superseded"] += len(work)
+            _say(f"{', '.join(it['key'] for it in work)} superseded by a raise to {level}")
         self.state["outbox"].extend(items)
         self.save()
         for it in items:
@@ -980,7 +1026,8 @@ class Run:
         scope = self._former(scope, ids)
         entry = self.led.lookup(ids, scope=scope.name)
         # jsje: a raise never waits behind lower-priority work on its own thread
-        if self.busy(ids, scope.name) and not (self._clears(c, scope, entry) and not self.busy(ids, scope.name)):
+        if self.busy(ids, scope.name) and not (self._clears(c, scope, entry)
+                                               and not self.busy(ids, scope.name, passing=True)):
             self.n["busy"] += 1
             self.defer([(c, scope)])  # its update (a fix, a promotion) is planned once the send resolves
             return
@@ -1012,7 +1059,7 @@ class Run:
             self.n["withheld"] += 1
             return
         if items:
-            self.enqueue(items)
+            self.enqueue(items, self.passed.pop(entry.root_event_id, None) if entry is not None else None)
             if any(it in self._withheld_items() for it in items):  # waits for resolve; after --drop, planned anew
                 self.defer([(c, scope)])
 
@@ -1348,7 +1395,7 @@ class Run:
         """jsje: a busy thread this run's KEV read raises supersedes the lower-priority
         work in its way (``yields``), and is then judged like any other."""
         level = recompute.raised(e, scope, self.copy, rs)
-        return level is not None and self.yields(e, level) and not self.busy(e.aliases, e.scope)
+        return level is not None and self.yields(e, level) and not self.busy(e.aliases, e.scope, passing=True)
 
     def recompute(self):
         """Send what the verdicts say (ny5g): a raise now; a lowering when the thread
@@ -1370,7 +1417,8 @@ class Run:
         # Not busy when judged, and not busy now: a candidate of this run can leave work in
         # flight under a thread's ids without touching its entry (a refused item of a thread
         # that shares an id), and nothing is sent on top of work in flight.
-        found = [v for root, v in self.verdicts.items() if root in live and not self.busy(v[0].aliases, v[0].scope)]
+        found = [v for root, v in self.verdicts.items()
+                 if root in live and not self.busy(v[0].aliases, v[0].scope, passing=v[1] == "raise")]
         raises = [(e, level) for e, kind, level in found if kind == "raise"]
         due = recompute.select([(e, level) for e, kind, level in found
                                 if kind == "due" and recompute.quiet(e, self.now)], len(self.judged), st, self.now)
@@ -1381,7 +1429,8 @@ class Run:
             except ValueError:  # compose refused it: this thread's change is withheld
                 self.n["withheld"] += 1
                 continue
-            self.enqueue(items)  # its wait stays until the ledger shows the level: see drop_unsent_lowerings
+            # its wait stays until the ledger shows the level: see drop_unsent_lowerings
+            self.enqueue(items, self.passed.pop(e.root_event_id, None) if (e, level) in raises else None)
 
     def _withdrawn(self, root, fetch=None) -> tuple[set, set]:
         """(case-folded advisory ids, root event ids) withdrawn under ``root`` as of a
@@ -1869,8 +1918,8 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                 cp_status = "error"
                 _say(f"checkpoint stopped: {type(e).__name__}")
             if state["withheld"]:  # every run says so while any waits
-                _say(f"withheld={len(state['withheld'])} refused by the relay; each is dropped and planned anew "
-                     f"{WITHHELD_SECONDS // 86400} days after its refusal (sooner: resolve --requeue|--drop)")
+                _say(f"withheld={len(state['withheld'])} refused by the relay; each is dropped, or a reply sent once "
+                     f"more, {WITHHELD_SECONDS // 86400} days after its refusal (sooner: resolve --requeue|--drop)")
         # q03f: catalog sends, with the ledger lock released and the checkpoint signed, so
         # they cannot delay an alert post, the checkpoint or the next run.
         if cat_id and english_ok and cat_status != "error":

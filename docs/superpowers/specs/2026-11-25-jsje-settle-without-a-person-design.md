@@ -54,13 +54,12 @@ A Japanese reply is settled by the same rules. Its pending entry holds no adviso
 
 ### 2. A refused item leaves `withheld` after three days (`Run.expire_withheld`)
 
-A withheld group whose refusal is three days old (`WITHHELD_SECONDS`) is removed, with any pending mark its items left. Nothing then holds its advisory:
+A withheld root (with its copies), copy or digest whose refusal is three days old (`WITHHELD_SECONDS`) is removed, with any pending mark its items left. Nothing then holds its advisory:
 
 - a candidate's item: the candidate was deferred every run while the thread was busy, so the next `one()` plans it anew from its sources;
-- a level reply: the recompute judges the thread again;
 - a digest: today's digest is built anew.
 
-One kind of group is not dropped: a reply the thread already records from another channel (its journaled advisory is the ledger's). Nothing would plan that again, so the channel that refused it would lack the change for good. The relay took the same text in the other channel, so the text is not at fault: the reply goes back to the journal and is sent once more as it is. Refused again, it is dropped and counted; the poster cannot make the relay take it.
+A reply is not dropped at three days. Another channel may have taken the same change; the ledger then records it, nothing would plan it again, and the channel that refused it would lack it for good. Whether another channel has it cannot be read from the ledger once a later reply was recorded, so every reply is treated alike: it goes back to the journal marked `retried` and is sent once more as it is. Refused again, it is dropped and counted; the poster cannot make the relay take it. The mark is on the journal item, on disk: a restart or a failed send does not forget it, and a later reply under the same key does not inherit it. A lowering no channel has is still removed by `drop_unsent_lowerings` before it is sent on old evidence.
 
 The run says so on stderr, counts it in a `settled=` field of the summary line, and adds one to a new state key `dropped`. The next digest adds `dropped` to its "withheld by the publication check" count, and prints that line on a quiet day too; recording that digest subtracts the number it carried. If the relay refuses the same text again, the item is withheld again and waits another three days: one attempt every three days, never a loop inside a run.
 
@@ -68,12 +67,12 @@ Three days, not one: a second refusal in a run stops the run, so every retry of 
 
 ### 3. A raise supersedes lower-priority work on its own thread (`Run.yields`)
 
-When a raise of a thread is about to be planned and the thread is busy, the work in its way is removed if all of it may be superseded.
+When a raise of a thread is about to be planned and the thread is busy, the raise is planned anyway if all the work in its way may be superseded. That work stays in the journal, or withheld, until the raise is journaled: one save removes it and adds the raise (`Run.enqueue`). Until then the drain passes over it. A run that stops in between has lost nothing, and the next run sends or supersedes the work on what it reads then.
 
 **May be superseded:** a reply of that thread, in the journal or withheld, that the relay has not acknowledged, judged by the block it carries on the wire:
 
 - a level below the raise's and nothing else (a lowering). Whichever channels have it: the raise is a level reply in every channel of the thread, so it states the level last in each;
-- ids, sources and a severity word and nothing else, when no channel can have it: the ledger does not record it and it has no `tried`. Its candidate was deferred and brings the same ids and sources again.
+- ids, sources and a severity word and nothing else, when no channel can have it: it has no `tried` and no `retried`, and the thread's advisory lacks at least one id or source it lists (those lists only grow, so a later reply cannot hide that another channel recorded it). Its candidate was deferred and brings the same ids and sources again.
 
 **May not:** anything while a send under any of the thread's ids is pending (outcome unknown); an item the relay acknowledged; a root or a copy; a reply that carries a fix, a range, an action or a level at or above the raise's; a source-only reply another channel has or may have. The raise then waits as before, for rule 1, rule 2 or the next drain.
 
@@ -101,7 +100,7 @@ A superseded lowering that one channel already has leaves the channels at differ
 
 ## Blast radius and rollback
 
-Poster only: no wire format, reader, schema or spec file changes. The poster state gains `dropped` (an integer; a state from before starts at 0), a digest item's snapshot may carry `dropped`, and a journal item may carry `tried`. The previous version refuses a state with any of them. To roll back: stop the poster's timer; rewrite the state file (the config's `state`) in place with `jq 'del(.dropped) | (.outbox[], .withheld[].items[]) |= (del(.tried) | if .kind == "digest" then del(.adv.dropped) else . end)' state.json > state.json.new && mv state.json.new state.json`; start the timer. A test drives a state to hold all three and checks that they are the only keys the version before does not know, and that the CHANGELOG line names each; the `jq` line itself was run by hand on such a state (run record). The summary line gains ` settled=…` only in a run that settled something.
+Poster only: no wire format, reader, schema or spec file changes. The poster state gains `dropped` (an integer; a state from before starts at 0), a digest item's snapshot may carry `dropped`, and a journal item may carry `tried` and `retried`. The previous version refuses a state with any of them. To roll back: stop the poster's timer; rewrite the state file (the config's `state`) in place with `jq 'del(.dropped) | (.outbox[], .withheld[].items[]) |= (del(.tried, .retried) | if .kind == "digest" then del(.adv.dropped) else . end)' state.json > state.json.new && mv state.json.new state.json`; start the timer. A test drives a state to hold `dropped`, the snapshot's `dropped` and `tried` and checks that they are the only keys the version before does not know, and that the CHANGELOG line names each; the `jq` line itself was run by hand on such a state (run record). The summary line gains ` settled=…` only in a run that settled something.
 
 When the poster sends twice, after this change: an unknown send that did post, whose event the mirror did not show within 24 hours while claiming to be fresh, or within 72 hours at all. Before, only after a person said "not delivered".
 
@@ -123,6 +122,16 @@ Two findings rated critical and four major. Nothing was built when it ran; the t
 - **Fixed (major): a repeat moved the match floor past the first attempt's event.** The floor is the item's first unknown attempt (`tried`). Tests: the two `test_a_delivery_that_shows_after_…`.
 - **Fixed (major): the rollback line printed JSON and changed no file.** It now names the file, the stop of the timer and the replace. A test checks that the three keys it removes are the only ones the version before does not know.
 - **Rebutted (major): the snapshot commit's message.** The reviewed commit is a dangling review snapshot made with `git commit-tree`; it is on no branch and is never pushed.
+
+## Review dispositions (whole branch, one independent pass at e63d990, gpt-6-astra, and one same-model pass)
+
+The independent pass rated three findings critical and three major. All six are fixed; the run climbed from medium to heavy on them, so one delta pass follows.
+
+- **Fixed (critical): supersession removed the queued work before its replacement was journaled.** A run that stopped between the two, followed by a read that no longer raised, left one channel without the lowering for good. `yields` now removes nothing; `enqueue` removes the work in the save that journals the raise. Test: `test_superseded_work_stays_journaled_until_the_raise_is`.
+- **Fixed (critical): "another channel has it" was read from advisory equality, which a later recorded reply breaks.** Every refused reply is now sent once more before any drop, and the source-only test in `yields` reads the lists, which only grow. Test: `test_a_refused_reply_is_sent_once_more_whatever_the_thread_recorded_since`.
+- **Fixed (critical): the retry mark was a key kept in memory, and reply keys repeat.** It is now `retried` on the item. Test: `test_the_retry_mark_is_the_items_and_outlives_a_failed_send`, which also covers the major finding that the mark did not survive a restart or a failed send.
+- **Fixed (major): a repeat the relay refused ended settlement of the first attempt.** `settle` matches withheld items that carry `tried`. Test: `test_a_refused_repeat_is_still_settled_by_the_first_attempts_event`.
+- **Fixed (major): a pull that timed out discarded the stored events.** Test: `test_a_pull_that_times_out_keeps_what_an_earlier_pull_stored`.
 
 ## Open questions
 
