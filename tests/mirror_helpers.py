@@ -60,12 +60,12 @@ class Mirror:
     def man(self):
         return manifest.load(json.dumps(self.manifest).encode())
 
-    def publish_cert(self, key=None, issued=None, days=120, signer=None, man=None, min_cli=None):
+    def publish_cert(self, key=None, issued=None, days=120, signer=None, man=None, min_cli=None, ruleset_pin=None):
         """Sign and serve a certificate for the current manifest (or ``man``)."""
         man = man or self.man
         issued = issued if issued is not None else man.event["created_at"]
         self.cert = checkpoint.build_cert(signer or self.root_sec, man, key or self.ck, issued, issued + days * 86400,
-                                           min_cli)
+                                           min_cli, ruleset_pin)
         self.raw.pop("checkpoint-key.json", None)
         return self.cert
 
@@ -174,7 +174,7 @@ class Mirror:
         return self.body(name)
 
 
-def mirror_now(min_cli=None) -> tuple:
+def mirror_now(min_cli=None, ruleset_pin=None) -> tuple:
     """(a Mirror dated at the real clock, that clock): the manifest and the certificate
     two hours old, so a reader that refuses what is dated ahead (a released one, or the
     CLI, neither of which takes a clock) reads it. Date its events ``now - 3600`` on."""
@@ -183,7 +183,7 @@ def mirror_now(min_cli=None) -> tuple:
     m = Mirror()
     m.clock = now
     m.publish_manifest(version=1, issued=now - 7200, cert=False)
-    m.publish_cert(min_cli=min_cli)
+    m.publish_cert(min_cli=min_cli, ruleset_pin=ruleset_pin)
     return m, now
 
 

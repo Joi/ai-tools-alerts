@@ -3,7 +3,7 @@
 
     scripts/sign-checkpoint-key.py <checkpoint public key, as an npub>
         [--manifest trust/manifest.json] [--days 120] [--out trust/checkpoint-key.json]
-        [--min-cli N.N.N]
+        [--min-cli N.N.N] [--ruleset-min-version N]
 
 The certificate names the one key that may sign feed checkpoints
 (aitools_alerts/checkpoint.py). It is bound to the manifest at --manifest by
@@ -18,6 +18,18 @@ manifest with a key they do not know and ignore one in this certificate
 (spec/wire.md). The 0.1.7 release and earlier never print the line. Pass it
 again on every later certificate, or the floor is gone: the script says so on
 stderr when the certificate it replaces named one and this run does not.
+
+--ruleset-min-version N signs the root's pin of the ruleset: the version and
+the digest of this checkout's own ruleset (spec/ruleset.json over
+spec/scope.json, ruleset.load()) and N, the oldest ruleset version a reader may
+judge with. A CLI whose ruleset is below N, or is the pinned version with
+another digest, prints one "out of date" line and judges no level; nothing is
+refused or hidden. Sign it from the verified checkout of the release whose
+ruleset members should have: the digest is of the files in this checkout. N
+may not be above this checkout's version. Without the option no pin is signed;
+like --min-cli it must be passed again on every later certificate, and the
+script warns when a pin is dropped or lowered. Releases up to 0.1.7 ignore
+the key.
 
 The key is taken as an npub only. A 64-hex secret key is a valid public key
 about half the time, so a hex argument could put a secret, pasted by mistake,
@@ -47,7 +59,7 @@ REPO = Path(__file__).resolve().parent.parent
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from aitools_alerts import TRUST_ROOT_PUBKEY, checkpoint, manifest, nostr  # noqa: E402
+from aitools_alerts import TRUST_ROOT_PUBKEY, checkpoint, manifest, nostr, ruleset  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("sign_manifest", Path(__file__).with_name("sign-manifest.py"))
 _sign_manifest = importlib.util.module_from_spec(_spec)
@@ -90,6 +102,27 @@ def _min_cli(text: str) -> str:
     return text
 
 
+def _min_version(text: str) -> int:
+    if not (text.isascii() and text.isdigit() and len(text) <= 9 and int(text) >= 1):
+        raise argparse.ArgumentTypeError("must be a ruleset version: a whole number, 1 or more")
+    return int(text)
+
+
+def _pin(min_version: int | None):
+    """The pin to sign: this checkout's ruleset version and digest, and ``min_version``."""
+    if min_version is None:
+        return None
+    try:
+        rs = ruleset.load()
+        return ruleset.parse_pin({"version": rs.version, "sha256": rs.digest, "min_version": min_version})
+    except ruleset.RulesetError as e:
+        _die(f"--ruleset-min-version {min_version}: {e} (this checkout's ruleset is version {ruleset.VERSION})")
+
+
+def _warn(msg: str) -> None:
+    print(f"sign-checkpoint-key: warning: {msg}", file=sys.stderr)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Sign the checkpoint key certificate with the root key.")
     ap.add_argument("checkpoint_key", help="the checkpoint public key, as an npub")
@@ -98,6 +131,8 @@ def main(argv=None) -> int:
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--min-cli", type=_min_cli, default=None,
                     help="the oldest CLI release that can read the feed (N.N.N); older ones print an upgrade line")
+    ap.add_argument("--ruleset-min-version", type=_min_version, default=None, metavar="N",
+                    help="pin this checkout's ruleset; N is the oldest ruleset version a reader may judge with")
     args = ap.parse_args(argv)
 
     key = _public_key(args.checkpoint_key)
@@ -113,6 +148,7 @@ def main(argv=None) -> int:
         _die(f"output directory {args.out.parent} does not exist")
     if args.out.resolve() == args.manifest.resolve():
         _die("--out is the manifest; the certificate is a separate file")
+    pin = _pin(args.ruleset_min_version)
     now = int(time.time())
     previous = None
     if args.out.exists():
@@ -125,12 +161,19 @@ def main(argv=None) -> int:
         if previous.issued_at >= now:  # readers that hold it would refuse the new one (cert_order)
             _die(f"existing {args.out} is issued at or after this machine's clock; check the clock")
         if previous.min_cli is not None and args.min_cli is None:
-            print(f"sign-checkpoint-key: warning: the certificate being replaced names min_cli {previous.min_cli} "
-                  "and this one names none; pass --min-cli to keep the floor", file=sys.stderr)
+            _warn(f"the certificate being replaced names min_cli {previous.min_cli} "
+                  "and this one names none; pass --min-cli to keep the floor")
+        old = previous.ruleset
+        if old is not None and pin is None:
+            _warn(f"the certificate being replaced pins ruleset {old.version} (min_version {old.min_version}) "
+                  "and this one pins none; pass --ruleset-min-version to keep the pin")
+        elif old is not None and (pin.version < old.version or pin.min_version < old.min_version):
+            _warn(f"the certificate being replaced pins ruleset {old.version} (min_version {old.min_version}); "
+                  f"this one pins {pin.version} (min_version {pin.min_version}), which is lower")
 
     sec = read_root_secret()
     try:
-        ev = checkpoint.build_cert(sec, m, key, now, now + args.days * 86400, args.min_cli)
+        ev = checkpoint.build_cert(sec, m, key, now, now + args.days * 86400, args.min_cli, pin)
     except checkpoint.CheckpointError as e:
         _die(str(e))
     finally:

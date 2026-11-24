@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from aitools_alerts import checkpoint as cp
-from aitools_alerts import manifest, nostr, pull
+from aitools_alerts import manifest, nostr, pull, ruleset
 from mirror_helpers import T0, Mirror
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -370,7 +370,7 @@ def test_build_checkpoint_refuses_bad_input(w):
 
 
 def test_unknown_content_keys_are_ignored(w):
-    cert = cp.load_cert(raw(w.resign(w.m.root_sec, w.cert_ev, {"comment": "x", "ruleset": {"n": 1}})))
+    cert = cp.load_cert(raw(w.resign(w.m.root_sec, w.cert_ev, {"comment": "x", "later": {"n": 1}})))  # "ruleset" was the example here until it became a key (ed7n)
     assert cp.verify_cert(cert, w.m.root) and cp.cert_problem(cert, w.man, T0 + 5) is None
     c = cp.load_checkpoint(raw(w.resign(w.ck_sec, w.checkpoint().event, {"comment": ["y"]})))
     assert cp.verify_checkpoint(c, w.cert) and c.events == frozenset(IDS)
@@ -578,3 +578,93 @@ def test_script_warns_when_a_new_certificate_drops_the_floor(w, script, monkeypa
     assert script.main(script.argv(nostr.npub(w.ck))) == 0
     assert "names min_cli 0.2.0 and this one names none" in capsys.readouterr().err
     assert cp.load_cert(script.out).min_cli is None
+
+
+# ---------------------------------------------------------------- the ruleset pin (ai-tools-alerts#ed7n)
+
+def _pin(version=7, min_version=5, sha256="ab" * 32):
+    return ruleset.Pin(version=version, sha256=sha256, min_version=min_version)
+
+
+def test_the_ruleset_pin_is_an_optional_key_of_the_certificate(w):
+    assert w.cert.ruleset is None and "ruleset" not in json.loads(w.cert_ev["content"])
+    ev = cp.build_cert(w.m.root_sec, w.man, w.ck, T0, T0 + DAY, ruleset_pin=_pin())
+    cert = cp.load_cert(raw(ev))
+    assert json.loads(ev["content"])["ruleset"] == {"version": 7, "sha256": "ab" * 32, "min_version": 5}
+    assert cert.ruleset == _pin() and cert.min_cli is None
+    assert cp.verify_cert(cert, w.m.root) and cp.cert_problem(cert, w.man, T0) is None
+    assert cp.cert_from_event(ev) == cert
+    # what the object says must be what the root signed
+    assert not cp.verify_cert(replace(cert, ruleset=_pin(min_version=1)), w.m.root)
+    assert not cp.verify_cert(replace(cert, ruleset=_pin(sha256="cd" * 32)), w.m.root)
+    assert not cp.verify_cert(replace(cert, ruleset=None), w.m.root)
+    assert not cp.verify_cert(replace(w.cert, ruleset=_pin()), w.m.root)
+    stranger, _ = nostr.keygen()  # a pin another key signed is no pin of the root's
+    assert not cp.verify_cert(cp.load_cert(raw(w.resign(stranger, ev))), w.m.root)
+
+
+def test_a_certificate_carries_min_cli_and_the_pin_together(w):
+    cert = cp.load_cert(raw(cp.build_cert(w.m.root_sec, w.man, w.ck, T0, T0 + DAY, "0.2.0", _pin())))
+    assert (cert.min_cli, cert.ruleset) == ("0.2.0", _pin()) and cp.verify_cert(cert, w.m.root)
+
+
+GOOD_PIN = {"version": 7, "sha256": "ab" * 32, "min_version": 5}
+
+
+@pytest.mark.parametrize("bad", [
+    [], {}, "7", 7, True, {k: v for k, v in GOOD_PIN.items() if k != "sha256"}, {**GOOD_PIN, "scope": 6},
+    {**GOOD_PIN, "min_version": 8}, {**GOOD_PIN, "min_version": 0}, {**GOOD_PIN, "version": True},
+    {**GOOD_PIN, "version": 7.0}, {**GOOD_PIN, "sha256": "ab" * 31 + "a"}, {**GOOD_PIN, "sha256": "AB" * 32},
+    {**GOOD_PIN, "sha256": None}, {**GOOD_PIN, "version": 2**53}])
+def test_a_malformed_pin_is_refused_when_read(w, bad):
+    with pytest.raises(cp.CheckpointError, match="certificate: ruleset: "):
+        cp.load_cert(raw(w.resign(w.m.root_sec, w.cert_ev, {"ruleset": bad})))
+    with pytest.raises(cp.CheckpointError, match="ruleset"):
+        cp.cert_from_event(w.resign(w.m.root_sec, w.cert_ev, {"ruleset": bad}))
+
+
+@pytest.mark.parametrize("bad", [GOOD_PIN, (7, "ab" * 32, 5), "pin", 7,
+                                 ruleset.Pin(version=7, sha256="ab" * 32, min_version=8),
+                                 ruleset.Pin(version=7, sha256="AB" * 32, min_version=5),
+                                 ruleset.Pin(version=True, sha256="ab" * 32, min_version=1)])
+def test_a_malformed_pin_is_refused_when_built(w, bad):
+    with pytest.raises(cp.CheckpointError, match="ruleset"):
+        cp.build_cert(w.m.root_sec, w.man, w.ck, T0, T0 + DAY, ruleset_pin=bad)
+
+
+def test_a_null_pin_reads_as_absent(w):
+    cert = cp.load_cert(raw(w.resign(w.m.root_sec, w.cert_ev, {"ruleset": None})))
+    assert cert.ruleset is None and cp.verify_cert(cert, w.m.root)
+
+
+def test_script_signs_the_pin_of_this_checkout_and_checks_it_before_reading_the_root_key(w, script, capsys):
+    rs = ruleset.load()
+    for bad in ("0", "-1", "1.0", "latest", "", "٣", str(rs.version + 1)):
+        with pytest.raises(SystemExit) as e:
+            script.main(script.argv(nostr.npub(w.ck), "--ruleset-min-version", bad))
+        assert e.value.code not in (0, None)
+    assert script.calls == [] and not script.out.exists()
+    assert script.main(script.argv(nostr.npub(w.ck))) == 0  # no option: no pin
+    assert cp.load_cert(script.out).ruleset is None
+    script.out.unlink()
+    assert script.main(script.argv(nostr.npub(w.ck), "--ruleset-min-version", "1", "--min-cli", "0.2.0")) == 0
+    cert = cp.load_cert(script.out)
+    assert cert.ruleset == ruleset.Pin(version=rs.version, sha256=rs.digest, min_version=1) and cert.min_cli == "0.2.0"
+    assert cp.verify_cert(cert, w.m.root) and not ruleset.outdated(cert.ruleset)
+    assert "warning" not in capsys.readouterr().err
+
+
+def test_script_warns_when_a_new_certificate_drops_or_lowers_the_pin(w, script, monkeypatch, capsys):
+    rs = ruleset.load()
+    assert script.main(script.argv(nostr.npub(w.ck), "--ruleset-min-version", str(rs.version))) == 0
+    assert "warning" not in capsys.readouterr().err
+    if rs.version > 1:
+        monkeypatch.setattr(script.time, "time", lambda: T0 + 60.0)
+        assert script.main(script.argv(nostr.npub(w.ck), "--ruleset-min-version", "1")) == 0
+        assert (f"pins ruleset {rs.version} (min_version {rs.version}); this one pins {rs.version} (min_version 1), "
+                "which is lower") in capsys.readouterr().err
+        assert cp.load_cert(script.out).ruleset.min_version == 1
+    monkeypatch.setattr(script.time, "time", lambda: T0 + 70.0)
+    assert script.main(script.argv(nostr.npub(w.ck))) == 0
+    assert "and this one pins none; pass --ruleset-min-version to keep the pin" in capsys.readouterr().err
+    assert cp.load_cert(script.out).ruleset is None
