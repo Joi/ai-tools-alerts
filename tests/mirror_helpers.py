@@ -69,6 +69,18 @@ class Mirror:
         self.raw.pop("checkpoint-key.json", None)
         return self.cert
 
+    def publish_unreadable_pin(self, later=0, value=None):
+        """Replace the certificate with one, issued ``later`` seconds after it, whose
+        ``ruleset`` is a form no reader here knows (a pin with a fourth key)."""
+        old, content = self.cert, json.loads(self.cert["content"])
+        issued = old["created_at"] + later
+        content.update(issued_at=iso(issued),
+                       ruleset=value or {"version": 99, "sha256": "0" * 64, "min_version": 99, "scope": 7})
+        self.cert = nostr.sign_event(self.root_sec, {"created_at": issued, "kind": old["kind"], "tags": old["tags"],
+                                                     "content": json.dumps(content)})
+        self.raw.pop("checkpoint-key.json", None)
+        return self.cert
+
     def honest_ids(self, at):
         """What an honest signer lists at time ``at``: events that verify, are
         signed by a poster of the current manifest, are bound to an alert

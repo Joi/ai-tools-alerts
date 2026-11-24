@@ -630,15 +630,13 @@ def test_a_pin_this_reader_cannot_read_is_kept_as_unreadable_and_the_certificate
     assert not cp.verify_cert(cp.load_cert(raw(w.resign(stranger, ev))), w.m.root)
 
 
-def test_a_pin_nested_too_deeply_is_unreadable_or_refused_never_a_crash(w):
+def test_a_nested_pin_is_unreadable(w):
     deep = "[" * 400 + "]" * 400
-    ev = w.resign(w.m.root_sec, w.cert_ev)
+    ev = w.cert_ev
     ev = nostr.sign_event(w.m.root_sec, {"created_at": ev["created_at"], "kind": ev["kind"], "tags": ev["tags"],
                                          "content": ev["content"][:-1] + ',"ruleset":{"version":' + deep + "}}"})
-    try:
-        assert cp.load_cert(raw(ev)).ruleset_unreadable
-    except cp.CheckpointError:
-        pass
+    cert = cp.load_cert(raw(ev))
+    assert cert.ruleset_unreadable and cert.ruleset is None and cp.verify_cert(cert, w.m.root)
 
 
 @pytest.mark.parametrize("bad", [GOOD_PIN, (7, "ab" * 32, 5), "pin", 7,

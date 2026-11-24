@@ -1,6 +1,6 @@
 # Run: ed7n-ruleset-pin
 Instruction: Read TASK-ai-tools-alerts#ed7n.md in this worktree root, then run `kata show ai-tools-alerts#ed7n` and follow the brief and the dispatch rules. (Issue: self-correct: the root-signed manifest carries the ruleset pin; the CLI says when its ruleset is out of date, finding D10, second half of s6mt. Its first comment moves the pin from the manifest to the checkpoint key certificate.)
-Stage: code-review:whole-branch (the delta)
+Stage: verifying
 Rung: heavy (start-floor heavy: hard-trigger, BR2 REV1 NOV1 INT2 FC2 = 8). Evaluator: "secrets, auth or credential handling — the diff changes `scripts/sign-checkpoint-key.py` (the script that signs with the trust root key) and changes what `checkpoint._parse_cert` / `verify_cert` check on the checkpoint key certificate". The dispatch floor was medium.
 Lens (every review pass carries it): "a certificate without the key behaves as today"; "No rollout" (no signing step is run; it is filed as an issue); nothing built may wait for a person to act; released readers v0.1.6 and v0.1.7 "show what they showed before".
 Last reviewed: spec 473b94f45de878e706b81d503c423ab5c15d6eb5 (the delta; first pass 8d460f1246dba3e2b9e57bc2ae54c7e0e1ec8d40)
@@ -24,6 +24,8 @@ Pass 1 [code:whole-branch]: 1B/2S/5C/0R · fixed -/- · velocity = (—→8, esc
   S fixed (Stage 1): main had released 0.1.8 under the branch. Merged; the changelog entry is under a new Unreleased heading; the documents say "0.1.8 and earlier"; the compatibility case runs v0.1.8 too.
   S fixed (Stage 1): the out-of-date clause of `_cache` had no test (a mutant survived). A test now caches a contradiction on a current CLI, then pins past it.
   C fixed: the wire.md sentence about a malformed pin (rewritten with the B fix); `verify`'s line no longer starts with `source check:`; the README names the three forms of the line; the exit-status sentence says a kept level can give exit 2; `cmd_run` computes the state once, `cmd_verify` returns before the inventory, `build_cert` parses the pin before signing.
+Pass 2 [code:whole-branch]: 0B/0S/4C/0R · fixed 3/3 prior · velocity ↓ (8→4, escalation no)   (the delta, reviewed 83151d54999c9a677927d3d816f7c9429fa011e5; Stage 2 fresheyes `--since aeca706`: passed, no finding; Stage 1 same-model subagent: 0B/0S/4C, nine mutants of the fix all killed by the intended test)
+  C fixed, with no further pass: `spec/wire.md` says "any other value that is standard JSON" (a certificate whose content is not standard JSON is refused as before); the nesting test asserts the flag outright and the dead `RecursionError` clause is gone; the no-expiry and cached-result tests run for the unreadable form too; the line says "ruleset unknown" when the reader's own ruleset cannot be loaded.
 
 ## Chunks
 - [x] pin in the certificate: `ruleset.outdated`, `checkpoint` parse, build and verify, the signing option

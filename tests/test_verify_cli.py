@@ -199,7 +199,8 @@ def test_a_cli_whose_ruleset_is_out_of_date_reads_no_source_and_judges_nothing(f
     assert data["ruleset_outdated"]["pinned"] == _pin().version
 
 
-def test_a_result_cached_before_the_cli_went_out_of_date_is_not_shown(feed, monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize("form", ["another digest", "unreadable"])
+def test_a_result_cached_before_the_cli_went_out_of_date_is_not_shown(feed, monkeypatch, tmp_path, capsys, form):
     """The CLI was current, read the source and cached a contradiction. The root then
     pins a ruleset this CLI does not have: the cached judgment is its old ruleset's."""
     m = feed([bot(id=CVE, level="critical")], 'verify = "all"\n', ruleset_pin=_pin())
@@ -207,14 +208,17 @@ def test_a_result_cached_before_the_cli_went_out_of_date_is_not_shown(feed, monk
     line = f"source check: the source does not support {CVE} for Claude Code"
     assert line in out_of(capsys, ["run"])[1] and line in out_of(capsys, ["check"])[1]
     assert (config.state_dir() / "verify.json").exists() and len(n.calls) == 1
-    m.publish_cert(issued=m.cert["created_at"] + 500, ruleset_pin=_pin(sha256="0" * 64))
+    if form == "unreadable":
+        m.publish_unreadable_pin(later=500)
+    else:
+        m.publish_cert(issued=m.cert["created_at"] + 500, ruleset_pin=_pin(sha256="0" * 64))
     m.write(tmp_path / "mirror")
     for argv in (["run"], ["check"], ["plan", CVE], ["verify"]):
         _, out, err = out_of(capsys, argv)
         assert "source check: " not in out and err.count("out of date:") == 1, argv
     assert json.loads(out_of(capsys, ["check", "--json"])[1])[0]["source_check"] is None
     assert json.loads(out_of(capsys, ["run", "--json"])[1])["matches"][0]["source_check"] is None
-    assert len(n.calls) == 1  # nothing was read after the pin
+    assert len(n.calls) == 1  # nothing was read after the pin: `run` and `verify` asked no source
 
 
 def test_a_pin_the_cli_meets_changes_nothing_in_the_source_check(feed, monkeypatch, capsys):

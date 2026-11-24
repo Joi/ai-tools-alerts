@@ -387,7 +387,7 @@ def _ruleset_outdated(a, st: State) -> dict | None:
 def _outdated_line(o: dict) -> str:
     line = (OUTDATED_UNREADABLE_LINE if o["pinned"] is None
             else OUTDATED_DIGEST_LINE if o["have"] == o["pinned"] else OUTDATED_LINE)
-    return line.format(tail=OUTDATED_TAIL, **o)
+    return line.format(tail=OUTDATED_TAIL, **{**o, "have": "unknown" if o["have"] is None else o["have"]})
 
 
 def _stale_since(a, st: State) -> str | None:

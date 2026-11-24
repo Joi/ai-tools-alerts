@@ -229,7 +229,7 @@ def _parse_cert(ev) -> tuple:
     if pin is not None:
         try:
             pin = ruleset.parse_pin(pin)
-        except (ruleset.RulesetError, RecursionError):
+        except ruleset.RulesetError:
             pin, unreadable = None, True
     return (_hex(c, "manifest_id", "certificate"), _int(c, "manifest_version", 1, MAX_INT, "certificate"),
             key, issued, expires, min_cli, pin, unreadable)

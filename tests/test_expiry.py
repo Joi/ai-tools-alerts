@@ -391,12 +391,15 @@ def test_decay_off_keeps_a_claim_threads_level_and_still_ends_a_curators_expiry(
         CVE: "critical", "AITA-TEST-0001": "critical"}
 
 
-@pytest.mark.parametrize("outdated", [True, False])
+@pytest.mark.parametrize("outdated", [True, "unreadable", False])
 def test_check_applies_no_computed_expiry_while_its_ruleset_is_out_of_date(mirror, monkeypatch, capsys, outdated):
     rs = ruleset.load()
     pin = (ruleset.Pin(version=rs.version + 1, sha256="0" * 64, min_version=rs.version + 1) if outdated
            else ruleset.Pin(version=rs.version, sha256=rs.digest, min_version=rs.version))
-    mirror.publish_cert(ruleset_pin=pin)
+    if outdated == "unreadable":
+        mirror.publish_unreadable_pin()
+    else:
+        mirror.publish_cert(ruleset_pin=pin)
     bot_root(mirror)
     assert pull_at(mirror, T0 + 101 + 14 * DAY).error is None
     monkeypatch.setenv(cli.TRUST_ROOT_ENV, mirror.root)
@@ -407,5 +410,5 @@ def test_check_applies_no_computed_expiry_while_its_ruleset_is_out_of_date(mirro
     assert cli.main(["check"]) == 0
     io = capsys.readouterr()
     assert f"(id {CVE}, " in io.out
-    assert ("CRITICAL: " in io.out) == outdated and ("HIGH: " in io.out) != outdated
-    assert ("out of date:" in io.err) == outdated
+    assert ("CRITICAL: " in io.out) == bool(outdated) and ("HIGH: " in io.out) != bool(outdated)
+    assert ("out of date:" in io.err) == bool(outdated)
