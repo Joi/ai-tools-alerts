@@ -364,7 +364,8 @@ def test_read_advisory_reads_the_labelled_fields_of_a_real_page():
     assert p.blocks == (rules.Block("@anthropic-ai/claude-code", "npm", "< 2.1.129", "2.1.129"),)
     assert p.title == "Arbitrary File Write via Write-Time Symlink Following (TOCTOU) in Claude Code"
     assert rules.read_advisory(advisory_page(G1, cve="CVE-2026-0007", severity="Critical")) == rules.AdvisoryPage(
-        G1, "CVE-2026-0007", (rules.Block("@anthropic-ai/claude-code", "npm", "< 2.1.0", "2.1.0"),), "critical", "A flaw")
+        G1, "CVE-2026-0007", (rules.Block("@anthropic-ai/claude-code", "npm", "< 2.1.0", "2.1.0"),), "critical", "A flaw",
+        "Details.")
     soft = rules.read_advisory(advisory_page(G1, package="Claude Desktop", ecosystem=None))
     assert (soft.blocks[0].name, soft.blocks[0].ecosystem, soft.cve) == ("Claude Desktop", "", None)
 
