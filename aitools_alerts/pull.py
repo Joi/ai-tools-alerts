@@ -141,6 +141,7 @@ class Thread:
     offered: str | None = None
     held_aliases: tuple = ()
     held_fixed: tuple = ()
+    held_products: tuple = ()  # entries whose exact product name ``wide`` no longer carries
     refused: str | None = None
 
 
@@ -956,22 +957,40 @@ class _Hold:
     """What ``threads_from`` keeps for a relay-bot thread beside the state a curator's
     word gives it (c1g2): ``wide``, the widest state; ``until``, when the curator's hold
     ends (None: none in force, and then the thread's advisory is ``wide`` itself);
-    ``offered``, the level last published below ``wide``'s; ``aliases``, every alias
-    ``wide`` has held, in the order they came; ``fixed``, per product name the first
-    fixed version the thread stated for it (a later reply may clear ``fixed``, which
-    is a widening for matching and must not weaken what a check is asked about)."""
-    __slots__ = ("wide", "until", "offered", "aliases", "fixed")
+    ``offered``, the level last published below ``wide``'s. And the history a check is
+    asked with (``note``), from every state the thread has shown, the curator's held
+    one included: ``aliases``, every alias, in the order they came; ``fixed``, per
+    product name the first fixed version stated for it; ``names``, per product name,
+    exactly as written, the first entry that carried it. A later reply may drop an
+    alias, clear ``fixed`` or put a product in another spelling in an entry's place:
+    each is a widening for matching, and none may weaken what a check is asked about."""
+    __slots__ = ("wide", "until", "offered", "aliases", "fixed", "names", "_seen")
 
     def __init__(self, adv: Advisory):
-        self.until, self.offered, self.aliases, self.fixed = None, None, [], {}
+        self.until, self.offered, self.aliases, self.fixed, self.names, self._seen = None, None, [], {}, {}, set()
         self.widen(adv)
+
+    def note(self, adv: Advisory) -> None:
+        for a in adv.aliases:
+            if a not in self._seen:  # a set: a thread flooded with aliases must not cost their square
+                self._seen.add(a)
+                self.aliases.append(a)
+        for p in adv.products:
+            self.names.setdefault(p.name, p)
+            if p.fixed is not None:
+                self.fixed.setdefault(p.name, p.fixed)
 
     def widen(self, adv: Advisory) -> None:
         self.wide = adv
-        self.aliases += [a for a in adv.aliases if a not in self.aliases]
-        for p in adv.products:
-            if p.fixed is not None:
-                self.fixed.setdefault(p.name, p.fixed)
+        self.note(adv)
+
+
+def _missing(h: _Hold) -> tuple:
+    """The first entry of each product name the thread has carried and ``wide`` no
+    longer does. The join compares names without case, the source check by the scope
+    file's exact name: an entry spelled otherwise can stand in for the original."""
+    have = {p.name for p in h.wide.products}
+    return tuple(p for name, p in h.names.items() if name not in have)
 
 
 def _bot_patch(adv: Advisory, p: dict, dropped: Counter | None = None) -> tuple:
@@ -1124,9 +1143,12 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
                 if "aliases" in p:  # only aliases a curator wrote:
                     t[4].update(i.casefold() for i in new.aliases)  # a bot's never list a thread
                 if h is not None:
+                    h.note(new)  # a fix or an alias the curator supplied is part of the thread's history
                     # The widest state takes a curator's reply as it takes the bot's: what it
                     # adds or raises stays after the hold, what it takes away does not.
-                    wide, used = _bot_patch(h.wide, p)
+                    # Without its expiry: the bot's rules refuse a block that names one whole,
+                    # and a raise sent with an expiry must not be lost with it.
+                    wide, used = _bot_patch(h.wide, {k: v for k, v in p.items() if k != "expires_at"})
                     if wide is not None:
                         h.widen(wide)
                     if isinstance(p.get("level"), str) and p["level"] in _RANK:
@@ -1143,7 +1165,8 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
         gone = not ids.isdisjoint(listed)  # the manifest's word: for good, nothing lapses
         hold = {} if h is None or gone else {"wide": h.wide, "held_until": h.until, "offered": h.offered,
                                              "held_aliases": tuple(h.aliases),
-                                             "held_fixed": tuple(sorted(h.fixed.items()))}
+                                             "held_fixed": tuple(sorted(h.fixed.items())),
+                                             "held_products": _missing(h)}
         # ``ok``: every id and alias the thread has held. A later patch that drops an
         # alias must not take away a renewal made under it.
         enrolled = first is not None and first[0] in ok
@@ -1189,14 +1212,15 @@ def _held(t: Thread, now) -> bool:
 
 def widest(t: Thread) -> Advisory:
     """What a member's check is asked about: the widest state of a relay-bot thread with
-    every alias it has held and, for a product whose entry states no fixed version, the
-    one the thread stated before. The source's level is held to what the post can be
-    acted on with (9kgk), so a reply that drops an alias or clears ``fixed`` must not be
-    able to make the source read lower than it did."""
+    every alias it has held, every product name it has carried and, for a product whose
+    entry states no fixed version, the one the thread stated before. The source is
+    read per exact product name and its level is held to what the post can be acted on
+    with (9kgk), so a reply that drops an alias, clears ``fixed`` or respells a product
+    must not be able to make the source read lower than it did, or not at all."""
     fixed = dict(t.held_fixed)
     return replace(t.wide, aliases=list(t.held_aliases),
                    products=[replace(p, fixed=fixed[p.name]) if p.fixed is None and p.name in fixed else p
-                             for p in t.wide.products])
+                             for p in (*t.wide.products, *t.held_products)])
 
 
 def asks(t: Thread, now: float | None = None) -> list:

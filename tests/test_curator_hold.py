@@ -97,6 +97,14 @@ def test_what_a_curator_adds_or_raises_outlasts_the_hold(mirror):
     assert (t.adv.level, t.adv.title, t.offered) == ("critical", "Curated", None)
 
 
+def test_a_curator_raise_sent_with_an_expiry_outlasts_the_hold_and_the_expiry_does_not(mirror):
+    root = bot_root(mirror, level="high")
+    mirror.reply(mirror.cur_sec, root, mirror.patch_text(level="critical", expires_at=AT + 300 * DAY), created_at=AT)
+    t = thread(mirror)
+    assert (t.adv.level, t.adv.expires_at, t.wide.level, t.wide.expires_at) == ("critical", AT + 300 * DAY, "critical", None)
+    assert shown(mirror, AT + HOLD + 1).adv.level == "critical"
+
+
 # ---------------------------------------------------------------- the bot is not silenced
 
 def test_a_bot_raise_shows_at_once_and_any_other_change_after_the_hold(mirror):
@@ -271,6 +279,46 @@ def test_a_level_line_followed_by_a_raising_block_leaves_nothing_published(mirro
     mirror.reply(mirror.cur_sec, root, "level: notice\n" + mirror.patch_text(level="critical"), created_at=AT + DAY)
     t = thread(mirror)
     assert (t.adv.level, t.offered) == ("critical", None)
+
+
+def test_a_product_put_in_another_spelling_is_still_asked_about_by_its_first_name(mirror):
+    """The join compares product names without case; the source check reads the scope
+    file's exact name. An entry in capitals can take the original's place."""
+    root = bot_root(mirror)
+    loud = {"name": "CLAUDE CODE", "ecosystem": "claude-code", "affected": None, "fixed": None}
+    mirror.reply(mirror.cur_sec, root, "level: notice\n" + mirror.patch_text(products=[loud]), created_at=AT)
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(products=[loud]), created_at=AT + 10)
+    t = thread(mirror)
+    assert [p.name for p in t.wide.products] == ["CLAUDE CODE"]
+    assert [(p.name, p.fixed) for p in pull.widest(t).products] == [("CLAUDE CODE", None), ("Claude Code", "99.0.0")]
+
+
+def test_a_fix_and_an_alias_a_curator_supplied_are_part_of_what_is_asked(mirror):
+    root = bot_root(mirror, level="high", products=[schema_product(fixed=None)], actions=[])
+    mirror.reply(mirror.cur_sec, root, mirror.patch_text(
+        level="critical", products=[CC], actions=[{"verb": "upgrade", "target": "Claude Code", "value": "99.0.0"}]),
+        created_at=AT)
+    mirror.reply(mirror.cur_sec, root, "level: high\n" + mirror.patch_text(aliases=["GHSA-aaaa-bbbb-cccc"]),
+                 created_at=AT + 10)
+    t = thread(mirror)
+    assert [p.fixed for p in t.wide.products] == [None]  # the bot's rules do not take a fix where there was none
+    w = pull.widest(t)
+    assert [p.fixed for p in w.products] == ["99.0.0"] and w.aliases == ["GHSA-aaaa-bbbb-cccc"]
+
+
+def test_a_flood_of_aliases_is_kept_once_each(mirror):
+    root = bot_root(mirror)
+    for i in range(40):
+        mirror.reply(mirror.bot_sec, root, mirror.patch_text(aliases=[f"AITA-X-{i}-{j}" for j in range(50)]),
+                     created_at=AT + i)
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(aliases=["AITA-X-0-0"]), created_at=AT + 100)
+    t = thread(mirror)
+    assert len(t.held_aliases) == 2000 == len(set(t.held_aliases)) and t.adv.aliases == ["AITA-X-0-0"]
+
+
+def schema_product(**over):
+    from aitools_alerts.schema import Product
+    return Product(**{**CC, **over})
 
 
 def test_asks(mirror):

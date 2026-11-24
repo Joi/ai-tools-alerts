@@ -358,6 +358,12 @@ def renew_event(sec: str, m, root: str, st: State, thread, root_ev: dict, *, now
         patch = {k: v for k, v in held.items() if k not in ("id", "posted_by", "level") and v != wide[k]}
         if lower is None and not patch:
             raise CuratorError("nothing to renew: the hold lowers, narrows and retracts nothing")
+        # A list relay-bot replies joined past what one event may carry cannot be said
+        # again; left out, the readers keep it as held. Some block must remain for the
+        # reply to count as an action: the title, unchanged, when nothing else does.
+        patch = {k: v for k, v in patch.items() if len(v) <= pull.LIST_LIMITS.get(k, len(v))}
+        if lower is None and not patch:
+            patch = {"title": t.adv.title}
         content = f"level: {lower}" if lower else f"Renewed: {t.adv.title}"
         if patch:
             content += f"\n\n```{schema.INFO_STRING}\n{json.dumps(patch, indent=2, ensure_ascii=False)}\n```\n"

@@ -5,6 +5,8 @@ import sys
 import threading
 import time
 
+from dataclasses import replace
+
 import pytest
 
 from aitools_alerts import cli, config, curator, nostr, pull, relay, schema
@@ -584,6 +586,25 @@ def test_renew_signs_a_retraction_again(mirror):
     t = as_replayed(st, root)
     assert again["content"] == "retract" and t.retracted
     assert t.held_until == again["created_at"] + pull.CURATOR_HOLD_S > gone["created_at"] + pull.CURATOR_HOLD_S
+
+
+def test_renew_of_a_hold_on_a_thread_whose_list_has_grown_past_what_one_event_carries(mirror):
+    root, st = bot_thread(mirror, level="high")
+    more = [{"name": f"Tool {i}", "ecosystem": "git", "affected": None, "fixed": None} for i in range(50)]
+    signed(st, mirror.reply(mirror.bot_sec, root, mirror.patch_text(products=more), created_at=NOW + 1))
+    signed(st, curator.amend_event(mirror.cur_sec, st.manifest, mirror.root, st, as_replayed(st, root), root,
+                                   now=NOW + 2, actions=[]))
+    extra = [{"name": "Tool 99", "ecosystem": "git", "affected": None, "fixed": None}]
+    signed(st, mirror.reply(mirror.bot_sec, root, mirror.patch_text(products=extra), created_at=NOW + 3))
+    t = as_replayed(st, root)
+    assert (len(t.adv.products), len(t.wide.products), t.adv.actions) == (51, 52, [])
+    again = signed(st, curator.renew_event(mirror.cur_sec, st.manifest, mirror.root, st, t, root, now=NOW + DAY))
+    assert pull._patch(again["content"]) == {"actions": []}
+    after = as_replayed(st, root)
+    assert after.adv == t.adv and after.held_until == again["created_at"] + pull.CURATOR_HOLD_S
+    # with nothing but the long list held, the title said again is the action
+    t2 = replace(after, adv=replace(after.adv, actions=after.wide.actions))
+    assert t2.adv.products != t2.wide.products
 
 
 def test_renew_refuses_when_nothing_is_held(mirror):

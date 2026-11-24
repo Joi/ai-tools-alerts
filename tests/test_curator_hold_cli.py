@@ -42,6 +42,8 @@ def test_a_curator_notice_on_a_thread_the_kev_lists_keeps_critical_and_is_flagge
     status, out, _ = out_of(capsys, ["run"])
     line = f"source check: a lowering of {CVE} to notice is not applied: the source supports critical for Claude Code"
     assert line in out and status == cli.EXIT_UNSEEN_CRITICAL  # contradicted and notified in the same run
+    first, _, after = out.partition("After the source check:\n")
+    assert first.startswith("NOTICE: ") and after.startswith("CRITICAL: ")  # and listed as it now stands
     assert n.urls == [verify.KEV_URL]
     _, out, _ = out_of(capsys, ["check"])
     assert out.startswith("CRITICAL: ") and line in out
@@ -105,7 +107,68 @@ def test_a_curator_retraction_with_no_machine_readable_source_lapses_after_fourt
         assert levels(capsys) == want, at
 
 
+def test_verify_counts_the_alert_a_refused_retraction_brought_back(feed, monkeypatch, capsys, reader_clock):
+    m = feed([bot(id=CVE, level="critical")], ALL)
+    m.reply(m.cur_sec, m.events["feed.json"][0], "retract", created_at=AT)
+    serve(m, reader_clock, AT + 100)
+    use(monkeypatch, Net().set(verify.KEV_URL, KEV_CC))
+    assert levels(capsys) == {}
+    _, out, _ = out_of(capsys, ["verify"])
+    # the alert is back and counted; its own state is read on the next run
+    assert out == ("source check: 0 confirmed, 0 contradicted, 1 not verified\n"
+                   "source check: 1 lowerings or retractions asked about: 0 confirmed, 1 contradicted, 0 not settled\n"
+                   f"source check: a retraction of {CVE} is not applied: the source supports critical for Claude Code\n")
+    assert levels(capsys) == {CVE: "critical"}
+    status, out, _ = out_of(capsys, ["run"])
+    assert status == cli.EXIT_UNSEEN_CRITICAL and "After the source check" not in out  # nothing changed in this run
+
+
 # ---------------------------------------------------------------- what a stolen key must not get
+
+def test_respelling_the_product_does_not_take_a_curator_lowering_past_the_source(feed, monkeypatch, capsys, reader_clock):
+    m = feed([bot(id=CVE, level="critical")], ALL)
+    loud = {"name": "CLAUDE CODE", "ecosystem": "claude-code", "affected": None, "fixed": None}
+    m.reply(m.cur_sec, m.events["feed.json"][0], "level: notice\n" + m.patch_text(products=[loud]), created_at=AT)
+    serve(m, reader_clock, AT + 100)
+    use(monkeypatch, Net().set(verify.KEV_URL, KEV_CC))
+    assert levels(capsys) == {CVE: "notice"}
+    _, out, _ = out_of(capsys, ["verify"])
+    assert f"a lowering of {CVE} to notice is not applied: the source supports critical for Claude Code" in out
+    assert levels(capsys) == {CVE: "critical"}
+
+
+def test_a_fix_a_curator_supplied_keeps_the_source_at_critical_for_a_later_bot_lowering(feed, monkeypatch, capsys,
+                                                                                        reader_clock):
+    from aitools_alerts.schema import Product
+    nofix = replace(bot(id=CVE, level="high", actions=[]), products=[Product("Claude Code", "claude-code", None, None)])
+    m = feed([nofix], ALL)
+    root = m.events["feed.json"][0]
+    m.reply(m.cur_sec, root, m.patch_text(level="critical", products=[CC], actions=[
+        {"verb": "upgrade", "target": "Claude Code", "value": "99.0.0"}]), created_at=AT)
+    m.reply(m.bot_sec, root, m.patch_text(level="high"), created_at=AT + 15 * DAY)
+    serve(m, reader_clock, AT + 15 * DAY + 100)
+    use(monkeypatch, Net().set(verify.KEV_URL, KEV_CC))
+    assert levels(capsys) == {CVE: "critical"}
+    _, out, _ = out_of(capsys, ["verify"])
+    assert f"a lowering of {CVE} to high is not applied: the source supports critical" in out
+    assert levels(capsys) == {CVE: "critical"}
+
+
+def test_a_damaged_ruleset_stops_no_alert_and_settles_no_lowering(feed, monkeypatch, capsys, reader_clock):
+    m = feed([bot(id=G1, level="critical"), bot(id="AITA-TEST-0009", level="critical")], ALL)
+    m.reply(m.bot_sec, m.events["feed.json"][0], m.patch_text(level="high"), created_at=AT)
+    serve(m, reader_clock, AT + 100)
+    assert cli.main(["pull"]) == 0
+
+    def broken():
+        raise ruleset.RulesetError("damaged")
+    monkeypatch.setattr(ruleset, "load", broken)
+    # notify reads no source-check result of its own: with a lowering published it must
+    # still send (check and run print results and already needed the ruleset before this)
+    sent = []
+    monkeypatch.setattr(cli.notify, "send", lambda ch, text, s: sent.append(text) or cli.notify.SendResult(True, "fake"))
+    status, _, err = out_of(capsys, ["notify"])
+    assert (status, len(sent)) == (0, 2) and "Traceback" not in err
 
 def test_clearing_the_fixed_version_does_not_make_the_source_confirm_a_lowering(feed, monkeypatch, capsys, reader_clock):
     """A KEV listing supports critical only with a fix to upgrade to (9kgk). A relay-bot
@@ -201,7 +264,11 @@ def test_a_confirmation_is_read_again_every_day_and_does_not_outlive_two(tmp_pat
     n, said = run(ghsa(type="malware"), NOW + verify.RETRY_S, recheck=[ask])
     assert n.urls == [gurl(G1)] and said is False  # the source now supports more
     n, said = run(OSError("down"), NOW + 2 * verify.RETRY_S, recheck=[ask])
-    assert said is None  # a failed read confirms nothing
+    assert said is False  # a failed read does not take a contradiction away
+    n, said = run(ghsa(), NOW + 3 * verify.RETRY_S, recheck=[ask])
+    assert said is True  # a whole read does
+    n, said = run(OSError("down"), NOW + 4 * verify.RETRY_S, recheck=[ask])
+    assert said is None  # and a failed read confirms nothing
 
 
 def test_a_refresh_the_budget_cut_short_does_not_pass_for_a_fresh_confirmation(tmp_path, monkeypatch):
@@ -221,6 +288,13 @@ def test_a_refresh_the_budget_cut_short_does_not_pass_for_a_fresh_confirmation(t
     assert cache["results"][verify.state_key(ask)] == {"at": later, "products": {
         "Claude Code": {"result": "unknown", "why": "unread", "source": None}}}
     assert verify.lowering(a, "high", cache, later) is None
+    # a contradiction held before the budget ran out stays one
+    monkeypatch.setattr(verify, "MAX_FETCHES", 10)
+    go(tmp_path, [a, ask], n, wanted=[ask], now=later + 1, recheck=[ask])
+    assert verify.lowering(a, "high", verify.load(tmp_path), later + 1) is False
+    monkeypatch.setattr(verify, "MAX_FETCHES", 1)
+    go(tmp_path, [a, ask], n, wanted=[ask], now=later + 1 + verify.RETRY_S, recheck=[ask])
+    assert verify.lowering(a, "high", verify.load(tmp_path), later + 1 + verify.RETRY_S) is False
 
 
 def test_a_confirmed_lowering_is_read_again_a_day_later_through_the_cli(feed, monkeypatch, capsys, reader_clock):

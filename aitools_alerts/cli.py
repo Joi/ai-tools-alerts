@@ -250,10 +250,13 @@ def _lowering_check(a, st: State):
     old (its ruleset may be the one that is wrong). None settles nothing: a relay-bot
     lowering is not applied and a curator's holds its 14 days."""
     s = getattr(a, "settings", None)
-    cache = _cache(st, s) if s is not None else None
-    if cache is None or _min_cli(a, st) is not None:
+    if s is None or s.verify == "off" or _min_cli(a, st) is not None or not any(pull.asks(t) for t in getattr(a, "raw", ())):
+        return None  # and with no lowering to judge, no cache and no ruleset is loaded
+    try:
+        cache, rs = _cache(st, s), ruleset.load()
+    except Exception:  # a damaged ruleset: nothing is settled, and every alert is still shown and notified
         return None
-    return lambda adv, level: verify.lowering(adv, level, cache, time.time())
+    return lambda adv, level: verify.lowering(adv, level, cache, time.time(), rs)
 
 
 def _source(adv) -> tuple[str, bool]:
@@ -318,9 +321,10 @@ def _source_lines(a, st: State, s: config.Settings, threads: list) -> list[str]:
                            f"the source supports {r['source']}")
     # c1g2: a lowering or retraction the member's source contradicts, from the results as
     # they are now (this run's source check may have just read them).
+    shown = {r for t in threads for r in t.root_ids}
     for t in pull.active(getattr(a, "raw", ()), *pull.head_clock(st), _lowering_check(a, st)):
         ident = verify.norm_id(t.adv.id)
-        if t.refused is None or ident is None:
+        if t.refused is None or ident is None or t.root_id not in shown:
             continue
         what = f"a retraction of {ident}" if t.refused == pull.NONE else f"a lowering of {ident} to {t.refused}"
         found = verify.result_for(verify.at_level(pull.widest(t), t.refused), cache) or {}
@@ -338,10 +342,16 @@ def cmd_verify(a, st: State, s: config.Settings) -> int:
     """The source check on the stored state, then what it found."""
     threads, pairs = _matches(a, st)
     _source_check(st, s, threads, pairs, a.asked)
+    if a.asked:  # c1g2: the alerts as they stand after what the sources just said about a lowering
+        threads, pairs = _matches(a, st)
     cache = _cache(st, s)
     found = [verify.summary(r)[0] for t in threads if (r := verify.result_for(t.adv, cache)) is not None]
     print(f"source check: {found.count(verify.CONFIRMED)} confirmed, {found.count(verify.CONTRADICTED)} "
           f"contradicted, {found.count(verify.UNKNOWN)} not verified")
+    if a.asked and (check := _lowering_check(a, st)) is not None:
+        said = [check(pull.widest(t), level) for t in a.raw for level in pull.asks(t)]
+        print(f"source check: {len(said)} lowerings or retractions asked about: {said.count(True)} confirmed, "
+              f"{said.count(False)} contradicted, {said.count(None)} not settled")
     for line in _source_lines(a, st, s, threads):
         print(line)
     return 0
@@ -528,14 +538,18 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
     if not a.json:  # the hourly job's form; the hook runs --json and must read no source.
         # After the notification: a critical never waits for a source.
         _source_check(st, s, threads, pairs, a.asked)
-        if a.asked:
+        if a.asked and s.verify != "off":
             # c1g2: what the sources just said about a lowering counts in this run. A
             # critical that a contradicted lowering had hidden is notified now.
+            before = sorted((t.root_id, t.adv.level) for t in threads)
             threads, pairs = _matches(a, st)
             tried = {r for t, _ in pending for r in t.root_ids}
             late = [x for x in _unseen_critical(a, st, pairs) if tried.isdisjoint(x[0].root_ids)]
             status = send(late) or status
             pending = pending + late
+            if not a.quiet and before != sorted((t.root_id, t.adv.level) for t in threads):
+                print("After the source check:")  # what was listed above is no longer what stands
+                cmd_check(a, st, s, source_lines=False)
         for line in () if a.quiet else _source_lines(a, st, s, threads):
             print(line)
     if a.json:

@@ -643,6 +643,19 @@ class _Run:
         return {p: t.judge(p, records, complete, self.rs) for p in t.products}
 
 
+def _settled(held, products: dict, asked: bool) -> dict:
+    """``products``, or for an asked state (c1g2) the held result when that said a source
+    supports more and the new one only failed to read: a contradiction of a lowering
+    stays until sources read whole say otherwise, so nobody ends it by making a read
+    fail or by crowding the run's budget."""
+    if asked and held is not None and set(held["products"]) == set(products) \
+            and any(p["why"] == "below-source" for p in held["products"].values()) \
+            and any(p["why"] == "unread" for p in products.values()) \
+            and not any(p["why"] == "below-source" for p in products.values()):
+        return held["products"]
+    return products
+
+
 def _waits(t: _Target, results: dict, now: int) -> bool:
     """A thread is read when its published state has no result, when a read it
     needed failed, and, a day later, when its result is anything but
@@ -696,12 +709,13 @@ def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=
                 held = results.get(t.key)
                 # c1g2: not for a state whose result authorises a lowering. Kept with a new
                 # time, an old ``match`` would read as confirmed today, and would stand in
-                # for what the requests this run did make had found. It is unread instead.
+                # for what the requests this run did make had found. It is unread instead,
+                # unless it was a contradiction (``_settled``).
                 keep = held is not None and set(held["products"]) == set(t.products) and t.key not in again
-                results[t.key] = {"at": now, "products": held["products"] if keep else {
-                    p: judge(t.level, p, [], False, rs) for p in t.products}}
+                results[t.key] = {"at": now, "products": held["products"] if keep else _settled(
+                    results.get(t.key), {p: judge(t.level, p, [], False, rs) for p in t.products}, t.key in again)}
             break
-        results[t.key] = {"at": now, "products": products}
+        results[t.key] = {"at": now, "products": _settled(results.get(t.key), products, t.key in again)}
     live = [_Target(adv) for adv in current if adv.posted_by == BOT and norm_id(adv.id) is not None]
     keys = {t.key for t in live}
     ids = {i for t in live for i in t.ids()}

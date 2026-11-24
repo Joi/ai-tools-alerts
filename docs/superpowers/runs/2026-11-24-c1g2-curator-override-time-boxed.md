@@ -33,6 +33,24 @@ Plan pass 1 findings and what was done (same reviewer):
 - SUBSTANTIVE: `recheck=` not wired from the CLI in the plan. The plan now says so; test `test_a_confirmed_lowering_is_read_again_a_day_later_through_the_cli`.
 - SUBSTANTIVE: refusal lost between `Thread` and the JSON. `Entry.refused` carries it; asserted for both JSON commands.
 
+Pass 1 [code:all]: 2B/7S/3C/0R · fixed -/- · velocity = (—→12, escalation no)
+passes: 1 · elapsed: 17 min (Stage 1, a same-model subagent, and Stage 2, fresheyes on the whole branch at 6e7f36a92e601d2e0cd024758d16adbd253ac97d, in parallel)
+
+Code pass 1, Stage 2 (fresheyes, gpt-6.1-sol, high), all fixed:
+- BLOCKER: a product entry in another spelling replaced the original in the widest state and left the check with a name it cannot judge. Fixed: `Thread.held_products`, added to `pull.widest`; tests `test_a_product_put_in_another_spelling_is_still_asked_about_by_its_first_name`, `test_respelling_the_product_does_not_take_a_curator_lowering_past_the_source`.
+- BLOCKER: the history (fixed versions, aliases) was taken only from the widest state, so a fix a curator supplied was not in it. Fixed: `_Hold.note` records every state shown; tests `test_a_fix_and_an_alias_a_curator_supplied_are_part_of_what_is_asked`, `test_a_fix_a_curator_supplied_keeps_the_source_at_critical_for_a_later_bot_lowering`.
+- SUBSTANTIVE: alias history cost the square of the aliases. Fixed with a set; `test_a_flood_of_aliases_is_kept_once_each`.
+- SUBSTANTIVE: a damaged ruleset stopped `notify`. Fixed: no cache or ruleset is loaded unless a lowering is published, and a failure settles nothing; `test_a_damaged_ruleset_stops_no_alert_and_settles_no_lowering`.
+- SUBSTANTIVE: `run` listed the alerts as they were before the source check. Fixed: it lists them again when they changed; asserted in the first acceptance test.
+- SUBSTANTIVE: `verify` summarised the alerts as they were before the check. Fixed, with a line for the asked states; `test_verify_counts_the_alert_a_refused_retraction_brought_back`.
+- SUBSTANTIVE: `renew` failed when a held list had grown past 50. Fixed; `test_renew_of_a_hold_on_a_thread_whose_list_has_grown_past_what_one_event_carries`.
+
+Code pass 1, Stage 1 (same model; it also ran origin/main's replay against this one on 450 random threads and found no difference where no curator and no lowering is involved):
+- SUBSTANTIVE: a curator raise sent with an expiry was lost after the hold. Fixed; `test_a_curator_raise_sent_with_an_expiry_outlasts_the_hold_and_the_expiry_does_not`.
+- SUBSTANTIVE: a failed or cut-short re-read erased a contradiction. Fixed (`verify._settled`); asserted in the two re-read tests.
+- COSMETIC, fixed: `plan` printed refusal lines of other advisories; the second pass of `run` ran with `verify = "off"`.
+- COSMETIC, left: the hold note also prints under `--dry-run` (it says when the hold would end); a hold the checkpoint has already lapsed is still asked about (one request, no effect on what is shown).
+
 ## Chunks
 - [x] reader: hold, lapse, widest state, published lowering (aitools_alerts/pull.py)
 - [x] member check applies to a lowering (aitools_alerts/verify.py, aitools_alerts/cli.py)
