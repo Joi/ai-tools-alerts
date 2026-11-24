@@ -581,3 +581,94 @@ def test_no_waiting_line_where_no_wait_runs(feed, monkeypatch, capsys, reader_cl
     cli.main(["pull"])
     assert "published and not verified" not in out_of(capsys, ["check"])[1]
     assert json.loads(out_of(capsys, ["check", "--json"])[1])[0]["lowering_waits"] is None
+
+
+# ---------------------------------------------------------------- what the delta review found
+
+def test_an_hourly_run_with_failing_source_reads_keeps_the_held_queue(feed, sent, monkeypatch, capsys):
+    three(feed)  # verify = "matched": the hourly run reads, every read fails, and its second pass runs
+    assert out_of(capsys, ["run"])[0] == cli.EXIT_UNSEEN_CRITICAL
+    (since,) = State.load().held.values()
+    clock_at(monkeypatch, verify.time.time() + 3600)
+    assert out_of(capsys, ["run"])[0] == 0
+    assert list(State.load().held.values()) == [since]  # still held, and since the first hour
+
+
+def test_reserving_keeps_a_held_alert_this_command_did_not_look_at(feed, sent, monkeypatch, capsys):
+    m = three(feed, 'verify = "off"\n')
+    run_json(capsys)
+    (mine,) = State.load().held
+    early = State.load()  # a command that started before another root arrived
+    a = cli._parser().parse_args(["run", "--json"])
+    a.root, a.ignored_env, a.settings = m.root, [], config.load()
+    _, pairs = cli._matches(a, early)
+    pending, held, grants, _ = cli._interrupts(a, early, a.settings, pairs)
+    other = m.root_post(m.bot_sec, bot(id=G4, level="critical"), created_at=T0 + 500)
+    m.write(Path(config.load().mirror_url[len("file://"):]))
+    run_json(capsys)  # another command pulls it and holds it
+    before = State.load().held
+    assert before.keys() == {mine, other["id"]}
+    cli._reserve(early, pending, held, grants)
+    assert State.load().held == before
+    st = State.load()  # an entry for an alert since seen, or no longer stored, is dropped
+    st.held.update({"e" * 64: 1})
+    st.seen.add(other["id"])
+    st.save_unverified()
+    st.save_seen()
+    cli._reserve(State.load(), pending, held, grants)
+    assert State.load().held.keys() == {mine}
+
+
+def two_products(first_confirmed: bool):
+    from dataclasses import replace
+    from aitools_alerts.schema import Action, Product
+    names = ["Claude Code", "Codex"] if first_confirmed else ["Codex", "Claude Code"]
+    eco = {"Claude Code": "claude-code", "Codex": "codex"}
+    return replace(bot(id=G1, level="critical"), products=[Product(n, eco[n], "<99.0.0", "99.0.0") for n in names],
+                   actions=[Action("upgrade", n, "99.0.0") for n in names])
+
+
+def both_installed(monkeypatch):
+    from aitools_alerts import inventory
+    from aitools_alerts.inventory import Installed, Inventory
+    inv = Inventory(products={"claude-code": [Installed("Claude Code", "2.0.0", "/invented/bin/claude")],
+                              "codex": [Installed("Codex", "0.1.0", "/invented/bin/codex")]})
+    monkeypatch.setattr(inventory, "collect", lambda *a, **k: inv)
+
+
+def test_the_notification_describes_the_product_the_source_confirmed(feed, sent, monkeypatch, capsys):
+    both_installed(monkeypatch)
+    m = feed([two_products(first_confirmed=False)], ALL)
+    use(monkeypatch, Net().set(gurl(G1), ghsa(type="malware")))  # the source names Claude Code only
+    cli.main(["pull"])
+    cli.main(["verify"])
+    st = State.load()
+    st.interrupts = {m.bot: {"a" * 64: int(verify.time.time()), "b" * 64: int(verify.time.time())}}  # no poster slot left
+    st.save_unverified()
+    assert run_json(capsys)[0] == cli.EXIT_UNSEEN_CRITICAL
+    (text,) = sent["texts"]
+    assert "Affected: Claude Code" in text and cli.NOT_VERIFIED not in text
+
+
+def test_a_second_confirmed_product_s_slot_is_tried_when_the_first_is_taken(feed, sent, monkeypatch, capsys):
+    both_installed(monkeypatch)
+    m = feed([two_products(first_confirmed=True)], ALL)
+    both = ghsa(type="malware", pkgs=(("npm", "@anthropic-ai/claude-code"), ("npm", "@openai/codex")))
+    use(monkeypatch, Net().set(gurl(G1), both))
+    cli.main(["pull"])
+    cli.main(["verify"])
+    data = json.loads(out_of(capsys, ["check", "--json"])[1])
+    assert [d["source_check"]["result"] for d in data] == ["confirmed", "confirmed"]
+    root = m.events["feed.json"][0]
+    a = cli._parser().parse_args(["run", "--json"])
+    a.root, a.ignored_env, a.settings = m.root, [], config.load()
+    st = State.load()
+    threads, pairs = cli._matches(a, st)
+    first = next(mm for t, mm in pairs if mm.product.name == "Claude Code")
+    now = int(verify.time.time())
+    st.interrupts = {m.bot: {"a" * 64: now, "b" * 64: now},  # no poster slot left,
+                     cli._verified_bucket(pairs[0][0], first): {"c" * 64: now}}  # and Claude Code's slot is another root's
+    st.save_unverified()
+    status, out = run_json(capsys)
+    assert status == cli.EXIT_UNSEEN_CRITICAL and out["unseen_critical"] == [root["id"]] and out["held_critical"] == []
+    assert "Affected: Codex" in sent["texts"][0]

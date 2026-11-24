@@ -701,8 +701,11 @@ def _interrupts(a, st: State, s: config.Settings, pairs: list | None = None) -> 
         groups.setdefault(t.root_id, (t, []))[1].append(m)
     never = float("inf")
     for t, ms in sorted(groups.values(), key=lambda g: min(st.held.get(r, never) for r in g[0].root_ids)):
-        sure = next((m for m in ms if _confirmed_now(t, m, cache, now)), None)
-        if _result(t, ms[0], cache) is None or (sure is not None and take(_verified_bucket(t, sure), 1, t)):
+        # the first confirmed match whose advisory-and-product slot this alert holds or can take
+        sure = next((m for m in ms if _confirmed_now(t, m, cache, now) and take(_verified_bucket(t, m), 1, t)), None)
+        if sure is not None:  # the confirming match first: it is the one a notification describes
+            pending += [(t, sure)] + [(t, m) for m in ms if m is not sure]
+        elif _result(t, ms[0], cache) is None:
             pending += [(t, m) for m in ms]
         elif not rebuilt and take(_poster(t, st), MAX_UNVERIFIED, t):
             loose.update(t.root_ids)
@@ -718,13 +721,17 @@ def _reserve(st: State, pending: list, held: list, grants: list) -> tuple[list, 
     slot a concurrent run took meanwhile is held, not pending. Called before a command
     reports anything, so exit 2 and ``unseen_critical`` name only alerts that hold a
     slot, and the slot is used by the report, whether or not a channel then delivers.
-    Also records since when each held alert has been held (``State.held``; an alert no
-    longer held is dropped from it). Slots outside the window are dropped on the way. A
-    state directory that cannot be written grants them for this command: a critical is
-    never lost to a full disk."""
+    Also records since when each held alert has been held (``State.held``). Of the
+    alerts this command looked at (``pending`` and ``held``), one no longer held is
+    dropped from it; an entry for an alert this command did not look at (another command
+    pulled it since) is kept with its time, unless that alert is seen or its root is no
+    longer stored. Slots outside the window are dropped on the way. A state directory
+    that cannot be written grants them for this command: a critical is never lost to a
+    full disk."""
     denied = set()
     waiting = {t.root_id for t, _ in held}
-    if not grants and waiting == set(st.held):
+    looked = waiting | {t.root_id for t, _ in pending}
+    if not grants and not waiting and not st.held:
         return pending, held
     try:
         with st.locked():
@@ -740,7 +747,10 @@ def _reserve(st: State, pending: list, held: list, grants: list) -> tuple[list, 
             if st.interrupts != slots:
                 st.interrupts = {b: live for b in st.interrupts if (live := _slots(st, b, now))}
             was = dict(st.held)
-            st.held = {r: st.held[r] if 0 <= st.held.get(r, -1) <= now else now for r in sorted(waiting | denied)}
+            others = {r: at for r, at in st.held.items()
+                      if r not in looked and r not in st.seen and r in st.events}
+            st.held = {**others, **{r: st.held[r] if 0 <= st.held.get(r, -1) <= now else now
+                                    for r in sorted(waiting | denied)}}
             if st.interrupts != slots or st.held != was:
                 st.save_unverified()
     except OSError:
@@ -867,8 +877,9 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
             if a.asked:
                 threads, pairs = _matches(a, st)
             tried = {r for t, _ in pending for r in t.root_ids}
-            again, _, grants, loose = _interrupts(a, st, s, pairs)
-            late = [x for x in _reserve(st, again, [], grants)[0] if tried.isdisjoint(x[0].root_ids)]
+            again, held, grants, loose = _interrupts(a, st, s, pairs)
+            again, held = _reserve(st, again, held, grants)
+            late = [x for x in again if tried.isdisjoint(x[0].root_ids)]
             status = send(late, loose) or status
             pending = pending + late
             if not a.quiet and before != sorted((t.root_id, t.adv.level) for t in threads):

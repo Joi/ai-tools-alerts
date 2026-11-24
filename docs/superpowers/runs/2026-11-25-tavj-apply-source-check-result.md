@@ -48,7 +48,16 @@ Code pass 1, Stage 1 (same model; it also replayed 1500 random threads through o
 - SUBSTANTIVE, twice: the two Stage 2 findings, found independently.
 - COSMETIC, fixed: an alert matched through a confirmed and an unconfirmed product was both pending and held (it is decided once now); the waiting line was printed where no wait runs.
 
-Gate: `scripts/test-gate.sh` in a clone holding only this branch passed at 8cc1d2d (2738 passed, 1 skipped).
+Pass 2 [code:all]: 0B/4S/0C/0R · fixed 6/6 prior · velocity ↓ (8→4, escalation no)
+passes: 2 · elapsed: 34 min (the one delta, fresheyes `--since 8cc1d2d`, over the fixes at ccd1da88b3e04f2f89b245abd9caa589620a5fde; no rebuttals file: every finding of pass 1 was fixed)
+
+Delta findings (the reviewer wrote "major" on each and failed the review; none was a finding of pass 1 left open). All four are fixed in the commit after ccd1da8, which no review saw; the gate ran on it. No further pass (review cycle: one review, one delta).
+- The second pass of `run` passed no held alerts to `_reserve`, which then emptied the queue's ages. Fixed: it passes them; `test_an_hourly_run_with_failing_source_reads_keeps_the_held_queue`.
+- `_reserve` replaced the held record with the caller's own view, dropping an alert another command had queued since. Fixed: entries for alerts the command did not look at are kept, unless seen or no longer stored; `test_reserving_keeps_a_held_alert_this_command_did_not_look_at`.
+- Only the first confirmed product was tried for a verified slot. Fixed: each confirmed match is tried; `test_a_second_confirmed_product_s_slot_is_tried_when_the_first_is_taken`.
+- A notification could describe an unconfirmed product of an alert that took its slot through another. Fixed: the confirming match goes first; `test_the_notification_describes_the_product_the_source_confirmed`.
+
+Gate: `scripts/test-gate.sh` in a clone holding only this branch passed at 8cc1d2d (2738 passed, 1 skipped); the result at the final head is in the kata comment.
 
 ## Chunks
 - [x] reader: what a thread stated and who offered a lowering; the 72-hour rule (aitools_alerts/pull.py, aitools_alerts/state.py)
