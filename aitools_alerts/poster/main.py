@@ -51,6 +51,12 @@ and seven days without a level change on the thread, and is a level-only reply
 lowers nothing, and neither does what a cut one lacks. The next digest lists what
 was lowered in one line.
 
+So it does for each thread that carries a GHSA id, from this run's reads of GitHub's
+advisory database and of OSV (``sources``, ai-tools-alerts#3qyq): a failed read is
+unknown and moves nothing. A new candidate's ``ghsa`` reading is that API's answer
+too (``Run.admit``); one whose advisory could not be read is admitted again each
+run for RETRY_DAYS. At most 30 advisory requests a run, in three lanes.
+
 With spec/catalog-channel.json present, every in-scope advisory (each ledger thread
 whose product starts at its level, and each held notice) is also posted, whole, as a
 root to the catalog channel when it differs from what was last posted there
@@ -80,8 +86,8 @@ from zoneinfo import ZoneInfo
 
 from aitools_alerts import TRUST_ROOT_PUBKEY, check, manifest, pull, ruleset, schema, versions
 from aitools_alerts import config as _member_config
-from aitools_alerts.poster import (candidates, catalog, compose, inputs, ledger, recompute, rules, signer, translate,
-                                   wording,
+from aitools_alerts.poster import (candidates, catalog, compose, inputs, ledger, recompute, rules, signer, sources,
+                                   translate, wording,
                                    transport)
 from aitools_alerts.poster.inputs import Config, ConfigError
 from aitools_alerts.poster.ledger import Ledger, LedgerError
@@ -102,7 +108,7 @@ PASS_DEADLINE = 300  # seconds of curator translation per run (the ledger lock i
 WORDING_CALLS = 4  # model calls for headlines a run (c6ak): roots are high or critical, about one a day
 WORDING_SECONDS = 60  # no wording call starts after this many seconds of them in a run
 MAX_RUN_PAGES = 40  # authoritative pages fetched per run; a candidate past it waits for the next
-RETRY_DAYS = 7  # a candidate whose source could not be fetched is tried again this long
+RETRY_DAYS = 7  # 3qyq: a candidate whose advisory the API did not give is admitted again this long
 # jsje: a run settles what used to wait for `resolve`.
 SETTLE_SKEW = 600  # an event dated this long before the attempt is still its delivery (a clock step)
 MIRROR_FRESH = 3600  # a channel file generated longer ago proves no absence
@@ -139,8 +145,9 @@ def _fold(ids) -> set[str]:
 
 class Run:
     def __init__(self, now, config: Config, led: Ledger, state: dict, channels, send, page,
-                 *, digest_now=False, skipped: Counter | None = None, wording_call=None):
+                 *, digest_now=False, skipped: Counter | None = None, wording_call=None, reader=None):
         self.now, self.config, self.led, self.state = now, config, led, state
+        self.api = reader if reader is not None else sources.Reader()  # 3qyq: this run's advisory reads
         # c6ak: the wording call (None: read the key at the first root to word), its use
         # this run, and the summary's wording= status ("off" unless model_wording is on).
         self._wcall, self._wasked, self._wspent = wording_call, 0, 0.0
@@ -947,10 +954,20 @@ class Run:
         severity = "; ".join(x for x in (ev.severity, title if ev.url else None) if x) or None
         text = candidates._title(ev.text, candidates._Hosts(candidates.FLEET_HOSTS), candidates.MAX_SOURCE_TEXT) \
             if ev.url and ev.text else c.source_text if ev.kev else None  # c6ak: wording only
+        readings = rules.readings_for(c, ev, self._admit_read)  # s6mt: what the level can rest on, as fields
+        if ev.structured and ev.ghsa and not any(r[0] == "ghsa" for r in readings) and not self.is_synthetic(c):
+            # 3qyq: the advisory API gave no reading (a failure, a 429, a spent share). The
+            # candidate goes on as its other evidence rates it, and is admitted again each
+            # run for RETRY_DAYS from first sight: a held notice whose fields support more
+            # then posts, with no new input record.
+            self.saw(scope.name, c.id)  # only a first sight on record bounds the retry: none, no retry
+            if f"{scope.name}|{c.id.casefold()}" in self.state["waiting"] \
+                    and self.now - self.first_seen(scope.name, [c.id]) < RETRY_DAYS * 86400:
+                self.defer([(c, scope)])
         return replace(c, aliases=tuple(aliases), fixed=ev.fixed, affected=ev.affected, sources=tuple(kept),
                        source_title=title, source_text=text,
                        severity_word=ev.severity,  # dmmf: the page's word, alone
-                       readings=rules.readings_for(c, ev),  # s6mt: what the level can rest on, as fields
+                       readings=readings,
                        advisory_severity=severity or (c.advisory_severity if trusted else None),
                        trojanized=c.trojanized is True and trusted, injection_exec=c.injection_exec is True and trusted)
 
@@ -1000,9 +1017,29 @@ class Run:
         return any(self._held_for(old, ids) is not None or any(f"{old}|{k}" in self.state["digested"] for k in keys)
                    for old in getattr(scope, "formerly", ()))
 
+    def _admit_read(self, i):
+        """An advisory read for a candidate: the ``admit`` lane, which no thread's read spends."""
+        return self.api.read(i, "admit")
+
+    def _tied(self, c, entry=None):
+        """c with only the ``ghsa`` readings the source ties to the first id of its
+        post (``sources.tied``, from this run's reads): its thread's published id when
+        it has one (``entry``), else its own. ``ledger.merge`` unions the readings of
+        candidates that share an id or a fixed release, and a later sighting of one
+        member alone arrives under that member's id; a member's check reads the
+        thread's first id and ignores an advisory that id's source does not name. So
+        does the level (3qyq)."""
+        first = recompute.lookup_id(entry.advisory.get("id") if entry is not None else c.id)
+        aliases = recompute.published_aliases(entry) if entry is not None else \
+            [x for x in map(recompute.lookup_id, c.aliases) if x is not None]
+        keep = tuple(r for r in c.readings if r[0] != "ghsa"
+                     or sources.tied(first, json.loads(r[1]).get("ghsa_id"), self._admit_read, aliases))
+        return c if keep == tuple(c.readings) else replace(c, readings=keep)
+
     def _rate(self, c, scope, entry):
         """(the candidate, its level, the reason) against its thread; ``entry`` is None
         for a new one."""
+        c = self._tied(c, entry)  # 3qyq: only readings the source ties to the post's first id
         if entry is not None and entry.lowered and c.exploited is True \
                 and not any(r[0] == "kev" for r in c.readings):
             # ny5g: on a lowered thread the recompute holds the KEV level. A mark that no
@@ -1103,6 +1140,11 @@ class Run:
         held = self._held_for(scope.name, ids)
         seen = self.first_seen(scope.name, ids, held)
         published = _published(c.sources) or (_published(schema.validate(h["adv"]).sources) if (h := held) else None)
+        # 3qyq: a fix group's first member is its loudest, not its newest; the group is
+        # news if any member is (faxq), so its age is its newest member's.
+        dated = [d for m in self.groups.get((scope.name, c.id.casefold()), ()) if (d := _published(m.sources)) is not None]
+        if dated:
+            published = max([*dated, *([published] if published is not None else [])])
         w, key = self.state["waiting"], self._seen_key(scope.name, ids, f"{scope.name}|{c.id.casefold()}")
         # A KEV entry is exempt: the day CISA lists it is the news, whatever the advisory's age.
         if level != "notice" and not test and c.exploited is not True and published is not None \
@@ -1351,8 +1393,9 @@ class Run:
             self._drop(gone)
 
     def observe(self, kev_out: dict):
-        """Judge every open thread the ledger marks exploited against this run's KEV
-        copy, and save what that does to each wait, before anything is sent (ny5g). A
+        """Judge every open thread that has a source to judge it by (the ledger marks it
+        exploited, or it carries an advisory id: ``recompute.judged``) against this run's KEV
+        copy and advisory reads, and save what that does to each wait, before anything is sent (ny5g). A
         run that then stops at a failed send has still recorded what it read: an unknown
         read has broken the wait, another level has started it over. What the verdicts
         send is ``recompute``'s, later in the run. Also settles the digest report of a
@@ -1374,34 +1417,63 @@ class Run:
         self.observed = {e.root_event_id for e in entries}
         for k in ("dwell", "listed"):
             st[k] = {r: v for r, v in st[k].items() if r in self.observed}
-        self.verdicts, self.judged = {}, set()
-        self._judge(entries, rs)
+        st["exploited"] = {r: v for r, v in st["exploited"].items() if r in self.observed}
+        self.verdicts, self.judged, self.known = {}, set(), set()
+        self._judge(self._in_turn(entries), rs)
+        if self.api.unread:
+            _say(f"advisory reads: {len(self.api.unread)} id(s) not read this run (the lane's share was spent); "
+                 "their threads are unknown and nothing of theirs moves")
         st["open"] = None  # the observation is whole and saved: the next run may count from it
         self.save_rc()
 
     def _judge(self, entries, rs):
         """Judge each entry and keep its verdict by root: ("raise" | "due", level) or
-        nothing. An entry that is not KEV's, out of scope now or has work in flight is
-        not judged, and its wait takes no time for a run that did not look at it."""
+        nothing. An entry with no source to judge it by (``recompute.judged``), out of
+        scope now or with work in flight is not judged, and its wait takes no time for a
+        run that did not look at it. Advisory reads are made here (3qyq), in the ``wait``
+        lane for a thread whose wait is running and in ``rest`` for any other."""
         st = self.rc
         for e in entries:  # with no copy every read is unknown, and judge says so to each wait
             root = e.root_event_id
             self.verdicts.pop(root, None)
-            scope = rules.scope_of(e.scope) if e.exploited else None
+            self.known.discard(root)
+            scope = rules.scope_of(e.scope) if recompute.judged(e) else None
             if scope is None or scope.name != e.scope or (
                     self.busy(e.aliases, e.scope) and not self._raise_clears(e, scope, rs)):
                 self.judged.discard(root)
                 recompute.pause(st, root)
                 continue
             self.judged.add(root)
-            verdict = recompute.judge(e, scope, self.copy, rs, st, self.now)
+            lane = "wait" if root in st["dwell"] else "rest"
+
+            def read(i, lane=lane):
+                return self.api.read(i, lane)
+            info: dict = {}
+            verdict = recompute.judge(e, scope, self.copy, rs, st, self.now, read, info)
+            if info.get("known"):
+                self.known.add(root)
             if verdict is not None:
                 self.verdicts[root] = (e, *verdict)
 
+    def _in_turn(self, entries):
+        """The order threads are read in (3qyq): those with a wait running, then the
+        rest, each group in a stable order that starts one thread further on every
+        hour. So every thread is first in its lane once in as many hours as the lane
+        has threads, and reads that keep failing ahead of it cannot keep it unread."""
+        dwell = self.rc["dwell"]
+        out = []
+        for group in ([e for e in entries if e.root_event_id in dwell],
+                      [e for e in entries if e.root_event_id not in dwell]):
+            group.sort(key=lambda e: e.root_event_id)
+            k = (self.now // 3600) % len(group) if group else 0
+            out += group[k:] + group[:k]
+        return out
+
     def _raise_clears(self, e, scope, rs) -> bool:
-        """jsje: a busy thread this run's KEV read raises supersedes the lower-priority
+        """jsje: a busy thread this run's reads raise supersedes the lower-priority
         work in its way (``yields``), and is then judged like any other."""
-        level = recompute.raised(e, scope, self.copy, rs)
+        lane = "wait" if e.root_event_id in self.rc["dwell"] else "rest"  # 3qyq: as _judge reads it
+        level = recompute.raised(e, scope, self.copy, rs, lambda i: self.api.read(i, lane))
         return level is not None and self.yields(e, level) and not self.busy(e.aliases, e.scope, passing=True)
 
     def recompute(self):
@@ -1428,8 +1500,14 @@ class Run:
                  if root in live and not self.busy(v[0].aliases, v[0].scope, passing=v[1] == "raise")]
         raises = [(e, level) for e, kind, level in found if kind == "raise"]
         due = recompute.select([(e, level) for e, kind, level in found
-                                if kind == "due" and recompute.quiet(e, self.now)], len(self.judged), st, self.now)
+                                if kind == "due" and recompute.quiet(e, self.now)], len(self.known & live), st, self.now)
         self.save_rc()
+        # 3qyq: KEV listed these threads; the ledger says so from now on. Here, after this
+        # run's candidates were planned (plan_known reads the mark) and after the last
+        # judging above, which is where a thread posted by this run is first seen listed.
+        for root in st["exploited"]:
+            if root in live:
+                self.led.mark_exploited(root)
         for e, level in raises + due:
             try:
                 items = self._level_items(e, level)
@@ -1795,7 +1873,7 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
         page=rules.http_page, channels: dict | None = None,
         digest_now: bool = False, kev_catalog: dict | None = None,
         mirror_fetch=None, translate_call=None, catalog_channel=None, wording_call=None,
-        **translate_kw) -> tuple[int, str]:
+        advisory_fetch=None, **translate_kw) -> tuple[int, str]:
     """One poster run. Returns (exit code, one-line summary). ``digest_now`` sends
     today's digest whatever the hour (once per date); ``kev_catalog`` replaces the
     KEV fetch with a synthetic catalog (``inputs.read_kev_file``). ``catalog_channel``:
@@ -1835,7 +1913,7 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
         with Ledger(config.ledger) as led:
             state = inputs.load_state(config.state, now, config.backfill_days)
             r = Run(now, config, led, state, channels, send, page, digest_now=digest_now, skipped=skipped,
-                    wording_call=wording_call)
+                    wording_call=wording_call, reader=sources.Reader(advisory_fetch))
             n, w_run = r.n, r
             _gate(state, led)
             recompute.begin(r.rc, now)  # ny5g: before anything is read, so a run that stops is known to have
@@ -1876,7 +1954,8 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                 # faxq: in flight, an id joins no fix group (that send would record the group's ids)
                 settled = {f"{it['scope']}|{i.casefold()}" for it in state["outbox"] + r._withheld_items()
                            for i in it["ids"]}
-                merged = ledger.merge(pairs, led, r.groups, settled=settled)  # BEFORE level_for
+                merged = ledger.merge(pairs, led, r.groups, settled=settled,  # BEFORE level_for
+                                      loud=lambda c, scope: rules.evidence_rank(r._tied(c), scope))
                 r.observe(kev_out)
                 r.make_way(merged)
                 r.drain()

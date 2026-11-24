@@ -348,7 +348,8 @@ def test_raised_agrees_with_judge_and_keeps_no_wait():
     listed, gone = kc(catalog("v1", CVE), "ok", st, 0), kc(catalog("v2"), "ok", st, 1)
     before = json.dumps(st, sort_keys=True)
     assert recompute.raised(low, scope, listed, rs) == "critical"
-    assert recompute.judge(low, scope, listed, rs, {**st, "dwell": {}}, 2) == ("raise", "critical")
+    # judge, on a state of its own: it keeps the wait and (3qyq) the CVEs a copy listed
+    assert recompute.judge(low, scope, listed, rs, {**st, "dwell": {}, "exploited": {}}, 2) == ("raise", "critical")
     assert recompute.raised(low, scope, gone, rs) is None and recompute.raised(low, scope, None, rs) is None
     assert recompute.raised(replace(low, level="critical"), scope, listed, rs) is None  # already there
     assert json.dumps(st, sort_keys=True) == before

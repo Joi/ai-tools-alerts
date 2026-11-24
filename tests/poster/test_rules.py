@@ -10,9 +10,11 @@ from dataclasses import replace
 
 import pytest
 
-from aitools_alerts import schema
+from aitools_alerts import schema, verify
 from aitools_alerts.poster import candidates, compose, rules
 from pages import advisory_page
+from advisories import Api, ghsa_json
+from aitools_alerts.poster import sources
 from aitools_alerts.poster.candidates import Candidate, Source
 
 KEV_PAGE = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
@@ -767,11 +769,24 @@ def kev_cand(vendor="Anthropic", product="Claude Code", cve="CVE-2026-0001"):
     return got[0]
 
 
-def page_cand(page=VENDOR_PAGE, **kw):
-    """(the candidate with its readings as main.admit sets them, its evidence)."""
+API_PACKAGES = [("npm", "@anthropic-ai/claude-code", ">= 2.0.0, < 2.1.0", "2.1.0"),  # out of order, one twice
+                ("npm", "@anthropic-ai/claude-code", "< 1.9.5", "1.9.5"),
+                ("npm", "@anthropic-ai/claude-code", ">= 2.0.0, < 2.1.0", "2.1.0")]
+
+
+def api_read(*answers):
+    """``sources.Reader.read`` over the advisory API's answers, each ``ghsa_json`` (3qyq)."""
+    return sources.Reader(Api(**{a["ghsa_id"]: a for a in answers})).read
+
+
+def page_cand(page=VENDOR_PAGE, api=None, **kw):
+    """(the candidate with its readings as main.admit sets them, its evidence). The
+    reading is the advisory API's answer for the page's GHSA id (3qyq): by default one
+    that states what the page does and no type, weakness or vector."""
     c = ghsa_cand(**kw)
     ev = rules.evidence(c, CLAUDE, served({REPO + G1: (200, advisory_page(G1, **page))}))
-    return replace(c, readings=rules.readings_for(c, ev)), ev
+    api = api or ghsa_json(G1, type=None, cwes=(), vector=None, packages=API_PACKAGES)
+    return replace(c, readings=rules.readings_for(c, ev, api_read(api))), ev
 
 
 def test_the_page_evidence_carries_the_fields_a_reading_needs():
@@ -784,10 +799,19 @@ def test_the_page_evidence_carries_the_fields_a_reading_needs():
     fields = json.loads(text)
     assert source == "ghsa" and fields["cwes"] == [] and fields["type"] is None and fields["severity"] == "high"
     assert [p["range"] for p in fields["packages"]] == ["< 1.9.5", ">= 2.0.0, < 2.1.0"]  # sorted, the repeat once
-    # A block that states no fix has a null, never the page's word "None"; "Moderate" is the API's "medium".
-    c, ev = page_cand(dict(severity="Moderate", patched=None))
+    # 3qyq: the reading is the API's answer, whole, as the member's check builds it: its type,
+    # weaknesses and vector, which the page does not show, and every package it lists.
+    full = ghsa_json(G1, cve="CVE-2026-0007", packages=[*API_PACKAGES, ("npm", "some-other-package", "< 9", "9")])
+    c, ev = page_cand(api=full)
     fields = json.loads(c.readings[0][1])
-    assert fields["packages"][0]["first_patched"] is None and fields["severity"] == "medium"
+    assert fields == verify._ghsa_reading(full, G1)[0] and c.readings[0][1].encode() == ruleset.canonical(fields)
+    assert fields["type"] == "reviewed" and fields["cwes"] == ["CWE-78"] and len(fields["packages"]) == 3
+    assert rules.level_for(c, CLAUDE, False)[0] == "high"  # the vendor's own, a command injection, patched
+    # No answer (a 404, a 429, another advisory's body), or no reader: no ghsa reading; the page makes none.
+    for bad in (404, 429, ghsa_json(G2)):
+        read = sources.Reader(Api(**{G1: bad})).read
+        assert rules.readings_for(ghsa_cand(), ev, read) == ()
+    assert rules.readings_for(ghsa_cand(), ev) == () and rules.readings_for(ghsa_cand(), ev, lambda i: None) == ()
     # A vendor site page that only names the id, and a page that confirmed nothing, give no reading.
     site = cand(sources=(Source("https://www.anthropic.com/security/x", None),))
     ev = rules.evidence(site, CLAUDE, served({"https://www.anthropic.com/security/x": (200, "<html>CVE-2026-0001 Claude Code</html>")}))
@@ -883,7 +907,9 @@ def test_the_poster_builds_the_shared_vectors_byte_for_byte(name):
         g = "GHSA-aaaa-bbbb-cccc"
         c = ghsa_cand(id=g, sources=(Source(REPO + g, None),))
         ev = rules.evidence(c, CLAUDE, served({REPO + g: (200, advisory_page(g, **VENDOR_PAGE))}))
-        c = replace(c, readings=rules.readings_for(c, ev))
+        # 3qyq: from the API's answer; one that states no more than the page gives the vector's fields
+        api = ghsa_json(g, type=None, cwes=(), vector=None, packages=API_PACKAGES)
+        c = replace(c, readings=rules.readings_for(c, ev, api_read(api)))
     (claim,) = rules.claims_for(c, CLAUDE, T)
     raw = ruleset.canonical(claim)
     assert raw.decode("utf-8") == v["canonical"] and hashlib.sha256(raw).hexdigest() == v["sha256"]
@@ -895,6 +921,7 @@ def test_rule_of_fields_is_the_level_of_every_claim_the_poster_builds():
     what the ruleset gives its fields; the published level is never below a claim's; it is
     critical only by a field; and with nothing but a model's reading it is high at most."""
     rng, rs = random.Random(20261124), ruleset.load()
+    api_rng = random.Random(3)  # its own sequence: the candidates generated are the ones they were
     products = [("claude-code", "@anthropic-ai/claude-code", "npm", "anthropics/claude-code"),
                 ("openai/codex", "@openai/codex", "npm", "openai/codex"),
                 ("openssh", "OpenSSH", None, "openssh/openssh-portable"),
@@ -922,7 +949,11 @@ def test_rule_of_fields_is_the_level_of_every_claim_the_poster_builds():
                      advisory_severity=rng.choice([None, "high", "remote code execution", "low"]))
             ev = rules.evidence(c, scope, served({url: (200, page)}))
             assert ev.structured
-            members.append(replace(c, readings=rules.readings_for(c, ev), aliases=tuple(sorted(i.upper() for i in ev.ids if i.startswith("cve")))))
+            # 3qyq: the reading is the API's answer: any type, with or without a weakness the rules name
+            api = ghsa_json(g, type=api_rng.choice(["reviewed", "unreviewed", "malware", None]),
+                            cwes=api_rng.choice([(), (), (), ("CWE-78",), ("CWE-506",), ("CWE-79",)]), repo=repo,
+                            packages=[(e or "", name, a, p) for name, e, a, p in blocks])
+            members.append(replace(c, readings=rules.readings_for(c, ev, api_read(api)), aliases=tuple(sorted(i.upper() for i in ev.ids if i.startswith("cve")))))
             want += 1
         if rng.random() < 0.4 or not members:
             members.append(kev_cand(*kev_names[text]))
