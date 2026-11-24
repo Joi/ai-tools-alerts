@@ -153,9 +153,9 @@ def test_what_the_format_avoids_a_level_change_mixed_with_a_fix_loses_the_fix(tm
 def test_what_the_format_avoids_an_expiry_in_a_relay_bot_block_ends_the_alert(tmp_path, tag):
     """Why a relay-bot block sets no expiry (null in a root, absent in a reply): every released reader stops
     showing the alert at that time, and none of them takes a renewal from the relay
-    bot. So does this reader, until a renewal has a form it can check
-    (ai-tools-alerts#r0ra); the expiry of the self-correcting design is computed from
-    the claim, outside the block."""
+    bot. This reader does not read a relay-bot block's expiry at all
+    (ai-tools-alerts#r0ra): it computes expiry from the claim, outside the block, so
+    it goes on showing the alert."""
     m, now = mirror_now()
     week = 7 * 86400
     adv = advisory(posted_by="relay-bot", posted_at=now - 3600, expires_at=now + week)
@@ -163,9 +163,10 @@ def test_what_the_format_avoids_an_expiry_in_a_relay_bot_block_ends_the_alert(tm
     m.post(m.bot_sec, m.patch_text(expires_at=now + 9 * week), created_at=now - 3000,
            tags=[["e", root["id"], "", "root"]])  # the renewal
     theirs, mine = released(tmp_path, tag, m, now), this_reader(m, now, tmp_path)
-    for got in (theirs, mine):
-        assert got[str(now)] == {"AITA-TEST-0001": ["critical", ["99.0.0"], True]}
-        assert got[str(now + MONTH)] == {}  # gone, renewal or not
+    live = {"AITA-TEST-0001": ["critical", ["99.0.0"], True]}
+    assert theirs[str(now)] == live and mine[str(now)] == live
+    assert theirs[str(now + MONTH)] == {}  # gone, renewal or not
+    assert mine[str(now + MONTH)] == live
 
 
 @pytest.mark.parametrize("tag", ("v0.1.4", "v0.1.7"))

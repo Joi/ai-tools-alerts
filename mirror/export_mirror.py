@@ -625,7 +625,7 @@ def index_doc(events: dict[str, list[dict]], m, channels: dict, now: int,
     rows = []
     for t, retracted, first in rows_of:
         adv = t.adv
-        expired = adv.expires_at is not None and adv.expires_at < now  # pull.active's rule
+        expired = adv.expires_at is not None and adv.expires_at < now  # a curator's expiry; a relay-bot's is not read
         title = ("Retracted: " if retracted else "Expired: " if expired else "") + adv.title
         url, primary = _source(adv)
         date = _iso(first)[:10]

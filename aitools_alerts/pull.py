@@ -39,6 +39,14 @@ manifest wins. ``unverified`` says whether what the reader shows may be
 trusted to be complete right now; the CLI auto-applies nothing when it may
 not. The poster and the curator command, which write the feed, pull with
 ``checkpoint=False``: every verified event, as before, never a verified state.
+
+Expiry (ai-tools-alerts#r0ra) is computed, and judged by the checkpoint, never
+by this machine's clock: see ``active``. A relay-bot block's ``expires_at`` is
+not read. A thread whose root carries a claim stands for as long as its
+claims keep its level standing (``ruleset.Ruleset.level_at``), and it decays
+only under a stored checkpoint issued after that which lists its root. A
+frozen mirror, a withheld renewal or a wrong clock therefore expire nothing;
+retention takes its clock from the checkpoint too (``_fetch``).
 """
 
 from __future__ import annotations
@@ -55,7 +63,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field, replace
 from urllib.parse import urlsplit
 
-from . import TRUST_DIR, TRUST_ROOT_PUBKEY, manifest, nostr, schema, versions
+from . import TRUST_DIR, TRUST_ROOT_PUBKEY, manifest, nostr, ruleset, schema, versions, wire
 from . import checkpoint as cpt
 from .manifest import Manifest
 from .schema import Advisory
@@ -66,7 +74,7 @@ __all__ = ["FILES", "FetchError", "PULL_ERRORS", "MAX_FETCH_BYTES", "MAX_EVENTS"
            "parse_translation", "translation_title", "threads_from",
            "STALE_EVENT_S", "STALE_MANIFEST_S", "freshness", "stale_since",
            "MAX_AHEAD_S", "CHAT_KIND", "ChannelSpecError", "channel_ids", "unverified",
-           "bundled_cert", "SECOND_TIMEOUT"]
+           "bundled_cert", "SECOND_TIMEOUT", "head_clock"]
 
 FILES = ("feed.json", "critical.json")
 MAX_FETCH_BYTES = 8 << 20
@@ -106,6 +114,12 @@ class Thread:
     updated_at: int
     translations: dict = field(default_factory=dict)  # lang -> text of the current advisory
     translated_at: dict = field(default_factory=dict)  # lang -> created_at of that reply
+    # What ``active`` computes expiry from (see _renewal): each (confirmed_at, checked_at,
+    # the event's created_at). ``enrolled``: the root itself carries one; only then can
+    # the thread decay. ``curated``: a curator posted or amended it; it never decays.
+    renewals: tuple = ()
+    enrolled: bool = False
+    curated: bool = False
 
 
 # ------------------------------------------------------------------ fetching
@@ -285,7 +299,9 @@ def _retain(kept: dict, now: float, res: PullResult) -> dict:
     is older than RETENTION_S. A thread is kept or dropped as a unit, so a
     retraction, a patch or a curator amendment never outlives or predeceases
     its thread. A checkpoint that lists an aged-out thread does not bring it
-    back."""
+    back. ``now`` is the caller's retention clock: a checked pull passes the
+    checkpoint's time when that is earlier than this machine's clock, so a
+    clock set ahead ages nothing out."""
     cutoff = now - RETENTION_S
     newest: dict[str, int] = {}
     for eid, ev in kept.items():
@@ -305,6 +321,7 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float, second: st
     before = state.events_for(root_pubkey)
     channels = None
     extra: dict = {"second_origin": None}
+    rnow = now  # the retention clock; a checked pull that holds a checkpoint sets it below
 
     def record(ok: bool, error: str | None) -> None:
         last = {"at": int(now), "mirror_url": base, "ok": ok, "error": error,
@@ -339,6 +356,8 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float, second: st
     old_cert = t["cert"] if t else None
     old_cp = t["checkpoint"] if t else None
     old_applied = set(t["applied"]) if t and old_cp is not None else None
+    if check and old_cp is not None:
+        rnow = min(now, old_cp.created_at)
     unchecked = "checkpoint_ok" not in state.last_pull or state.last_pull.get("writer") is True
     if unchecked:
         # last_pull is one record for every trust root, and step 0 is about to
@@ -393,7 +412,7 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float, second: st
                     best = (m.version, is_second)
                     early = PullResult()
                     state.accept(root_pubkey, m,
-                                 _retain(_filter(before, [], m, floor, early, channels, now), now, early))
+                                 _retain(_filter(before, [], m, floor, early, channels, now), rnow, early))
                     state.save_events()
         if is_second:
             extra["second_origin"] = err or "ok"  # never by itself a pull error
@@ -404,21 +423,24 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float, second: st
     m = max(cands, key=lambda c: c[:2])[2]
     res.manifest = m
 
-    def settle(fetched: list, error: str | None, keep=None) -> PullResult:
+    def settle(fetched: list, error: str | None, keep=None, at=None) -> PullResult:
         """Accept the manifest with the stored events it still trusts plus
         ``fetched``, and record the outcome. A verified manifest is accepted
         even when the pull fails later: its revocations apply to the stored
-        events at once."""
+        events at once. ``at``: the retention clock, when not ``rnow``."""
+        at = rnow if at is None else at
         dropped = Counter()
         box = PullResult(dropped=dropped)
         kept = _filter(before, fetched, m, floor, box, channels, now)
         if keep is not None:
             kept = {eid: ev for eid, ev in kept.items() if eid in keep}
-        kept = _retain(kept, now, box)
+        kept = _retain(kept, at, box)
         if (len(kept) > MAX_STORED_EVENTS
                 or state.size_with(root_pubkey, m, kept) > MAX_STORED_BYTES):
             dropped.clear()
-            kept = _retain(_filter(before, [], m, floor, box, channels, now), now, box)
+            # nothing new is stored, so the checkpoint this pull fetched is not accepted
+            # either: what is kept is aged by the clock the reader already held
+            kept = _retain(_filter(before, [], m, floor, box, channels, now), rnow, box)
             error = error or "state limit reached: new events not stored"
         if not res.dropped:  # a failed step may already have counted what it refused
             res.dropped = dropped
@@ -491,7 +513,7 @@ def _fetch(base_url, state: State, get, root_pubkey: str, now: float, second: st
     # fetched again by the pull that follows its checkpoint; kept here it
     # would be shown by the released reader if it were run on this state, and
     # it would let whoever can post crowd the store.
-    settle(fetched, None, keep=applied)
+    settle(fetched, None, keep=applied, at=min(now, cp.created_at))
     if res.error is not None:  # the applied events do not fit: nothing new is trusted
         return done()
     # 5. save: the checkpoint file first, then the events, then the record.
@@ -825,6 +847,24 @@ def translation_title(text: str, adv_id: str | None = None) -> str:
     return title
 
 
+def _renewal(ev: dict, role: str) -> tuple | None:
+    """(the claim's id case-folded, confirmed_at, checked_at, the event's
+    created_at) when ``ev`` is a relay-bot event carrying a well-formed claim
+    of a level, checked no later than the event is dated; else None. The
+    claim's own level and ruleset number are not compared, and its fields are
+    not judged: a renewal says when, the source check says whether. Never
+    raises."""
+    if role != "relay-bot":
+        return None
+    try:
+        c = ruleset.parse_claim(wire.claim_of(ev))
+        if c["level"] == ruleset.NONE or c["checked_at"] > ev["created_at"]:
+            return None
+        return c["id"].casefold(), c["confirmed_at"], c["checked_at"], ev["created_at"]
+    except Exception:  # a hostile claim never stops the other threads
+        return None
+
+
 def _is_root(ev: dict) -> bool:
     """A root carries no e tag at all (as C1's exporter): an event whose only
     e tags are unmarked mentions is neither a root nor a reply."""
@@ -863,6 +903,11 @@ def advisories(state: State, dropped: Counter | None = None, checkpointed: bool 
     ``retracted``, whoever posted or retracted it, compared case-folded as
     the poster's ledger compares ids. Deletion events (kinds 5 and 9005) are
     never read.
+
+    A root from any role but curator has its ``expires_at`` dropped (counted
+    ``bot-expiry``): expiry is computed from claims, see ``active``. Each
+    thread carries its ``renewals`` (_renewal), from the root and from every
+    reply of a thread not retracted, discussion included.
     """
     m = effective_manifest(state)
     if m is None:
@@ -891,12 +936,18 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
         if adv is None:
             dropped["no-block"] += 1
             continue
+        if role != "curator" and adv.expires_at is not None:
+            dropped["bot-expiry"] += 1
+            adv = replace(adv, expires_at=None)
         roots[ev["id"]] = [replace(adv, posted_by=role), False, ev["created_at"], role == "curator",
-                           {i.casefold() for i in (adv.id, *adv.aliases)}, {}, [ev["id"]], False]
+                           {i.casefold() for i in (adv.id, *adv.aliases)}, {}, [ev["id"]], False,
+                           [], _renewal(ev, role)]
     for ev, role, ref in sorted(replies, key=lambda r: (r[0]["created_at"], r[0]["id"])):
         t = roots.get(ref)
         if t is None or t[1]:
             continue
+        if (rn := _renewal(ev, role)) is not None:
+            t[8].append(rn)
         first = _first_line(ev["content"])
         if role != "curator" and t[3] and not first.startswith("lang:"):
             continue  # discussion: a curator posted or amended this thread (a translation is not)
@@ -946,10 +997,14 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
                 t[4].update(i.casefold() for i in new.aliases)  # a bot's never list a thread
     listed = {i.casefold() for i in m.retracted}
     out = []
-    for rid, (a, r, u, _, ids, tr, changes, retitled) in sorted(roots.items(), key=lambda kv: (kv[1][2], kv[0])):
+    for rid, (a, r, u, cur, ids, tr, changes, retitled, rns, first) in sorted(
+            roots.items(), key=lambda kv: (kv[1][2], kv[0])):
         text, at = _composed(a, tr, changes, retitled)
+        ok = ids | {i.casefold() for i in (a.id, *a.aliases)}
+        enrolled = first is not None and first[0] in ok
         out.append(Thread(root_id=rid, adv=a, retracted=r or not ids.isdisjoint(listed), updated_at=u,
-                          translations=text, translated_at=at))
+                          translations=text, translated_at=at, enrolled=enrolled, curated=cur,
+                          renewals=tuple(sorted(x[1:] for x in [first, *rns] if x[0] in ok)) if enrolled else ()))
     return out
 
 
@@ -970,8 +1025,53 @@ def _composed(adv: Advisory, tr: dict, changes: list, retitled: bool) -> tuple[d
     return text, at
 
 
-def active(threads: list[Thread], now: float | None = None) -> list[Thread]:
-    """Threads check should see: not retracted, not expired."""
-    now = time.time() if now is None else now
-    return [t for t in threads if not t.retracted
-            and (t.adv.expires_at is None or t.adv.expires_at >= now)]
+def head_clock(state: State) -> tuple[int | None, frozenset | None]:
+    """(the issue time of the stored checkpoint of the state's root, the ids
+    it lists): the clock ``active`` judges expiry by. (None, None) when there
+    is no checkpoint, and when an event it lists is not stored: a save
+    interrupted between the checkpoint and the events leaves a later
+    checkpoint over an earlier store, in which a renewal may be missing."""
+    cp = state.checkpoint_for(state.manifest_root)
+    if cp is None or not cp.events <= set(state.events):
+        return None, None
+    return cp.created_at, cp.events
+
+
+def active(threads: list[Thread], now: float | None = None, listed=None) -> list[Thread]:
+    """Threads check should see: not retracted, not expired, each at the level
+    it holds at ``now``.
+
+    ``now`` is the issue time of the newest accepted checkpoint and ``listed``
+    the ids it lists (``head_clock``), never this machine's clock: a frozen
+    mirror stops the clock, so it can pin an alert and cannot end one. With
+    ``now`` None nothing expires; with ``listed`` None every thread counts as
+    listed. A thread whose root the checkpoint does not list keeps the level
+    its events give.
+
+    A curator's ``expires_at`` ends its thread once ``now`` is past it. A
+    thread whose root carries a claim, and that no curator posted or amended,
+    is shown at ``ruleset.Ruleset.level_at`` of its renewals dated at or
+    before ``now`` (a claim on an event dated after the checkpoint counts
+    once a checkpoint reaches its date) and dropped when no level stands.
+    Every other thread does not expire. A ruleset that cannot be loaded
+    expires nothing."""
+    out, rs = [], None
+    for t in threads:
+        if t.retracted:
+            continue
+        level = t.adv.level
+        if now is not None and (listed is None or t.root_id in listed):
+            if t.adv.expires_at is not None:
+                if now > t.adv.expires_at:
+                    continue
+            elif t.enrolled and not t.curated:
+                rn = [(c, k) for c, k, at in t.renewals if at <= now]
+                try:
+                    rs = rs or ruleset.load()
+                    level = rs.level_at(level, rn, now) if rn else level
+                except Exception:  # a damaged spec file must not end alerts
+                    level = t.adv.level
+                if level == ruleset.NONE:
+                    continue
+        out.append(t if level == t.adv.level else replace(t, adv=replace(t.adv, level=level)))
+    return out
