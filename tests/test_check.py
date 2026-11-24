@@ -390,3 +390,21 @@ def test_hermes_and_openclaw_match_their_scope_products():
         a = adv([Product(name, eco, "<2.0", "2.0")], [])
         [m] = check.match([a], inv(**{eco: [Installed(name, "1.0", "/x")]}))
         assert m.reason == check.AFFECTED
+
+
+@pytest.mark.parametrize("order", [0, 1])
+def test_a_may_apply_product_cannot_hide_an_affected_one(order):
+    plugin = Installed("demo", None, "/p", source="market")
+    prods = [Product("demo", "skill", "*", None), Product("demo@market", "skill", "*", None)]
+    a = adv(prods[::-1] if order else prods, [])
+    assert sorted(m.reason for m in check.match([a], inv(skill=[plugin]))) == sorted([check.AFFECTED, check.MAY_APPLY])
+
+
+def test_a_scoped_plugin_name_matches_unqualified():
+    plugin = Installed("@scope/x", None, "/p", source="market")
+    a = adv([Product("@scope/x", "skill", "*", None)], [])
+    [m] = check.match([a], inv(skill=[plugin]))
+    assert m.reason == check.MAY_APPLY
+    b = adv([Product("@scope/x@market", "skill", "*", None)], [])
+    [m] = check.match([b], inv(skill=[plugin]))
+    assert m.reason == check.AFFECTED

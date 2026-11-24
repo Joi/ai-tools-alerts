@@ -89,6 +89,17 @@ New probes:
 
 Member-side only; nothing a poster, mirror or released reader sees changes. Worst case of a bug: a missed or extra match on the member's machine, or a `may apply` that should have interrupted. The reason rename changes the `reason` value in `--json` from `name` to `may apply`; the session-start skill docs are updated in the same change. Rollback: revert the merge commit.
 
+## Amendments from the whole-branch review (reviewed head 19f3103)
+
+- `match` dedupes on `(ecosystem, installation, affected, fixed, reason)`: a `may apply` product listed first cannot hide an `affected` one for the same installation and range (BLOCKER).
+- Hermes since 0.23 declares `version = "0.0.0"` in `pyproject.toml` and takes its release from git or an install stamp (upstream `hermes_cli/version_info.py`). A version of only zeros is no version: Hermes then matches as `may apply`, never as a version below every range. Reading the stamp or the tag is a follow-up.
+- npm: a version is kept only when exact (`x.y.z`); `pkg@1.2` and `pkg@1` are ranges to npm. A spec ending in `.tgz`, `.tar` or `.tar.gz` is a file, not a name.
+- npx with several `--package` options: the one whose bare name is the command, else no package (the server is listed by its key).
+- An option that names another registry or index (`--registry`, `--index-url`, `--extra-index-url`, `--index`, `--default-index`, `-i`, `--find-links`, `-f`) ends the reading: the name then says nothing about the public package.
+- Only absolute paths are read (a relative one would resolve against the CLI's directory, not the client's).
+- A plugin name with a leading `@scope/` is not a marketplace-qualified name.
+- Trade-off, stated: a malicious-release critical (`*`, no fix) on an installation matched by a name alone (an MCP key with no resolvable package, a skill without its marketplace) is `may apply` and does not interrupt. Every MCP product the poster can post is a scope entry with a `package`, so an MCP server whose command resolves keeps the interrupt; one configured so that its package cannot be read does not.
+
 ## Not verified
 
 - OpenClaw's `--version` output on a real install.

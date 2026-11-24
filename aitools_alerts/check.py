@@ -102,7 +102,7 @@ def _identity(product: Product, inst: Installed) -> bool | None:
         if want is None or inst.package is None:
             return None
         return inst.package == want
-    if product.ecosystem == "skill" and "@" in name:
+    if product.ecosystem == "skill" and name.rfind("@") > 0:  # not a leading @scope
         # Source-qualified: only an installation from that marketplace is it.
         return inst.source is not None and f"{inst.name}@{inst.source}".lower() == name
     return None
@@ -147,8 +147,7 @@ def match(advs: list[Advisory], inv: Inventory) -> list[Match]:
         for product in adv.products:
             for inst in inv.products.get(product.ecosystem, []):
                 aliases = _aliases(product.ecosystem, inst)
-                key = (product.ecosystem, inst, product.affected, product.fixed)
-                if product.name.lower() not in aliases or key in seen:
+                if product.name.lower() not in aliases:
                     continue
                 ident = _identity(product, inst)
                 if ident is False:
@@ -163,6 +162,11 @@ def match(advs: list[Advisory], inv: Inventory) -> list[Match]:
                     if hit is False:
                         continue
                     reason = AFFECTED if hit else UNPARSABLE
+                # The reason is in the key: a may-apply product cannot hide
+                # an affected one for the same installation and range.
+                key = (product.ecosystem, inst, product.affected, product.fixed, reason)
+                if key in seen:
+                    continue
                 seen.add(key)
                 allowed = ([] if reason == UNPARSABLE else
                            [a for a in adv.actions

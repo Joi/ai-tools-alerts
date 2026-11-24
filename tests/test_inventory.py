@@ -243,3 +243,44 @@ def test_openclaw_probe(out, want):
     assert [i.version for i in inv.products["openclaw"]] == ([want] if want else [])
     if want:
         assert inv.products["openclaw"][0].name == "OpenClaw"
+
+
+@pytest.mark.parametrize("command,args,want", [
+    ("npx", ["-y", "pkg@1.2"], ("npm:pkg", "pkg", None)),  # npm reads 1.2 and 1 as ranges
+    ("npx", ["-y", "pkg@1"], ("npm:pkg", "pkg", None)),
+    ("npx", ["--package=typescript", "--package=mcp-remote@0.1.9", "mcp-remote"],
+     ("npm:mcp-remote", "mcp-remote", "0.1.9")),  # several packages: the one the command names
+    ("npx", ["-p", "@scope/tool@1.0.0", "-p", "typescript", "tool"], ("npm:@scope/tool", "@scope/tool", "1.0.0")),
+    ("uvx", ["--refresh", "mcp-server-git"], ("pypi:mcp-server-git", "mcp-server-git", None)),
+])
+def test_mcp_command_forms_from_review(command, args, want):
+    assert mcp_package(command, args) == want
+
+
+@pytest.mark.parametrize("command,args", [
+    ("npx", ["--package", "typescript", "--package", "other", "mcp-remote"]),  # none is the command
+    ("npx", ["--registry=https://private.invalid/", "pkg@1.0.0"]),  # another registry: no public name
+    ("uvx", ["--index-url", "https://private.invalid/simple", "mcp-server-git"]),
+    ("npx", ["-y", "./server.tgz"]),
+    ("npx", ["-y", "server.tgz"]),
+    ("node", ["node_modules/@modelcontextprotocol/server-memory/dist/index.js"]),  # relative
+    ("venv/bin/mcp-server-git", []),
+])
+def test_mcp_command_forms_that_name_nothing_from_review(command, args):
+    assert mcp_package(command, args) is None
+
+
+def test_hermes_placeholder_version_is_no_version(tmp_path):
+    proj = tmp_path / ".hermes" / "hermes-agent"
+    proj.mkdir(parents=True)
+    (proj / "pyproject.toml").write_text('[project]\nname = "hermes-agent"\nversion = "0.0.0"\n')
+    [h] = inventory.collect(tmp_path, runner=lambda argv: None, apps_dirs=[]).products["hermes"]
+    assert h.name == "Hermes" and h.version is None
+
+
+def test_scoped_plugin_keeps_its_scope_and_marketplace(tmp_path):
+    f = tmp_path / ".claude" / "plugins" / "installed_plugins.json"
+    f.parent.mkdir(parents=True)
+    f.write_text(json.dumps({"plugins": {"@scope/x@market": [], "plain": []}}))
+    got = {(i.name, i.source) for i in inventory.collect_skills(tmp_path)}
+    assert got == {("@scope/x", "market"), ("plain", None)}

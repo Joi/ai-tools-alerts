@@ -154,8 +154,15 @@ def collect_hermes(home: Path, name: str) -> Installed | None:
         return None
     if not isinstance(project, dict) or project.get("name") != "hermes-agent":
         return None
+    # Since 0.23 the file says 0.0.0 and the release comes from git or an
+    # install stamp: a placeholder is no version (the match may apply),
+    # never one that would read as below every affected range.
     version = versions.normalize(project.get("version"))
-    return Installed(name=name, version=version, path=str(path)) if version else None
+    if version is None:
+        return None
+    if set(re.sub(r"[^0-9]", "", version)) <= {"0"}:
+        version = None
+    return Installed(name=name, version=version, path=str(path))
 
 
 def _read(path: Path) -> bytes | None:
@@ -236,11 +243,15 @@ _NPM_NAME = re.compile(r"(?:@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*")
 _PYPI_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
 _EXACT = re.compile(r"[0-9]{1,9}(?:\.[0-9]{1,9}){0,4}(?:[a-z][a-z0-9]{0,15})?")
 _NPX = frozenset({"npx", "bunx"})
-_NPX_FLAGS = frozenset({"-y", "--yes", "-q", "--quiet", "--no-install", "--prefer-offline"})
+_NPX_FLAGS = frozenset({"-y", "--yes", "-q", "--quiet", "--no-install", "--prefer-offline",
+                        "--prefer-online"})
+# Options that point the runner at another registry or index: the name then
+# says nothing about the public package, so the reading stops.
+_REGISTRY = frozenset({"--registry", "--index", "--index-url", "--extra-index-url",
+                       "--default-index", "-i", "--find-links", "-f"})
 _PY_SPEC = frozenset({"--from", "--spec"})
 _PY_VALUE = frozenset({
-    "--python", "-p", "--with", "--with-editable", "--with-requirements", "--index",
-    "--index-url", "--extra-index-url", "--default-index", "-i", "--find-links", "-f",
+    "--python", "-p", "--with", "--with-editable", "--with-requirements",
     "--constraint", "-c", "--override", "--python-preference", "--cache-dir",
     "--directory", "--project", "--env-file", "--pip-args", "--index-strategy",
     "--keyring-provider", "--refresh-package", "--reinstall-package", "--upgrade-package"})
@@ -251,12 +262,18 @@ def _exact(v: str | None) -> str | None:
     return v if isinstance(v, str) and _EXACT.fullmatch(v) and versions.normalize(v) == v else None
 
 
+_NPM_EXACT = re.compile(r"[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}")
+
+
 def _npm_spec(spec: str):
+    """An npm spec; its version only when exact (x.y.z: npm reads 1.2 as a range)."""
     name, version = spec, None
     at = spec.rfind("@")
     if at > 0:
-        name, version = spec[:at], _exact(spec[at + 1:])
-    if len(name) > 214 or not _NPM_NAME.fullmatch(name):
+        name, rest = spec[:at], spec[at + 1:]
+        version = rest if _NPM_EXACT.fullmatch(rest) else None
+    if (len(name) > 214 or not _NPM_NAME.fullmatch(name)
+            or name.endswith((".tgz", ".tar", ".tar.gz"))):
         return None
     return f"npm:{name}", name, version
 
@@ -280,18 +297,29 @@ def _pypi_spec(spec: str):
 
 
 def _first_spec(args: list, spec_flags: frozenset, value_flags: frozenset,
-                plain_flags: frozenset) -> str | None:
-    """The package spec a runner's arguments name: the value of a spec flag,
-    else the first positional. An unknown option ends the reading."""
-    i = 0
+                plain_flags: frozenset, bare) -> str | None:
+    """The package spec a runner's arguments name. With one spec flag, its
+    value; with several (npx --package a --package b cmd), the one whose
+    bare name is the command, else none; with none, the first positional.
+    An unknown option, or one naming another registry, ends the reading."""
+    specs, i = [], 0
     while i < len(args):
         a = args[i]
+        if a.split("=", 1)[0] in _REGISTRY:
+            return None
         if a in spec_flags:
-            return args[i + 1] if i + 1 < len(args) else None
-        if a == "--":
-            return args[i + 1] if i + 1 < len(args) else None
+            if i + 1 >= len(args):
+                return None
+            specs.append(args[i + 1])
+            i += 2
+            continue
         if a.startswith("--") and "=" in a and a.split("=", 1)[0] in spec_flags:
-            return a.split("=", 1)[1]
+            specs.append(a.split("=", 1)[1])
+            i += 1
+            continue
+        if a == "--":
+            positional = args[i + 1] if i + 1 < len(args) else None
+            break
         if a in value_flags:
             i += 2
             continue
@@ -300,8 +328,27 @@ def _first_spec(args: list, spec_flags: frozenset, value_flags: frozenset,
                 i += 1
                 continue
             return None
-        return a
-    return None
+        positional = a
+        break
+    else:
+        positional = None
+    if len(specs) == 1:
+        return specs[0]
+    if specs:
+        named = [s for s in specs if positional is not None and bare(s) == positional]
+        return named[0] if len(named) == 1 else None
+    return positional
+
+
+def _npm_bare(spec: str) -> str:
+    """The command an npm spec installs by default: its name after any scope."""
+    at = spec.rfind("@")
+    name = spec[:at] if at > 0 else spec
+    return name.rsplit("/", 1)[-1]
+
+
+def _pypi_bare(spec: str) -> str:
+    return re.split(r"[=@\[<>!~ ]", spec, maxsplit=1)[0]
 
 
 def _node_modules(path: str):
@@ -365,7 +412,7 @@ def mcp_package(command, args) -> tuple[str, str, str | None] | None:
             return None
         base = command.replace("\\", "/").rsplit("/", 1)[-1]
         if base in _NPX:
-            spec = _first_spec(args, frozenset({"-p", "--package"}), frozenset(), _NPX_FLAGS)
+            spec = _first_spec(args, frozenset({"-p", "--package"}), frozenset(), _NPX_FLAGS, _npm_bare)
             return _npm_spec(spec) if spec else None
         py = None
         if base == "uvx":
@@ -375,13 +422,18 @@ def mcp_package(command, args) -> tuple[str, str, str | None] | None:
         elif base == "pipx" and args[:1] == ["run"]:
             py = args[1:]
         if py is not None:
-            spec = _first_spec(py, _PY_SPEC, _PY_VALUE, frozenset({"-q", "--quiet", "-v", "--verbose",
-                                                                    "--isolated", "--no-cache", "--offline"}))
+            spec = _first_spec(py, _PY_SPEC, _PY_VALUE,
+                               frozenset({"-q", "--quiet", "-v", "--verbose", "--isolated",
+                                          "--no-cache", "--offline", "--refresh"}), _pypi_bare)
             return _pypi_spec(spec) if spec else None
         target = args[0] if base in ("node", "node.exe") and args else command
+        # A relative path would resolve against this process's directory,
+        # not the client's: only absolute paths are read.
+        if not os.path.isabs(target):
+            return None
         if "/node_modules/" in target.replace("\\", "/"):
             return _node_modules(target)
-        if "/" in command:
+        if target == command:
             return _venv(command)
     except Exception:
         return None
