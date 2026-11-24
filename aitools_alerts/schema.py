@@ -350,7 +350,7 @@ def render_post(adv: Advisory, body: str) -> str:
     if not isinstance(adv, Advisory) or not isinstance(body, str):
         raise ValueError("render_post needs an Advisory and a str body")
     adv = validate(asdict(adv))
-    block = json.dumps(asdict(adv), indent=2, ensure_ascii=False)
+    block = json.dumps(asdict(adv), ensure_ascii=False, separators=(",", ":"))  # one line (faxq)
     out = f"{body.rstrip(chr(10))}\n\n```{INFO_STRING}\n{block}\n```\n"
     if parse_post(out) != adv:
         raise ValueError("rendered post does not parse back (unclosed fence in body?)")

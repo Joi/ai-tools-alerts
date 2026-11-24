@@ -411,7 +411,7 @@ def test_one_failure_stops_further_sends(env):
 
 
 def test_ledger_error_stops_sends_and_replays_without_sending(env, monkeypatch):
-    env.collector([finding(), finding(fid="GHSA-zzzz-zzzz-zzzz")])
+    env.collector([finding(), finding(fid="GHSA-zzzz-zzzz-zzzz", fixed="2.1.1")])  # faxq: two fixes, two threads
     real = Ledger.record_root
 
     def boom(self, *a, **k):
@@ -489,7 +489,7 @@ def test_high_becoming_critical_under_another_id(env):
     assert chans(relay) == [("critical", None), ("feed", feed_root)]
     copy, reply = relay.calls[0][2], relay.calls[1][2]
     assert copy.startswith("CRITICAL: Claude Code") and "(GHSA-abcd-efgh-ijkl)" in copy
-    assert "Fixed in 2.1.0." in copy  # the stored fix is kept
+    assert "Do: upgrade Claude Code to 2.1.0 or later." in copy  # the stored fix is kept
     assert "Level is now critical." in reply
     (e,), _ = env.ledger()
     assert e["level"] == "critical" and set(e["channel_ids"]) == {"critical", "feed"}
@@ -608,7 +608,7 @@ def test_affected_range_correction_posts_a_reply(env):
     fixed_range["affected"] = "<2.1.0"
     env.collector([fixed_range])
     code, summary, relay = env.run(now=T0 + 3600)
-    assert code == 0 and "replies=1" in summary and "below 2.1.0" in relay.calls[0][2]
+    assert code == 0 and "replies=1" in summary and "before 2.1.0" in relay.calls[0][2]
 
 
 def test_busy_update_survives_its_source_being_replaced(env):
@@ -655,7 +655,7 @@ def test_range_correction_without_a_fix_posts_a_reply(env):
     env.collector([corrected])
     code, summary, relay = env.run(now=T0 + 3600)
     assert code == 0 and "replies=1" in summary  # the thread is in the feed: high until its fix
-    assert all("below 2.5.0" in c[2] for c in relay.calls)
+    assert all("before 2.5.0" in c[2] for c in relay.calls)
 
 
 def test_only_ids_the_vendor_page_assigns_are_learned(env):  # h340 (was: ids learned past the alias cap)
@@ -772,7 +772,7 @@ def test_fresh_correction_wins_over_a_deferred_fix(env):
 
 
 def test_digest_backlog_moves_forward_day_by_day(env, monkeypatch):
-    env.collector([finding(fid=f"GHSA-aaaa-aaaa-aa{i:02d}") for i in range(6)])
+    env.collector([finding(fid=f"GHSA-aaaa-aaaa-aa{i:02d}", fixed=f"2.1.{i}") for i in range(6)])  # faxq: six threads
     env.run()
     assert len(env.ledger()[0]) == 6
     monkeypatch.setattr(main.transport, "MAX_CONTENT", 700)
@@ -803,7 +803,7 @@ def test_new_roots_copy_stays_on_its_thread(env):
 
 
 def test_ledger_error_keeps_unplanned_candidates(env, monkeypatch):
-    env.collector([finding(), finding(fid="GHSA-zzzz-zzzz-zzzz")])
+    env.collector([finding(), finding(fid="GHSA-zzzz-zzzz-zzzz", fixed="2.1.1")])  # faxq: two fixes, two threads
     real = Ledger.record_root
     calls = []
 
@@ -959,7 +959,8 @@ def test_kev_file_bypasses_fetch_and_marks_posts(env):
     assert kev.headers == [] and not env.config.kev_cache.exists()
     assert "inputs=kev:file," in summary and "roots=1" in summary
     assert chans(relay) == [("feed", None)]  # 9kgk: a KEV entry states no fix, so high until one is known
-    assert all(c[2].startswith("HIGH (SYNTHETIC TEST): SYNTHETIC TEST: Claude Code") and "CVE-2099-0010" in c[2]
+    # faxq: the headline is the KEV entry's own name after the product; the marker stays first
+    assert all(c[2].startswith("HIGH (SYNTHETIC TEST): Claude Code: SYNTHETIC TEST: ") and "CVE-2099-0010" in c[2]
                for c in relay.calls)
     assert env.state()["kev_since"] is None  # the real catalog was not read
     code, summary, relay = env.run(now=at(20, 7), kev=kev, kev_catalog=catalog)
@@ -1142,7 +1143,9 @@ def test_change_reply_japanese_names_it_in_of(env):
     for (ch, reply_to, text), (ech, _, _), eid in zip(relay.ja, relay.calls, relay.ids):
         assert ch == ech and reply_to == roots[ch]
         assert text.startswith(f"lang: ja\nof: {eid}\n\n") and "（2.5.0 未満）" in text
-        assert "\n\n重要: Claude Code: 悪用が確認された脆弱性 (CVE-2026-0001)\n" in text  # the current version
+        # the current version: the source's title is the headline (faxq), the ids on 対象
+        assert "\n\n重要: Claude Code: remote code execution\n" in text
+        assert "\n対象: アドバイザリ 1 件: CVE-2026-0001, GHSA-abcd-efgh-ijkl\n" in text
 
 
 def test_digest_gets_a_japanese_reply(env):
@@ -1392,8 +1395,8 @@ def test_root_and_digest_carry_the_source_title(env):
     env.collector([_cfe8()])
     _, _, relay = env.run()
     root = relay.calls[0][2].split("\n")
-    assert "(CVE-2026-88968)" in root[0] and root[1] == TOCTOU
-    assert relay.ja[0][2].split("\n")[3] == f"原題: {TOCTOU}"  # lang: ja, of:, blank, head
+    assert root[0] == f"HIGH: Claude Code: {TOCTOU}" and "CVE-2026-88968" in root[3]  # faxq: the title is the headline
+    assert relay.ja[0][2].split("\n")[2] == f"重要: Claude Code: {TOCTOU}"  # the head, in English as the source wrote it
     assert env.ledger()[0][0]["source_title"] == TOCTOU
     _, _, relay = env.run(now=at(5, 9))
     assert f"(CVE-2026-88968): {TOCTOU};" in relay.calls[0][2]
@@ -1416,8 +1419,8 @@ def test_a_title_learned_later_posts_nothing_and_reaches_the_digest(env):
 def test_a_fence_in_the_title_never_withholds_the_advisory(env):
     env.collector([_cfe8(title="Race ~~~aitools-alert ``` in Edit writes outside the workspace")])
     _, _, relay = env.run()
-    assert relay.calls and relay.calls[0][2].split("\n")[1] == \
-        "Race ~aitools-alert in Edit writes outside the workspace"  # k5tr: no backtick
+    assert relay.calls and relay.calls[0][2].split("\n")[0] == \
+        "HIGH: Claude Code: Race ~aitools-alert in Edit writes outside the workspace"  # k5tr: no backtick
 
 
 def test_a_held_notice_learns_its_title_for_the_digest(env):
@@ -1434,8 +1437,8 @@ def test_a_held_notice_learns_its_title_for_the_digest(env):
 
 # ---------------------------------------------------------------- withheld (ai-tools-alerts#8acj)
 
-THREE = [finding(), finding(fid="GHSA-zzzz-zzzz-zzzz"),
-         finding(fid="GHSA-yyyy-yyyy-yyyy")]
+THREE = [finding(), finding(fid="GHSA-zzzz-zzzz-zzzz", fixed="2.1.1"),
+         finding(fid="GHSA-yyyy-yyyy-yyyy", fixed="2.1.2")]  # faxq: three fixes, three threads
 
 
 def test_a_refused_item_is_withheld_and_the_run_goes_on(env, capsys):
@@ -1516,7 +1519,7 @@ def test_japanese_roots_carry_the_candidates_exploited_state(env, monkeypatch): 
     _, summary, relay = env.run(now=T0 + 3600)
     assert "replies=1" in summary and len(seen) == 2 and all(s is True for s in seen)  # the root, then the reply
     # (9kgk: exploited with no fix is high, so the thread is in the feed only)
-    assert all("直ちに更新" in text for _, _, text in relay.ja)
+    assert all("対応: 悪用が確認されています。" in text for _, _, text in relay.ja)
 
 
 def test_kev_learned_on_a_flagged_thread_replies_and_makes_the_japanese_action_urgent(env):  # 4yr1, s6mt, 9kgk
@@ -1528,7 +1531,8 @@ def test_kev_learned_on_a_flagged_thread_replies_and_makes_the_japanese_action_u
     env.collector([first])
     _, summary, relay = env.run()
     assert "roots=1" in summary and chans(relay) == [("feed", None)]
-    assert relay.calls[0][2].startswith("HIGH: Claude Code: trojanized release (CVE-2026-0001)")
+    assert relay.calls[0][2].startswith("HIGH: Claude Code: remote code execution\n")  # faxq: the page's title
+    assert "Covers 1 advisory: CVE-2026-0001, GHSA-abcd-efgh-ijkl" in relay.calls[0][2]
     (e,), _ = env.ledger()
     assert e["level"] == "high" and e["advisory"]["title"] == "Claude Code: trojanized release (CVE-2026-0001)"
     env.kev.catalog = {"vulnerabilities": [kev_item()]}
@@ -1539,7 +1543,7 @@ def test_kev_learned_on_a_flagged_thread_replies_and_makes_the_japanese_action_u
     assert e["level"] == "high"
     assert relay.ja
     for _, _, text in relay.ja:
-        assert "悪用が確認されているため、リリースがあれば直ちに更新してください。" in text
+        assert "対応: 悪用が確認されています。出典に回避策があれば適用し、修正版が出るまで続けてください。" in text
 
 
 def test_a_level_rise_copy_gets_the_exploited_flag(env, monkeypatch):  # 4yr1
@@ -1639,7 +1643,7 @@ def test_a_high_with_no_fix_waits_and_posts_with_its_fix(env):  # 0dvh
     assert list(env.state()["waiting"]) == ["Claude Code|ghsa-abcd-efgh-ijkl"]  # saved: a restart keeps it
     env.collector([bare_high(fixed="2.1.0")])  # the next run reads the fix
     _, summary, ssh = env.run(now=T0 + 3600)
-    assert "roots=1" in summary and len(_roots(ssh)) == 1 and "Fixed in 2.1.0." in _roots(ssh)[0][2]
+    assert "roots=1" in summary and len(_roots(ssh)) == 1 and "Do: upgrade Claude Code to 2.1.0 or later." in _roots(ssh)[0][2]
     assert env.state()["deferred"] == []
     _, summary, ssh = env.run(now=T0 + 7200)
     assert ssh.calls == []  # posted once
@@ -1651,7 +1655,7 @@ def test_a_hold_ends_after_six_hours_with_what_is_known(env):  # 0dvh
     _, summary, ssh = env.run(now=T0 + main.HOLD_SECONDS - 60)
     assert "waiting=1" in summary and _roots(ssh) == []
     _, summary, ssh = env.run(now=T0 + main.HOLD_SECONDS)
-    assert "roots=1" in summary and "does not state a fixed version" in _roots(ssh)[0][2]
+    assert "roots=1" in summary and "Do: apply the source's workaround" in _roots(ssh)[0][2] and "or later" not in _roots(ssh)[0][2]
     assert env.state()["deferred"] == []
 
 
@@ -1788,7 +1792,7 @@ def test_a_waiting_candidate_survives_a_run_that_dies(env, monkeypatch):  # 0dvh
     monkeypatch.undo()
     env.collector([bare_high(fixed="2.1.0")])
     _, summary, ssh = env.run(now=T0 + 3600)
-    assert "roots=1" in summary and "Fixed in 2.1.0." in _roots(ssh)[0][2]
+    assert "roots=1" in summary and "Do: upgrade Claude Code to 2.1.0 or later." in _roots(ssh)[0][2]
 
 
 def test_a_fieldless_sighting_keeps_the_notice_fix_and_first_sight(env, capsys):  # 0dvh, dmmf
@@ -1974,9 +1978,10 @@ def test_a_record_about_a_real_advisory_posts_what_the_vendor_page_says(env, sev
     else:
         (e,), _ = env.ledger()
         adv, title, text = e["advisory"], e["source_title"], relay.calls[0][2]
-        assert text.split("\n")[:4] == ["HIGH: Claude Code: security advisory (CVE-2026-0007)", race,
-                                        "Affected: Claude Code from 1.0 and below 2.1.251. Fixed in 2.1.251.",
-                                        "Action: upgrade Claude Code to 2.1.251 or later."]
+        assert text.split("\n")[:4] == [f"HIGH: Claude Code: {race}",  # faxq: the title is the headline
+                                        "Affected: `@anthropic-ai/claude-code` from 1.0 and before 2.1.251 (npm).",
+                                        "Do: upgrade Claude Code to 2.1.251 or later.",
+                                        "Covers 1 advisory: CVE-2026-0007, GHSA-abcd-efgh-ijkl"]
     # The level, version, range, title, ids and sources are the page's; the record's are gone.
     assert adv["level"] == level and title == race
     assert adv["products"] == [{"name": "Claude Code", "ecosystem": "claude-code", "affected": ">=1.0,<2.1.251",
@@ -1993,8 +1998,8 @@ def test_fixed_is_read_from_the_page_not_picked_from_it(env):
                                       title="Remote code execution"))
     env.collector([{**finding(fixed="2.0"), "affected": "<2.0"}])
     _, _, relay = env.run()
-    assert "Action: upgrade Claude Code to 3.0 or later." in relay.calls[0][2] and "to 2.0 or later" not in relay.calls[0][2]
-    assert "Affected: Claude Code from 1.0 and up to 2.0. Fixed in 3.0." in relay.calls[0][2]
+    assert "Do: upgrade Claude Code to 3.0 or later." in relay.calls[0][2] and "to 2.0 or later" not in relay.calls[0][2]
+    assert "Affected: `@anthropic-ai/claude-code` from 1.0 and up to 2.0 (npm)." in relay.calls[0][2]
 
 
 def test_an_advisory_for_another_package_in_the_products_repository_is_dropped(env, capsys):
@@ -2048,7 +2053,8 @@ def test_a_model_read_flag_counts_only_from_a_record_that_cites_the_vendors_advi
     env.collector([pure, mixed, junk])
     _, summary, relay = env.run()
     assert chans(relay) == [("feed", None)] and "held=2" in summary  # s6mt: the flag raises to high, never critical
-    assert relay.calls[0][2].startswith("HIGH: Claude Code: trojanized release (GHSA-aaaa-aaaa-aaaa)")
+    assert relay.calls[0][2].startswith("HIGH: Claude Code: trojanized release\n")  # faxq: no id in the headline
+    assert "Covers 1 advisory: GHSA-aaaa-aaaa-aaaa" in relay.calls[0][2]
     assert sorted(h["adv"]["id"] for h in env.state()["held"]) == ["GHSA-bbbb-bbbb-bbbb", "GHSA-cccc-cccc-cccc"]
 
 
@@ -2065,7 +2071,7 @@ def test_a_failed_fetch_or_an_unparsed_page_defers_and_never_drops(env, capsys, 
     del env.pages.fixed[GHSA]  # the page answers
     _, summary, relay = env.run(now=T0 + 3600 * 24 * 9 + 3600)
     assert "roots=1" in summary and env.state()["deferred"] == []
-    assert "Action: upgrade Claude Code to 2.1.0 or later." in relay.calls[0][2]
+    assert "Do: upgrade Claude Code to 2.1.0 or later." in relay.calls[0][2]
 
 
 def test_a_page_that_says_no_is_dropped_not_retried(env, capsys):
@@ -2078,7 +2084,8 @@ def test_a_page_that_says_no_is_dropped_not_retried(env, capsys):
 
 def test_the_page_budget_defers_the_rest_to_the_next_run(env, capsys, monkeypatch):
     monkeypatch.setattr(main, "MAX_RUN_PAGES", 2)
-    env.collector([finding(), finding(fid="GHSA-zzzz-zzzz-zzzz"), finding(fid="GHSA-yyyy-yyyy-yyyy")])
+    env.collector([finding(), finding(fid="GHSA-zzzz-zzzz-zzzz", fixed="2.1.3"),
+                   finding(fid="GHSA-yyyy-yyyy-yyyy", fixed="2.1.4")])  # faxq: three fixes, three threads
     _, summary, relay = env.run()
     assert "roots=2" in summary and "page budget, deferred=1" in capsys.readouterr().err
     assert len(env.pages.calls) == 2 and [d["id"] for d in env.state()["deferred"]] == ["GHSA-yyyy-yyyy-yyyy"]
@@ -2162,17 +2169,19 @@ def test_sources_a_thread_learned_before_the_gate_are_listed_only_if_the_vendors
     assert "example.org" not in reply and "musistudio" not in reply and GHSA2 in reply
 
 
-def test_an_unexpressible_vendor_fix_gets_no_action_line_through_a_whole_run(env):
-    """The vendor's page states a fix the schema cannot carry: the post says a fix is listed,
-    names no version and has no action sentence, in English and in Japanese."""
+def test_an_unexpressible_vendor_fix_names_no_version_through_a_whole_run(env):
+    """The vendor's page states a fix the schema cannot carry: the post sends the reader to
+    the fix the source names and names no version, in English and in Japanese."""
     env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", affected="< 2.0.0", patched="2.0.0-rc.1",
                                       title="Remote code execution"))
     env.collector([finding(fixed="2.0.0")])
     _, summary, relay = env.run()
     text, ja = relay.calls[0][2], relay.ja[0][2]
-    assert "Affected: Claude Code below 2.0.0. A fix is listed upstream; see the source." in text.split("\n")
-    assert "Action:" not in text and "rc.1" not in text and "unexpressed" not in text
-    assert "修正は上流で公開されています" in ja and "対応:" not in ja
+    lines = text.split("\n")
+    assert "Affected: `@anthropic-ai/claude-code` before 2.0.0 (npm)." in lines
+    assert "Do: upgrade Claude Code to the fixed release the source names." in lines  # faxq: names no version
+    assert "or later" not in text and "rc.1" not in text and "unexpressed" not in text
+    assert "出典に記載された修正版に更新してください" in ja and "以降に更新" not in ja and "rc.1" not in ja
     assert env.ledger()[0][0]["advisory"]["actions"] == [] and env.ledger()[0][0]["advisory"]["products"][0]["fixed"] is None
 
 
@@ -2258,7 +2267,7 @@ def test_a_code_execution_flaw_in_git_posts_at_high_though_git_is_out(env):
     rce = finding(fid="GHSA-wxyz-wxyz-wxyz", product="git/git", fixed="2.47.1", sources=(url,), severity="high")
     rce["sources"][0]["title"] = "Remote code execution on recursive clone"  # the vendor page's own words
     env.collector([rce,
-                   finding(fid="GHSA-aaaa-zzzz-aaaa", product="git/git", fixed="2.47.1", severity="high",
+                   finding(fid="GHSA-aaaa-zzzz-aaaa", product="git/git", fixed="2.47.2", severity="high",
                            sources=("https://github.com/git/git/security/advisories/GHSA-aaaa-zzzz-aaaa",))])
     code, summary, relay = env.run()
     assert code == 0 and "roots=1" in summary and "out=1" in summary and env.state()["held"] == []
@@ -2353,7 +2362,7 @@ def test_a_journaled_critical_with_no_action_never_posts(env):
     code, summary, relay = env.run(now=T0 + 3600)
     assert code == 0 and "withheld=1" in summary, summary
     # what posts is the candidate the failed run deferred, planned again: with its upgrade
-    assert relay.calls and all("Action: upgrade Claude Code to 2.1.0 or later." in c[2] for c in relay.calls)
+    assert relay.calls and all("Do: upgrade Claude Code to 2.1.0 or later." in c[2] for c in relay.calls)
     assert not [it for it in env.state()["outbox"] if it["kind"] in ("root", "copy")]
 
 
@@ -2378,7 +2387,7 @@ def test_a_kev_listing_of_a_thread_that_states_its_fix_is_critical(env):
     env.kev.catalog = {"vulnerabilities": [kev_item()]}
     code, summary, relay = env.run(now=T0 + 3600)
     assert code == 0 and "copies=1" in summary and relay.calls[0][0] == "critical", summary
-    assert "Action: upgrade Claude Code to 2.1.0 or later." in relay.calls[0][2]
+    assert "Do: upgrade Claude Code to 2.1.0 or later." in relay.calls[0][2]
 
 
 def test_a_standing_critical_with_no_fix_still_takes_its_updates(env, monkeypatch):
@@ -2392,7 +2401,7 @@ def test_a_standing_critical_with_no_fix_still_takes_its_updates(env, monkeypatc
     env.collector([bare_high(fixed=None, affected="<2.5.0")])
     code, summary, relay = env.run(now=T0 + 3600)
     assert code == 0 and "replies=2" in summary and "withheld=0" in summary, summary
-    assert all("below 2.5.0" in c[2] for c in relay.calls)
+    assert all("before 2.5.0" in c[2] for c in relay.calls)
 
 
 def test_a_stop_using_critical_with_the_threads_fix_raises_it(env, monkeypatch):
@@ -2405,7 +2414,7 @@ def test_a_stop_using_critical_with_the_threads_fix_raises_it(env, monkeypatch):
     env.collector([{**finding(fid="GHSA-abcd-efgh-ijkl", fixed=None, affected="<2.1.0"), "trojanized": True}])
     code, summary, relay = env.run(now=T0 + 3600)
     assert code == 0 and "copies=1" in summary and relay.calls[0][0] == "critical", summary
-    assert "Action: upgrade Claude Code to 2.1.0 or later." in relay.calls[0][2]
+    assert "Do: upgrade Claude Code to 2.1.0 or later." in relay.calls[0][2]
 
 
 def test_a_fix_reply_never_raises_a_thread_whose_root_had_no_fix(env):
@@ -2439,7 +2448,7 @@ def test_a_journaled_critical_copy_with_no_action_never_posts(env):
     env.kev.catalog = {"vulnerabilities": []}
     code, summary, relay = env.run(now=T0 + 3600)
     assert code == 0 and "withheld=1" in summary, summary  # the old copy dropped; the replanned one acts
-    assert all("Action: upgrade Claude Code to 2.1.0 or later." in c[2] for c in relay.calls)
+    assert all("Do: upgrade Claude Code to 2.1.0 or later." in c[2] for c in relay.calls)
 
 
 def test_a_journaled_reply_raising_a_thread_to_an_actionless_critical_never_posts(env):
@@ -2458,3 +2467,134 @@ def test_a_journaled_reply_raising_a_thread_to_an_actionless_critical_never_post
     code, summary, relay = env.run(now=T0 + 7200)
     assert code == 0 and "withheld=1" in summary, summary  # dropped; the replanned raise carries its upgrade
     assert any(c[0] == "feed" and "Level is now critical." in c[2] for c in relay.calls)
+
+
+# ---------------------------------------------------------------- faxq: one release, one post
+
+GHSA_Z = "GHSA-zzzz-zzzz-zzzz"
+
+
+def test_two_advisories_one_release_fixes_are_one_post(env):
+    env.collector([finding(), finding(fid=GHSA_Z)])
+    code, summary, relay = env.run()
+    assert code == 0 and "roots=1" in summary and chans(relay) == [("feed", None)]
+    text = relay.calls[0][2]
+    assert "Covers 2 advisories: GHSA-abcd-efgh-ijkl, GHSA-zzzz-zzzz-zzzz" in text.split("\n")
+    assert "Do: upgrade Claude Code to 2.1.0 or later." in text.split("\n")
+    (entry,), _ = env.ledger()
+    assert {"GHSA-abcd-efgh-ijkl", GHSA_Z} <= set(entry["aliases"])
+    env.collector([finding(fid=GHSA_Z)])  # a member sighted again is the thread's, not a new root
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "roots=0" in summary and "replies=0" in summary and relay.calls == []
+
+
+def test_a_fix_group_that_must_wait_is_kept_as_its_members(env):
+    """Busy behind an unknown send: each member is deferred under its own id, so the
+    next run admits each from its own page (admit keeps only the ids that page assigns)."""
+    env.collector([finding(), finding(fid=GHSA_Z)])
+    code, _, _ = env.run(relay=FakeRelay("unknown"))
+    assert code == 1
+    env.collector([finding(), finding(fid=GHSA_Z)])
+    code, summary, _ = env.run(now=T0 + 3600)
+    assert "busy=0" not in summary and "roots=0" in summary
+    assert sorted(d["id"] for d in env.state()["deferred"]) == ["GHSA-abcd-efgh-ijkl", GHSA_Z]
+
+
+def test_a_run_never_lowers_a_threads_fix(env):
+    """A member sighted again with its own, older fix leaves the thread's later one: an
+    upgrade to it fixes every member, and readers apply a reply's fix as sent."""
+    env.collector([finding(fixed="3.0")])
+    code, summary, _ = env.run()
+    assert code == 0 and "roots=1" in summary
+    env.collector([finding(fixed="2.1.0")])
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "replies=0" in summary and relay.calls == []
+    (entry,), _ = env.ledger()
+    assert entry["advisory"]["products"][0]["fixed"] == "3.0"
+
+
+def test_a_held_notice_takes_the_ids_of_its_fix_group(env):
+    """A notice held from an earlier run, then met by a fix group: the group's new ids
+    join the held notice, so the digest lists them with it (once)."""
+    env.collector([finding(severity=None)])
+    code, summary, _ = env.run()
+    assert "held=1" in summary, summary
+    env.collector([finding(severity=None), finding(fid=GHSA_Z, severity=None)])
+    code, summary, _ = env.run(now=T0 + 3600)
+    assert code == 0 and "roots=0" in summary
+    (held,) = env.state()["held"]
+    assert GHSA_Z in held["adv"]["aliases"]
+
+
+def test_one_members_sighting_never_narrows_its_groups_range(env):
+    """Review: A affects <2.1.0 and B >=1.5,<2.1.0; the root states <2.1.0. B, or A,
+    seen again alone, must not send a reply narrowing it."""
+    env.collector([finding(affected="<2.1.0"), finding(fid=GHSA_Z, affected=">=1.5,<2.1.0")])
+    code, summary, relay = env.run()
+    assert code == 0 and "roots=1" in summary
+    assert "Affected: `@anthropic-ai/claude-code` before 2.1.0 (npm)." in relay.calls[0][2].split("\n")
+    env.collector([finding(fid=GHSA_Z, affected=">=1.5,<2.1.0")])
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "replies=0" in summary and relay.calls == []
+    (entry,), _ = env.ledger()
+    assert entry["advisory"]["products"][0]["affected"] == "<2.1.0"
+
+
+def test_a_group_meeting_a_listed_notice_holds_the_rest(env):
+    """Review: notice A is listed by a digest; a later run groups A with new notice Z.
+    Z is held under its own id and listed once; A is not listed again."""
+    env.collector([finding(severity=None)])
+    code, summary, _ = env.run(digest_now=True)
+    assert "digest=1" in summary and env.state()["held"] == []
+    env.collector([finding(severity=None), finding(fid=GHSA_Z, severity=None)])
+    code, summary, _ = env.run(now=T0 + 3600)
+    assert code == 0 and "held=1" in summary
+    (held,) = env.state()["held"]
+    assert held["adv"]["id"] == GHSA_Z and "GHSA-abcd-efgh-ijkl" not in held["adv"]["aliases"]
+
+
+def test_a_held_notice_widens_its_range_for_a_member_with_none(env):
+    env.collector([finding(severity=None, affected=">=2.0,<2.1.0")])
+    env.run()
+    env.collector([finding(severity=None, affected=">=2.0,<2.1.0"), finding(fid=GHSA_Z, severity=None)])
+    env.run(now=T0 + 3600)
+    (held,) = env.state()["held"]
+    assert GHSA_Z in held["adv"]["aliases"] and held["adv"]["products"][0]["affected"] is None
+
+
+def test_an_advisory_with_a_send_in_flight_joins_no_group(env):
+    """Review: a root's send outcome is unknown; its advisory and a new one with the same
+    fix must not group, or resolving the send would record the new one's ids unnamed."""
+    env.collector([finding()])
+    code, _, _ = env.run(relay=FakeRelay("unknown"))
+    assert code == 1
+    env.collector([finding(), finding(fid=GHSA_Z)])
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert "roots=1" in summary and [c[0] for c in relay.calls] == ["feed"]
+    assert "Covers 1 advisory: GHSA-zzzz-zzzz-zzzz" in relay.calls[0][2].split("\n")
+    out = [it for it in env.state()["outbox"] if it["kind"] == "root"]
+    assert all(GHSA_Z.casefold() not in {i.casefold() for i in it["ids"]} for it in out
+               if "abcd" in it["key"])
+
+
+def test_a_groups_range_widens_for_a_members_later_fix(env):
+    """Delta review: A's vendor corrects its fix to 2.2.0 and its range to <2.2.0; the
+    group's range must reach 2.1.5, which the new fix covers."""
+    env.collector([finding(affected="<2.1.0"), finding(fid=GHSA_Z, affected="<2.1.0")])
+    code, summary, _ = env.run()
+    assert "roots=1" in summary
+    env.collector([finding(affected="<2.2.0", fixed="2.2.0")])
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "replies=1" in summary
+    (entry,), _ = env.ledger()
+    assert entry["advisory"]["products"][0] == {**entry["advisory"]["products"][0], "affected": "<2.2.0", "fixed": "2.2.0"}
+
+
+def test_a_cve_assigned_after_the_digest_is_not_listed_again(env):
+    """Delta review: an id new to a listed advisory is not a new member."""
+    env.collector([finding(severity=None)])
+    code, summary, _ = env.run(digest_now=True)
+    assert "digest=1" in summary
+    env.collector([finding(severity=None, aliases=("CVE-2026-7777",))])
+    code, summary, _ = env.run(now=T0 + 3600)
+    assert code == 0 and env.state()["held"] == []

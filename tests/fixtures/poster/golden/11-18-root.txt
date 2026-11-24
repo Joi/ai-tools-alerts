@@ -1,0 +1,9 @@
+HIGH: mcp-server-git: a submodule's own configuration still runs programs on git_diff…
+Affected: mcp-server-git before 2026.11.18 (PyPI).
+Do: upgrade mcp-server-git to 2026.11.18 or later.
+Covers 5 advisories: GHSA-8wv7-r664-7594, GHSA-pm7p-vphh-2cg7, GHSA-9vjp-x34c-xg6v, GHSA-87qg-cmw8-jc5m, GHSA-h2g3-rwxm-xfm3
+Source: https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-8wv7-r664-7594
+
+```aitools-alert
+{"id":"GHSA-8wv7-r664-7594:mcp-server","aliases":["GHSA-8wv7-r664-7594","GHSA-pm7p-vphh-2cg7","GHSA-9vjp-x34c-xg6v","GHSA-87qg-cmw8-jc5m","GHSA-h2g3-rwxm-xfm3"],"level":"high","advisory_severity":"high","title":"mcp-server-git: security advisory (GHSA-8wv7-r664-7594)","products":[{"name":"mcp-server-git","ecosystem":"mcp","affected":"<2026.11.18","fixed":"2026.11.18"}],"actions":[{"verb":"upgrade","target":"mcp-server-git","value":"2026.11.18"}],"sources":[{"url":"https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-8wv7-r664-7594","published_at":"2026-11-18T09:24:57Z"},{"url":"https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-pm7p-vphh-2cg7","published_at":"2026-11-18T09:24:02Z"},{"url":"https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-9vjp-x34c-xg6v","published_at":"2026-11-18T09:23:38Z"},{"url":"https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-87qg-cmw8-jc5m","published_at":"2026-11-18T09:22:44Z"},{"url":"https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-h2g3-rwxm-xfm3","published_at":"2026-11-18T09:22:16Z"}],"posted_by":"relay-bot","posted_at":1795001400,"expires_at":null}
+```

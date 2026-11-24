@@ -99,14 +99,14 @@ def test_reply_post_refuses_a_lowering_alone_or_with_a_fix():
     for changes in ({"level": "notice"}, {"level": "high", "products": fixed}):
         with pytest.raises(ValueError, match="a lowering travels alone"):
             compose.reply_post(prev, cand(), changes)
-    assert '"fixed": "2.2.0"' in compose.reply_post(prev, cand(), {"products": fixed})  # the fix alone still posts
+    assert '"fixed":"2.2.0"' in compose.reply_post(prev, cand(), {"products": fixed})  # the fix alone still posts
     # Rule 2: once a thread was lowered, a raise travels alone too; other changes still post.
     was_lowered = replace(prev, level="notice")
-    assert '"level": "high"' in compose.reply_post(was_lowered, cand(), {"level": "high", "products": fixed})
+    assert '"level":"high"' in compose.reply_post(was_lowered, cand(), {"level": "high", "products": fixed})
     for changes in ({"level": "high", "products": fixed}, {"level": "high"}):
         with pytest.raises(ValueError, match="was lowered"):
             compose.reply_post(was_lowered, cand(), changes, lowered=True)
-    assert '"fixed": "2.2.0"' in compose.reply_post(was_lowered, cand(), {"products": fixed}, lowered=True)
+    assert '"fixed":"2.2.0"' in compose.reply_post(was_lowered, cand(), {"products": fixed}, lowered=True)
 
 
 def test_this_reader_keeps_the_higher_level_and_ignores_the_claim_tag():

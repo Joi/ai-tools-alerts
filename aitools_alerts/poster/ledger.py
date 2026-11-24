@@ -17,6 +17,7 @@ import os
 import tempfile
 import unicodedata
 from dataclasses import asdict, dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 from aitools_alerts import schema, wire
@@ -462,36 +463,120 @@ def _union(a, b) -> list[str]:
     return out
 
 
-def merge(pairs, ledger: Ledger | None = None) -> list:
+def _fix_key(c) -> set[str]:
+    """faxq: advisories of one product fixed by one release are one post. The key is
+    the fixed version as the schema states it; none for no fix, an unexpressible one,
+    or a synthetic id (never grouped with a real advisory)."""
+    fixed = c.fixed[1:] if isinstance(c.fixed, str) and c.fixed[:1] in ("v", "V") else c.fixed
+    if not isinstance(fixed, str) or not schema._FIXED.fullmatch(fixed) or schema.is_synthetic(c.id):
+        return set()
+    return {f"\0fix:{fixed}"}  # NUL: never an id
+
+
+def _components(items, keys_of) -> list[list]:
+    """items grouped by any shared key (union-find), in first-seen order."""
+    parent = list(range(len(items)))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    seen: dict[str, int] = {}
+    for i, it in enumerate(items):
+        for k in keys_of(it):
+            if k in seen:
+                parent[root(i)] = root(seen[k])
+            else:
+                seen[k] = i
+    comps: dict[int, list] = {}
+    for i in range(len(items)):
+        comps.setdefault(root(i), []).append(items[i])
+    return list(comps.values())
+
+
+def merge(pairs, ledger: Ledger | None = None, groups: dict | None = None, settled=frozenset()) -> list:
     """Merge (Candidate, ScopeEntry) pairs that share an id or alias under the same
-    scope entry. ``exploited`` crosses only within one scope: a candidate under
-    another scope never inherits the KEV clause, even if it names the KEV CVE."""
+    scope entry, then (faxq) those that state the same fixed version: advisories of one
+    product fixed by one release are one post. ``exploited`` crosses only within one
+    scope: a candidate under another scope never inherits the KEV clause, even if it
+    names the KEV CVE.
+
+    A merged candidate that already has a thread in ``ledger`` (under the scope's name or
+    a former one), or an id in ``settled`` (``scope|id`` keys journaled work holds), joins
+    nothing by its fix: two threads never become one, a thread keeps its range, and an
+    unresolved send never records another advisory's ids. A
+    fix group's first member, whose id and primary source the post carries, is the one
+    its primary source published last: the group is news if any member is. A fix group's range is
+    one that covers every member's: theirs when they agree, none stated when one states
+    none, else everything before the fix. ``groups``, when given, receives
+    ``{(scope, id casefolded): [the id-merged members]}`` for every fix group, so a
+    caller that defers the group can keep each member re-admittable on its own."""
     out = []
     by_scope: dict[str, list] = {}
     for c, s in pairs:
         by_scope.setdefault(s.name, []).append((c, s))
     for name, group in by_scope.items():
-        parent = list(range(len(group)))
+        by_id = [_merged(m, name, ledger) for m in _components(
+            [c for c, _ in group], lambda c: _keys([c.id, *c.aliases]))]
 
-        def root(i):
-            while parent[i] != i:
-                parent[i] = parent[parent[i]]
-                i = parent[i]
-            return i
+        names = (name, *getattr(group[0][1], "formerly", ()))  # wa6n: a thread may hold an earlier name
 
-        seen: dict[str, int] = {}
-        for i, (c, _) in enumerate(group):
-            for k in _keys([c.id, *c.aliases]):
-                if k in seen:
-                    parent[root(i)] = root(seen[k])
-                else:
-                    seen[k] = i
-        comps: dict[int, list] = {}
-        for i in range(len(group)):
-            comps.setdefault(root(i), []).append(group[i][0])
-        for members in comps.values():
-            out.append((_merged(members, name, ledger), group[0][1]))
+        def fix_keys(c):
+            keys = _keys([c.id, *c.aliases])
+            if any(not settled.isdisjoint(f"{n}|{k}" for k in keys) for n in names):
+                return set()
+            if ledger is not None and any(ledger.lookup_all([c.id, *c.aliases], n) for n in names):
+                return set()
+            return _fix_key(c)
+
+        for component in _components(by_id, fix_keys):
+            for members in _chunks(sorted(component, key=_published_key, reverse=True)):
+                c = members[0] if len(members) == 1 else _fix_group(members, name, ledger)
+                if len(members) > 1 and groups is not None:  # under former names too (Run._former)
+                    groups.update({(n, c.id.casefold()): members for n in names})
+                out.append((c, group[0][1]))
     return out
+
+
+def _chunks(members, cap: int = 51) -> list[list]:
+    """A fix group cut so each part's ids fit one block (an id and at most 50 aliases):
+    a member left out of the block would be recorded as posted and never named."""
+    out, ids = [], set()
+    for m in members:
+        mine = _keys([m.id, *m.aliases])
+        if out and len(ids | mine) <= cap:
+            out[-1].append(m)
+            ids |= mine
+        else:
+            out.append([m])
+            ids = set(mine)
+    return out
+
+
+def _published_key(c) -> float:
+    """When the member's primary source was published, as a UTC instant; -inf when it
+    does not say. The accepted forms (a space or a T, Z or an offset, a date alone) do
+    not sort as strings."""
+    src = next((s for s in c.sources if schema.is_primary(s.url)), None)
+    pub = getattr(src, "published_at", None) if src is not None else None
+    if not isinstance(pub, str):
+        return float("-inf")
+    raw = pub.strip().replace(" ", "T", 1).replace("Z", "+00:00").replace("z", "+00:00")
+    try:
+        t = datetime.fromisoformat(raw)
+    except ValueError:
+        return float("-inf")
+    return (t if t.tzinfo else t.replace(tzinfo=timezone.utc)).timestamp()
+
+
+def _fix_group(members, scope_name, ledger):
+    c = _merged(members, scope_name, ledger)
+    fixed = c.fixed[1:] if c.fixed[:1] in ("v", "V") else c.fixed
+    ranges = {m.affected.strip() if isinstance(m.affected, str) and m.affected.strip() else None for m in members}
+    affected = ranges.pop() if len(ranges) == 1 else None if None in ranges else f"<{fixed}"
+    return replace(c, affected=affected)
 
 
 def _merged(members, scope_name, ledger):

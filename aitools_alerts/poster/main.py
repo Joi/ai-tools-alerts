@@ -72,7 +72,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from aitools_alerts import TRUST_ROOT_PUBKEY, check, manifest, pull, ruleset, schema
+from aitools_alerts import TRUST_ROOT_PUBKEY, check, manifest, pull, ruleset, schema, versions
 from aitools_alerts.poster import (candidates, catalog, compose, inputs, ledger, recompute, rules, signer, translate,
                                    transport)
 from aitools_alerts.poster.inputs import Config, ConfigError
@@ -136,6 +136,7 @@ class Run:
         self.digest_now = digest_now  # run --digest-now: today's digest whatever the hour
         self.n = Counter()
         self.deferred: dict[tuple, dict] = {}  # (scope, id) -> candidate dict, for the next run
+        self.groups: dict[tuple, list] = {}  # faxq: (scope, id) -> a fix group's members (ledger.merge)
 
     def save(self):
         inputs.save_state(self.config.state, self.state)
@@ -637,7 +638,10 @@ class Run:
         for c, scope in pairs:
             if self.is_synthetic(c):
                 continue  # never kept: a later run would post it without its marker
-            self.deferred[(scope.name, c.id.casefold())] = c.to_dict()
+            # faxq: a fix group is kept as its members, each re-admitted alone next run
+            # (admit keeps only the ids the primary's own page assigns), then grouped again.
+            for m in self.groups.get((scope.name, c.id.casefold()), [c]):  # merge keys former names too
+                self.deferred[(scope.name, m.id.casefold())] = m.to_dict()
 
     @staticmethod
     def is_synthetic_id(i) -> bool:
@@ -784,7 +788,8 @@ class Run:
             return []
         chans = CHANNELS_FOR[level]
         ja = self._ja(compose.root_post_ja, adv, reason, compose.fix_unexpressed(c), title,
-                      exploited=c.exploited is True, range_unexpressed=compose.range_unexpressed(c))
+                      exploited=c.exploited is True, range_unexpressed=compose.range_unexpressed(c),
+                      package=compose.package_of(scope))
         return [self._item("root" if i == 0 else "copy", scope.name, ids, ch, text, key_id=c.id,
                            adv=asdict(adv), exploited=c.exploited, ja=ja,
                            source_title=title if i == 0 else None, floor=floor if i == 0 else None)
@@ -826,6 +831,29 @@ class Run:
                     h["adv"] = {**a, "aliases": compose._ids([*a["aliases"], *old], a["id"])[:50],
                                 **{k: h["adv"][k] for k in ("products", "actions", "posted_at")}}
                     self.save()
+                ids = compose._ids([*h["adv"]["aliases"], a["id"], *a["aliases"]], h["adv"]["id"])[:50]
+                if ids != h["adv"]["aliases"]:  # faxq: a fix group's new members are listed with it,
+                    p = dict(h["adv"]["products"][0])  # under a range that covers them too
+                    if p["affected"] != a["products"][0]["affected"]:
+                        p["affected"] = None if None in (p["affected"], a["products"][0]["affected"]) \
+                            or not p["fixed"] else f"<{p['fixed']}"
+                    h["adv"] = {**h["adv"], "aliases": ids, "products": [p]}
+                    self.save()
+            # Members, not ids: an id new to a listed advisory (a CVE assigned later) is not news.
+            fresh = [i for m in self.groups.get((scope, a["id"].casefold()), ())
+                     if not any(f"{scope}|{k.casefold()}" in known for k in (m.id, *m.aliases))
+                     for i in compose._ids([m.id, *m.aliases], None)]
+            fresh = list(dict.fromkeys(fresh))
+            if fresh and not any(h["scope"] == scope and set(self._notice_keys(scope, h["adv"]))
+                                 & set(self._notice_keys(scope, a)) for h in self.state["held"]):
+                # faxq: a fix group met a member a digest already listed: the members it has
+                # not listed are held under their own ids, so each is listed once.
+                old = compose.public_form(a["id"])
+                a = {**a, "id": fresh[0], "aliases": fresh[1:50],
+                     "title": a["title"].replace(f"({old})", f"({fresh[0]})")}
+                self.state["held"].append({"scope": scope, "adv": a, **({"source_title": title} if title else {})})
+                self.save()
+                self.n["held"] += 1
             return
         self.state["held"].append({"scope": scope, "adv": a, **({"source_title": title} if title else {})})
         self.save()
@@ -850,6 +878,11 @@ class Run:
         if title and not entry.source_title:  # learned late: the digest carries it; no reply says it
             self.led.learn_title(entry.root_event_id, title)
         own_fix = compose.schema_fixed(c.fixed) is not None
+        older = versions.parse(compose.schema_fixed(c.fixed)), versions.parse(was.fixed)
+        if own_fix and None not in older and older[0] < older[1]:
+            # faxq: a member of a fix group sighted again says its own, older fix; the thread
+            # keeps the later one, which fixes every member. A run never lowers a fix.
+            own_fix = False
         prev_ids = _fold([prev.id, *prev.aliases])
         prev_urls = {s.url for s in prev.sources}
         # Ids and sources learned by earlier runs that posted nothing (8ke5) come along.
@@ -868,8 +901,12 @@ class Run:
             c, id=prev.id, aliases=tuple(prev.aliases) + tuple(unpublished),
             fixed=c.fixed if own_fix else was.fixed,
             # a range the schema cannot say is kept raw when none is known: no "not stated" (0dvh)
-            affected=c.affected if compose.schema_affected(c.affected) else (was.affected or c.affected),
-            sources=tuple(prev.sources) + tuple(extra))
+            # faxq: one member's sighting never narrows a fix group's range, which covers them
+            # all; a range that differs widens it to everything before the fix
+            affected=_group_range(was, c, c.fixed if own_fix else was.fixed) if compose.covers(prev)[0] not in (0, 1)
+            else c.affected if compose.schema_affected(c.affected) else (was.affected or c.affected),
+            sources=tuple(prev.sources) + tuple(extra),
+            source_title=compose.source_title(c) or entry.source_title)  # faxq: a copy's headline
         text, new = compose.root_post(k, (level, reason), scope, posted_at=prev.posted_at)
         changes = {}
         if RANK[level] > RANK[prev.level]:
@@ -892,8 +929,9 @@ class Run:
         if changes and new.advisory_severity not in (None, prev.advisory_severity):
             changes["advisory_severity"] = new.advisory_severity  # 0dvh: never a reply on its own
         copies = [ch for ch in CHANNELS_FOR[level] if ch not in entry.channel_ids]
-        ja = self._ja(compose.root_post_ja, new, reason, compose.fix_unexpressed(k), title,
-                      exploited=k.exploited is True, range_unexpressed=compose.range_unexpressed(k)) if copies else None
+        ja = self._ja(compose.root_post_ja, new, reason, compose.fix_unexpressed(k), title or entry.source_title,
+                      exploited=k.exploited is True, range_unexpressed=compose.range_unexpressed(k),
+                      package=compose.package_of(scope)) if copies else None
         items = [self._item("copy", scope.name, ids, ch, text, key_id=prev.id, exploited=c.exploited,
                             root=entry.root_event_id, ja=ja)
                  for ch in copies]
@@ -917,8 +955,10 @@ class Run:
             # The changed lines, then the whole current advisory: readers show the latest translation.
             ja = self._ja(lambda: compose.reply_post_ja(merged, k, json.loads(schema._last_block(reply)),
                           reason=reason) + "\n\n" + compose.root_post_ja(merged, reason, compose.fix_unexpressed(k),
+                                                          title or entry.source_title,
                                                           exploited=k.exploited is True,
-                                                          range_unexpressed=compose.range_unexpressed(k)))
+                                                          range_unexpressed=compose.range_unexpressed(k),
+                                                          package=compose.package_of(scope)))
             items += [self._item("reply", scope.name, ids, ch, reply, key_id=prev.id,
                                  adv=asdict(merged), exploited=c.exploited, root=entry.root_event_id, ja=ja)
                       for ch in entry.channel_ids]
@@ -1168,6 +1208,17 @@ def _epoch(v) -> int | None:
     return int(t.timestamp())
 
 
+def _group_range(was, c, fixed) -> str | None:
+    """A fix group thread's range after one member's sighting: the thread's when they
+    agree or the sighting states none, none stated when the thread states none, else
+    everything before the fix (which covers both)."""
+    new = compose.schema_affected(c.affected)
+    if new is None or new == was.affected or was.affected is None:
+        return was.affected
+    fixed = compose.schema_fixed(fixed)
+    return f"<{fixed}" if fixed else None
+
+
 def _published(sources) -> int | None:
     """When the primary source (the one a post names) was published, if it says: read from
     the input's own timestamp, which the wire form may drop (a space before the time)."""
@@ -1400,7 +1451,10 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                 pairs = [(a, scope) for c, scope in pairs if (a := r.admit(c, scope)) is not None]
                 if review:
                     led.add_review(review, now=now)
-                merged = ledger.merge(pairs, led)  # merge BEFORE level_for
+                # faxq: in flight, an id joins no fix group (that send would record the group's ids)
+                settled = {f"{it['scope']}|{i.casefold()}" for it in state["outbox"] + r._withheld_items()
+                           for i in it["ids"]}
+                merged = ledger.merge(pairs, led, r.groups, settled=settled)  # BEFORE level_for
                 r.observe(kev_out)
                 r.drain()
                 for i, (c, scope) in enumerate(merged):

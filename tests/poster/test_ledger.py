@@ -369,3 +369,95 @@ def test_a_ledger_with_a_malformed_recompute_key_is_refused(tmp_path, bad):  # n
     path.write_text(json.dumps(data))
     with pytest.raises(LedgerError, match="malformed"):
         Ledger(path).__enter__()
+
+
+# ---------------------------------------------------------------- faxq: one release, one post
+
+def _gh(gid, **kw):
+    return cand(id=gid, sources=(Source(f"https://github.com/anthropics/claude-code/security/advisories/{gid}", None),),
+                **kw)
+
+
+def test_advisories_one_release_fixes_merge_into_one_candidate():
+    a = _gh("GHSA-aaaa-aaaa-aaaa", fixed="2.1.0", affected="<2.1.0", injection_exec=True)
+    b = _gh("GHSA-bbbb-bbbb-bbbb", fixed="v2.1.0", affected="<2.1.0", exploited=True)
+    c = _gh("GHSA-cccc-cccc-cccc", fixed="2.2.0")  # another release
+    d = _gh("GHSA-dddd-dddd-dddd")  # no fix: never grouped
+    e = _gh("GHSA-eeee-eeee-eeee", fixed="2.1.0", product_text="docker engine")  # another product
+    f = _gh("CVE-2099-0003", fixed="2.1.0")  # a synthetic id is never grouped with a real one
+    g = _gh("GHSA-gggg-gggg-gggg", fixed="2.1.0-rc 1")  # a fix the schema cannot say
+    groups = {}
+    out = ledger.merge([pair(x) for x in (a, b, c, d, e, f, g)], groups=groups)
+    assert sorted(m.id for m, _ in out) == sorted(x.id for x in (a, c, d, e, f, g))
+    (ab, s), = [(m, s) for m, s in out if m.id == a.id]
+    assert ab.aliases == ("GHSA-bbbb-bbbb-bbbb",) and ab.exploited and ab.injection_exec  # the loudest member
+    assert ab.fixed == "2.1.0" and ab.affected == "<2.1.0" and len(ab.sources) == 2
+    assert [m.id for m in groups[("Claude Code", a.id.casefold())]] == [a.id, b.id] and len(groups) == 1
+
+
+@pytest.mark.parametrize("ranges,want", [
+    (("<2.1.0", "<2.1.0"), "<2.1.0"),
+    ((">=2.0,<2.1.0", ">=1.0,<2.1.0"), "<2.1.0"),  # every member's installations, and more
+    (("<2.1.0", None), None),  # one states none: the group states none
+])
+def test_a_fix_groups_range_covers_every_member(ranges, want):
+    (m, _), = ledger.merge([pair(_gh(f"GHSA-aaaa-aaaa-aa{i:02d}", fixed="2.1.0", affected=r))
+                            for i, r in enumerate(ranges)])
+    assert m.affected == want
+
+
+def test_a_candidate_with_a_thread_joins_no_fix_group(tmp_path):
+    a = _gh("GHSA-aaaa-aaaa-aaaa", fixed="2.1.0")
+    b = _gh("GHSA-bbbb-bbbb-bbbb", fixed="2.1.0")
+    with Ledger(tmp_path / "l.json") as led:
+        led.record_root(adv_for(a, "high"), "r1", {"feed": "r1"}, scope="Claude Code", exploited=False, now=T0)
+        assert len(ledger.merge([pair(a), pair(b)], led)) == 2  # two threads never become one
+
+
+def test_a_fix_groups_first_member_is_the_newest():
+    """Review: the age limit reads the group's primary source, so the newest member's."""
+    old = cand(id="GHSA-aaaa-aaaa-aaaa", fixed="2.1.0", sources=(Source(
+        "https://github.com/anthropics/claude-code/security/advisories/GHSA-aaaa-aaaa-aaaa", "2026-10-01T00:00:00Z"),))
+    new = cand(id="GHSA-bbbb-bbbb-bbbb", fixed="2.1.0", sources=(Source(
+        "https://github.com/anthropics/claude-code/security/advisories/GHSA-bbbb-bbbb-bbbb", "2026-11-04T00:00:00Z"),))
+    for order in ((old, new), (new, old)):
+        (m, _), = ledger.merge([pair(x) for x in order])
+        assert m.id == new.id and m.aliases == (old.id,)
+
+
+def test_a_fix_group_is_cut_to_what_one_block_can_name():
+    """Review: a block names an id and at most 50 aliases; a member past that would be
+    recorded as posted and never named."""
+    many = [_gh(f"GHSA-aaaa-aaaa-{i:04d}", fixed="2.1.0", aliases=(f"CVE-2026-{1000 + i}",)) for i in range(30)]
+    out = ledger.merge([pair(x) for x in many])
+    assert len(out) == 2 and all(1 + len(m.aliases) <= 51 for m, _ in out)
+    assert sum(1 + len(m.aliases) for m, _ in out) == 60
+
+
+def test_an_id_with_work_in_flight_or_a_thread_under_a_former_name_joins_no_group(tmp_path):
+    a = _gh("GHSA-aaaa-aaaa-aaaa", fixed="2.1.0", product_text="pypi:mcp-server-git")
+    b = _gh("GHSA-bbbb-bbbb-bbbb", fixed="2.1.0", product_text="pypi:mcp-server-git")
+    assert len(ledger.merge([pair(a), pair(b)])) == 1
+    assert len(ledger.merge([pair(a), pair(b)], settled={"mcp-server-git|ghsa-aaaa-aaaa-aaaa"})) == 2
+    with Ledger(tmp_path / "l.json") as led:
+        adv = adv_for(a, "high")
+        led.record_root(adv, "r1", {"feed": "r1"}, scope="MCP servers and clients", exploited=False, now=T0)
+        assert len(ledger.merge([pair(a), pair(b)], led)) == 2
+
+
+def test_the_newest_member_is_found_whatever_form_its_date_takes():
+    """Delta review: a space before the time, an offset or a date alone do not sort as strings."""
+    url = "https://github.com/anthropics/claude-code/security/advisories/"
+    old = cand(id="GHSA-aaaa-aaaa-aaaa", fixed="2.1.0", sources=(Source(url + "GHSA-aaaa-aaaa-aaaa", "2026-11-17T00:00:00Z"),))
+    for when in ("2026-11-17 23:00:00Z", "2026-11-18T08:00:00+09:00", "2026-11-18"):
+        new = cand(id="GHSA-bbbb-bbbb-bbbb", fixed="2.1.0", sources=(Source(url + "GHSA-bbbb-bbbb-bbbb", when),))
+        (m, _), = ledger.merge([pair(old), pair(new)])
+        assert m.id == new.id, when
+
+
+def test_a_groups_members_are_keyed_under_its_former_names_too():
+    a = _gh("GHSA-aaaa-aaaa-aaaa", fixed="2.1.0", product_text="pypi:mcp-server-git")
+    b = _gh("GHSA-bbbb-bbbb-bbbb", fixed="2.1.0", product_text="pypi:mcp-server-git")
+    groups = {}
+    (m, _), = ledger.merge([pair(a), pair(b)], groups=groups)
+    assert set(groups) == {("mcp-server-git", m.id.casefold()), ("MCP servers and clients", m.id.casefold())}
