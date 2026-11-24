@@ -473,3 +473,111 @@ def test_an_alert_matched_through_two_installations_takes_one_slot(feed, sent, m
     status, data = run_json(capsys)
     assert len(data["matches"]) == 4 and len(data["unseen_critical"]) == 2 and data["held_critical"] == []
     assert {k: len(v) for k, v in State.load().interrupts.items()} == {m.bot: 2}
+
+
+# ---------------------------------------------------------------- what the code review found
+
+def test_support_read_before_the_request_budget_ran_out_still_refuses(tmp_path, monkeypatch):
+    """The catalog lists the CVE; the alias that follows is not read, the run's requests
+    being used up. What was read supports more: that is a refusal, not an unread state."""
+    from test_unchecked_lowering import lowering
+    from test_verify import adv
+    monkeypatch.setattr(verify, "MAX_FETCHES", 1)
+    a = adv(id=CVE, aliases=[G1], level="critical")
+    n = Net().set(verify.KEV_URL, KEV_CC).set(gurl(G1), ghsa(cve=CVE))
+    assert lowering(tmp_path, a, "high", n) is False and n.urls == [verify.KEV_URL]
+    ask = verify.at_level(a, "high")
+    assert verify.result_for(ask, verify.load(tmp_path))["Claude Code"]["why"] == "below-source"
+
+
+def test_a_command_that_started_earlier_does_not_write_over_a_newer_refusal(feed, monkeypatch, capsys, reader_clock):
+    m = feed([bot(id=CVE, level="critical")], ALL)
+    root = m.events["feed.json"][0]
+    low = lower(m, root, "high")
+    serve(m, reader_clock, C0)
+    use(monkeypatch, Net().set(verify.KEV_URL, OSError("down")))
+    assert levels(capsys) == {CVE: "critical"}
+    serve(m, reader_clock, C0 + 100)
+    cli.main(["pull"])
+    a = cli._parser().parse_args(["check"])
+    a.root, a.ignored_env, a.settings = m.root, [], config.load()
+    early = State.load()  # a command that starts now: nothing read, nothing refused
+    early.lowerings = {}  # and with a change to write (as on its first sight of the reply)
+    a.raw = pull.advisories(early)
+    now, listed = pull.head_clock(early)
+    use(monkeypatch, Net().set(verify.KEV_URL, KEV_CC))
+    cli.main(["verify"])  # meanwhile another command reads support for critical and saves the refusal
+    assert State.load().refused == {root["id"]}
+    since = cli._note_offers(a, early, now, listed, None)  # the early command, with its view of no result at all
+    st = State.load()
+    assert st.refused == {root["id"]} and st.lowerings == {low["id"]: C0 + 100} and since == {}
+
+
+@pytest.mark.parametrize("channels", ["working", "none"])
+def test_a_held_alert_gets_the_next_free_slot_before_an_earlier_dated_or_an_undelivered_one(feed, sent, monkeypatch,
+                                                                                            capsys, channels):
+    """Slots must not go round the same alerts, or to whatever is dated first, while one
+    waits: the alert held longest takes the first slot that is free."""
+    m = three(feed, 'verify = "off"\n' + ("notify = []\n" if channels == "none" else ""))
+    _, first = run_json(capsys)
+    (waiting,) = first["held_critical"]
+    assert State.load().held.keys() == {waiting}
+    real = verify.time.time()
+    for day in (1, 2, 3):
+        for i in range(2):  # two more a day, each dated before every root there is
+            m.root_post(m.bot_sec, bot(id=G4, level="critical", title=f"Invented early {day} {i}"),
+                        created_at=T0 + 10 * day + i)
+        m.write(Path(config.load().mirror_url[len("file://"):]))
+        clock_at(monkeypatch, real + day * (cli.UNVERIFIED_WINDOW_S + 60))
+        _, data = run_json(capsys)
+        if day == 1:
+            assert waiting in data["unseen_critical"] and waiting not in State.load().held
+        assert len(data["unseen_critical"]) == 2
+    if channels == "working":
+        assert waiting in State.load().seen
+
+
+def test_copies_of_a_confirmed_advisory_with_other_aliases_share_its_one_slot(feed, sent, monkeypatch, capsys):
+    m = feed([bot(id=G1, level="critical")])
+    use(monkeypatch, Net().set(gurl(G1), ghsa(type="malware")))
+    assert out_of(capsys, ["run"])[0] == cli.EXIT_UNSEEN_CRITICAL
+    for i in range(5):  # the aliases of a GHSA thread are never read: each copy is another published state
+        m.root_post(m.bot_sec, bot(id=G1, level="critical", aliases=[f"CVE-2025-100{i}"]), created_at=T0 + 200 + i)
+    m.write(Path(config.load().mirror_url[len("file://"):]))
+    cli.main(["pull"])
+    cli.main(["verify"])  # every copy's state is read and confirmed
+    _, data = run_json(capsys)
+    assert len(data["unseen_critical"]) == 2 and len(data["held_critical"]) == 3
+    assert sum(cli.NOT_VERIFIED in t for t in sent["texts"]) == 2  # the first sight, and one copy on the poster's last slot
+
+
+def test_an_alert_matched_through_a_confirmed_and_an_unconfirmed_product_is_decided_once(feed, sent, monkeypatch, capsys):
+    from aitools_alerts import inventory
+    from aitools_alerts.inventory import Installed, Inventory
+    inv = Inventory(products={"claude-code": [Installed("Claude Code", "2.0.0", "/invented/bin/claude")],
+                              "codex": [Installed("Codex", "0.1.0", "/invented/bin/codex")]})
+    monkeypatch.setattr(inventory, "collect", lambda *a, **k: inv)
+    from aitools_alerts.schema import Action, Product
+    from dataclasses import replace
+    two = replace(bot(id=G1, level="critical"), products=[Product("Claude Code", "claude-code", "<99.0.0", "99.0.0"),
+                                                          Product("Codex", "codex", "<99.0.0", "99.0.0")],
+                  actions=[Action("upgrade", "Claude Code", "99.0.0"), Action("upgrade", "Codex", "99.0.0")])
+    m = feed([two], ALL)
+    use(monkeypatch, Net().set(gurl(G1), ghsa(type="malware")))  # the source names Claude Code only
+    cli.main(["pull"])
+    cli.main(["verify"])
+    st = State.load()
+    st.interrupts = {m.bot: {"a" * 64: int(verify.time.time()), "b" * 64: int(verify.time.time())}}  # no poster slot left
+    st.save_unverified()
+    _, data = run_json(capsys)
+    assert len(data["matches"]) == 2 and len(data["unseen_critical"]) == 1 and data["held_critical"] == []
+    assert len(sent["texts"]) == 1 and cli.NOT_VERIFIED not in sent["texts"][0]  # one alert, one notification
+
+
+def test_no_waiting_line_where_no_wait_runs(feed, monkeypatch, capsys, reader_clock):
+    m = feed([bot(id=CVE, level="critical")], ALL, min_cli="99.0.0")  # a CLI too old applies nothing unchecked
+    lower(m, m.events["feed.json"][0], "notice")
+    serve(m, reader_clock, C0)
+    cli.main(["pull"])
+    assert "published and not verified" not in out_of(capsys, ["check"])[1]
+    assert json.loads(out_of(capsys, ["check", "--json"])[1])[0]["lowering_waits"] is None

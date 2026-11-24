@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -294,25 +295,34 @@ def _note_offers(a, st: State, now, listed, check):
     failed read, a crowded request budget, a turned-off check, a raise and a new
     lowering reply all leave it standing, so nothing the thread's signer posts turns a
     known refusal into an unchecked lowering. A state directory that cannot be written
-    records nothing."""
-    want = pull.offers(a.raw, st.lowerings, now, listed)
-    refused = set(st.refused)
-    if now is not None and listed is not None:
-        refused &= {t.root_id for t in a.raw}
-        for t in a.raw:
-            if t.offered_by not in want:
-                continue
-            said = check(pull.widest(t), t.offered, t.stated) if check is not None else None
-            if said is False:
-                refused.add(t.root_id)
-            elif said is True or (check is not None and check.whole(pull.widest(t), t.offered, t.stated)):
-                refused.discard(t.root_id)
-            if t.root_id in refused:
-                want[t.offered_by] = int(now)  # the 72 hours start when the refusal ends
+    records nothing.
+
+    The record is rewritten under the state lock from the record and the source-check
+    results as they are on disk then, never from what this command read before it had
+    the lock: a command that started earlier must not write its older view over a
+    refusal, or a later start of a wait, that another command has saved since."""
+    def step(check) -> tuple[dict, set]:
+        want = pull.offers(a.raw, st.lowerings, now, listed)
+        refused = set(st.refused)
+        if now is not None and listed is not None:
+            refused &= {t.root_id for t in a.raw}
+            for t in a.raw:
+                if t.offered_by not in want:
+                    continue
+                said = check(pull.widest(t), t.offered, t.stated) if check is not None else None
+                if said is False:
+                    refused.add(t.root_id)
+                elif said is True or (check is not None and check.whole(pull.widest(t), t.offered, t.stated)):
+                    refused.discard(t.root_id)
+                if t.root_id in refused:
+                    want[t.offered_by] = int(now)  # the 72 hours start when the refusal ends
+        return want, refused
+
+    want, refused = step(check)
     if (want, refused) != (st.lowerings, st.refused):
         try:
             with st.locked():
-                st.lowerings, st.refused = want, refused
+                st.lowerings, st.refused = step(_lowering_check(a, st))
                 st.save_unverified()
         except OSError:
             st.lowerings, st.refused = want, refused  # for this command; nothing applies sooner for it
@@ -359,14 +369,14 @@ def _mend(st: State) -> None:
     unknown. When the directory cannot be written the same holds for this command."""
     if not st.unverified_damaged:
         return
-    fresh = ({}, set(), {}, int(time.time()))
+    fresh = ({}, set(), {}, {}, int(time.time()))
     try:
         with st.locked():
             if st.unverified_damaged:  # else a concurrent run has mended it
-                st.lowerings, st.refused, st.interrupts, st.reset_at = fresh
+                st.lowerings, st.refused, st.interrupts, st.held, st.reset_at = fresh
                 st.save_unverified()
     except OSError:
-        st.lowerings, st.refused, st.interrupts, st.reset_at = fresh
+        st.lowerings, st.refused, st.interrupts, st.held, st.reset_at = fresh
     _err("the record of unverified alerts was unreadable and has been started again")
 
 
@@ -644,45 +654,61 @@ def _slots(st: State, bucket: str, now: int) -> dict:
     return {r: at for r, at in st.interrupts.get(bucket, {}).items() if now - UNVERIFIED_WINDOW_S < at <= now}
 
 
+def _verified_bucket(t: Entry, m) -> str:
+    """The bucket of the one slot a confirmed alert takes: the advisory's first id as the
+    source is asked for it and the matched product, and nothing else of the post. The
+    aliases, the level, the title and the root are the signer's to vary; what this
+    machine read and confirmed is that id for that product."""
+    name = m.product.name if m.product is not None else ""
+    return hashlib.sha256(json.dumps([verify.norm_id(t.adv.id), name]).encode("utf-8")).hexdigest()
+
+
 def _interrupts(a, st: State, s: config.Settings, pairs: list | None = None) -> tuple[list, list, list, set]:
     """(pending, held, grants, the root ids of the unverified among pending) of the
-    unseen critical matches (tavj, finding D8).
+    unseen critical matches (tavj, finding D8). Each alert is decided once, whatever
+    number of installations or products it matches through.
 
     A relay-bot alert interrupts on a slot. One this machine's own read of the source
-    confirms, freshly (``_confirmed_now``), takes the one slot of its published state
-    (``verify.state_key``) per UNVERIFIED_WINDOW_S: copies of a confirmed post are not
-    each confirmed. Any other is unverified and takes one of the MAX_UNVERIFIED slots of
-    its poster key per window. An alert that holds a slot keeps interrupting until it is
-    seen, so a notification that failed is tried again; one that finds no slot is held:
-    listed, not notified, not marked seen, no exit 2, until its source confirms it or a
-    slot is free. ``grants``: (bucket, capacity, root id) for ``_reserve`` to record.
-    Nothing is written here: what a caller reports as an interrupt is what ``_reserve``
-    returns.
+    confirms, freshly (``_confirmed_now``, for any product it matches), takes the one
+    slot of that advisory and product (``_verified_bucket``) per UNVERIFIED_WINDOW_S:
+    copies of a confirmed post are not each confirmed. Any other is unverified and takes
+    one of the MAX_UNVERIFIED slots of its poster key per window. An alert that holds a
+    slot keeps interrupting until it is seen, so a notification that failed is tried
+    again; one that finds no slot is held: listed, not notified, not marked seen, no
+    exit 2, until its source confirms it or a slot is free. A free slot goes to the alert
+    held longest (``State.held``), before one never held and before one whose own slot
+    ran out, so nothing dated earlier or posted later keeps a held alert out for good.
+    ``grants``: (bucket, capacity, root id) for ``_reserve`` to record. Nothing is
+    written here: what a caller reports as an interrupt is what ``_reserve`` returns.
     While a record rebuilt after damage is younger than the window, no poster-key slot
     is free (``State.reset_at``). A curator's alert needs no slot."""
     cache, now, taken = _results(a, st, s), int(time.time()), Counter()
-    pending, held, grants, loose, mine = [], [], [], set(), set()
+    pending, held, grants, loose = [], [], [], set()
     rebuilt = st.reset_at is not None and now - UNVERIFIED_WINDOW_S < st.reset_at <= now
 
     def take(bucket: str, cap: int, t: Entry) -> bool:
         have = _slots(st, bucket, now)
-        if not have.keys().isdisjoint(t.root_ids) or (bucket, t.root_id) in mine:
-            return True  # it holds one, or took one a moment ago (an alert matched through two installations)
+        if not have.keys().isdisjoint(t.root_ids):
+            return True
         if len(have) + taken[bucket] >= cap:
             return False
         taken[bucket] += 1
-        mine.add((bucket, t.root_id))
         grants.append((bucket, cap, t.root_id))
         return True
 
+    groups: dict = {}
     for t, m in _unseen_critical(a, st, pairs):
-        if _result(t, m, cache) is None or (_confirmed_now(t, m, cache, now) and take(verify.state_key(t.adv), 1, t)):
-            pending.append((t, m))
+        groups.setdefault(t.root_id, (t, []))[1].append(m)
+    never = float("inf")
+    for t, ms in sorted(groups.values(), key=lambda g: min(st.held.get(r, never) for r in g[0].root_ids)):
+        sure = next((m for m in ms if _confirmed_now(t, m, cache, now)), None)
+        if _result(t, ms[0], cache) is None or (sure is not None and take(_verified_bucket(t, sure), 1, t)):
+            pending += [(t, m) for m in ms]
         elif not rebuilt and take(_poster(t, st), MAX_UNVERIFIED, t):
             loose.update(t.root_ids)
-            pending.append((t, m))
+            pending += [(t, m) for m in ms]
         else:
-            held.append((t, m))
+            held += [(t, m) for m in ms]
     return pending, held, grants, loose
 
 
@@ -692,14 +718,17 @@ def _reserve(st: State, pending: list, held: list, grants: list) -> tuple[list, 
     slot a concurrent run took meanwhile is held, not pending. Called before a command
     reports anything, so exit 2 and ``unseen_critical`` name only alerts that hold a
     slot, and the slot is used by the report, whether or not a channel then delivers.
-    Slots outside the window are dropped on the way. A state directory that cannot be
-    written grants them for this command: a critical is never lost to a full disk."""
-    if not grants:
-        return pending, held
+    Also records since when each held alert has been held (``State.held``; an alert no
+    longer held is dropped from it). Slots outside the window are dropped on the way. A
+    state directory that cannot be written grants them for this command: a critical is
+    never lost to a full disk."""
     denied = set()
+    waiting = {t.root_id for t, _ in held}
+    if not grants and waiting == set(st.held):
+        return pending, held
     try:
         with st.locked():
-            now, changed = int(time.time()), False
+            now, slots = int(time.time()), dict(st.interrupts)
             for bucket, cap, root in grants:
                 have = _slots(st, bucket, now)
                 if root in have:
@@ -708,9 +737,11 @@ def _reserve(st: State, pending: list, held: list, grants: list) -> tuple[list, 
                     denied.add(root)
                     continue
                 st.interrupts[bucket] = {**have, root: now}
-                changed = True
-            if changed:
+            if st.interrupts != slots:
                 st.interrupts = {b: live for b in st.interrupts if (live := _slots(st, b, now))}
+            was = dict(st.held)
+            st.held = {r: st.held[r] if 0 <= st.held.get(r, -1) <= now else now for r in sorted(waiting | denied)}
+            if st.interrupts != slots or st.held != was:
                 st.save_unverified()
     except OSError:
         pass
@@ -751,7 +782,7 @@ def _notify(st: State, s: config.Settings, pending, loose=frozenset()) -> int:
 
 def cmd_notify(a, st: State, s: config.Settings) -> int:
     pending, held, grants, loose = _interrupts(a, st, s)
-    return _notify(st, s, _reserve(st, pending, held, grants)[0], loose)
+    return _notify(st, s, _reserve(st, pending, held, grants)[0], loose)  # loose roots that end up held are not sent
 
 
 def cmd_plan(a, st: State, s: config.Settings) -> int:

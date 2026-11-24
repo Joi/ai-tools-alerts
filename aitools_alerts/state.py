@@ -85,7 +85,7 @@ EVENT_KEYS = ("id", "pubkey", "created_at", "kind", "tags", "content", "sig")
 # (pull.MAX_STORED_EVENTS; tests/test_unchecked_lowering.py checks the two are equal):
 # no record the CLI writes is one this loader refuses.
 MAX_UNVERIFIED_ENTRIES = 20000
-_UNVERIFIED_KEYS = {"lowerings", "refused", "interrupts", "reset_at"}
+_UNVERIFIED_KEYS = {"lowerings", "refused", "interrupts", "held", "reset_at"}
 
 
 def _load_unverified(where: Path) -> dict | None:
@@ -96,7 +96,8 @@ def _load_unverified(where: Path) -> dict | None:
     listed}. ``refused``: the root ids of the threads whose lowering this machine's source
     check has refused.
     ``interrupts``: {bucket: {root event id: local time}}, a bucket being a poster key or
-    a source-check state key. ``reset_at``: None, or the local time the record was
+    a hash of an advisory id and product. ``held``: {root event id: the local time the
+    alert was first held for want of a slot}. ``reset_at``: None, or the local time the record was
     rebuilt after damage.
 
     Damage is not a StateError: nobody is there to mend the file, and the commands must
@@ -107,12 +108,14 @@ def _load_unverified(where: Path) -> dict | None:
     def ident(v):
         return nostr._is_hex(v, 32)
     try:
-        rec = _read(where, {"lowerings": {}, "refused": [], "interrupts": {}, "reset_at": None})
+        rec = _read(where, {"lowerings": {}, "refused": [], "interrupts": {}, "held": {}, "reset_at": None})
         ok = (isinstance(rec, dict) and set(rec) == _UNVERIFIED_KEYS
               and isinstance(rec["lowerings"], dict) and isinstance(rec["refused"], list)
               and isinstance(rec["interrupts"], dict) and (rec["reset_at"] is None or when(rec["reset_at"]))
-              and all(len(rec[k]) <= MAX_UNVERIFIED_ENTRIES for k in ("lowerings", "refused", "interrupts"))
+              and isinstance(rec["held"], dict)
+              and all(len(rec[k]) <= MAX_UNVERIFIED_ENTRIES for k in ("lowerings", "refused", "interrupts", "held"))
               and all(ident(i) and when(t) for i, t in rec["lowerings"].items())
+              and all(ident(i) and when(t) for i, t in rec["held"].items())
               and all(ident(i) for i in rec["refused"])
               and all(ident(k) and isinstance(slots, dict) and len(slots) <= MAX_UNVERIFIED_ENTRIES
                       and all(ident(r) and when(t) for r, t in slots.items())
@@ -162,6 +165,7 @@ class State:
     lowerings: dict = field(default_factory=dict)
     refused: set = field(default_factory=set)
     interrupts: dict = field(default_factory=dict)
+    held: dict = field(default_factory=dict)
     reset_at: int | None = None
     unverified_damaged: bool = False
 
@@ -203,7 +207,8 @@ class State:
         return cls(dir=d, roots=roots, manifest_root=current, seen=set(seen), last_pull=last,
                    trust=_load_trust(d / "checkpoint.json"), unverified_damaged=u is None,
                    **({} if u is None else {"lowerings": u["lowerings"], "refused": set(u["refused"]),
-                                            "interrupts": u["interrupts"], "reset_at": u["reset_at"]}))
+                                            "interrupts": u["interrupts"], "held": u["held"],
+                                            "reset_at": u["reset_at"]}))
 
     @property
     def manifest(self) -> Manifest | None:
@@ -241,7 +246,7 @@ class State:
             self.roots, self.manifest_root = fresh.roots, fresh.manifest_root
             self.seen, self.last_pull, self.trust = fresh.seen, fresh.last_pull, fresh.trust
             self.lowerings, self.refused, self.interrupts = fresh.lowerings, fresh.refused, fresh.interrupts
-            self.reset_at, self.unverified_damaged = fresh.reset_at, fresh.unverified_damaged
+            self.reset_at, self.unverified_damaged, self.held = fresh.reset_at, fresh.unverified_damaged, fresh.held
             yield self
         finally:
             os.close(fd)
@@ -302,7 +307,8 @@ class State:
 
     def save_unverified(self) -> None:
         write_json(self.dir / "unverified.json", {"lowerings": self.lowerings, "refused": sorted(self.refused),
-                                                   "interrupts": self.interrupts, "reset_at": self.reset_at})
+                                                   "interrupts": self.interrupts, "held": self.held,
+                                                   "reset_at": self.reset_at})
         self.unverified_damaged = False
 
     def save_seen(self) -> None:

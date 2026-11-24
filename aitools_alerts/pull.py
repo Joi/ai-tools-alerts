@@ -1309,7 +1309,7 @@ def standing(t: Thread, now: float | None = None, check=None, since=None) -> Thr
     for "none"; the CLI's check never says True for that), with ``refused`` set when
     it says False. A relay bot's lowering the check does not settle (None) applies once
     it has stood UNCHECKED_LOWERING_S in ``since`` by ``now`` (tavj); until then the
-    thread is the widest state and ``waiting`` names the level. So a lowering nobody can
+    thread is the widest state and ``waiting`` names the level when ``since`` holds its reply. So a lowering nobody can
     check lasts a curator's 14 days and no longer, a relay bot's applies after 72 hours of
     signed checkpoints, and one the member's source contradicts never applies at all."""
     if t.wide is None or (t.held_until is None and t.offered is None):
@@ -1331,7 +1331,10 @@ def standing(t: Thread, now: float | None = None, check=None, since=None) -> Thr
     if said is True or (said is None and _stood(t, now, since)):
         return replace(base(), retracted=True) if t.offered == NONE else replace(
             base(), adv=replace(t.wide, level=t.offered))
-    unsettled = said is None and t.offered_by is not None and t.offered not in (None, NONE)
+    # waiting: only where the wait can run out (a record is kept, and it holds this reply:
+    # not for a CLI that applies nothing unchecked, not for a thread whose refusal stands)
+    unsettled = (said is None and t.offered not in (None, NONE) and since is not None
+                 and t.offered_by is not None and t.offered_by in since)
     return base(t.offered if said is False else None, t.offered if unsettled else None)
 
 

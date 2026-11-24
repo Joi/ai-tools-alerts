@@ -791,7 +791,12 @@ def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=
         if job.exhausted:
             # Not tried in full: its result stays as it was. But a thread that spent
             # requests has had its turn, or it would come first again every run.
-            if job.requests > asked:
+            if any(p["why"] == "below-source" for p in products.values()):
+                # tavj: what was read before the budget ran out supports more. That rests on
+                # bodies that arrived whole, whatever was not read: kept, so the lowering it
+                # contradicts is refused and never runs out its 72 hours unchecked.
+                results[t.key] = {"at": now, "products": products}
+            elif job.requests > asked:
                 held = results.get(t.key)
                 # c1g2: not for a state whose result authorises a lowering. Kept with a new
                 # time, an old ``match`` would read as confirmed today, and would stand in

@@ -72,8 +72,9 @@ def test_an_unsettled_lowering_applies_after_72_hours_of_the_clock_it_is_given(m
     assert level_at(mirror, AT + 100 + WAIT - 1, says(None), since) == ("critical", "high", None)
     assert level_at(mirror, AT + 100 + WAIT, says(None), since) == ("high", None, None)
     assert level_at(mirror, AT + 100 + WAIT, None, since) == ("high", None, None)  # no check at all: verify = "off"
-    assert level_at(mirror, AT + 900 * 86400, says(None), None) == ("critical", "high", None)  # no record, no wait
-    assert level_at(mirror, AT + 900 * 86400, says(None), {}) == ("critical", "high", None)
+    # no record, or none of this reply: no wait runs, and nothing says one does
+    assert level_at(mirror, AT + 900 * 86400, says(None), None) == ("critical", None, None)
+    assert level_at(mirror, AT + 900 * 86400, says(None), {}) == ("critical", None, None)
     assert level_at(mirror, None, says(None), since) == ("critical", "high", None)  # no checkpoint, no clock
     assert level_at(mirror, AT + 900 * 86400, says(False), since) == ("critical", None, "high")  # refused, however long
     assert level_at(mirror, AT + 101, says(True), since) == ("high", None, None)
@@ -139,21 +140,25 @@ def test_what_a_thread_stated(mirror):
 
 def test_the_record_is_read_and_written_and_a_missing_one_is_empty(tmp_path):
     st = State.load(tmp_path)
-    assert (st.lowerings, st.refused, st.interrupts, st.reset_at, st.unverified_damaged) == ({}, set(), {}, None, False)
+    assert (st.lowerings, st.refused, st.interrupts, st.held, st.reset_at, st.unverified_damaged) == (
+        {}, set(), {}, {}, None, False)
     st.lowerings, st.refused, st.interrupts, st.reset_at = {"a" * 64: 5}, {"a" * 64}, {"b" * 64: {"c" * 64: 7}}, 9
+    st.held = {"d" * 64: 3}
     st.save_unverified()
     again = State.load(tmp_path)
-    assert (again.lowerings, again.refused, again.interrupts, again.reset_at) == (
-        {"a" * 64: 5}, {"a" * 64}, {"b" * 64: {"c" * 64: 7}}, 9)
+    assert (again.lowerings, again.refused, again.interrupts, again.held, again.reset_at) == (
+        {"a" * 64: 5}, {"a" * 64}, {"b" * 64: {"c" * 64: 7}}, {"d" * 64: 3}, 9)
 
 
 @pytest.mark.parametrize("damage", [
-    "{", "[]", '{"lowerings": {}}', '{"lowerings": {}, "refused": [], "interrupts": {}, "reset_at": "soon"}',
-    '{"lowerings": {"x": 1}, "refused": [], "interrupts": {}, "reset_at": null}',
-    '{"lowerings": {}, "refused": [7], "interrupts": {}, "reset_at": null}',
-    '{"lowerings": {}, "refused": [], "interrupts": {"%s": [1]}, "reset_at": null}' % ("a" * 64),
-    '{"lowerings": {"%s": -1}, "refused": [], "interrupts": {}, "reset_at": null}' % ("a" * 64),
-    '{"lowerings": {}, "refused": [], "interrupts": {}, "reset_at": null, "more": 1}',
+    "{", "[]", '{"lowerings": {}}', '{"lowerings": {}, "refused": [], "interrupts": {}, "held": {}, "reset_at": "soon"}',
+    '{"lowerings": {"x": 1}, "refused": [], "interrupts": {}, "held": {}, "reset_at": null}',
+    '{"lowerings": {}, "refused": [7], "interrupts": {}, "held": {}, "reset_at": null}',
+    '{"lowerings": {}, "refused": [], "interrupts": {"%s": [1]}, "held": {}, "reset_at": null}' % ("a" * 64),
+    '{"lowerings": {"%s": -1}, "refused": [], "interrupts": {}, "held": {}, "reset_at": null}' % ("a" * 64),
+    '{"lowerings": {}, "refused": [], "interrupts": {}, "held": [], "reset_at": null}',
+    '{"lowerings": {}, "refused": [], "interrupts": {}, "reset_at": null}',
+    '{"lowerings": {}, "refused": [], "interrupts": {}, "held": {}, "reset_at": null, "more": 1}',
 ])
 def test_a_damaged_record_is_flagged_and_never_an_error(tmp_path, damage):
     (tmp_path / "unverified.json").write_text(damage)
@@ -161,7 +166,7 @@ def test_a_damaged_record_is_flagged_and_never_an_error(tmp_path, damage):
     assert st.unverified_damaged and (st.lowerings, st.refused, st.interrupts, st.reset_at) == ({}, set(), {}, None)
     st.save_unverified()
     assert not State.load(tmp_path).unverified_damaged
-    assert set(json.loads((tmp_path / "unverified.json").read_text())) == {"lowerings", "refused", "interrupts", "reset_at"}
+    assert set(json.loads((tmp_path / "unverified.json").read_text())) == {"lowerings", "refused", "interrupts", "held", "reset_at"}
 
 
 # ---------------------------------------------------------------- the check: withdrawal
