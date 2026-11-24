@@ -33,7 +33,7 @@ def shown(m: Mirror, now, check=None, listed=None):
 
 
 def says(answer, asked=None):
-    def check(adv, level):
+    def check(adv, level, stated=()):
         if asked is not None:
             asked.append((adv, level))
         return answer

@@ -79,7 +79,7 @@ __all__ = ["FILES", "FetchError", "PULL_ERRORS", "MAX_FETCH_BYTES", "MAX_EVENTS"
            "STALE_EVENT_S", "STALE_MANIFEST_S", "freshness", "stale_since",
            "MAX_AHEAD_S", "CHAT_KIND", "ChannelSpecError", "channel_ids", "unverified",
            "bundled_cert", "SECOND_TIMEOUT", "head_clock", "CURATOR_HOLD_S", "NONE", "standing", "asks",
-           "widest"]
+           "widest", "UNCHECKED_LOWERING_S", "offers"]
 
 FILES = ("feed.json", "critical.json")
 MAX_FETCH_BYTES = 8 << 20
@@ -98,6 +98,9 @@ SECOND_TIMEOUT = 5  # the second origin must not hold up a session-start hook
 _RANK = {"notice": 1, "high": 2, "critical": 3}
 CURATOR_HOLD_S = 14 * 86400  # c1g2: a curator's word on a relay-bot thread holds this long unchecked
 NONE = ruleset.NONE  # the level a retraction publishes
+# tavj: a relay-bot lowering this machine's check cannot settle applies once checkpoints
+# this far apart have listed it
+UNCHECKED_LOWERING_S = 72 * 3600
 _PATCH_KEYS = frozenset(f for f in Advisory.__dataclass_fields__)
 _DELETION_KINDS = frozenset({5, 9005})  # NIP-09 deletion, NIP-29 relay delete-event
 MAX_TRANSLATION_CHARS = 8000
@@ -143,6 +146,16 @@ class Thread:
     held_fixed: tuple = ()
     held_products: tuple = ()  # entries whose exact product name ``wide`` no longer carries
     refused: str | None = None
+    # tavj, a relay-bot thread only. ``offered_by``: the id of the relay-bot reply that
+    # published ``offered`` (the first of them when the same level was offered again);
+    # None when a curator offered it. ``stated``: (level, the event's claim or None) for the
+    # root and for every reply that names a level, a curator's with None: what tells a level
+    # that rests on fields from one that may rest on a reading (``verify.claimed``).
+    # ``waiting``: set by ``standing``: the relay-bot lowering the check could not settle and
+    # that has not yet stood UNCHECKED_LOWERING_S.
+    offered_by: str | None = None
+    stated: tuple = ()
+    waiting: str | None = None
 
 
 # ------------------------------------------------------------------ fetching
@@ -964,10 +977,11 @@ class _Hold:
     exactly as written, the first entry that carried it. A later reply may drop an
     alias, clear ``fixed`` or put a product in another spelling in an entry's place:
     each is a widening for matching, and none may weaken what a check is asked about."""
-    __slots__ = ("wide", "until", "offered", "aliases", "fixed", "names", "_seen")
+    __slots__ = ("wide", "until", "offered", "aliases", "fixed", "names", "_seen", "offered_by")
 
     def __init__(self, adv: Advisory):
         self.until, self.offered, self.aliases, self.fixed, self.names, self._seen = None, None, [], {}, {}, set()
+        self.offered_by = None  # tavj: the relay-bot reply that published ``offered``
         self.widen(adv)
 
     def note(self, adv: Advisory) -> None:
@@ -1023,6 +1037,8 @@ def _bot_reply(t: list, h: _Hold, ev: dict, p: dict, dropped: Counter) -> None:
     curator's hold in force that is the thread. With one, only a higher level reaches
     the thread now, and never a retracted one; the rest shows when the hold lapses."""
     if set(p) == {"level"} and wire.is_lowering(p, h.wide.level):
+        if h.offered != p["level"] or h.offered_by is None:
+            h.offered_by = ev["id"]  # the same level offered again keeps the first reply: its wait goes on
         h.offered = p["level"]
         if h.until is not None and not t[1] and _RANK[p["level"]] > _RANK[t[0].level]:
             # below the widest level and above what the curator holds it at: a raise to a reader
@@ -1037,7 +1053,7 @@ def _bot_reply(t: list, h: _Hold, ev: dict, p: dict, dropped: Counter) -> None:
     t[10].update(i.casefold() for i in new.aliases)  # for renewals: an alias once held stays
     level = used.get("level")
     if level is not None:
-        h.offered = None  # a block that applied names the widest state's level or raises it
+        h.offered = h.offered_by = None  # a block that applied names the widest state's level or raises it
     if h.until is None:
         t[0], t[2] = new, ev["created_at"]
         t[7] = t[7] or "title" in used or "level" in used
@@ -1073,7 +1089,8 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
         roots[ev["id"]] = [replace(adv, posted_by=role), False, ev["created_at"], role == "curator",
                            {i.casefold() for i in (adv.id, *adv.aliases)}, {}, [ev["id"]], False,
                            [], _renewal(ev, role), {i.casefold() for i in (adv.id, *adv.aliases)},
-                           None if role == "curator" else _Hold(replace(adv, posted_by=role))]
+                           None if role == "curator" else _Hold(replace(adv, posted_by=role)),
+                           [] if role == "curator" else [(adv.level, wire.claim_of(ev))]]
     for ev, role, ref in sorted(replies, key=lambda r: (r[0]["created_at"], r[0]["id"])):
         t = roots.get(ref)
         if t is None:
@@ -1096,6 +1113,8 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
             named = (_patch(ev["content"]) or {}).get("level")
             if isinstance(named, str) and named in _RANK:
                 t[8].append((t[0].id.casefold(), at, at, at))
+                if h is not None:
+                    t[12].append((named, wire.claim_of(ev)))
         first = _first_line(ev["content"])
         if first.startswith("lang:"):  # a translation, never a patch or a retraction
             tr = None if t[1] else parse_translation(ev["content"])
@@ -1112,7 +1131,7 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
         if first == "retract":
             t[1], t[2] = True, at
             if h is not None:  # held, and published for the member's check; said again, it renews
-                h.offered, h.until, t[3] = NONE, at + CURATOR_HOLD_S, True
+                h.offered, h.until, t[3], h.offered_by = NONE, at + CURATOR_HOLD_S, True, None
             continue
         if t[1]:
             continue  # retracted and held: only a retraction renews it
@@ -1126,7 +1145,8 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
                     t[7] = True
                 acted = True  # the same level said again renews a hold
                 if h is not None:
-                    h.offered = want if _RANK[want] < _RANK[h.wide.level] else None
+                    h.offered, h.offered_by = want if _RANK[want] < _RANK[h.wide.level] else None, None
+                    t[12].append((want, None))  # a curator's word carries no claim
         if p is not None:
             try:
                 new = _apply_patch(t[0], p, role, dropped)
@@ -1153,20 +1173,23 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
                         h.widen(wide)
                     if isinstance(p.get("level"), str) and p["level"] in _RANK:
                         h.offered = p["level"] if _RANK[p["level"]] < _RANK[h.wide.level] else None
+                        h.offered_by = None
+                        t[12].append((p["level"], None))
         if acted:
             t[3] = True
             if h is not None:
                 h.until = at + CURATOR_HOLD_S
     listed = {i.casefold() for i in m.retracted}
     out = []
-    for rid, (a, r, u, cur, ids, tr, changes, retitled, rns, first, ok, h) in sorted(
+    for rid, (a, r, u, cur, ids, tr, changes, retitled, rns, first, ok, h, said) in sorted(
             roots.items(), key=lambda kv: (kv[1][2], kv[0])):
         text, at = _composed(a, tr, changes, retitled)
         gone = not ids.isdisjoint(listed)  # the manifest's word: for good, nothing lapses
         hold = {} if h is None or gone else {"wide": h.wide, "held_until": h.until, "offered": h.offered,
                                              "held_aliases": tuple(h.aliases),
                                              "held_fixed": tuple(sorted(h.fixed.items())),
-                                             "held_products": _missing(h)}
+                                             "held_products": _missing(h), "stated": tuple(said),
+                                             "offered_by": h.offered_by if h.offered is not None else None}
         # ``ok``: every id and alias the thread has held. A later patch that drops an
         # alias must not take away a renewal made under it.
         enrolled = first is not None and first[0] in ok
@@ -1240,46 +1263,80 @@ def asks(t: Thread, now: float | None = None) -> list:
     return out
 
 
-def standing(t: Thread, now: float | None = None, check=None) -> Thread:
+def offers(threads, held: dict, now, listed) -> dict:
+    """The member's record of unchecked relay-bot lowerings as it should be under the
+    checkpoint issued at ``now`` that lists ``listed`` (``head_clock``): {the reply's id:
+    the issue time of the checkpoint this machine held when it first saw one list the
+    reply}. Kept: a reply that is still its thread's standing offer and that the
+    checkpoint lists, with its root, at the earlier of its recorded time and ``now``.
+    Everything else is dropped, so a lowering a checkpoint stops listing, or one a raise
+    replaced, starts again from nothing. Without a checkpoint the record is unchanged.
+    Only signed checkpoint times enter it: never a reply's own date, which its signer
+    chooses, and never this machine's clock."""
+    if now is None or listed is None:
+        return dict(held)
+    out = {}
+    for t in threads:
+        i = t.offered_by
+        if i is not None and t.offered not in (None, NONE) and i in listed and t.root_id in listed:
+            at = held.get(i)
+            out[i] = int(min(at, now)) if type(at) is int else int(now)
+    return out
+
+
+def _stood(t: Thread, now, since) -> bool:
+    """The relay-bot lowering of ``t`` has been listed by checkpoints UNCHECKED_LOWERING_S apart."""
+    at = since.get(t.offered_by) if since is not None and t.offered_by is not None else None
+    return (now is not None and type(at) is int and t.offered not in (None, NONE)
+            and now - at >= UNCHECKED_LOWERING_S)
+
+
+def standing(t: Thread, now: float | None = None, check=None, since=None) -> Thread:
     """The thread as it stands at ``now`` (c1g2). Only a relay-bot thread a curator
     acted on, or one with a published lowering, can differ from ``t``.
 
-    ``check(advisory, level)`` is the member's own source check of "this advisory at
-    this level" ("none": retracted): True when the sources confirm it, False when they
-    support more, None when they do not settle it (and for every thread when ``check``
-    is None). ``now`` is the clock a hold is judged by; None: no hold lapses.
+    ``check(advisory, level, stated)`` is the member's own source check of "this advisory
+    at this level" ("none": retracted; ``stated`` is the thread's): True when the sources
+    confirm it, False when they support more, None when they do not settle it (and for
+    every thread when ``check`` is None). ``now`` is the clock a hold is judged by; None:
+    no hold lapses. ``since``: the member's record of unchecked lowerings (``offers``);
+    None: none ever applies unchecked.
 
     While a curator's hold is in force the thread is as the curator left it, unless the
     curator lowered or retracted it and the check says False: then it is the widest
     state, whole, and ``refused`` names the level. After the hold, and with none, it is
     the widest state: at the published lower level when the check says True (retracted
     for "none"; the CLI's check never says True for that), with ``refused`` set when
-    it says False. So a lowering nobody can check
-    lasts a curator's 14 days and no longer, a relay bot's never applies unchecked, and
-    one the member's source contradicts never applies at all."""
+    it says False. A relay bot's lowering the check does not settle (None) applies once
+    it has stood UNCHECKED_LOWERING_S in ``since`` by ``now`` (tavj); until then the
+    thread is the widest state and ``waiting`` names the level. So a lowering nobody can
+    check lasts a curator's 14 days and no longer, a relay bot's applies after 72 hours of
+    signed checkpoints, and one the member's source contradicts never applies at all."""
     if t.wide is None or (t.held_until is None and t.offered is None):
         return t
 
     def says(level):
-        return check(widest(t), level) if check is not None else None
+        return check(widest(t), level, t.stated) if check is not None else None
 
-    def base(refused=None) -> Thread:
+    def base(refused=None, waiting=None) -> Thread:
         same = t.adv == t.wide and not t.retracted  # else the translations describe the held state
         return replace(t, adv=t.wide, retracted=False, curated=False, held_until=None, refused=refused,
+                       waiting=waiting,
                        translations=t.translations if same else {}, translated_at=t.translated_at if same else {})
 
     if _held(t, now):
         ask = next(iter(asks(replace(t, offered=None), now)), None)
         return t if ask is None or says(ask) is not False else base(ask)
     said = says(t.offered) if t.offered is not None else None
-    if said is True:
+    if said is True or (said is None and _stood(t, now, since)):
         return replace(base(), retracted=True) if t.offered == NONE else replace(
             base(), adv=replace(t.wide, level=t.offered))
-    return base(t.offered if said is False else None)
+    unsettled = said is None and t.offered_by is not None and t.offered not in (None, NONE)
+    return base(t.offered if said is False else None, t.offered if unsettled else None)
 
 
 def active(threads: list[Thread], now: float | None = None, listed=None, check=None, *,
-           decay: bool = True) -> list[Thread]:
+           decay: bool = True, since=None) -> list[Thread]:
     """Threads check should see: not retracted, not expired, each at the level
     it holds at ``now``, as it stands (``standing``).
 
@@ -1303,13 +1360,16 @@ def active(threads: list[Thread], now: float | None = None, listed=None, check=N
     ruleset the trust root calls out of date (``ruleset.outdated``) keeps the
     level a thread's events give. A curator's ``expires_at`` still ends its thread.
 
-    Each thread is taken as it stands (``standing``, with ``check``): a curator's hold
-    on a relay-bot thread lapses by the same clock, under a checkpoint that lists the
-    root, and a thread whose hold lapsed decays by its claims again."""
+    Each thread is taken as it stands (``standing``, with ``check`` and ``since``): a
+    curator's hold on a relay-bot thread lapses by the same clock, under a checkpoint that
+    lists the root, and a thread whose hold lapsed decays by its claims again. An entry
+    of ``since`` counts only while the checkpoint lists its reply."""
     out, rs = [], None
+    if since is not None and listed is not None:
+        since = {i: at for i, at in since.items() if i in listed}
     for t in threads:
         judged = now is not None and (listed is None or t.root_id in listed)
-        t = standing(t, now if judged else None, check)
+        t = standing(t, now if judged else None, check, since)
         if t.retracted:
             continue
         level = t.adv.level
