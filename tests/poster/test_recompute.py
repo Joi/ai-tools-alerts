@@ -161,7 +161,7 @@ def _thread(aliases=(CVE,), level="critical", product="Claude Code", **more):
 def _support(entry, cat, status="ok"):
     copy = kc(cat, status, recompute.new_state(), 0) if cat else None
     scope = next(e for e in schema.load_scope() if e.name == entry.scope)
-    return recompute.support(entry, scope, copy, ruleset.load())
+    return recompute.support(entry, scope, copy, ruleset.load())[:4]  # 3qyq: and whether a read says stop_using
 
 
 def test_support_is_what_the_copy_states():
