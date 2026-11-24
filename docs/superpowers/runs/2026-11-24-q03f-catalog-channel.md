@@ -1,6 +1,6 @@
 # Run: q03f-catalog-channel
 Instruction: Read TASK-ai-tools-alerts#q03f.md in this worktree root, then run `kata show ai-tools-alerts#q03f` and follow the brief and the dispatch rules (/do-it, starting rung floored at medium).
-Stage: verifying
+Stage: committing
 Rung: medium (start-floor medium: dispatch floor and evaluator, BR2 REV1 NOV1 INT2 FC2 = 8)
 Lens: catalog events never in feed.json/critical.json nor in the signed checkpoint; no human in the loop; no live install or post from this session.
 Spec: docs/superpowers/specs/2026-11-24-q03f-catalog-channel-design.md   Plan: docs/superpowers/plans/2026-11-24-q03f-catalog-channel.md
@@ -50,5 +50,6 @@ Pass 2 [code:delta]: 2B/0S/0C/0R · fixed 6/6 prior · velocity ↓ (7→2, esca
 - Rung stays medium: every BLOCKER and SUBSTANTIVE finding of the spec and plan passes was fixed or rebutted (none survives).
 - Prior work: kata search "catalog.json" (q03f, 9mx8, 6ghg, wa6n, t8jr, vzc3); t8jr note c:dp781t gives the two wire conditions; wa6n note c:30j9w4 names ScopeEntry.scope_class. capability-search was run by the issue author (0 hits).
 - Gate: scripts/test-gate.sh in the shared clone fails the public scan on objects reachable only from local refs/heads/rescue/2026-11-23/* (none reachable from this branch or origin/main; checked with git rev-list --objects). The gate is run instead in a fresh single-branch clone of this branch plus origin/main, which is what the pull request publishes: b2ce5b3 passed (2361 passed, 1 skipped).
+- Gate at 7d59b6d (the delta fixes plus origin/main through 4c4e149), fresh single-branch clone: exit 0, public scan clean (known hits only), 2371 passed, 1 skipped. This record's commit follows it and changes only this file.
 - Size: ~860 changed lines, of which ~300 code, ~470 tests, ~110 docs; kept as one deliverable (the producer side) after the CLI split.
 - Split decided on kata (decided: comment): CLI consumer side to 8nb4.
