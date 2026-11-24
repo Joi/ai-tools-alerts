@@ -522,6 +522,29 @@ def level_post(prev: schema.Advisory, level: str) -> str:
     return _guard(out)
 
 
+def level_report(lowered, tripped, lang: str = "en") -> str:
+    """The lines a digest adds for the recompute (ny5g, D15), or "": one listing the
+    ids lowered since the last digest, ``[[id, level]]``, and one while the circuit
+    breaker holds lowerings back (``tripped``: ``{"due": n}`` or None; n is how many wait). Only a bare
+    CVE or GHSA id is printed, at most 50."""
+    ja = lang == "ja"
+    done = [(i, lv) for i, lv in lowered if public_id(i) and lv in wire.LEVELS]
+    lines = []
+    if done:
+        shown = "; ".join(f"{i} ({_JA_LEVEL[lv]})" if ja else f"{i} to {lv}" for i, lv in done[:50])
+        more = len(done) - 50
+        if ja:
+            lines.append(f"前回のダイジェスト以降に引き下げ: {shown}" + (f"、ほか {more} 件" if more > 0 else "") + "。")
+        else:
+            lines.append(f"Lowered since the last digest: {shown}" + (f"; and {more} more" if more > 0 else "") + ".")
+    if tripped:
+        n = tripped["due"]
+        lines.append(f"レベル確認: 1 日のうちに引き下げの対象が上限を超えたため、保留しています (保留中: {n} 件)。" if ja
+                     else f"Level check: more threads fell due to be lowered within a day than the limit allows; "
+                          f"held back: {n}.")
+    return _guard("\n\n" + "\n".join(lines)) if lines else ""
+
+
 _LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
 
 
