@@ -1,11 +1,13 @@
 # Run: 9kgk-level-rules-by-consequence
 Instruction: Read TASK-ai-tools-alerts#9kgk.md in this worktree root, then run `kata show ai-tools-alerts#9kgk` and follow the brief and the dispatch rules (do-it, start rung floored at medium; PR landing; one independent review).
-Stage: executing
+Stage: done
 Rung: medium (start-floor medium: dispatch floor; evaluator agrees, BR2 REV2 NOV1 INT2 FC1 = 8, no lens)
 Spec: docs/superpowers/specs/2026-11-24-9kgk-level-rules-by-consequence-design.md   Plan: docs/superpowers/plans/2026-11-24-9kgk-level-rules-by-consequence.md
 Agency project: 01a20c73-16b2-76c9-9e91-0aa26b6b06e6 (three tasks; Agency composes prompts only, the work was done in this session)
 Kata: ai-tools-alerts#9kgk
 Last reviewed: spec 6e9cd54036a1958e3e67e6ca08c4353cc6d1dd16
+Last reviewed: code 7974dded70c64b08b6eb8f93ea6cb9013a45dcf7 (whole branch), delta --since 7974dde at 313f1afb339a1d82df0c89844e02d933bb4bb83a
+Pre-merge review: 313f1af fixed+delta +fix d4f4bc0 +fix f8b9173 +fix 39b2e34 (the last two: the ny5g merge and its same-model review fixes)
 
 ## Scorecards
 Pass 1 [spec]: 4B/4S/0C/0R · fixed -/- · velocity = (—→8, escalation no)   # fresheyes, gpt-6.1-sol high
@@ -33,3 +35,4 @@ code: passes: 2 (+ stage 1) · elapsed: ~70 min
 - Size: about 1,000 changed lines of code and tests beyond the vectors, most of it test migration the rule forces (the old suite encoded KEV-alone critical and the severity word alone as high) plus the fv4g/ny5g integration. Not split: the rule and the tests that encode the old rule cannot land apart.
 - Follow-up filed: ai-tools-alerts#a3xh (the synthetic check cannot reach the critical channel).
 - Test migration: the old suite encoded KEV-alone critical and the severity word alone as high. KEV-critical tests now give the vendor's fix (kev_fixed); no-fix highs use a verified trojanized flag (bare_high), the only no-fix, non-exploited high left; vendor pages state the consequence in their title.
+- Same-model look at the ny5g merge (f8b9173): 0B/2S/1C, all fixed in 39b2e34 (an older ledger entry with replies has an unknown root and is never lowered by the cap; the prose floor counts the thread's fix; a stop_using critical is confirmed by held). Gate at 39b2e34: public scan and 2320 tests pass.
