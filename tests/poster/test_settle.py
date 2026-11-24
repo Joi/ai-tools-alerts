@@ -496,3 +496,33 @@ def test_a_pull_that_times_out_keeps_what_an_earlier_pull_stored(env, monkeypatc
     code, summary, relay = env.run(now=T0 + 72 * HOUR)
     monkeypatch.setattr(main.translate, "bounded", real)
     assert relay.calls == [] and env.ledger()[0][0]["root_event_id"] == ev["id"] and "delivered:1" in summary
+
+
+# ---------------------------------------------------------------- found by the same-model review
+
+
+def test_a_repeat_that_failed_and_never_shows_is_simply_sent_again(env):
+    unknown_root(env)
+    code, _, relay = run(env, T0 + 24 * HOUR, relay=FakeRelay("fail"))
+    assert code == 1 and env.ledger()[1] == [] and env.state()["outbox"][0]["tried"] == T0
+    code, summary, relay = run(env, T0 + 25 * HOUR)  # nothing is pending and nothing shows: no expiry, one send
+    assert code == 0 and [c[0] for c in relay.calls] == ["feed"] and "error=" not in summary
+    assert len(env.ledger()[0]) == 1 and env.state()["outbox"] == []
+
+
+def test_a_candidate_that_does_not_raise_supersedes_nothing(env):
+    """The feed's lowering is unsent; a candidate for the thread says nothing higher
+    than it stands. The lowering goes out as before."""
+    post(env)
+    hours(env, 1, 24)
+    one(env, 25, relay=FakeRelay("ok", "fail"), code=1)
+    env.collector([finding(fid=CVE, sources=(GHSA_OF_CVE,), fixed="2.1.0", severity=None)], name="2026-11-07T000000Z")
+    code, summary, relay = env.run(now=T0 + 26 * HOUR)
+    assert levels(relay) == [{"level": "notice"}] and "superseded" not in summary
+
+
+def test_resolve_not_delivered_remembers_the_attempt_too(env):
+    it = unknown_root(env)
+    key = env.state()["outbox"][0]["key"]
+    assert main.resolve(T0 + 24 * HOUR, env.config, key, reason="not in the channel")[0] == 0
+    assert env.state()["outbox"][0]["tried"] == T0

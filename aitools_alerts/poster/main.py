@@ -205,7 +205,7 @@ class Run:
 
     def drain(self):
         """Send every journaled item, oldest first; a pending one (and anything after it
-        that shares its ids) waits for a human."""
+        that shares its ids) waits until its outcome is settled (``settle``)."""
         held_back: set[str] = set()
         for it in list(self.state["outbox"]):
             if it not in self.state["outbox"] or it["kind"] == "ja":
@@ -601,7 +601,7 @@ class Run:
         try:
             for it in [o for o in self.state["outbox"] if o["kind"] == "ja"]:
                 if it["sent"] is None and self.led.has_pending(it["key"]):
-                    self.n["busy"] += 1  # unknown outcome: `pending` / `resolve`, as for English
+                    self.n["busy"] += 1  # unknown outcome: settled by a later run, as for English
                     continue
                 if not self.deliver(it):
                     return
@@ -1067,7 +1067,7 @@ class Run:
             return
         if items:
             self.enqueue(items, self.passed.pop(entry.root_event_id, None) if entry is not None else None)
-            if any(it in self._withheld_items() for it in items):  # waits for resolve; after --drop, planned anew
+            if any(it in self._withheld_items() for it in items):  # withheld: planned anew once it is dropped
                 self.defer([(c, scope)])
 
     def _held_for(self, scope, ids) -> dict | None:
@@ -2071,6 +2071,9 @@ def resolve(now: int, config, key: str, *, delivered: str | None = None,
             if now - p["at"] < ledger.PENDING_EXPIRY:
                 return refuse(f"pending under 24 hours; --not-delivered is allowed from "
                               f"{_iso(p['at'] + ledger.PENDING_EXPIRY)}")
+            if it is not None:  # jsje: as Run.settle: a channel may have it, and its event still settles it
+                it["tried"] = min(p["at"], it.get("tried", p["at"]))
+                inputs.save_state(config.state, state)
             led.expire_pending(key, reason, now=now)
             return 0, [f"aitools-alerts-poster: resolved {key}: expired; the next run sends it again"]
     except LedgerError as e:
