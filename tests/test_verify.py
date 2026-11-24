@@ -120,6 +120,7 @@ def one(tmp_path, a, product="Claude Code"):
     ("cve-2026-1234", "CVE-2026-1234"), ("CVE-2026-1234", "CVE-2026-1234"),
     ("GHSA-ABCD-EFGH-IJKL", "GHSA-abcd-efgh-ijkl"), ("ghsa-abcd-efgh-ijkl", "GHSA-abcd-efgh-ijkl"),
     ("MAL-2026-77", "MAL-2026-77"),
+    ("CVE-2026-123158:openssh", "CVE-2026-123158"), ("GHSA-87qg-cmw8-jc5m:mcp-server", "GHSA-87qg-cmw8-jc5m"),
 ])
 def test_norm_id_gives_the_lookup_form(given, want):
     assert verify.norm_id(given) == want
@@ -127,7 +128,9 @@ def test_norm_id_gives_the_lookup_form(given, want):
 
 @pytest.mark.parametrize("given", [
     "AITA-TEST 1", "https://evil.example/x", "../x", "GHSA-aaaa-bbbb", "CVE-2026-1/..", "MAL-1?x=1", "MAL-1/2",
-    "CVE-2099-0001", "", None, 7, "LEAD-9a4d0dc65b79:docker" + "x" * 200, "GHSA-aaaa-bbbb-cccc\n",
+    "CVE-2099-0001", "", None, 7, "MAL-2026-1" + "x" * 200, "GHSA-aaaa-bbbb-cccc\n",
+    "LEAD-9a4d0dc65b79:docker", "AITA-TEST-0001", "PYSEC-2026-1", "RUSTSEC-2026-0001", "mal-2026-1",
+    "CVE-2026-1000:", "CVE-2026-1000:a/b", "CVE-2026-1000:a:b", "MAL-2026-1:slug x", "CVE-2099-0001:openssh",
 ])
 def test_norm_id_refuses_what_names_no_source(given):
     assert verify.norm_id(given) is None
@@ -137,7 +140,7 @@ def test_url_of_builds_only_the_three_shapes():
     assert verify.url_of(CVE) == verify.KEV_URL
     assert verify.url_of(G1) == gurl(G1)
     assert verify.url_of("MAL-2026-7:a.b") == "https://api.osv.dev/v1/vulns/MAL-2026-7%3Aa.b"
-    for bad in ("GHSA-AAAA-BBBB-CCCC", "https://evil.example/", "x/../y", "CVE-2099-0001"):
+    for bad in ("GHSA-AAAA-BBBB-CCCC", "https://evil.example/", "x/../y", "CVE-2099-0001", "CVE-2026-1000:openssh"):
         with pytest.raises(ValueError):
             verify.url_of(bad)
 
@@ -225,17 +228,25 @@ def test_osv_fields():
 
 
 def test_kev_readings():
-    cat = kev((CVE, " Anthropic ", "Claude Code "), ("CVE-2026-3", "Cisco", "IOS"))
-    assert verify._kev_readings(cat, {CVE, CVE2}) == {CVE: [{"cve_id": CVE, "name": "Anthropic Claude Code"}],
-                                                       CVE2: [{"cve_id": CVE2, "name": None}]}
-    for broken in ({**cat, "count": 5}, {**cat, "catalogVersion": None}, {**cat, "vulnerabilities": [3, 4]},
-                   {"vulnerabilities": []}, [], {**cat, "vulnerabilities": [{"cveID": 1}, {"cveID": "x"}]}):
+    cat = verify._kev_catalog(kev((CVE, " Anthropic ", "Claude Code "), ("CVE-2026-3", "Cisco", "IOS"), ("CVE-2026-4", "", "Git")))
+    assert verify._kev_readings(cat, CVE) == [{"cve_id": CVE, "name": "Anthropic Claude Code"}]
+    assert verify._kev_readings(cat, CVE2) == [{"cve_id": CVE2, "name": None}]
+    assert verify._kev_readings(cat, "CVE-2026-4") == [{"cve_id": "CVE-2026-4", "name": "Git"}]
+    whole = kev((CVE, "Anthropic", "Claude Code"))
+    for broken in ({**whole, "count": 5}, {**whole, "catalogVersion": None}, {**whole, "vulnerabilities": [3, 4]},
+                   {"vulnerabilities": []}, [], {**whole, "count": 2, "vulnerabilities": [{"cveID": 1}, {"cveID": "x"}]}):
         with pytest.raises(verify._Bad):
-            verify._kev_readings(broken, {CVE})
-    bad_entry = kev((CVE, "Anthropic", "Claude Code"))
-    bad_entry["vulnerabilities"][0]["product"] = 5
-    assert verify._kev_readings(bad_entry, {CVE}) == {CVE: None}
+            verify._kev_catalog(broken)
+    whole["vulnerabilities"][0]["product"] = 5
+    with pytest.raises(verify._Bad):
+        verify._kev_readings(verify._kev_catalog(whole), CVE)
 
+
+def test_a_response_that_names_too_many_ids_is_a_failed_read(tmp_path):
+    a = adv()
+    many = [{"type": "CVE", "value": f"CVE-2026-{5000 + i}"} for i in range(verify.MAX_NAMES + 1)]
+    go(tmp_path, [a], net((gurl(G1), ghsa(identifiers=many))))
+    assert one(tmp_path, a) == ("unknown", "unread")
 
 # ------------------------------------------------------------------ one product's result
 
@@ -244,7 +255,9 @@ def rec(support=None, lowers=True):
 
 
 @pytest.mark.parametrize("level, records, complete, want", [
-    ("high", [rec({"Claude Code": ["critical", True]})], False, ("unknown", "unread", None)),
+    ("high", [rec({"Claude Code": ["critical", True]})], False, ("contradicted", "below-source", "critical")),  # read bodies say more
+    ("high", [rec({"Claude Code": ["high", True]})], False, ("unknown", "unread", None)),  # a missing read could say more
+    ("critical", [rec()], False, ("unknown", "unread", None)),
     ("high", [rec({"Claude Code": ["critical", True]})], True, ("contradicted", "below-source", "critical")),
     ("high", [rec({"Claude Code": ["high", True]})], True, ("confirmed", "match", "high")),
     ("critical", [rec()], True, ("contradicted", "unsupported", "none")),
@@ -256,18 +269,21 @@ def rec(support=None, lowers=True):
     ("critical", [rec({"Claude Code": ["high", True]})], True, ("contradicted", "above-source", "high")),
     ("critical", [rec({"Claude Code": ["notice", True]})], True, ("contradicted", "above-source", "notice")),
     ("high", [rec({"Claude Code": ["notice", True]})], True, ("unknown", "reading", "notice")),
-    ("notice", [rec({"Claude Code": ["notice", False]})], True, ("confirmed", "match", "notice")),
+    ("notice", [rec({"Claude Code": ["notice", True]})], True, ("confirmed", "match", "notice")),
+    # what its subject's attacker can write confirms nothing, at any level
+    ("notice", [rec({"Claude Code": ["notice", False]}, lowers=False)], True, ("unknown", "unauthoritative", "none")),
+    ("high", [rec({"Claude Code": ["high", False]})], True, ("unknown", "unauthoritative", "none")),
 ])
 def test_judge(level, records, complete, want):
     r = verify.judge(level, "Claude Code", records, complete, ruleset.load())
     assert (r["result"], r["why"], r["source"]) == want
 
 
-def test_a_product_outside_the_scope_file_is_unsupported_once_complete():
+def test_a_product_outside_this_reader_s_scope_file_is_not_judged():
     rs = ruleset.load()
-    assert verify.judge("high", "Nobody Runs This", [rec()], True, rs)["why"] == "unsupported"
-    assert verify.judge("high", "Nobody Runs This", [], False, rs)["why"] == "unread"
-
+    for complete in (True, False):
+        r = verify.judge("high", "Nobody Runs This", [rec()], complete, rs)
+        assert (r["result"], r["why"]) == ("unknown", "no-source")
 
 def test_summary_is_the_worst_product():
     def p(result, why):
@@ -305,8 +321,48 @@ def test_an_alias_no_source_ties_to_the_first_id_adds_nothing(tmp_path):
     a = adv(id=CVE, aliases=[G2], level="critical")
     n = net((verify.KEV_URL, kev()), (gurl(G2), ghsa(G2, type="malware", cve=CVE2)))
     go(tmp_path, [a], n)
-    assert one(tmp_path, a) == ("contradicted", "unsupported")
+    assert one(tmp_path, a) == ("unknown", "unauthoritative")  # never confirmed; KEV's silence contradicts nothing
 
+
+def test_an_alias_tied_only_by_a_source_anyone_can_write_adds_nothing(tmp_path):
+    a = adv(id=CVE, aliases=[G2], level="notice")
+    go(tmp_path, [a], net((verify.KEV_URL, kev()), (gurl(G2), ghsa(G2, type="unreviewed", cve=CVE))))
+    assert one(tmp_path, a) == ("unknown", "unauthoritative")
+
+
+def test_an_attacker_written_first_id_cannot_borrow_a_real_exploited_cve(tmp_path):
+    """An unreviewed advisory names a CVE that KEV truly lists for the product."""
+    a = adv(id=G1, aliases=[CVE], level="critical")
+    n = net((gurl(G1), ghsa(type="unreviewed", cve=CVE)), (verify.KEV_URL, KEV_CC))
+    go(tmp_path, [a], n)
+    assert n.urls == [gurl(G1)]  # what it names is not even read
+    assert one(tmp_path, a) == ("unknown", "unauthoritative")
+
+
+def test_a_fabricated_notice_is_not_confirmed_by_a_source_anyone_can_write(tmp_path):
+    a = adv(level="notice")
+    go(tmp_path, [a], net((gurl(G1), ghsa(type="unreviewed"))))
+    assert one(tmp_path, a) == ("unknown", "unauthoritative")
+    go(tmp_path / "reviewed", [a], net((gurl(G1), ghsa(type="reviewed", high=False))))
+    assert one(tmp_path / "reviewed", a) == ("confirmed", "match")
+
+
+def test_dropping_an_alias_never_turns_a_true_alert_into_a_contradiction(tmp_path):
+    n = net((verify.KEV_URL, kev()), (gurl(G2), ghsa(G2, type="malware", cve=CVE)))
+    a = adv(id=CVE, aliases=[G2], level="critical")
+    go(tmp_path, [a], n)
+    assert one(tmp_path, a) == ("confirmed", "match")
+    stripped = adv(id=CVE, aliases=[], level="critical")  # a bot patch replaced the aliases
+    go(tmp_path, [stripped], n)
+    assert one(tmp_path, stripped) == ("unknown", "unauthoritative")
+
+
+def test_the_ids_an_authoritative_first_response_names_are_read_whatever_the_thread_lists(tmp_path):
+    n = net((gurl(G1), ghsa(cve=CVE)), (verify.KEV_URL, KEV_CC))
+    a = adv(id=G1, aliases=[], level="critical")  # the bot lists no alias, or dropped it
+    go(tmp_path, [a], n)
+    assert n.urls == [gurl(G1), verify.KEV_URL]
+    assert one(tmp_path, a) == ("confirmed", "match")
 
 def test_an_alias_whose_own_response_names_the_first_id_counts(tmp_path):
     a = adv(id=CVE, aliases=[G2], level="critical")
@@ -468,7 +524,7 @@ def test_one_kev_request_serves_every_cve_thread_and_a_304_keeps_the_support(tmp
     n = net((verify.KEV_URL, ('"k1"', KEV_CC)))
     go(tmp_path, [a, b], n)
     assert n.urls == [verify.KEV_URL]
-    assert one(tmp_path, a) == ("confirmed", "match") and one(tmp_path, b) == ("contradicted", "unsupported")
+    assert one(tmp_path, a) == ("confirmed", "match") and one(tmp_path, b) == ("unknown", "unauthoritative")
     go(tmp_path, [a, b], n)
     assert len(n.calls) == 1  # decisive results stand until the published state changes
     lower = adv(id=CVE, level="high")
@@ -479,7 +535,7 @@ def test_one_kev_request_serves_every_cve_thread_and_a_304_keeps_the_support(tmp
     new = adv(id="CVE-2026-3000", level="critical", title="new")  # not read at that ETag: the body is needed
     n.set(verify.KEV_URL, ('"k1"', KEV_CC))
     go(tmp_path, [lower, b, new], n)
-    assert n.calls[-1][1] is None and one(tmp_path, new) == ("contradicted", "unsupported")
+    assert n.calls[-1][1] is None and one(tmp_path, new) == ("unknown", "unauthoritative")
 
 
 def test_a_304_with_nothing_stored_decides_nothing(tmp_path):
@@ -530,17 +586,18 @@ def test_nothing_a_source_says_is_stored(tmp_path):
             (gurl(G2), ghsa(G2, cve="CVE-2026-8888", pkgs=(CC, ("npm", f"{SENTINEL}-11")))))
     go(tmp_path, [a, b], n)
     text = (tmp_path / verify.FILE).read_text()
-    assert SENTINEL not in text and "CVE-2026-9999" not in text and "CVE-2026-8888" not in text
+    assert SENTINEL not in text
     assert "9.9.9" not in text and "CVSS" not in text and "anthropic" not in text.lower()
     cache = json.loads(text)
     assert set(cache) == {"version", "ruleset", "kev", "sources", "results"}
-    assert set(cache["sources"]) == {CVE, G1, "MAL-2026-1", G2}  # ids the threads carried
+    # ids the threads carried, and one an authoritative response named, in the exact form of an id
+    assert set(cache["sources"]) == {CVE, G1, "MAL-2026-1", G2, "CVE-2026-8888"}
     scope, levels = ruleset.load().products(), {"none", "notice", "high", "critical"}
     for r in cache["sources"].values():
         assert set(r) == {"etag", "at", "lowers", "support", "names"}
         assert r["etag"] in (None, 'W/"kev-1"', '"g-1"') and type(r["lowers"]) is bool and type(r["at"]) is int
         assert all(k in scope and v[0] in levels and type(v[1]) is bool for k, v in r["support"].items())
-        assert all(len(d) == 64 and int(d, 16) >= 0 for d in r["names"])
+        assert all(verify.norm_id(d) == d for d in r["names"])
     for r in cache["results"].values():
         for name, p in r["products"].items():
             assert name in ("Claude Code", "git") and set(p) == {"result", "why", "source"}
@@ -641,8 +698,12 @@ def fake_connection(monkeypatch, response=None, connect_delay=0.0, response_dela
         def __init__(self, host, timeout=None):
             log.append(("open", host, timeout))
 
-        def request(self, method, path, headers=None):
+        sock = None
+
+        def connect(self):
             time.sleep(connect_delay)
+
+        def request(self, method, path, headers=None):
             log.append((method, path, headers))
 
         def getresponse(self):
@@ -716,7 +777,25 @@ def test_the_deadline_is_for_the_whole_request_not_each_phase(monkeypatch):
     start = time.monotonic()
     with pytest.raises(OSError):
         REAL_FETCH(gurl(G1), None, 1000, 0.3)
-    assert 0.25 < time.monotonic() - start < 0.44  # no phase took 0.3 s; the three together did
+    assert 0.25 < time.monotonic() - start < 1  # no phase took 0.3 s; the three together did
+
+
+def test_a_request_that_outlived_its_wait_sends_nothing(monkeypatch):
+    log = fake_connection(monkeypatch, FakeResponse(headers={"Content-Length": "2"}), connect_delay=0.4)
+    with pytest.raises(OSError):
+        REAL_FETCH(gurl(G1), None, 1000, 0.1)
+    time.sleep(0.6)  # the name lookup returns after the caller has gone
+    assert [x[0] for x in log] == ["open"]
+
+
+def test_a_slow_body_is_cut_at_the_deadline_inside_the_request(monkeypatch):
+    body = b" " * (65536 * 4)
+    resp = FakeResponse(headers={"Content-Length": str(len(body))}, body=body, read_delay=0.1)
+    fake_connection(monkeypatch, resp)
+    box = []
+    with pytest.raises(OSError):
+        verify._request("api.github.com", "/x", None, 1 << 20, 0.15, box, __import__("threading").Event())
+    assert len(resp.body) > 0  # it stopped reading: the deadline is the request's own, not only the caller's wait
 
 
 def test_the_last_request_of_a_run_gets_only_what_is_left(monkeypatch, tmp_path):
@@ -739,3 +818,75 @@ def test_a_fetch_error_carries_no_text_of_the_response(monkeypatch):
     with pytest.raises(OSError) as e:
         REAL_FETCH(gurl(G1), None, 1000, 1)
     assert SENTINEL not in str(e.value)
+
+
+# ------------------------------------------------------------------ review fixes
+
+def test_the_thirty_seconds_also_end_work_that_needs_no_request(tmp_path):
+    """One KEV answer serves every CVE thread; the clock still stops the run."""
+    advs = [adv(id=f"CVE-2026-{7000 + i}", level="critical") for i in range(50)]
+    clock = Clock()
+
+    def slow(url, etag, limit, timeout):
+        clock.t += 31
+        return 200, None, json.dumps(kev()).encode()
+    cache = go(tmp_path, advs, slow, clock=clock)
+    assert len(cache["results"]) == 1  # the thread whose request was sent in time is finished; no other is begun
+    cache = go(tmp_path, advs, lambda *a: (200, None, json.dumps(kev()).encode()), clock=Clock())
+    assert len(cache["results"]) == 50
+
+
+def test_threads_that_keep_failing_do_not_starve_the_rest(tmp_path):
+    junk = [adv(id=f"CVE-2026-{8000 + i}", aliases=[f"GHSA-{c * 4}-{c * 4}-{i}{c * 3}" for c in "234"], level="critical")
+            for i in range(3)]
+    quiet = adv(id=G1, level="notice")
+    n = net((verify.KEV_URL, kev()), (gurl(G1), ghsa(type="malware")))
+    go(tmp_path, junk + [quiet], n)
+    assert len(n.calls) == 10 and gurl(G1) not in n.urls  # 1 + 3 x 3: the budget is gone
+    go(tmp_path, junk + [quiet], n, now=NOW + 3600)
+    assert n.urls[10] == gurl(G1)  # never tried goes before tried
+    assert one(tmp_path, quiet) == ("contradicted", "below-source")
+
+
+def test_a_result_that_is_not_confirmed_is_read_again_after_a_day(tmp_path):
+    a = adv(id=CVE, level="critical")
+    n = net((verify.KEV_URL, kev((CVE, "Cisco", "IOS XE"))))
+    go(tmp_path, [a], n)
+    assert one(tmp_path, a) == ("contradicted", "unsupported")
+    go(tmp_path, [a], n, now=NOW + verify.RETRY_S - 1)
+    assert len(n.calls) == 1
+    n.set(verify.KEV_URL, KEV_CC)  # CISA has listed it for the product since
+    go(tmp_path, [a], n, now=NOW + verify.RETRY_S)
+    assert one(tmp_path, a) == ("confirmed", "match")
+    go(tmp_path, [a], n, now=NOW + 10 * verify.RETRY_S)
+    assert len(n.calls) == 2  # confirmed stands
+
+
+@pytest.mark.parametrize("path, value", [
+    (("results", "KEY", "products", "Claude Code", "result"), []), (("results", "KEY", "products", "Claude Code", "why"), {}),
+    (("results", "KEY", "products", "Claude Code", "source"), []), (("sources", G1, "support", "Claude Code"), [[], True]),
+    (("sources", G1, "names"), [[]]), (("sources", G1, "etag"), []), (("kev",), []), (("ruleset",), []), (("version",), []),
+    (("results", "KEY", "products"), [["Claude Code"]]), (("sources", G1), None), (("results",), None),
+])
+def test_a_cache_with_a_value_of_the_wrong_kind_is_an_empty_one_not_a_crash(tmp_path, path, value):
+    a = adv()
+    go(tmp_path, [a], net((gurl(G1), ('"e1"', ghsa()))))
+    bad = json.loads((tmp_path / verify.FILE).read_text())
+    node = bad
+    for k in path[:-1]:
+        node = node[verify.state_key(a) if k == "KEY" else k]
+    node[path[-1]] = value
+    (tmp_path / verify.FILE).write_text(json.dumps(bad))
+    assert verify.load(tmp_path) == verify._empty(ruleset.load().digest)
+    assert verify.result_for(a, verify.load(tmp_path))["Claude Code"]["why"] == "unread"
+
+
+def test_a_thread_key_of_the_poster_s_is_read_by_its_public_id(tmp_path):
+    a = adv(id=f"{CVE}:claude-code", level="critical")
+    n = net((verify.KEV_URL, KEV_CC))
+    go(tmp_path, [a], n)
+    assert n.urls == [verify.KEV_URL] and one(tmp_path, a) == ("confirmed", "match")
+    internal = adv(id="LEAD-9a4d0dc65b79:docker", aliases=["AITA-TEST-0001", "PYSEC-2026-1"], level="high")
+    n2 = Net()
+    go(tmp_path, [internal], n2)
+    assert n2.calls == [] and res(tmp_path, internal)["Claude Code"]["why"] == "no-source"

@@ -251,7 +251,6 @@ def _source_line(adv) -> str:
 # -------------------------------------------------------------- source check
 
 SOURCE_CHECK_FAILED = "source check failed"  # fixed: an exception's text may quote a response
-OUTSIDE_SCOPE = "a product outside the scope file"
 
 
 def _cache(st: State, s: config.Settings) -> dict | None:
@@ -274,22 +273,22 @@ def _source_check(st: State, s: config.Settings, threads: list, pairs: list) -> 
 
 def _source_lines(a, st: State, s: config.Settings, threads: list) -> list[str]:
     """One line per product whose source contradicts the post, from the cache.
-    Printed: the id as verify.norm_id returned it, a scope product name or a
-    fixed phrase, and level words. A CLI the trust root calls too old does not
-    say "the source supports more": its own ruleset may be the one that is wrong."""
+    Printed: the id as verify.norm_id returned it, a scope product name, and
+    level words. A CLI the trust root calls too old prints none: its ruleset
+    and scope file may be the ones that are wrong."""
     cache = _cache(st, s)
-    if cache is None:
+    if cache is None or _min_cli(a, st) is not None:
         return []
-    scope, outdated, out = ruleset.load().products(), _min_cli(a, st) is not None, []
+    scope, out = ruleset.load().products(), []
     for t in threads:
         for name, r in sorted((verify.result_for(t.adv, cache) or {}).items()):
-            ident, what = verify.norm_id(t.adv.id), name if name in scope else OUTSIDE_SCOPE
-            if r["result"] != verify.CONTRADICTED or ident is None:
+            ident = verify.norm_id(t.adv.id)
+            if r["result"] != verify.CONTRADICTED or ident is None or name not in scope:
                 continue
             if r["why"] == "unsupported":
-                out.append(f"source check: the source does not support {ident} for {what}")
-            elif r["why"] == "above-source" or not outdated:
-                out.append(f"source check: {ident} is published at {t.adv.level} for {what}; "
+                out.append(f"source check: the source does not support {ident} for {name}")
+            else:
+                out.append(f"source check: {ident} is published at {t.adv.level} for {name}; "
                            f"the source supports {r['source']}")
     return list(dict.fromkeys(out))
 
@@ -354,7 +353,7 @@ def _stale_since(a, st: State) -> str | None:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(min(since, schema.MAX_TIMESTAMP)))
 
 
-def cmd_check(a, st: State, s: config.Settings) -> int:
+def cmd_check(a, st: State, s: config.Settings, source_lines: bool = True) -> int:
     threads, pairs = _matches(a, st)
     if a.json:
         cache = _cache(st, s)
@@ -376,7 +375,7 @@ def cmd_check(a, st: State, s: config.Settings) -> int:
         print("Critical advisories not installed here:")
         for t in other:
             print(f"  CRITICAL: {_title(t, s)} (id {t.adv.id}, {_thread_ref(t)})")
-    for line in _source_lines(a, st, s, threads):
+    for line in _source_lines(a, st, s, threads) if source_lines else ():
         print(line)
     print(f"{len(threads)} advisories, {len(pairs)} matches on this machine")
     return 0
@@ -473,8 +472,6 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
         _err(f"{res.error} (using the last good state)")
     threads, pairs = _matches(a, st)  # one inventory collection per run (the hook's time budget)
     pending = _unseen_critical(a, st, pairs)
-    if not a.json:  # the hourly job's form; the hook runs --json and must read no source
-        _source_check(st, s, threads, pairs)
     if a.json:
         cache = _cache(st, s)
         out = {"pull_error": res.error, "ignored_env": a.ignored_env,
@@ -484,12 +481,17 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
                "unseen_critical": sorted({r for t, _ in pending for r in t.root_ids})}
     elif not a.quiet:
         a.json = False
-        cmd_check(a, st, s)
+        cmd_check(a, st, s, source_lines=False)  # printed below, once the sources are read
     if a.quiet or a.json:
         with contextlib.redirect_stdout(io.StringIO()):
             status = _notify(st, s, pending)
     else:
         status = _notify(st, s, pending)
+    if not a.json:  # the hourly job's form; the hook runs --json and must read no source.
+        # After the notification: a critical never waits for a source.
+        _source_check(st, s, threads, pairs)
+        for line in () if a.quiet else _source_lines(a, st, s, threads):
+            print(line)
     if a.json:
         print(json.dumps(out, indent=2))
     return EXIT_UNSEEN_CRITICAL if pending else status

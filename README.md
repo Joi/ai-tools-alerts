@@ -132,13 +132,15 @@ The relay bot's key signs every alert, so a stolen key could sign a false one. O
 - `https://api.github.com/advisories/<GHSA id>`,
 - `https://api.osv.dev/v1/vulns/<id>`.
 
-The id comes from the alert's own id and aliases and is used only when it has the exact form of a CVE, GHSA or OSV id. An alias counts only when the source itself ties it to the alert's first id. No link in a post is ever opened. Each request is https with no redirect followed, at most 10 seconds, at most 8 MB for the CISA file and 256 KB for an advisory; a run makes at most 10 requests in at most 30 seconds. Nothing a source says is printed, and nothing it says is stored except the response's ETag.
+The id comes from the alert's own id and aliases and is used only when it has the exact form of a CVE id, a GHSA id or an OSV malware id (`MAL-`). Which other ids are the same advisory is taken from the source, never from the post. No link in a post is ever opened. Each request is https with no redirect followed, at most 10 seconds, at most 8 MB for the CISA file and 256 KB for an advisory; a run makes at most 10 requests in at most 30 seconds. Nothing a source says is printed, and nothing it says is stored except the response's ETag and the ids it names.
 
 Each product of each relay-bot alert gets one of three results:
 
 - **confirmed**: the source supports the posted level for that product.
 - **contradicted**: the source supports more than was posted, or does not support the alert for that product. A known-exploited CVE that CISA lists for another vendor's product, posted as an alert about Claude Code, is contradicted. `check` prints one `source check:` line for each.
-- **unknown**: the source could not be read (a timeout, a rate limit, a 404, a damaged body), or it is one anyone can write, or the level rests on a reading of prose that no program can check. Unknown says nothing in either direction.
+- **unknown**: the source could not be read (a timeout, a rate limit, a 404, a damaged body), or it is one anyone can write (an advisory GitHub has not reviewed), or CISA simply does not list the CVE, or the level rests on a reading of prose that no program can check. Unknown says nothing in either direction.
+
+The check compares the product and the level. It does not compare the affected versions or the fixed version a post states with the source's.
 
 In this release the result is reported and changes nothing: levels, matches and notifications are as posted. `check --json` and `run --json` carry it as `source_check` on each match.
 

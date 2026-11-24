@@ -1,6 +1,6 @@
 # Run: fv4g-member-source-check
 Instruction: Read TASK-ai-tools-alerts#fv4g.md in this worktree root, then run `kata show ai-tools-alerts#fv4g` and follow the brief and the dispatch rules (ai-tools-alerts#fv4g, /do-it with the starting rung floored at medium): the member source check from three fixed endpoints, three results, and what cannot-verify means (findings D7 and D8 of the design review on ai-tools-alerts#h29n)
-Stage: code-review:verify+cli
+Stage: code-review:verify+cli (delta)
 Rung: medium (start-floor medium: constraint-lens, BR1 REV0 NOV1 INT1 FC1 = 4; the dispatch brief floors it at medium too)
 Lens: "No URL taken from an event is ever fetched"; "https only, no redirects"; "At most 10 fetches and 30 s per run"; "Runs in the hourly job, never in the session-start hook"; "no string from a source is printed or stored"; "a 404, a 429 and a truncated body are each `unknown` and change nothing"
 Last reviewed: spec 6c065d9d7c14b70e4715cf4fc4684a960685caba
@@ -39,6 +39,25 @@ Plan findings and what was done:
 4. BLOCKER, an exception's text could carry response text to stderr. Fixed: one fixed line; sentinel tests on stdout and stderr of `run` and `verify`.
 5. BLOCKER, no test for a failed re-read after a cached success. Fixed: 404, 429 and a truncated body after a state change, with support cached.
 6. SUBSTANTIVE, invalidation tested for level only. Fixed: an added product and an added alias over persisted state.
+
+Pass 1 [code:verify+cli]: 4B/9S/3C/0R · fixed -/- · velocity = (—→16, escalation no)
+code passes: 1 so far · Stage 2 gpt-6-astra on the whole branch at 785da1da9f467e1b495435e6d909e8f8775c4d5f (fresheyes run 20261124-155808-063ed0: 3 BLOCKER, 4 SUBSTANTIVE) · Stage 1 a same-model reviewer on the same commit (1 BLOCKER, 6 SUBSTANTIVE, 3 COSMETIC; its BLOCKER and one SUBSTANTIVE are Stage 2's too)
+
+Code findings, pass 1, and what was done (the fix commit after 785da1d):
+1. BLOCKER (Stage 2), an attacker-written first id could name a real exploited CVE and borrow its level. Fixed: which ids are the same advisory is taken only from a response that is an authority (`lowers`); an unreviewed advisory ties nothing.
+2. BLOCKER (both), dropping an alias turned a true alert into `unsupported`. Fixed: KEV not listing a CVE is no authority (`unknown` for `unauthoritative`); for a GHSA or MAL first id the related ids are the ones its own response names, read whether or not the thread lists them. Residue stated in the spec: a CVE that KEV lists for another product, supported only through an alias the bot then drops.
+3. BLOCKER (Stage 2), a fabricated notice was `confirmed` by an unreviewed advisory. Fixed: support from a class with `lowers` false is not a level; it confirms nothing.
+4. SUBSTANTIVE (Stage 2), the timeout bounded the caller's wait, not the request. Fixed: one deadline inside the request, checked between phases and reads, the socket timeout set to what is left; on expiry the thread is told to stop, its connection shut, and nothing is sent after a late name lookup.
+5. SUBSTANTIVE (Stage 2), the 30 seconds began late and were checked only before a request. Fixed: from the start of `run`, and before each thread.
+6. SUBSTANTIVE (both), a list where a word belongs in `verify.json` crashed `run --json`. Fixed: any exception in the shape check is an empty cache; tested through `run --json`, `check`, `plan` and `run`.
+7. SUBSTANTIVE (Stage 2), `LEAD-...:docker` passed `norm_id` and would be sent to OSV. Fixed: of OSV's ids only `MAL-` is looked up; found with it: the poster's thread ids are ledger keys (`CVE-...:slug`), which `norm_id` refused, so no real thread would have been read. They are now read by their public id.
+8. SUBSTANTIVE (Stage 1), three failing critical threads took the whole budget every run. Fixed: longest untried first, then level.
+9. SUBSTANTIVE (Stage 1), `confirmed` does not cover the range or the fixed version. Rebutted for this slice: it reports and applies nothing; the limit is stated in the spec, the README and the changelog, and carried to ai-tools-alerts#tavj, which applies narrowings.
+10. SUBSTANTIVE (Stage 1), every result but `unread` was permanent. Fixed: anything but `confirmed` is read again after 24 hours.
+11. SUBSTANTIVE (Stage 1), an older scope file contradicted true alerts. Fixed: a product outside this reader's scope is `unknown`; a CLI the root calls too old prints no source-check line.
+12. SUBSTANTIVE (Stage 1), `run` read the sources before notifying. Fixed: the notification first.
+13. COSMETIC, fixed: an empty KEV vendor no longer makes a name the ruleset refuses; more than 50 named ids is a failed read; the timing test's window is wider.
+Also changed with these: `below-source` stands when a related id's read failed (it rests on bodies that were read; a junk alias must not hide it). The spec review had asked for every failure to be `unknown`; the first id's failure still is.
 
 ## Chunks
 - [x] verify: aitools_alerts/verify.py, the `verify` config key, tests/test_verify.py

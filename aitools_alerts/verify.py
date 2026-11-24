@@ -14,8 +14,8 @@ parse error, a size overrun), every product of it is ``unknown``. This module
 changes no level: it reports (ai-tools-alerts#tavj applies the results).
 
 Nothing a response says is printed. What is stored from one: levels and
-booleans the ruleset computed, an ETag of an ETag's shape, and SHA-256
-digests of the ids the response names. A run makes at most MAX_FETCHES
+booleans the ruleset computed, an ETag of an ETag's shape, and the ids the
+response names, each only in the exact form of a CVE, GHSA or MAL id. A run makes at most MAX_FETCHES
 requests in at most RUN_SECONDS, each bounded as a whole by a worker thread.
 """
 
@@ -25,6 +25,7 @@ import hashlib
 import http.client
 import json
 import re
+import socket
 import threading
 import time
 from pathlib import Path
@@ -46,7 +47,7 @@ TIMEOUT = 10.0  # one request, from the call to the last byte
 MAX_FETCHES = 10  # per run
 RUN_SECONDS = 30.0
 MAX_ALIASES = 3  # aliases of one thread that are read
-MAX_NAMES = 50  # ids one response may tie to its own
+MAX_NAMES = 50  # ids one response may name; more is a failed read
 MAX_CACHE_BYTES = 16 << 20
 FILE = "verify.json"
 BOT = "relay-bot"
@@ -59,6 +60,9 @@ _ETAG = re.compile(r'(?:W/)?"[\x21\x23-\x7e]{1,128}"')
 _HEX = re.compile(r"[0-9a-f]{64}")
 _REPO_URL = re.compile(r"https://api\.github\.com/repos/([A-Za-z0-9._-]{1,100})/([A-Za-z0-9._-]{1,100})"
                        r"/security-advisories/(GHSA(?:-[0-9a-z]{4}){3})")
+_LEDGER_KEY = re.compile(r"((?:CVE-[0-9]{4}-[0-9]{4,19}|GHSA(?:-[0-9A-Za-z]{4}){3})):[A-Za-z0-9][A-Za-z0-9._-]{0,63}",
+                         re.IGNORECASE)
+RETRY_S = 86400  # a result that is not "confirmed" is read again after a day
 _CONNECTION = http.client.HTTPSConnection  # tests replace it
 
 
@@ -67,15 +71,23 @@ _CONNECTION = http.client.HTTPSConnection  # tests replace it
 def norm_id(text) -> str | None:
     """The id as a lookup uses it, or None: ``CVE-`` in upper case, ``GHSA-``
     then lower case (as the poster writes it), kept only when
-    ``ruleset.source_of`` names its source and it is not a synthetic id."""
+    ``ruleset.source_of`` names its source and it is not a synthetic id. A
+    thread key of the poster's, ``<CVE or GHSA id>:<scope slug>``, is read as
+    its id. Of OSV's ids only ``MAL-`` ones are looked up: the ruleset gives
+    no other OSV entry any authority, and an internal key (``LEAD-...``,
+    ``AITA-...``) has the same loose shape and must never be sent anywhere."""
     if not isinstance(text, str) or len(text) > 128:
         return None
+    key = _LEDGER_KEY.fullmatch(text)
+    if key is not None:
+        text = key.group(1)
     head = text[:5].upper()
     if head.startswith("CVE-"):
         text = text.upper()
     elif head == "GHSA-":
         text = "GHSA-" + text[5:].lower()
-    if ruleset.source_of(text) is None or schema.is_synthetic(text):
+    source = ruleset.source_of(text)
+    if source is None or schema.is_synthetic(text) or source == "osv" and not text.startswith("MAL-"):
         return None
     return text
 
@@ -90,20 +102,36 @@ def url_of(lookup_id: str) -> str:
     return (_GHSA_URL if source == "ghsa" else _OSV_URL) + quote(lookup_id, safe="")
 
 
-def _digest(lookup_id: str) -> str:
-    return hashlib.sha256(lookup_id.encode("utf-8")).hexdigest()
-
-
 # ------------------------------------------------------------------ the request
 
-def _request(host: str, path: str, etag: str | None, limit: int, timeout: float):
+def _request(host: str, path: str, etag: str | None, limit: int, timeout: float, held: list, cancelled):
+    """One GET inside one deadline. The deadline is checked between the
+    phases and before every read, and the socket's timeout is what is left of
+    it, so no phase restarts the clock. ``cancelled`` is set by the caller
+    when its wait is over: nothing is sent after that."""
+    deadline = time.monotonic() + timeout
+
+    def left() -> float:
+        rest = deadline - time.monotonic()
+        if rest <= 0 or cancelled.is_set():
+            raise OSError("out of time")
+        sock = getattr(conn, "sock", None)
+        if sock is not None:
+            sock.settimeout(rest)
+        return rest
+
     conn = _CONNECTION(host, timeout=timeout)
+    held.append(conn)
     try:
         headers = {"User-Agent": "aitools-alerts", "Accept": "application/json", "Accept-Encoding": "identity"}
         if etag is not None:
             headers["If-None-Match"] = etag
+        conn.connect()  # name lookup, TCP and TLS; the one phase nothing can cut short
+        left()  # a lookup that outlived the wait sends nothing
         conn.request("GET", path, headers=headers)
+        left()
         r = conn.getresponse()
+        left()
         if r.status != 200:
             return r.status, None, b""
         if (r.getheader("Content-Encoding") or "identity").strip().lower() != "identity":
@@ -117,6 +145,7 @@ def _request(host: str, path: str, etag: str | None, limit: int, timeout: float)
             body += piece
             if len(body) > limit:
                 raise OSError("too large")
+            left()
         if not chunked and len(body) != int(length):
             raise OSError("body cut short")  # read(n) returns early at EOF without raising
         return 200, r.getheader("ETag"), bytes(body)
@@ -129,24 +158,39 @@ def default_fetch(url: str, etag: str | None, limit: int, timeout: float):
     https to one of the three hosts, no port, no userinfo. No redirect is
     followed (http.client has none) and no proxy variable is read. The whole
     request, name lookup and TLS included, gets ``timeout`` seconds: it runs
-    in a daemon thread that is abandoned when the time is up. A 200 body is
-    returned only when it arrived whole (see ``_request``). The error never
-    carries text from the response."""
+    in a daemon thread; when the time is up the thread is told to stop, its
+    connection is shut, and it is not waited for (a name lookup cannot be
+    interrupted, but nothing is sent once it returns). A 200 body is returned
+    only when it arrived whole (see ``_request``). The error never carries
+    text from the response."""
     parts = urlsplit(url)
     if parts.scheme != "https" or parts.netloc not in HOSTS or parts.query or parts.fragment:
         raise OSError("refused URL")
     box: list = []
+    held: list = []
+    cancelled = threading.Event()
 
     def go():
         try:
-            box.append(_request(parts.netloc, parts.path, etag, limit, timeout))
+            box.append(_request(parts.netloc, parts.path, etag, limit, timeout, held, cancelled))
         except Exception:  # network, TLS, protocol, framing: a failed read
             box.append(None)
 
     worker = threading.Thread(target=go, name="aitools-alerts-verify", daemon=True)
     worker.start()
     worker.join(timeout)
-    if worker.is_alive() or not box or box[0] is None:
+    if worker.is_alive():
+        cancelled.set()
+        for conn in held:  # wake a read that is blocked; the thread then ends by itself
+            try:
+                sock = getattr(conn, "sock", None)
+                if sock is not None:
+                    sock.shutdown(socket.SHUT_RDWR)
+                conn.close()
+            except Exception:
+                pass
+        raise OSError("fetch failed")
+    if not box or box[0] is None:
         raise OSError("fetch failed")
     return box[0]
 
@@ -170,27 +214,26 @@ def _strict(body: bytes):
                       parse_constant=schema._reject_constant)
 
 
-def _kev_readings(catalog, wanted) -> dict:
-    """{CVE id: [reading, ...]} for each wanted id; an unlisted id reads name null."""
+def _kev_catalog(catalog) -> dict:
+    """{CVE id: [entry, ...]} of a catalog that is whole: a version, and as
+    many entries as it says it has, each with its id."""
     _is(catalog, dict)
     _is(catalog.get("catalogVersion"), str)
     items = _is(catalog.get("vulnerabilities"), list)
     if _is(catalog.get("count"), int) != len(items):
         raise _Bad("count")
-    found: dict = {i: [] for i in wanted}
+    out: dict = {}
     for it in items:
-        cve = _is(_is(it, dict).get("cveID"), str)
-        if cve in found:
-            found[cve].append(it)
-    out = {}
-    for cve, entries in found.items():
-        try:
-            out[cve] = [{"cve_id": cve, "name": f"{_is(e.get('vendorProject'), str).strip()} "
-                                                f"{_is(e.get('product'), str).strip()}"}
-                        for e in entries] or [{"cve_id": cve, "name": None}]
-        except _Bad:
-            out[cve] = None  # this entry cannot be read; the others can
+        out.setdefault(_is(_is(it, dict).get("cveID"), str), []).append(it)
     return out
+
+
+def _kev_readings(entries: dict, cve: str) -> list:
+    """The readings of one CVE id: one per catalog entry; name null when the
+    catalog does not list it."""
+    return [{"cve_id": cve, "name": " ".join(x for x in (_is(e.get("vendorProject"), str).strip(),
+                                                         _is(e.get("product"), str).strip()) if x)}
+            for e in entries.get(cve, [])] or [{"cve_id": cve, "name": None}]
 
 
 def _ghsa_reading(obj, lookup_id: str):
@@ -243,16 +286,23 @@ def _osv_reading(obj, lookup_id: str):
 
 def _record(rs, source: str, readings: list, named, etag, now: int) -> dict:
     """What is kept of one id's good read: per scope product the level and
-    whether the class may lower, the reading's own ``lowers``, digests of the
-    ids it names, the ETag when it has an ETag's shape. No text of the source."""
+    whether the class may lower; the reading's own ``lowers`` (its authority
+    about a product it does not name, and about which other ids are the same
+    advisory); the ids it names, each only in the exact form ``norm_id``
+    returns; the ETag when it has an ETag's shape. No other text of the source.
+
+    KEV not listing a CVE is no authority: the catalog holds what is known to
+    be exploited, and says nothing about the rest."""
     support: dict = {}
     lowers = True
     for fields in readings:
         for name, s in rs.read(source, fields).items():
             if name not in support or _RANK[s.level] > _RANK[support[name][0]]:
                 support[name] = [s.level, s.lowers]
-        lowers = lowers and rs.lowers(source, fields)
-    names = sorted({_digest(n) for n in (norm_id(x) for x in named[:MAX_NAMES * 4]) if n is not None})[:MAX_NAMES]
+        lowers = lowers and rs.lowers(source, fields) and not (source == "kev" and fields["name"] is None)
+    if not isinstance(named, list) or len(named) > MAX_NAMES:
+        raise _Bad("names")  # cut short, a tied id could silently become untied
+    names = sorted({n for n in (norm_id(x) for x in named) if n is not None})
     return {"etag": etag if isinstance(etag, str) and _ETAG.fullmatch(etag) else None, "at": now,
             "lowers": lowers, "support": support, "names": names}
 
@@ -260,21 +310,23 @@ def _record(rs, source: str, readings: list, named, etag, now: int) -> dict:
 # ------------------------------------------------------------------ results
 
 def judge(level: str, product: str, records, complete: bool, rs) -> dict:
-    """One product's result. ``records``: what was kept of each counted id."""
+    """One product's result. ``records``: what was kept of each counted id.
+    Support from a source its subject's attacker can write (``lowers`` false)
+    confirms nothing and contradicts nothing: it only makes the result unknown."""
     def out(result, why, source):
         return {"result": result, "why": why, "source": source}
-    if not complete:
-        return out(UNKNOWN, "unread", None)  # one read missing: the source's level is only a lower bound
     if product not in rs.products():
-        return out(CONTRADICTED, "unsupported", ruleset.NONE)
-    s, may_lower = ruleset.NONE, True
+        return out(UNKNOWN, "no-source", None)  # not in this reader's scope file: it cannot judge
+    s, may_lower = ruleset.NONE, True  # s: the highest level a source that may set one gives
     for r in records:
         own = r["support"].get(product)
-        if own is not None and _RANK[own[0]] > _RANK[s]:
+        if own is not None and own[1] and _RANK[own[0]] > _RANK[s]:
             s = own[0]
         may_lower = may_lower and (own[1] if own is not None else r["lowers"])
     if _RANK[s] > _RANK[level]:
-        return out(CONTRADICTED, "below-source", s)
+        return out(CONTRADICTED, "below-source", s)  # rests on bodies that were read: a missing one could only add
+    if not complete:
+        return out(UNKNOWN, "unread", None)  # one read missing: the source's level is only a lower bound
     if s == level:
         return out(CONFIRMED, "match", s)
     if not may_lower:
@@ -327,6 +379,13 @@ def _empty(digest: str) -> dict:
 
 
 def _well_formed(c, digest: str) -> bool:
+    try:
+        return _shape_ok(c, digest)
+    except (TypeError, ValueError, KeyError, AttributeError, RecursionError):  # e.g. a list where a word belongs
+        return False
+
+
+def _shape_ok(c, digest: str) -> bool:
     if not isinstance(c, dict) or set(c) != set(_empty(digest)) or c["version"] != 1 or c["ruleset"] != digest:
         return False
 
@@ -345,8 +404,8 @@ def _well_formed(c, digest: str) -> bool:
         if norm_id(i) != i or not isinstance(r, dict) or set(r) != {"etag", "at", "lowers", "support", "names"} \
                 or not tag(r["etag"]) or not when(r["at"]) or type(r["lowers"]) is not bool \
                 or not isinstance(r["support"], dict) or not isinstance(r["names"], list) \
-                or not all(isinstance(n, str) and _HEX.fullmatch(n) for n in r["names"]) \
-                or not all(isinstance(n, str) and isinstance(s, list) and len(s) == 2 and s[0] in _LEVELS
+                or len(r["names"]) > MAX_NAMES or not all(norm_id(n) == n for n in r["names"]) \
+                or not all(isinstance(n, str) and isinstance(s, list) and len(s) == 2 and type(s[0]) is str and s[0] in _LEVELS
                            and type(s[1]) is bool for n, s in r["support"].items()):
             return False
     for key, r in c["results"].items():
@@ -355,8 +414,9 @@ def _well_formed(c, digest: str) -> bool:
             return False
         for name, p in r["products"].items():
             if not isinstance(name, str) or not isinstance(p, dict) or set(p) != {"result", "why", "source"} \
+                    or type(p["result"]) is not str or type(p["why"]) is not str \
                     or p["result"] not in _WHYS or p["why"] not in _WHYS[p["result"]] \
-                    or not (p["source"] is None or p["source"] in _LEVELS):
+                    or not (p["source"] is None or type(p["source"]) is str and p["source"] in _LEVELS):
                 return False
     return True
 
@@ -396,14 +456,19 @@ def result_for(adv, cache: dict | None) -> dict | None:
 # ------------------------------------------------------------------ a run
 
 class _Run:
-    def __init__(self, cache, rs, fetch, now, clock, wanted_cves):
-        self.cache, self.rs, self.fetch, self.now, self.clock = cache, rs, fetch, now, clock
-        self.start = clock()
+    def __init__(self, cache, rs, fetch, now, clock, start):
+        self.cache, self.rs, self.fetch, self.now, self.clock, self.start = cache, rs, fetch, now, clock, start
         self.requests = 0
         self.exhausted = False
         self.memo: dict = {}  # id -> record or None, for this run
-        self.kev_done = False
-        self.wanted_cves = wanted_cves
+        self.kev: dict | None = None  # the catalog this run read: {CVE id: entries}
+        self.kev_asked = self.kev_unchanged = False
+
+    def spent(self) -> bool:
+        """The run's 30 seconds are over."""
+        if self.clock() - self.start >= RUN_SECONDS:
+            self.exhausted = True
+        return self.exhausted
 
     def _spend(self) -> float | None:
         """Count one request and give its timeout, or None when the run's
@@ -430,89 +495,109 @@ class _Run:
         except Exception:  # nothing of the failure is kept or shown: its text may quote the response
             return None
 
-    def _kev(self) -> None:
-        """One request for the catalog serves every CVE id of the run."""
-        self.kev_done = True
+    def _ask_kev(self, known: set) -> None:
+        """The one request for the catalog. It carries the stored ETag only
+        when every CVE id known to be wanted has a record read at that ETag."""
+        self.kev_asked = True
         sources, held = self.cache["sources"], self.cache["kev"]
         etag = held["etag"] if held else None
-        if etag is None or any(sources.get(i, {}).get("etag") != etag for i in self.wanted_cves):
+        if etag is None or any(sources.get(i, {}).get("etag") != etag for i in known):
             etag = None  # an id not read at that ETag needs the body
         got = self._get(KEV_URL, etag, "kev")
         if got is None:
             return
         if got[0] == 304:
-            self.memo.update((i, sources[i]) for i in self.wanted_cves)
+            self.kev_unchanged = True
             return
         try:
-            readings = _kev_readings(got[2], self.wanted_cves)
+            self.kev = _kev_catalog(got[2])
         except _Bad:
             return
         tag = got[1] if isinstance(got[1], str) and _ETAG.fullmatch(got[1]) else None
         self.cache["kev"] = {"etag": tag, "at": self.now}
-        for cve, rd in readings.items():
-            try:
-                self.memo[cve] = sources[cve] = _record(self.rs, "kev", rd, [], tag, self.now) if rd else None
-            except (ruleset.RulesetError, TypeError):
-                self.memo[cve] = None
-            if self.memo[cve] is None:
-                sources.pop(cve, None)
 
-    def read(self, lookup_id: str) -> dict | None:
+    def read(self, lookup_id: str, known_cves=frozenset()) -> dict | None:
         """What is kept of this id's read, asked for at most once a run. None:
         the read failed or was not made. A stored record is never a fallback
         for a failed read; a 304 to its own ETag is the one way it is used."""
         if lookup_id in self.memo:
             return self.memo[lookup_id]
-        source = ruleset.source_of(lookup_id)
+        source, sources = ruleset.source_of(lookup_id), self.cache["sources"]
+        held, rec = sources.get(lookup_id), None
         if source == "kev":
-            if not self.kev_done:
-                self._kev()
-            return self.memo.setdefault(lookup_id, None)
-        held = self.cache["sources"].get(lookup_id)
-        got = self._get(url_of(lookup_id), held["etag"] if held else None, source)
-        rec = None
-        if got is not None and got[0] == 304:
-            rec = held
-        elif got is not None:
-            try:
-                fields, named = (_ghsa_reading if source == "ghsa" else _osv_reading)(got[2], lookup_id)
-                rec = _record(self.rs, source, [fields], named, got[1], self.now)
-                self.cache["sources"][lookup_id] = rec
-            except (_Bad, ruleset.RulesetError, TypeError, AttributeError):
-                rec = None
+            if not self.kev_asked:
+                self._ask_kev(set(known_cves) | {lookup_id})
+            if self.kev is not None:
+                try:
+                    tag = self.cache["kev"]["etag"]
+                    rec = _record(self.rs, "kev", _kev_readings(self.kev, lookup_id), [], tag, self.now)
+                except (_Bad, ruleset.RulesetError, TypeError, AttributeError):
+                    rec = None
+            elif self.kev_unchanged and held is not None and held["etag"] == self.cache["kev"]["etag"]:
+                rec = held
+        else:
+            got = self._get(url_of(lookup_id), held["etag"] if held else None, source)
+            if got is not None and got[0] == 304:
+                rec = held
+            elif got is not None:
+                try:
+                    fields, named = (_ghsa_reading if source == "ghsa" else _osv_reading)(got[2], lookup_id)
+                    rec = _record(self.rs, source, [fields], named, got[1], self.now)
+                except (_Bad, ruleset.RulesetError, TypeError, AttributeError):
+                    rec = None
+        if rec is not None:
+            sources[lookup_id] = rec
         self.memo[lookup_id] = rec
         return rec
 
-    def thread(self, t: _Target) -> dict:
-        """{product: result} for one thread. An alias counts only when a
-        response ties it to the first id: the first id's names it, or its own
-        names the first id."""
-        records, complete = [], True
-        first = self.read(t.first)
+    def thread(self, t: _Target, known_cves) -> dict:
+        """{product: result} for one thread.
+
+        Which other ids are the same advisory is the source's word, never the
+        bot's. When the first id is a GHSA or MAL id and its response is an
+        authority (``lowers``), the ids that response names are read, whether
+        or not the thread lists them: dropping an alias takes nothing away.
+        When the first id is a CVE (KEV names no other id), each GHSA or MAL
+        alias the thread lists is read, and counts only when its own response
+        is an authority and names that CVE. Anything else adds nothing."""
+        first = self.read(t.first, known_cves)
         if first is None:
-            complete = False
+            return {p: judge(t.level, p, [], False, self.rs) for p in t.products}
+        records, from_kev = [first], ruleset.source_of(t.first) == "kev"
+        if from_kev:
+            related = [a for a in t.aliases if ruleset.source_of(a) != "kev"]
         else:
-            records.append(first)
-            from_kev = ruleset.source_of(t.first) == "kev"
-            eligible = [a for a in t.aliases if _digest(a) in first["names"]
-                        or (from_kev and ruleset.source_of(a) != "kev")]
-            complete = len(eligible) <= MAX_ALIASES
-            for a in eligible[:MAX_ALIASES]:
-                rec = self.read(a)
-                if rec is None:
-                    complete = False
-                elif _digest(a) in first["names"] or _digest(t.first) in rec["names"]:
-                    records.append(rec)
+            related = [n for n in first["names"] if n != t.first] if first["lowers"] else []
+        complete = len(related) <= MAX_ALIASES
+        for a in related[:MAX_ALIASES]:
+            rec = self.read(a, known_cves)
+            if rec is None:
+                complete = False
+            elif not from_kev or (rec["lowers"] and t.first in rec["names"]):
+                records.append(rec)
         return {p: judge(t.level, p, records, complete, self.rs) for p in t.products}
+
+
+def _waits(t: _Target, results: dict, now: int) -> bool:
+    """A thread is read when its published state has no result, when a read it
+    needed failed, and, a day later, when its result is anything but
+    confirmed: a source read minutes before it changed must not stand for good."""
+    held = results.get(t.key)
+    if held is None or set(held["products"]) != set(t.products):
+        return True
+    whys = {p["why"] for p in held["products"].values()}
+    return "unread" in whys or (whys - {"match", "no-source"} and now - held["at"] >= RETRY_S)
 
 
 def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=time.monotonic, rs=None) -> dict:
     """Read the sources for the threads of ``wanted`` that need it and save
     the cache; returns it. ``current``: every current advisory (what the
     cache keeps); ``wanted``: the ones this run may read (all of them, or
-    those matching this machine). A thread is read when its published state
-    has no result yet, or a read it needed failed; highest level first, then
-    longest untried. The state lock is not held: a pull must not wait."""
+    those matching this machine). Threads waiting (``_waits``) are taken
+    longest untried first, then highest level, so no thread that keeps failing
+    holds the others back. The 30 seconds run from this call. The state lock
+    is not held: a pull must not wait."""
+    start = clock()
     rs = rs or ruleset.load()
     fetch = fetch or default_fetch
     now = int(time.time() if now is None else now)
@@ -524,19 +609,22 @@ def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=
             t = _Target(adv)
             if t.first is not None:
                 targets.setdefault(t.key, t)
-    waiting = [t for t in targets.values()
-               if t.key not in results or set(results[t.key]["products"]) != set(t.products)
-               or any(p["why"] == "unread" for p in results[t.key]["products"].values())]
-    waiting.sort(key=lambda t: (-_RANK[t.level], results.get(t.key, {}).get("at", 0), t.key))
-    cves = {i for t in waiting for i in t.ids() if ruleset.source_of(i) == "kev"}
-    job = _Run(cache, rs, fetch, now, clock, cves)
+    waiting = sorted((t for t in targets.values() if _waits(t, results, now)),
+                     key=lambda t: (results.get(t.key, {}).get("at", 0), -_RANK[t.level], t.key))
+    known = {i for t in waiting for i in [t.first, *cache["sources"].get(t.first, {}).get("names", [])]
+             if ruleset.source_of(i) == "kev"}
+    job = _Run(cache, rs, fetch, now, clock, start)
     for t in waiting:
-        products = job.thread(t)
+        if job.spent():
+            break
+        products = job.thread(t, known)
         if job.exhausted:
             break  # not tried in full: what is left stays as it was
         results[t.key] = {"at": now, "products": products}
-    live = [_Target(adv) for adv in current if adv.posted_by == BOT]
-    keys, ids = {t.key for t in live}, {i for t in live if t.first is not None for i in t.ids()}
+    live = [_Target(adv) for adv in current if adv.posted_by == BOT and norm_id(adv.id) is not None]
+    keys = {t.key for t in live}
+    ids = {i for t in live for i in t.ids()}
+    ids |= {n for i in list(ids) for n in cache["sources"].get(i, {}).get("names", [])}
     cache["results"] = {k: v for k, v in results.items() if k in keys}
     cache["sources"] = {i: r for i, r in cache["sources"].items() if i in ids}
     write_json(Path(state_dir) / FILE, cache)

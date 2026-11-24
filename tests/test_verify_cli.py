@@ -177,14 +177,51 @@ def test_a_cli_the_root_calls_too_old_does_not_say_the_source_supports_more(feed
 
 
 def test_an_alert_the_source_does_not_support_is_flagged_per_product(feed, monkeypatch, capsys):
-    feed([bot(id=CVE, level="critical", products=("Claude Code", "Nobody Runs This"))], 'verify = "all"\n')
-    use(monkeypatch, Net().set(verify.KEV_URL, kev((CVE, "Cisco", "IOS XE"))))
+    feed([bot(id=CVE, level="critical", products=("Claude Code", "git", "Nobody Runs This"))], 'verify = "all"\n')
+    use(monkeypatch, Net().set(verify.KEV_URL, kev((CVE, "Git", "Git"))))
     _, out, _ = out_of(capsys, ["run"])
+    assert out.count("source check:") == 1
     assert f"source check: the source does not support {CVE} for Claude Code\n" in out
-    assert f"source check: the source does not support {CVE} for a product outside the scope file\n" in out
-    assert "Nobody Runs This" not in out.split("source check:", 1)[1]
+    assert "Nobody Runs This" not in out  # outside this reader's scope file: not judged, never printed
     assert out_of(capsys, ["verify"])[1].startswith("source check: 0 confirmed, 1 contradicted, 0 not verified")
 
+
+def test_a_cli_the_root_calls_too_old_prints_no_source_check_line_at_all(feed, monkeypatch, capsys):
+    feed([bot(id=CVE, level="critical")], min_cli="99.0.0")
+    use(monkeypatch, Net().set(verify.KEV_URL, kev((CVE, "Cisco", "IOS XE"))))
+    for argv in (["run"], ["check"], ["plan", CVE]):
+        assert "source check: the source" not in out_of(capsys, argv)[1], argv
+
+
+def test_the_notification_is_sent_before_any_source_is_read(feed, monkeypatch, capsys):
+    feed([bot(id=CVE, level="critical")])
+    order = []
+    monkeypatch.setattr(notify, "send", lambda *a, **k: order.append("notify") or SendResult(True, "fake"))
+
+    def fetch(*a):
+        order.append("fetch")
+        raise OSError("down")
+    use(monkeypatch, fetch)
+    assert cli.main(["run"]) == cli.EXIT_UNSEEN_CRITICAL and order == ["notify", "fetch"]
+
+
+@pytest.mark.parametrize("damage", ['{"version": 1', '[]', "RESULT-LIST"])
+def test_a_damaged_cache_never_stops_the_hook_s_command(feed, monkeypatch, capsys, damage):
+    feed([bot(id=CVE, level="critical")])
+    use(monkeypatch, Net().set(verify.KEV_URL, KEV_CC))
+    cli.main(["run"])
+    (config.state_dir() / "seen.json").unlink()
+    path = config.state_dir() / verify.FILE
+    if damage == "RESULT-LIST":
+        good = json.loads(path.read_text())
+        next(iter(good["results"].values()))["products"]["Claude Code"]["result"] = []
+        damage = json.dumps(good)
+    path.write_text(damage)
+    status, out, err = out_of(capsys, ["run", "--json"])
+    assert status == cli.EXIT_UNSEEN_CRITICAL and "Traceback" not in err
+    assert json.loads(out)["matches"][0]["source_check"]["why"] == "unread"
+    for argv in (["check"], ["plan", CVE], ["run"]):
+        assert out_of(capsys, argv)[0] in (0, cli.EXIT_UNSEEN_CRITICAL)
 
 def test_confirmed_and_unknown_print_no_line(feed, monkeypatch, capsys):
     feed([bot(id=CVE, level="critical"), bot(id="https://evil.example/GHSA-aaaa-bbbb-cccc", level="critical")],
