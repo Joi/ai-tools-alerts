@@ -1,10 +1,12 @@
 # Changelog
 
-## 0.1.8 — 2026-11-24
+## Unreleased
 
 The poster can now post every in-scope advisory to a catalog channel, and the mirror can serve it as `catalog.json` (ai-tools-alerts#q03f, design section 1 of ai-tools-alerts#9mx8). Both stay off until `spec/catalog-channel.json` names the channel, which ai-tools-alerts#q3fd adds once the channel exists; until then nothing changes. The channel posts are unchanged. Released readers never fetch `catalog.json`, and no catalog event is ever in `feed.json`, `critical.json` or the checkpoint. Reading and matching the catalog in the CLI is ai-tools-alerts#8nb4. `docs/design.md`, "Catalog channel", has the rules.
 
 What an operator should know. With the file present the poster writes three more files beside the ledger, `<ledger>.catalog-known.json`, `<ledger>.catalog.json` and `<ledger>.catalog.lock`, and its summary line ends `catalog=<sent>/<waiting>`. Losing the first two only makes the lane post again, which is harmless. The catalog's sends come after the ledger lock and the checkpoint and never change the exit code. The exporter reads `spec/catalog-channel.json` from its own checkout (or `--catalog`), and a catalog failure leaves the alert files as they would have been. To go back: delete `spec/catalog-channel.json`.
+
+## 0.1.8 — 2026-11-24
 
 A level is now set by its consequence to the member, and a critical needs an action the member can take (ai-tools-alerts#9kgk, design section 4 of ai-tools-alerts#9mx8). Ruleset version 3: a critical stands only when the post carries a complete action, an upgrade while the post states the fixed version, or `stop_using` for a malicious release a reading confirms (GitHub malware, a vendor's CWE-506); otherwise it is `high`. A KEV listing with no fix known therefore posts at `high`. The upstream severity word is printed and never sets a level. A channel product's `high` needs code execution, credential or token theft, or a sandbox or approval bypass, with a fix; everything else is a notice, denial of service included. The poster, the curator command and the member's source check (`verify`) apply the same rule (`Ruleset.action_level`). A known thread is raised to critical only when its root stated the fix, because every reader holds a fix that a later reply adds (ai-tools-alerts#tyje); such a thread stays `high` with its fix until a source check can confirm the held fix. The synthetic check (`run --kev-file`) now posts at `high` (ai-tools-alerts#a3xh).
 
