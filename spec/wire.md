@@ -56,6 +56,10 @@ The trust root can name the oldest release that reads the feed in full. It is an
 
 It is not in the manifest because a released reader refuses a manifest with a key it does not know. The same holds for anything else the root must pin later (a ruleset digest): the certificate, not the manifest.
 
+## `catalog.json`
+
+A new file on the mirror, which no released reader fetches. Its events are relay posts in the catalog channel named by `spec/catalog-channel.json`, bound to that id alone; no catalog event is ever served in `feed.json` or `critical.json` (v0.1.4 and v0.1.5 would show it as an alert) or listed in a checkpoint (v0.1.6 and v0.1.7 would refuse the pull). Each is a root carrying one advisory's whole block for one product; the newest root per advisory id and product is current, and an alert thread for the same advisory and product governs over it. Since old readers never see it, the catalog entry's own format may change with the CLI that reads it (ai-tools-alerts#8nb4).
+
 ## Adding to the format
 
 Put a new signed thing where the table says released readers ignore it. Add it to the feed in `tests/test_wire_compat.py` first, and add the newly released tag to `RELEASED` there at each release.

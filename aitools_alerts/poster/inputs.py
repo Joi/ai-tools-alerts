@@ -13,6 +13,7 @@ import fcntl
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 import threading
@@ -143,6 +144,20 @@ class Config:
         return self.ledger.with_name(self.ledger.name + ".recompute.json")
 
     @property
+    def catalog_known(self) -> Path:
+        """The catalog lane's inventory (q03f): written only under catalog_lock."""
+        return self.ledger.with_name(self.ledger.name + ".catalog-known.json")
+
+    @property
+    def catalog_state(self) -> Path:
+        """What the catalog lane last sent per key (q03f): written only under catalog_lock."""
+        return self.ledger.with_name(self.ledger.name + ".catalog.json")
+
+    @property
+    def catalog_lock(self) -> Path:
+        return self.ledger.with_name(self.ledger.name + ".catalog.lock")
+
+    @property
     def mirror_dir(self) -> Path:
         """The verified mirror events the curator pass reads (a member-style state dir)."""
         return self.ledger.with_name(self.ledger.name + ".mirror")
@@ -160,6 +175,21 @@ class Config:
         if len(set(real)) != len(real) or any(r.startswith(mirror) for r in real[:-1]):
             raise ConfigError("ledger, ledger lock, state, kev_cache, the translation, checkpoint and recompute files "
                               "and the checkpoint key file must differ")
+
+
+    def check_catalog_paths(self) -> None:
+        """The catalog lane's three files differ from each other and from every file
+        check_paths guards. Checked only when the lane is on, and a clash turns off the
+        lane alone (q03f): a catalog path never stops alert work."""
+        own = [self.catalog_known, self.catalog_state, self.catalog_lock]
+        others = [self.ledger, self.ledger.with_name(self.ledger.name + ".lock"), self.state, self.kev_cache,
+                  self.translate_state, self.owed_state, self.recompute_state, self.mirror_dir]
+        if self.checkpoint_key_file is not None:
+            others.append(self.checkpoint_key_file)
+        real = [os.path.realpath(p).casefold() for p in own + others]
+        mirror = os.path.realpath(self.mirror_dir).casefold() + os.sep
+        if len(set(real)) != len(real) or any(r.startswith(mirror) for r in real[:3]):
+            raise ConfigError("the catalog files must differ from each other and from the poster's other files")
 
 
 def _check_relay_url(url) -> str:
@@ -256,6 +286,29 @@ def load_channels() -> dict:
     return ch
 
 
+CATALOG_SPEC = "catalog-channel.json"
+
+
+def load_catalog_channel(channels: dict, path: Path | None = None) -> str | None:
+    """The catalog channel id (q03f) from spec/catalog-channel.json, or None when the
+    file does not exist (the catalog is off). ConfigError when it is not exactly
+    ``{"catalog": <lowercase uuid>}`` naming neither alert channel."""
+    path = path if path is not None else schema.SPEC_DIR / CATALOG_SPEC
+    try:
+        ch = read_regular_json(path, 4096)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, RecursionError) as e:
+        raise ConfigError(f"spec/{CATALOG_SPEC} unreadable: {type(e).__name__}") from None
+    uuid = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+    if not (isinstance(ch, dict) and set(ch) == {"catalog"} and isinstance(ch["catalog"], str)
+            and uuid.fullmatch(ch["catalog"])):
+        raise ConfigError(f"spec/{CATALOG_SPEC} needs exactly catalog as a lowercase UUID")
+    if ch["catalog"] in (channels.get("feed"), channels.get("critical")):
+        raise ConfigError(f"spec/{CATALOG_SPEC} names an alert channel")
+    return ch["catalog"]
+
+
 # ---------------------------------------------------------------- files
 
 
@@ -291,6 +344,26 @@ def _sync(fd: int) -> None:
         except OSError:
             pass
     os.fsync(fd)
+
+
+def read_regular_json(path: Path, limit: int):
+    """read_json for a file that must be a regular file: opened without blocking (a FIFO
+    or a device at the path never holds the run), refused with ValueError when it is not
+    a regular file. FileNotFoundError when it does not exist."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("not a regular file")
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1
+            data = fh.read(limit + 1)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if len(data) > limit:
+        raise ValueError("file too large")
+    return json.loads(data, object_pairs_hook=schema._no_duplicates,
+                      parse_constant=schema._reject_constant)
 
 
 def read_json(path: Path, limit: int):
