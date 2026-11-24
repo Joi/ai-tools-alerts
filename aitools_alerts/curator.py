@@ -300,7 +300,7 @@ def amend_event(sec: str, m, root: str, st: State, thread, root_ev: dict, *, lev
     except ValueError as e:
         raise CuratorError(f"the amended advisory is not valid: {e}") from None
     if not _actionable(merged) and ("level" in patch or "actions" in patch or "products" in patch):
-        raise CuratorError(_NEEDS_ACTION)  # a critical already without one may still take a note
+        raise CuratorError(_NEEDS_ACTION)  # a critical already without one may still take a title or a lowering
     # The first line is always ours: a note can never read as retract or level.
     lines = [f"level: {lower}" if lower else f"Amended: {merged.title}"]
     note = _one_line(note, "--note")

@@ -519,3 +519,21 @@ def test_a_curator_critical_needs_a_complete_action(mirror, monkeypatch):
             post(**kw)
     assert len(post(fixed="2.1.0", actions=[curator.parse_action("upgrade:Claude Code:2.1.0")])) == 2
     assert len(post(actions=[curator.parse_action("stop_using:Claude Code")])) == 2
+
+
+def test_a_curator_amend_never_makes_an_actionless_critical(mirror, monkeypatch):
+    """9kgk, delta review: an amend that raises to critical, or takes away a critical's last
+    complete action, is refused before signing; a critical already without one (posted
+    before the rule) still takes a title or a lowering."""
+    bare = publish(mirror, *post(mirror, actions=[], channel="feed"))
+    with pytest.raises(curator.CuratorError, match="complete action"):
+        amend(mirror, bare, level="critical")
+    ok = publish(mirror, *post(mirror, level="critical", channel="feed",
+                               actions=[Action("stop_using", "Claude Code", None)]))
+    with pytest.raises(curator.CuratorError, match="complete action"):
+        amend(mirror, ok, actions=[])
+    with monkeypatch.context() as mp:
+        mp.setattr(curator, "_actionable", lambda adv: True)  # as posted before the rule
+        old = publish(mirror, *post(mirror, level="critical", channel="feed", actions=[]))
+    assert amend(mirror, old, title="A better title")
+    assert amend(mirror, old, level="high")

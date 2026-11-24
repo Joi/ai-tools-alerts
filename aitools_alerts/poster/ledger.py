@@ -310,6 +310,8 @@ class Ledger:
             raise LedgerError("reply_ids must map channel to event id")
         e = self._entry(root_event_id)
         was, new = e["advisory"], asdict(adv)
+        if "root_fixed" not in e and Entry(**e).fix_at_root:  # 9kgk: a legacy entry's root fix, kept
+            e["root_fixed"] = Entry(**e).fix_at_root
         if _listed_fields(was) != _listed_fields(new):
             e["listed_at"] = now  # a digest lists it again
         else:  # frozen, a legacy entry's too, before last_change moves

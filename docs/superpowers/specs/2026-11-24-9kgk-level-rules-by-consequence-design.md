@@ -188,8 +188,12 @@ Added after the whole-branch review (independent model, and the stage-1 pass):
   too. A fix the schema cannot express never yields `stop_using`.
 - **Curator.** `curator post` and `curator amend` refuse a critical with no complete
   action (any verb with a target; an upgrade needs the product's fixed version). A curator
-  critical already without one may still take a note. Readers are unchanged: nothing
-  already published is hidden.
+  critical already without one may still take a title or a lowering. Readers are
+  unchanged: nothing already published is hidden.
+
+Added after the delta pass: a journaled reply is checked too unless its thread already
+stands at critical; a legacy ledger entry's inferred root fix is written into
+`root_fixed` before its first reply is recorded.
 
 ### Consequences for other behaviour
 

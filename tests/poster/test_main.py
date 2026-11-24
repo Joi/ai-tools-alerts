@@ -2425,11 +2425,28 @@ def test_a_journaled_critical_copy_with_no_action_never_posts(env):
         exploited=True, trojanized=False, injection_exec=False, fixed=None, affected=None,
         sources=(main.candidates.Source(GHSA, None),), observed_at=None), "critical",
         main.rules.scope_of("Claude Code"), posted_at=T0)  # as an older poster wrote it
-    cp["adv"], cp["text"] = main.asdict(bare[1]), bare[0]
-    assert main._complete(main._block(bare[0])) is False  # a known thread's copy has only its text
+    cp["adv"], cp["text"] = None, bare[0]  # a known thread's copy keeps only its text
     env.config.state.write_text(json.dumps(st))
     env.collector([])
     env.kev.catalog = {"vulnerabilities": []}
     code, summary, relay = env.run(now=T0 + 3600)
     assert code == 0 and "withheld=1" in summary, summary  # the old copy dropped; the replanned one acts
     assert all("Action: upgrade Claude Code to 2.1.0 or later." in c[2] for c in relay.calls)
+
+
+def test_a_journaled_reply_raising_a_thread_to_an_actionless_critical_never_posts(env):
+    """Delta review: replies are exempt only on a thread already critical."""
+    env.collector([finding(fid="GHSA-abcd-efgh-ijkl", aliases=("CVE-2026-0001",), affected="<2.1.0")])
+    assert "roots=1" in env.run()[1]
+    env.collector([])
+    env.kev.catalog = {"vulnerabilities": [kev_item()]}
+    env.run(now=T0 + 3600, relay=FakeRelay("fail"))  # the raise is journaled, nothing sent
+    st = env.state()
+    (rp,) = [it for it in st["outbox"] if it["kind"] == "reply"]
+    assert rp["adv"]["level"] == "critical"
+    rp["adv"]["actions"], rp["adv"]["products"][0]["fixed"] = [], None  # as an older poster wrote it
+    env.config.state.write_text(json.dumps(st))
+    env.kev.catalog = {"vulnerabilities": []}
+    code, summary, relay = env.run(now=T0 + 7200)
+    assert code == 0 and "withheld=1" in summary, summary  # dropped; the replanned raise carries its upgrade
+    assert any(c[0] == "feed" and "Level is now critical." in c[2] for c in relay.calls)

@@ -4,6 +4,7 @@ import json
 import logging
 
 import pytest
+from dataclasses import replace
 
 from aitools_alerts.poster import compose, ledger, rules
 from aitools_alerts.poster.candidates import Candidate, Source
@@ -310,3 +311,18 @@ def test_learned_sources_wait_for_the_next_reply(tmp_path):
         posted = dataclasses.replace(adv, sources=[*adv.sources, schema.Source(GHSA, None)])
         led.record_reply("r1", posted, {"feed": "a1"}, now=T0 + 10)
         assert GHSA not in [x["url"] for x in led.thread("r1").learned_sources]
+
+
+def test_a_legacy_entry_keeps_its_root_fix_through_its_first_reply(tmp_path):
+    """Delta review: an entry written before root_fixed infers it from the advisory while no
+    reply changed it, and keeps it when the first reply is recorded."""
+    from aitools_alerts.poster.ledger import Ledger
+    with Ledger(tmp_path / "ledger.json") as led:
+        _, adv = compose.root_post(cand(fixed="2.1.0"), ("high", "fix-rce-tier1"), rules.scope_of("Claude Code"),
+                                   posted_at=1795000000)
+        led.record_root(adv, "r" * 64, {"feed": "r" * 64}, scope="Claude Code", exploited=False, now=1795000000)
+        led._state()["entries"][0].pop("root_fixed")  # as written before 9kgk
+        assert led.thread("r" * 64).fix_at_root == "2.1.0"
+        wider = replace(adv, products=[replace(adv.products[0], affected="<2.5.0", fixed="2.5.0")])
+        led.record_reply("r" * 64, wider, {"feed": "e" * 64}, now=1795000600)
+        assert led.thread("r" * 64).fix_at_root == "2.1.0"

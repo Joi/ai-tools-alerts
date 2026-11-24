@@ -176,9 +176,11 @@ class Run:
                                    and o["root"] is None and _fold(o["ids"]) & _fold(it["ids"])])
                 self.n["withheld"] += 1
                 return
-            if it["kind"] in ("root", "copy") and not _complete(it.get("adv") or _block(it["text"])):
-                # 9kgk: a critical root journaled before this rule (no fix, no action) never posts;
-                # a reply keeps a thread's standing level, which a run never lowers (h29n does);
+            if not _complete(it.get("adv") or _block(it["text"])) and (
+                    it["kind"] in ("root", "copy") or self._entry(it).level != "critical"):
+                # 9kgk: a critical journaled before this rule (no fix, no action) never posts, nor
+                # does a reply that would raise a thread to one; a reply on a thread already
+                # critical keeps its standing level, which a run never lowers (h29n does);
                 # the candidate is planned again from its sources next run. Its copies go too.
                 self._drop([it] + [o for o in self.state["outbox"] if o["kind"] == "copy"
                                    and o["root"] is None and _fold(o["ids"]) & _fold(it["ids"])])
