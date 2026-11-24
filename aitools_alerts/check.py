@@ -12,13 +12,16 @@ command templates belong to the CLI (A5) and skills (A6).
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 
 from . import schema, versions
 from .inventory import Installed, Inventory
 from .schema import Action, Advisory, Product
 
 AFFECTED = "affected"
-NAME = "name"
+# A match by a name alone, or with no version to compare to a range: it is
+# reported, and never interrupts (no exit 2, no notification, no auto-apply).
+MAY_APPLY = "may apply"
 UNPARSABLE = "unparsable-version"
 _NAME_ECOSYSTEMS = frozenset({"skill", "mcp"})
 # Verbs whose target must name the matched installation, and the ecosystem
@@ -42,6 +45,8 @@ IDENTITY = {
     "openssh": {"openssh"},
     "git": {"git"},
     "macos": {"macos"},
+    "openclaw": {"openclaw"},
+    "hermes": {"hermes", "hermes agent", "hermes-agent"},
 }
 
 
@@ -68,8 +73,47 @@ class Plan:
     prepare: list[Action]
 
 
+@lru_cache(maxsize=1)
+def _scope_packages() -> dict[str, str]:
+    """identity (lowercase) -> package, for every mcp scope entry and
+    component that has a package. A scope file that does not load: {}."""
+    try:
+        out = {}
+        for e in schema.load_scope():
+            if e.ecosystem != "mcp":
+                continue
+            for x in (e, *e.components):
+                if x.package:
+                    for ident in (x.name, *x.match):
+                        out[ident.lower()] = x.package.lower()
+        return out
+    except Exception:
+        return {}
+
+
+def _identity(product: Product, inst: Installed) -> bool | None:
+    """Whether the installation is the product by more than a name: True
+    when its package (mcp) or its marketplace (a plugin) says so, False when
+    they say it is another product (no match at all), None when nothing
+    beyond the name is known."""
+    name = product.name.lower()
+    if product.ecosystem == "mcp":
+        want = name if name.startswith(("npm:", "pypi:")) else _scope_packages().get(name)
+        if want is None or inst.package is None:
+            return None
+        return inst.package == want
+    if product.ecosystem == "skill" and "@" in name:
+        # Source-qualified: only an installation from that marketplace is it.
+        return inst.source is not None and f"{inst.name}@{inst.source}".lower() == name
+    return None
+
+
 def _aliases(ecosystem: str, installed: Installed) -> set[str]:
     names = {installed.name.lower()}
+    if ecosystem == "mcp":
+        names |= {x.lower() for x in (installed.package, installed.server) if x}
+    if ecosystem == "skill" and installed.source:
+        names.add(f"{installed.name}@{installed.source}".lower())
     tool = IDENTITY.get(ecosystem, set()) | {ecosystem}
     if ecosystem not in _NAME_ECOSYSTEMS and names & tool:  # the ecosystem's own tool
         names |= tool
@@ -103,12 +147,17 @@ def match(advs: list[Advisory], inv: Inventory) -> list[Match]:
         for product in adv.products:
             for inst in inv.products.get(product.ecosystem, []):
                 aliases = _aliases(product.ecosystem, inst)
-                key = (product.ecosystem, inst.name.lower(), product.affected, product.fixed)
+                key = (product.ecosystem, inst, product.affected, product.fixed)
                 if product.name.lower() not in aliases or key in seen:
                     continue
-                if inst.version is None or (product.affected is None
-                                            and product.fixed is None):
-                    reason = NAME
+                ident = _identity(product, inst)
+                if ident is False:
+                    continue
+                if (ident is True and product.affected == "*" and product.fixed is None):
+                    reason = AFFECTED  # every version, and it is this installation
+                elif inst.version is None or (product.affected is None
+                                              and product.fixed is None):
+                    reason = MAY_APPLY
                 else:
                     hit = versions.check(inst.version, product.affected, product.fixed)
                     if hit is False:
