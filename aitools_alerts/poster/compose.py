@@ -673,7 +673,7 @@ _DIGEST = {
                w_link=lambda url: f"Catalog: {url}"),
     "ja": dict(head=lambda d, n: f"{d} のデイリーダイジェスト: 新しいアラート {n} 件。",
                quiet=lambda d, n, url: f"{d} のデイリーダイジェスト: 新しいアラートはありません。"
-                                       f"今週カタログに追加された注意: {n} 件: {url}",
+                                       f"今週カタログに追加された注意は {n} 件です: {url}",
                bare=lambda d: f"{d} のデイリーダイジェスト: 新しいアラートはありません。",
                level=lambda lv: _JA_LEVEL[lv],
                withheld=lambda n: f"{n} 件を公開前チェックで保留しました。",

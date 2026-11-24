@@ -168,3 +168,91 @@ def test_a_digest_journaled_before_the_summary_still_settles(env):
     st = env.state()
     assert st["digest_date"] == "2026-11-09" and st["weekly"] == "2026-W45"  # an old item names no week
     assert chans(relay) == [("feed", None)] and code == 0
+
+
+# ------------------------------------------------ retiring held notices (review of fcaf792)
+
+INSPECTOR = test_main.INSPECTOR
+B_ID = "GHSA-2222-3333-4444"
+
+
+def inspector(**kw):
+    f = finding(fid="GHSA-4fc4-wcmh-4g86", product="npm:@modelcontextprotocol/inspector", severity=None,
+                fixed=None, sources=(INSPECTOR,))
+    return {**f, **kw}
+
+
+def held_then_posted(env, held_scope=None, extra_alias=None):
+    f = inspector()
+    env.collector([f])
+    env.run()
+    if held_scope or extra_alias:
+        def fix(st):
+            if held_scope:
+                st["held"][0]["scope"] = held_scope
+            if extra_alias:
+                st["held"][0]["adv"]["aliases"].append(extra_alias)
+        edit_state(env, fix)
+    rce = dict(f, fixed="1.0.3", advisory_severity="high")
+    rce["sources"] = [{"url": INSPECTOR, "published_at": None, "title": "Remote code execution through the proxy"}]
+    env.collector([rce], name="2026-11-05T020000Z")
+    _, summary, _ = env.run(now=test_main.T0 + 3600)
+    assert "roots=1" in summary, summary
+
+
+def test_a_held_notice_that_posted_is_retired_not_counted(env):
+    held_then_posted(env)
+    _, _, relay = env.run(now=at(5, 9))
+    (body,) = digests(relay)
+    assert body.startswith("Daily digest for 2026-11-05: 1 new alert.") and "GHSA-4fc4-wcmh-4g86" in body
+    st = env.state()
+    assert st["held"] == [] and "@modelcontextprotocol/inspector|ghsa-4fc4-wcmh-4g86" in st["digested"]
+    _, _, relay = env.run(now=at(9, 9))
+    assert "Weekly summary: 0 notices added" in digests(relay)[0]
+
+
+def test_a_notice_held_under_a_former_name_is_retired_by_the_root_under_the_new_one(env):
+    held_then_posted(env, held_scope="MCP Inspector")
+    env.run(now=at(5, 9))
+    assert env.state()["held"] == []
+
+
+def test_one_members_root_leaves_the_rest_of_a_held_group_held(env):
+    """A held fix group keeps its members as aliases (faxq): one member's root does not
+    retire the others, and the weekly summary counts the entry."""
+    held_then_posted(env, extra_alias=B_ID)
+    _, _, relay = env.run(now=at(5, 9))
+    assert "1 new alert." in digests(relay)[0]
+    assert [h["adv"]["aliases"] for h in env.state()["held"]] == [[B_ID]]
+    _, _, relay = env.run(now=at(9, 9))
+    assert "Weekly summary: 1 notice added" in digests(relay)[0]
+    st = env.state()
+    assert st["held"] == [] and f"@modelcontextprotocol/inspector|{B_ID.casefold()}" in st["digested"]
+
+
+def test_a_retracted_notice_is_not_counted_and_leaves_the_held_list(env, monkeypatch):
+    env.collector([notice(), notice("CVE-2026-5001")])
+    env.run()
+    monkeypatch.setattr(test_main.main.Run, "_withdrawn", lambda self, root, fetch=None: ({"cve-2026-5000"}, set()))
+    _, _, relay = env.run(now=at(5, 9))
+    assert "1 notice added to the catalog this week" in digests(relay)[0]
+    assert [h["adv"]["id"] for h in env.state()["held"]] == ["CVE-2026-5001"]
+
+
+def test_a_refused_summary_leaves_the_notices_for_the_next_digest(env, monkeypatch):
+    env.collector([notice()])
+    env.run()
+    real = compose.weekly
+    monkeypatch.setattr(compose, "weekly", lambda *a, **k: (_ for _ in ()).throw(ValueError("refused")))
+    _, summary, relay = env.run(now=at(9, 9))
+    assert digests(relay) == [f"Daily digest for 2026-11-09: no new alerts. 1 notice added to the catalog "
+                              f"this week: {LINK}"] and "withheld=1" in summary
+    assert env.state()["weekly"] == "2026-W45" and len(env.state()["held"]) == 1
+    monkeypatch.setattr(compose, "weekly", real)
+    _, _, relay = env.run(now=at(10, 9))
+    assert "Weekly summary: 1 notice added" in digests(relay)[0] and env.state()["held"] == []
+
+
+def test_week_validation_refuses_a_week_that_does_not_exist():
+    assert inputs.week_ok("2026-W53") and inputs.week_ok("2027-W01")
+    assert not any(inputs.week_ok(w) for w in ("2026-W00", "2026-W99", "2025-W53", "0000-W01", "2026-48"))

@@ -56,7 +56,9 @@ One chunk. Expected size: about 150 lines of code, 200 of tests and docs.
 
 - `python3 -m pytest tests/poster -q` while working; `scripts/test-gate.sh` at the end.
 - Mutation checks: drop the `posted_at` key (use `listed`) → the listed-once test
-  fails; drop `_week_due`'s missed-week branch → the missed-Monday test fails.
+  fails; restrict the weekly predicate (`state["weekly"] < week`) to Mondays → the
+  missed-Monday test fails; `Run._posted` with any id instead of every id → the held
+  group test fails; `Run._posted` on the held scope only → the former-name test fails.
 
 ### Acceptance
 

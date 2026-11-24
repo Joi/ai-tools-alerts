@@ -797,6 +797,17 @@ class Run:
                            source_title=title if i == 0 else None, floor=floor if i == 0 else None)
                 for i, ch in enumerate(chans)]
 
+    def _posted(self, h) -> bool:
+        """A held notice has posted when every id it holds has a thread under its product's
+        name, current or former (wa6n). Every id, not any: a held fix group (faxq) keeps
+        its members as aliases, and one member's root leaves the others unposted."""
+        names = {h["scope"]}
+        for s in rules._default_index().values():
+            if h["scope"] == s.name or h["scope"] in getattr(s, "formerly", ()):
+                names.update({s.name, *getattr(s, "formerly", ())})
+        return all(any(self.led.lookup([i], scope=n) is not None for n in names)
+                   for i in [h["adv"]["id"], *h["adv"]["aliases"]])
+
     @staticmethod
     def _notice_keys(scope, adv: dict) -> list[str]:
         return [f"{scope}|{i.casefold()}" for i in [adv.get("id"), *adv.get("aliases", [])] if isinstance(i, str)]
@@ -1132,7 +1143,7 @@ class Run:
         # (retracted, expired) never; both leave the held list with this digest (retire).
         notices, unlisted, retire = [], [], []
         for h in self.state["held"]:
-            if self.led.lookup([h["adv"]["id"], *h["adv"]["aliases"]], scope=h["scope"]) is not None:
+            if self._posted(h):
                 retire.append(h)
                 continue
             try:
@@ -1188,7 +1199,8 @@ class Run:
         else:
             cutoff, roots = at, sorted(done)
         acked = retire + ([h for _, h in notices] if weekly else [])
-        snap = {"held": sorted({k for h in acked for k in self._notice_keys(h["scope"], h["adv"])}), "cutoff": cutoff, "roots": roots, **({"week": week} if weekly else {})}
+        snap = {"held": sorted({k for h in acked for k in self._notice_keys(h["scope"], h["adv"])}),
+                "cutoff": cutoff, "roots": roots, **({"week": week} if weekly else {})}
         ja = self._ja(lambda: compose.digest([x[0] for x in taken], local.date(), lang="ja", retracted=gone,
                                              now=self.now, titles=titles, held=len(notices), link=link,
                                              summary=compose.weekly(names, link, "ja") if weekly else None)
@@ -1210,9 +1222,15 @@ class Run:
 
 def _mirror_link(config) -> str:
     """The mirror a digest links to: the poster's own when public, else the default
-    (a file:// URL names a local path and never reaches a post)."""
+    (a file:// URL names a local path, and one naming a host the publication check refuses
+    would refuse every digest: neither reaches a post)."""
     url = config.translate_mirror_url
-    return url if isinstance(url, str) and url.startswith("https://") else _member_config.DEFAULT_MIRROR_URL
+    if isinstance(url, str) and url.startswith("https://"):
+        try:
+            return compose._guard(url)
+        except ValueError:
+            pass
+    return _member_config.DEFAULT_MIRROR_URL
 
 
 def _observed(c) -> int | None:

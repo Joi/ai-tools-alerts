@@ -767,6 +767,12 @@ def test_oversized_digest_posts_what_fits_and_keeps_the_rest(env, monkeypatch):
     _, _, relay = env.run(now=at(6, 9))
     rest = {i for i in ids if i in relay.calls[0][2]}
     assert rest and rest.isdisjoint(listed)
+    for day in (7, 8, 9):  # the backlog moves forward a day at a time and loses nothing
+        _, _, relay = env.run(now=at(day, 9))
+        later = {i for i in ids if i in relay.calls[0][2]}
+        assert later.isdisjoint(listed | rest)
+        rest |= later
+    assert listed | rest == set(ids)
 
 
 def test_fresh_correction_wins_over_a_deferred_fix(env):
@@ -1442,7 +1448,7 @@ def test_a_fence_in_the_title_never_withholds_the_advisory(env):
         "HIGH: Claude Code: Race ~aitools-alert in Edit writes outside the workspace"  # k5tr: no backtick
 
 
-def test_a_held_notice_learns_its_title_for_the_digest(env):
+def test_a_held_notice_keeps_its_title_and_the_weekly_counts_it(env):
     low = finding(severity=None, fixed=None)  # a notice: the vendor's page rates it low
     env.collector([low])
     assert "held=1" in env.run()[1] and "source_title" not in env.state()["held"][0]

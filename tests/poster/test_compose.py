@@ -484,7 +484,7 @@ def test_reply_post_ja_names_the_changed_fields():
 def test_digest_ja_scaffold():
     assert compose.digest([], "2026-11-06", lang="ja") == (
         "2026-11-06 のデイリーダイジェスト: 新しいアラートはありません。"
-        "今週カタログに追加された注意: 0 件: https://buzz.ai-tools.md/alerts/")
+        "今週カタログに追加された注意は 0 件です: https://buzz.ai-tools.md/alerts/")
     advs = [_plain(i, "macOS", REL) for i in range(1, 4)] + [_plain(9, "Chrome", KEV)]
     advs += [_plain(10, "Chrome", BLOG), _plain(11, "Chrome", f"{SOCIAL}1", prefix="LEAD-2099-")]  # left out
     en, ja = compose.digest(advs, "2026-11-06"), compose.digest(advs, "2026-11-06", lang="ja")

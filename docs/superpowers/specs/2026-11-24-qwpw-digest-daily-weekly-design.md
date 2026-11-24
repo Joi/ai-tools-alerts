@@ -59,7 +59,10 @@ missed).**
   the filters the daily lines use). When the digest is acknowledged (sent), those
   notices leave `held` and their keys join `digested`, as the daily digest does today.
 - Retired with any digest, daily or weekly, and never counted: a held notice that has
-  since posted a thread (the daily lists its root) and one withdrawn since. Until now a
+  since posted a thread (the daily lists its root) and one withdrawn since. Posted means
+  every id the notice holds has a thread under its product's current or former name
+  (`Run._posted`): a held fix group keeps its members as aliases, and one member's root
+  leaves the others held. Until now a
   posted notice stayed in `held` with nothing to remove it. On a quiet Monday the daily line drops the count (the
   summary carries it): `Daily digest for <date>: no new alerts.`
 - One post a day, not two: the weekly rides the daily digest's journal item, its

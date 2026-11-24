@@ -50,6 +50,17 @@ WEEK = re.compile(r"\d{4}-W\d{2}")  # qwpw: the ISO week of the last weekly summ
 _TOKYO = _dt.timezone(_dt.timedelta(hours=9))
 
 
+def week_ok(v) -> bool:
+    """A week string ``iso_week`` writes: a week that exists (2026-W53 does not)."""
+    if not (isinstance(v, str) and WEEK.fullmatch(v)):
+        return False
+    try:
+        _dt.date.fromisocalendar(int(v[:4]), int(v[6:]), 1)
+    except ValueError:
+        return False
+    return True
+
+
 def iso_week(day) -> str:
     """The ISO week of a date, or of an epoch second in Tokyo: ``2026-W48``. Such strings
     sort by week."""
@@ -442,7 +453,7 @@ def _item_ok(it) -> bool:
     if kind == "digest":
         return (it["scope"] is None and _date_ok(it["date"]) and isinstance(adv, dict)
                 and set(adv) - {"week"} == {"held", "cutoff", "roots"} and type(adv["cutoff"]) is int
-                and ("week" not in adv or isinstance(adv["week"], str) and WEEK.fullmatch(adv["week"]))
+                and ("week" not in adv or week_ok(adv["week"]))
                 and isinstance(adv["held"], list) and all(isinstance(k, str) for k in adv["held"])
                 and isinstance(adv["roots"], list) and all(isinstance(k, str) for k in adv["roots"]))
     if not (isinstance(it["scope"], str) and it["scope"] and it["date"] is None):
@@ -513,7 +524,7 @@ def load_state(path: Path, now: int, backfill_days: int) -> dict:
               and type(st["schema_version"]) is int and st["schema_version"] == 1
               and type(st["since"]) is int and type(st["digest_at"]) is int
               and type(st["gate"]) is int and st["gate"] in (0, GATE)
-              and isinstance(st["weekly"], str) and WEEK.fullmatch(st["weekly"])
+              and week_ok(st["weekly"])
               and isinstance(st["digest_roots"], list) and all(isinstance(i, str) for i in st["digest_roots"])
               and isinstance(st["digest_ids"], list) and len(st["digest_ids"]) <= MAX_DIGEST_IDS
               and all(isinstance(i, str) and _HEX64.fullmatch(i) for i in st["digest_ids"])
