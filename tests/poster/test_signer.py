@@ -656,7 +656,8 @@ def test_an_event_that_leaves_the_mirror_is_listed_for_three_days_then_given_up(
 def test_an_owed_reply_records_the_root_of_its_own_channel(signing):
     """A critical has one root per channel; an update's reply in the feed is owed with the
     feed root, not the critical channel's."""
-    from test_main import FakeKEV, kev_item
+    from test_main import FakeKEV, kev_fixed, kev_item
+    kev_fixed(signing)  # 9kgk: KEV plus the vendor's fix makes the critical
     signing.run(relay=PutRelay(), kev=FakeKEV(catalog={"vulnerabilities": [kev_item()]}))
     entries, _ = signing.ledger()
     (entry,) = entries.values() if isinstance(entries, dict) else entries

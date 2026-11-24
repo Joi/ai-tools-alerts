@@ -41,11 +41,14 @@ def level(c: Candidate, source_ok=False):
     return rules.level_for(c, rules.scope_of(c.product_text), source_ok)
 
 
-def test_kev_tier1_is_critical():
-    c = cand(exploited=True)
+def test_kev_tier1_is_critical_with_its_fix_and_high_until_then():
+    c = cand(exploited=True, fixed="2.1.0")
     assert level(c, True) == ("critical", "kev-tier1")
     # The KEV clause is mechanical: it does not wait on a source fetch.
     assert level(c, False) == ("critical", "kev-tier1")
+    # 9kgk: a critical needs a complete action; exploited with no fix posts at high.
+    assert level(replace(c, fixed=None), True) == ("high", "no-action")
+    assert level(replace(c, fixed="see the vendor"), True) == ("high", "no-action")  # no version the schema says
 
 
 def test_kev_of_an_out_product_is_a_notice():
@@ -90,7 +93,15 @@ def test_fix_rce_tier1_is_high():
     cred = cand(product_text="OpenAI Codex", fixed="1.76.0", advisory_severity="credential exposure")
     assert level(cred) == ("high", "fix-rce-tier1")
     plain = cand(product_text="OpenAI Codex", fixed="22.11.1", advisory_severity="CRITICAL")
-    assert level(plain) == ("high", "severity-tier1")  # the level word alone: severity-tier1
+    assert level(plain) == ("notice", "notice")  # 9kgk: the level word alone sets nothing
+    for text in ("lets a prompt escape the sandbox", "approval bypass in auto mode", "skips approval",
+                 "writes files outside the workspace", "runs a program from the repository config",
+                 "runs gc.recentObjectsHook", "installs attacker-controlled code"):
+        assert level(cand(product_text="OpenAI Codex", fixed="22.11.1", advisory_severity=text)) == \
+            ("high", "fix-rce-tier1"), text
+        assert level(cand(product_text="OpenAI Codex", advisory_severity=text)) == ("notice", "notice"), text
+    assert level(cand(product_text="OpenAI Codex", fixed="1", advisory_severity="daemon crash; denial of service")) \
+        == ("notice", "notice")
     for text in ("High; remote code-execution", "lets an attacker execute arbitrary commands",
                  "\uff32\uff23\uff25 in the inspector"):
         assert level(cand(product_text="OpenAI Codex", fixed="22.11.1", advisory_severity=text)) == \
@@ -119,25 +130,23 @@ def test_channel_if_takes_remote_code_execution_only():
         ("high", "fix-rce-tier1")
 
 
-def test_severity_tier1_is_high():
+def test_the_severity_word_alone_is_a_notice():
+    """9kgk: the upstream severity is printed and never sets the level alone."""
     for sev in ("high", "critical", "High ", " CRITICAL", "\uff28\uff49\uff47\uff48", "high\u3000"):
-        assert level(cand(advisory_severity=sev)) == ("high", "severity-tier1"), sev
+        assert level(cand(advisory_severity=sev)) == ("notice", "notice"), sev
+        assert level(cand(advisory_severity=sev, fixed="2.1.0")) == ("notice", "notice"), sev
     ghsa = cand(id="GHSA-5xjx-9qx6-jcrv", advisory_severity="high")
-    assert level(ghsa) == ("high", "severity-tier1")
-    alias = cand(id="OSV-2026-1", aliases=("CVE-2026-0009",), advisory_severity="high")
-    assert level(alias) == ("high", "severity-tier1")
-    upper = cand(id="GHSA-5XJX-9QX6-JCRV", advisory_severity="high")
-    assert level(upper) == ("high", "severity-tier1")
+    assert level(ghsa) == ("notice", "notice")
     for sev in ("moderate", "low", "medium", None, "high-ish", "not high", ""):
         assert level(cand(advisory_severity=sev)) == ("notice", "notice"), sev
     # Tier 2 stays notice; critical stays reserved for the three critical rules.
     assert level(cand(product_text="Google Chrome", advisory_severity="critical")) == ("notice", "notice")
-    assert level(cand(advisory_severity="critical"), True)[0] == "high"
+    assert level(cand(advisory_severity="critical"), True)[0] == "notice"
 
 
-def test_fix_rce_tier1_wins_over_severity_tier1():
+def test_fix_rce_tier1_needs_the_consequence_not_the_word():
     c = cand(fixed="2.1.251", advisory_severity="high")
-    assert level(c) == ("high", "severity-tier1")
+    assert level(c) == ("notice", "notice")
     rce = cand(fixed="2.1.251", advisory_severity="high: remote code execution")
     assert level(rce) == ("high", "fix-rce-tier1")
 
@@ -163,7 +172,7 @@ def test_collector_claude_code_advisory_is_tier1_high():
     assert (c.advisory_severity, c.fixed) == ("high", None)  # what from_collector sets today
     scope = rules.scope_of(c.product_text)
     assert scope.scope_class == "channel"
-    assert rules.level_for(c, scope, False) == ("high", "severity-tier1")
+    assert rules.level_for(c, scope, False) == ("notice", "notice")  # 9kgk: the word alone
 
 
 def test_hint_never_raises_level():
@@ -798,11 +807,12 @@ def test_merge_then_defer_then_reload_keeps_the_level_and_claims_no_fresh_readin
     claims = rules.claims_for(merged, scope, T)
     assert [c["level"] for c in claims] == ["notice", "critical"]
     assert all(ruleset.check_claim(c, scope.name) == "ok" for c in claims)
-    assert rules.level_for(merged, scope, True) == ("critical", "kev-tier1")
+    want = ("critical", "kev-tier1") if merged.fixed else ("high", "no-action")  # 9kgk: critical needs the fix
+    assert rules.level_for(merged, scope, True) == want
     reloaded = inputs.candidate_from(merged.to_dict())  # a later run, the catalog unread
     assert reloaded.readings == () and rules.claims_for(reloaded, scope, T) == []
     assert rules.readings_for(reloaded, rules.evidence(reloaded, scope, served({}))) == ()
-    assert rules.level_for(reloaded, scope, False) == ("critical", "kev-tier1")  # no reading lowers nothing
+    assert rules.level_for(reloaded, scope, False) == want  # no reading lowers nothing
     assert rules.basis(reloaded, scope, "critical") == "fields"
     again = ledger.merge([(merged, CLAUDE), (merged, CLAUDE)])[0][0]
     assert again.readings == merged.readings  # joined once
@@ -826,19 +836,20 @@ def test_a_models_reading_raises_to_high_and_never_makes_a_critical():
 
 def test_the_level_and_its_basis_come_from_the_readings():
     c, _ = page_cand()
-    assert c.advisory_severity is None  # nothing but the reading says high
-    assert rules.level_for(c, CLAUDE, False) == ("high", "fields")
-    assert rules.basis(c, CLAUDE, "high") == "fields" and rules.basis(c, CLAUDE, "critical") == "reading"
+    assert c.advisory_severity is None  # the page's reading states severity High and no CWE
+    assert rules.level_for(c, CLAUDE, False) == ("notice", "notice")  # 9kgk: severity sets nothing
+    assert rules.basis(c, CLAUDE, "high") == "reading" and rules.basis(c, CLAUDE, "notice") == "fields"
     said = replace(c, advisory_severity="high")  # the page's word, as main.admit copies it
-    assert rules.level_for(said, CLAUDE, False) == ("high", "severity-tier1")
-    assert rules.basis(said, CLAUDE, "high") == "fields"
+    assert rules.level_for(said, CLAUDE, False) == ("notice", "notice")
     low, _ = page_cand(dict(severity="Low"))
     assert rules.level_for(low, CLAUDE, True) == ("notice", "notice")
     told = replace(low, advisory_severity="remote code execution", fixed="2.1.0")  # a collector's words
     assert rules.level_for(told, CLAUDE, True) == ("high", "fix-rce-tier1")
     assert rules.basis(told, CLAUDE, "high") == "reading"
     k = kev_cand()
-    assert rules.level_for(k, CLAUDE, False) == ("critical", "kev-tier1") and rules.basis(k, CLAUDE, "critical") == "fields"
+    assert rules.level_for(k, CLAUDE, False) == ("high", "no-action")  # 9kgk: no fix, no action
+    assert rules.level_for(replace(k, fixed="2.1.0"), CLAUDE, False) == ("critical", "kev-tier1")
+    assert rules.basis(k, CLAUDE, "critical") == "fields"
     # A reading of another product lends this one nothing.
     assert rules.level_for(replace(cand(product_text="codex cli"), readings=k.readings),
                            rules.scope_of("codex cli"), True) == ("notice", "notice")
@@ -912,9 +923,13 @@ def test_rule_of_fields_is_the_level_of_every_claim_the_poster_builds():
         ok = rng.random() < 0.5
         lvl, why = rules.level_for(c, scope, ok)
         best = rs.highest("none", *(x["level"] for x in claims))
-        assert rs.rank(lvl) >= rs.rank(best)
-        if lvl == "critical":
+        fixed = compose.schema_fixed(c.fixed)
+        action = ("upgrade", scope.name, fixed) if fixed else ("stop_using", scope.name, None)
+        readings = [(x["source"], x["fields"]) for x in claims]
+        assert rs.rank(lvl) >= rs.rank(rs.action_level(best, [action], scope.name, fixed, readings))
+        if lvl == "critical":  # 9kgk: never without a complete action
             assert best == "critical" or (c.exploited is True and scope.scope_class == "channel")
+            assert fixed is not None or why == "stop-using"
             assert rules.basis(c, scope, lvl) == "fields"
         if not claims and c.exploited is not True:
             assert rs.rank(lvl) <= rs.rank(rs.reading_cap)
@@ -923,4 +938,5 @@ def test_rule_of_fields_is_the_level_of_every_claim_the_poster_builds():
         seen[lvl] += 1
         seen["claims"] += len(claims)
         seen["reading"] += rules.basis(c, scope, lvl) == "reading"
-    assert min(seen.values()) > 20, seen  # the generator reaches every level, both bases
+    # the generator reaches every level, both bases; a critical needs its fix (9kgk), so fewer of those
+    assert seen["critical"] > 5 and min(v for k, v in seen.items() if k != "critical") > 20, seen

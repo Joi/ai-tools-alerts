@@ -56,7 +56,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from aitools_alerts import TRUST_ROOT_PUBKEY, check, manifest, pull, schema
+from aitools_alerts import TRUST_ROOT_PUBKEY, check, manifest, pull, ruleset, schema
 from aitools_alerts.poster import candidates, compose, inputs, ledger, rules, signer, translate, transport
 from aitools_alerts.poster.inputs import Config, ConfigError
 from aitools_alerts.poster.ledger import Ledger, LedgerError
@@ -81,6 +81,18 @@ _LEVEL_LINE = ("level: high", "level: notice")
 
 class _Stop(Exception):
     """A send failed or its outcome is unknown: send nothing more this run."""
+
+
+def _complete(adv) -> bool:
+    """False for a journaled critical whose block holds no complete action (9kgk): no
+    upgrade while its product states a fixed version, and no stop_using. A stop_using in
+    the journal was written by level_for under this rule, which a reading gave."""
+    if not isinstance(adv, dict) or adv.get("level") != "critical":
+        return True
+    prods, acts = adv.get("products") or [{}], adv.get("actions") or []
+    fixed = prods[0].get("fixed") if isinstance(prods[0], dict) else None
+    return any(isinstance(a, dict) and (a.get("verb") == "stop_using" or a.get("verb") == "upgrade" and fixed)
+               for a in acts)
 
 
 def _fold(ids) -> set[str]:
@@ -154,6 +166,13 @@ class Run:
             if it["kind"] == "root" and self.led.lookup(it["ids"], scope=it["scope"]) is not None:
                 # Its ids were widened into a known thread while it waited: never a second
                 # thread. Drop it and its copies; the candidate is planned as known next run.
+                self._drop([it] + [o for o in self.state["outbox"] if o["kind"] == "copy"
+                                   and o["root"] is None and _fold(o["ids"]) & _fold(it["ids"])])
+                self.n["withheld"] += 1
+                return
+            if not _complete(it.get("adv")):
+                # 9kgk: a critical journaled before this rule (no fix, no action) never posts;
+                # the candidate is planned again from its sources next run. Its copies go too.
                 self._drop([it] + [o for o in self.state["outbox"] if o["kind"] == "copy"
                                    and o["root"] is None and _fold(o["ids"]) & _fold(it["ids"])])
                 self.n["withheld"] += 1
@@ -609,6 +628,11 @@ class Run:
             return
         level, reason = self.level(c, scope)
         entry = self.led.lookup(ids, scope=scope.name)
+        if entry is not None and reason == "no-action" and compose.schema_fixed(c.fixed) is None:
+            # 9kgk: the thread already states a fix, which plan_known keeps; the upgrade is complete.
+            was = (entry.advisory.get("products") or [{}])[0].get("fixed")
+            if compose.schema_fixed(was):
+                level, reason = self.level(replace(c, fixed=was), scope)
         if entry is None and not rules.starts(scope, level):  # wa6n: out of the community service
             self.n["out"] += 1
             return
@@ -744,6 +768,10 @@ class Run:
 
     def plan_known(self, c, scope, level, reason, ids, entry):
         prev = schema.validate(entry.advisory)
+        if level == "critical" and reason == "stop-using" and entry.level != "critical":
+            # 9kgk: a relay-bot reply's only action is an upgrade (compose._publishable), so a
+            # thread is raised to critical only by a fix; stop_using makes a critical root only.
+            level, reason = ruleset.load().action_cap, "no-action"
         if RANK[level] <= RANK[entry.level]:  # a run never lowers a level; a curator does
             level, reason = entry.level, None
         was = prev.products[0]

@@ -10,6 +10,10 @@ field: the product is in the channel class and KEV lists the CVE as exploited, o
 a reading of a source's own fields gives critical. A catalog or out product is a
 notice, unless its entry's channel_if lets a code-execution flaw post at high; an
 out product's notice starts nothing (``starts``). A text no entry names does not post.
+A critical posts only with a complete action (9kgk): an upgrade to a stated version, or
+stop_using for a malicious release a reading confirms; otherwise it posts at
+``action_cap`` (high) and is raised when the fix is known. The upstream severity word
+never sets a level.
 
 The level table itself is spec/ruleset.json, evaluated by ``aitools_alerts.ruleset``
 (s6mt): ``level_for`` takes what the candidate's readings support, and a model's
@@ -32,7 +36,7 @@ from urllib.parse import urljoin, urlsplit
 
 from aitools_alerts import ruleset, schema, versions
 from aitools_alerts.poster import compose
-from aitools_alerts.poster.candidates import ADVISORY_ID, BOT_ID, Candidate
+from aitools_alerts.poster.candidates import BOT_ID, Candidate
 
 FETCH_TIMEOUT = 10
 MAX_REDIRECTS = 5
@@ -46,16 +50,19 @@ _REDIRECTS = frozenset({301, 302, 303, 307, 308})
 EXTRA_VENDOR_WORDS = frozenset({"anthropic", "openai", "anysphere", "nousresearch", "nous", "google",
                                 "mcp", "modelcontextprotocol"})  # wa6n: MCP entries are named by package
 
-# Advisory text that names code execution, credential theft or data loss.
+# Advisory text that names code execution, credential theft, data loss, or a sandbox or
+# approval bypass (9kgk: the design's high consequences, read from prose, never critical).
 _SEVERE = re.compile(
     r"code[ -]execution|\brce\b|command[ -](?:execution|injection)|arbitrary (?:code|commands?)"
-    r"|credential|token theft|secret exposure|data loss|data exfiltration",
+    r"|(?:attacker|malicious)[- ]controlled code|\bruns? (?:a |an |arbitrary )?(?:commands?|programs?|[\w.]*hook)\b"
+    r"|credential|token theft|secret exposure|data loss|data exfiltration"
+    r"|sandbox (?:escape|bypass)|escapes? the sandbox|bypass(?:es|ed)? (?:the )?(?:sandbox|approval|permission)"
+    r"|(?:approval|permission) (?:check |prompt )?bypass|skips? approval|outside (?:the |its )?(?:workspace|sandbox)",
     re.I,
 )
 # What a catalog or out entry's channel_if needs from prose: remote code execution, said so.
 _REMOTE_CODE = re.compile(r"remote code execution|\brce\b", re.I)
 _TOKEN = re.compile(r"(?:[^\W_]|\.)+")
-_HIGH_WORDS = frozenset({"high", "critical"})
 
 
 _norm, _class, _index = ruleset.norm, ruleset.class_of, ruleset.index  # one lookup for poster and CLI (s6mt)
@@ -141,10 +148,14 @@ def level_for(c: Candidate, scope: schema.ScopeEntry, source_ok: bool) -> tuple[
     which is ``high`` at most (s6mt): a flag that made a critical before makes
     ``high`` with reason ``reading``.
 
-    Reasons: kev-tier1, reading, unverified, fix-rce-tier1, severity-tier1,
-    fields, notice (the names predate scope classes: tier1 is the channel class). severity-tier1 is a channel
-    candidate with a CVE or GHSA id whose advisory severity is the word "high" or
-    "critical"; it needs no fix, and it never makes a critical. ``source_ok`` is "a page
+    Last, the ruleset's ``action_level`` (9kgk): a critical stands only with the action
+    the root post will carry, an upgrade to a stated version or, for a malicious
+    release a reading gives critical, stop_using (reason ``stop-using``); otherwise it
+    is ``action_cap`` with reason ``no-action``.
+
+    Reasons: kev-tier1, reading, unverified, fix-rce-tier1, fields, stop-using,
+    no-action, notice (the names predate scope classes: tier1 is the channel class).
+    The upstream severity word alone never raises (9kgk). ``source_ok`` is "a page
     authoritative for this product named this advisory" (``evidence``) and counts only when it is the
     bool True; main admits no candidate without evidence, so every level here rests on one. ``local_level_hint`` is never read: it cannot raise a level.
     """
@@ -156,7 +167,14 @@ def level_for(c: Candidate, scope: schema.ScopeEntry, source_ok: bool) -> tuple[
     level, reason = _prose_level(c, scope, source_ok is True, rs)
     fields = _fields_level(c, scope)
     if rs.rank(fields) > rs.rank(level):
-        return fields, "fields"
+        level, reason = fields, "fields"
+    fixed = compose.schema_fixed(c.fixed)
+    action = ("upgrade", scope.name, fixed) if fixed else ("stop_using", scope.name, None)
+    held = rs.action_level(level, [action], scope.name, fixed, _readings(c))
+    if held != level:
+        return held, "no-action"
+    if not fixed and rs.rank(level) > rs.rank(rs.action_cap):
+        return level, "stop-using"
     return level, reason
 
 
@@ -179,13 +197,7 @@ def _prose_level(c, scope, verified: bool, rs) -> tuple[str, str]:
     severity = c.advisory_severity
     if c.fixed and isinstance(severity, str) and (_SEVERE if channel else _REMOTE_CODE).search(_norm(severity)):
         return cap, "fix-rce-tier1"
-    if not channel:
-        return "notice", "notice"
-    # ledger.merge joins members' severities with "; ": any one member's word counts.
-    if isinstance(severity, str) and any(p.strip() in _HIGH_WORDS for p in _norm(severity).split(";")) \
-            and any(isinstance(i, str) and ADVISORY_ID.fullmatch(i) for i in (c.id, *c.aliases)):
-        return cap, "severity-tier1"
-    return "notice", "notice"
+    return "notice", "notice"  # 9kgk: the severity word alone never raises
 
 
 def basis(c: Candidate, scope: schema.ScopeEntry, level: str) -> str:

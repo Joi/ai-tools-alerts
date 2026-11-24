@@ -275,13 +275,21 @@ def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, sc
     ``c.id`` must be a CVE or GHSA id, bare or as a thread key (``candidates.BOT_ID``).
     ``level`` is ``rules.level_for``'s (level, reason), or a bare level. A reserved
     primary id (a synthetic check, ``run --kev-file``) marks the head line, and
-    ``schema.validate`` marks the block's title; nothing else marks either."""
+    ``schema.validate`` marks the block's title; nothing else marks either. A critical
+    carries a complete action (9kgk): an upgrade to a stated version, or, with reason
+    ``stop-using`` (``rules.level_for``), stop_using the product; any other critical
+    raises ValueError and does not post, except a bare level (reason None): the level a
+    thread already stands at, which ``plan_known`` keeps."""
     if getattr(scope, "components", ()):  # rules.scope_of resolves an entry to its component
         raise ValueError("an unresolved scope entry would publish a group name")
     if not (isinstance(c.id, str) and candidates.BOT_ID.fullmatch(c.id)):
         raise ValueError("the id is not a CVE or GHSA id: the advisory does not post")  # h340
     level, reason = level if isinstance(level, tuple) else (level, None)
     fixed = schema_fixed(c.fixed)
+    stop = level == "critical" and not fixed and reason == "stop-using"
+    if level == "critical" and not fixed and reason is not None and not stop:
+        # reason None is a thread's standing level, which a run never lowers (plan_known)
+        raise ValueError("a critical needs a complete action: no fixed version and no stop_using basis")
     sources = _sources(c.sources)
     if not sources:
         raise ValueError("no https source the schema accepts: the advisory does not post")
@@ -289,7 +297,8 @@ def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, sc
         id=c.id, aliases=_ids(c.aliases, c.id)[:50], level=level, advisory_severity=severity(c.severity_word),
         title=f"{scope.name}: {_kind(c, reason)} ({public_form(c.id)})",
         products=[schema.Product(scope.name, scope.ecosystem, schema_affected(c.affected), fixed)],
-        actions=[schema.Action("upgrade", scope.name, fixed)] if fixed else [],
+        actions=[schema.Action("upgrade", scope.name, fixed)] if fixed
+        else [schema.Action("stop_using", scope.name, None)] if stop else [],
         sources=sources, posted_by=POSTED_BY,
         posted_at=int(time.time()) if posted_at is None else posted_at, expires_at=None)))
     p = adv.products[0]
@@ -299,7 +308,7 @@ def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, sc
     title = source_title(c)
     # No version is not no fix: a KEV entry carries no version data at all (4yr1).
     # A fix the schema cannot express gets no action sentence: the post names no version (h340).
-    action = [] if unexpressed else [
+    action = [f"Action: stop using {p.name} until a fixed release ships."] if stop else [] if unexpressed else [
         f"Action: upgrade {p.name} to {fixed} or later." if fixed
         else "Action: check the vendor for an update; this is exploited in the wild, "
              "so update now if a release is out." if c.exploited is True or _exploited(adv)
@@ -339,7 +348,8 @@ def root_post_ja(adv: schema.Advisory, reason: str | None = None, unexpressed: b
     p, fixed = adv.products[0], adv.products[0].fixed
     head = _JA_LEVEL[adv.level] + (f" ({SYNTHETIC})" if is_synthetic(adv.id) else "") \
         + (f" ({UNVERIFIED})" if reason == "unverified" else "")
-    action = [] if unexpressed and not fixed else [
+    stop = not fixed and any(a.verb == "stop_using" for a in adv.actions)
+    action = [f"対応: 修正版が出るまで {p.name} の使用を停止してください。"] if stop else [] if unexpressed and not fixed else [
         f"対応: {p.name} を {fixed} 以降に更新してください。" if fixed
         else "対応: ベンダーの更新情報を確認してください。悪用が確認されているため、リリースがあれば直ちに更新してください。"
         if exploited else "対応: ベンダーの更新情報を確認し、リリースがあれば適用してください。"]

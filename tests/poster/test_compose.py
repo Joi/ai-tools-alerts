@@ -202,7 +202,7 @@ def test_review_fixes_publication():
     tup = compose.reply_post(prev, c, {"aliases": ("CVE-2026-0009", "OSV-2026-9", "bad alias!", "x" * 128)})
     assert _block(tup)["aliases"] == ["GHSA-abcd-efgh-ijkl", "CVE-2026-0009"]  # union, CVE and GHSA ids only
     # A fix the schema cannot express is not "no fix".
-    text, adv = root(cand(fixed="2.0.0-rc.1"))
+    text, adv = root(cand(fixed="2.0.0-rc.1"), ("high", "fix-rce-tier1"))  # 9kgk: a critical needs a stated version
     assert "A fix is listed upstream" in text and "no fix" not in text and adv.actions == []
     # Unverified survives into the title, so the digest and replies keep it.
     _, unv = root(cand(injection_exec=False, trojanized=True), ("high", "unverified"))
@@ -428,7 +428,7 @@ def test_root_post_fixed_line_unchanged_and_unexpressed_has_no_action():
     assert compose.root_post_ja(adv).split("\n")[1:3] == [
         "影響: Claude Code（2.1.0 未満）。 修正版: 2.1.0。", "対応: Claude Code を 2.1.0 以降に更新してください。"]
     for c in (cand(fixed="2.0.0-rc.1"), cand(fixed="2.0.0-rc.1", exploited=True, injection_exec=False)):
-        text, adv = root(c)
+        text, adv = root(c, ("high", "fix-rce-tier1"))  # 9kgk: a critical needs a stated version
         # h340: a fix the schema cannot express names no version and gets no action sentence.
         assert text.split("\n")[1:3] == [
             "Affected: Claude Code below 2.1.0. A fix is listed upstream; see the source.", f"Source: {GHSA}"]
@@ -439,9 +439,27 @@ def test_root_post_fixed_line_unchanged_and_unexpressed_has_no_action():
         assert "対応:" not in ja
 
 
+def test_a_critical_carries_a_complete_action():
+    """9kgk: an upgrade to a stated version, or stop_using for a malicious release; any
+    other critical does not post. A bare level (a thread's standing one) composes."""
+    text, adv = root(cand(fixed=None), ("critical", "stop-using"))
+    assert [(a.verb, a.target, a.value) for a in adv.actions] == [("stop_using", "Claude Code", None)]
+    assert "Action: stop using Claude Code until a fixed release ships." in text.split("\n")
+    assert "対応: 修正版が出るまで Claude Code の使用を停止してください。" in compose.root_post_ja(adv).split("\n")
+    for reason in ("kev-tier1", "fields", "reading"):
+        with pytest.raises(ValueError, match="complete action"):
+            root(cand(fixed=None), ("critical", reason))
+        with pytest.raises(ValueError, match="complete action"):
+            root(cand(fixed="2.0.0-rc.1"), ("critical", reason))  # a fix the schema cannot say
+    _, fixed = root(cand(fixed="2.1.0"), ("critical", "kev-tier1"))
+    assert [(a.verb, a.value) for a in fixed.actions] == [("upgrade", "2.1.0")]
+    _, kept = root(cand(fixed=None), "critical")
+    assert kept.actions == []
+
+
 def test_reply_post_ja_names_the_changed_fields():
     c = cand(fixed=None)
-    _, prev = root(c)
+    _, prev = root(c, ("high", "fix-rce-tier1"))
     reply = compose.reply_post(prev, cand(), {"products": [schema.Product(
         "Claude Code", "claude-code", "<2.1.0", "2.1.0")]})
     ja = compose.reply_post_ja(compose.parse_reply(reply, prev), cand(), ["products", "actions"],

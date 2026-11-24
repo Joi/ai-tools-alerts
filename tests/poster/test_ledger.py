@@ -197,13 +197,14 @@ def test_merge_keeps_severity_and_one_fix_in_either_order():
         assert (m.fixed, m.affected) == ("2.1.0", "<2.1.0")
 
 
-def test_merge_keeps_severity_tier1():
+def test_merged_severity_words_alone_stay_a_notice():
+    """9kgk: the upstream severity never sets the level alone, merged or not."""
     a = cand(advisory_severity="high", fixed=None)
     b = cand(id="GHSA-5xjx-9qx6-jcrv", aliases=("CVE-2026-0001",), advisory_severity="Critical")
     c = cand(id="CVE-2026-0001", aliases=(), advisory_severity="moderate")
     for order in ([a, b], [b, a], [c, a], [a, c]):
         (m, s), = ledger.merge([pair(x) for x in order])
-        assert rules.level_for(m, s, False) == ("high", "severity-tier1"), m.advisory_severity
+        assert rules.level_for(m, s, False) == ("notice", "notice"), m.advisory_severity
 
 
 def test_delta_fixes(tmp_path, monkeypatch):

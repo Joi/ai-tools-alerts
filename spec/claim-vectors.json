@@ -1,6 +1,6 @@
 {
- "description": "Test vectors for the claim a poster signs and a member's CLI checks offline (s6mt). A claim is {id, source, fields, ruleset, level, confirmed_at, checked_at}: id is the advisory id the source is looked up by and equals the fields' own id (a CVE id reads kev, a GHSA id ghsa, any other OSV id osv); fields is the reading, as spec/ruleset.json defines it; ruleset is the integer version of the ruleset that gave the level; level is critical, high, notice or none; confirmed_at and checked_at are integer Unix seconds, confirmed_at not after checked_at. The product is not in the claim: it is the product of the alert the claim is signed with. Canonical form: the JSON object with keys sorted by code point at every depth and no whitespace between tokens. Values are objects, lists, strings, integers of magnitude at most 2^53 - 1, true, false and null; there is no float. Every string, keys included, is printable ASCII (U+0020 to U+007E), so the bytes are ASCII and the only escapes are those of the quote and the backslash. A source value with any other character cannot be carried: that reading is malformed and makes no claim. Unicode is left out whole because which characters exist, and what they normalise to, differs between the Unicode versions two readers run. Lists whose order the source does not fix have one order: packages ascending by (ecosystem, name, range, first_patched) compared by code point with null as the empty string, each entry once; cwes ascending, each once, [] when none. 'claims': each vector's 'canonical' is the exact text of the canonical form of 'claim', 'sha256' its SHA-256, and the ruleset gives 'claim.level' for 'product'. 'levels': the level the ruleset gives 'product' for 'readings', each [source, fields]. Both test suites load this file: tests/test_ruleset.py and tests/poster/test_rules.py, which builds poster-kev and poster-ghsa-page through the poster's own code.",
- "ruleset": 2,
+ "description": "Test vectors for the claim a poster signs and a member's CLI checks offline (s6mt). A claim is {id, source, fields, ruleset, level, confirmed_at, checked_at}: id is the advisory id the source is looked up by and equals the fields' own id (a CVE id reads kev, a GHSA id ghsa, any other OSV id osv); fields is the reading, as spec/ruleset.json defines it; ruleset is the integer version of the ruleset that gave the level; level is critical, high, notice or none; confirmed_at and checked_at are integer Unix seconds, confirmed_at not after checked_at. The product is not in the claim: it is the product of the alert the claim is signed with. Canonical form: the JSON object with keys sorted by code point at every depth and no whitespace between tokens. Values are objects, lists, strings, integers of magnitude at most 2^53 - 1, true, false and null; there is no float. Every string, keys included, is printable ASCII (U+0020 to U+007E), so the bytes are ASCII and the only escapes are those of the quote and the backslash. A source value with any other character cannot be carried: that reading is malformed and makes no claim. Unicode is left out whole because which characters exist, and what they normalise to, differs between the Unicode versions two readers run. Lists whose order the source does not fix have one order: packages ascending by (ecosystem, name, range, first_patched) compared by code point with null as the empty string, each entry once; cwes ascending, each once, [] when none. 'claims': each vector's 'canonical' is the exact text of the canonical form of 'claim', 'sha256' its SHA-256, and the ruleset gives 'claim.level' for 'product'. 'levels': the level the ruleset gives 'product' for 'readings', each [source, fields]. Both test suites load this file: tests/test_ruleset.py and tests/poster/test_rules.py, which builds poster-kev and poster-ghsa-page through the poster's own code. 'actions' (9kgk) are vectors for Ruleset.action_level: the level a post may carry given its actions, each [verb, target, value], the fixed version the post states for the product, and the readings; a level above the ruleset's action_cap stands only with an upgrade of the product while that fixed version is stated, or stop_using it when a reading gives that level through a stop_using row.",
+ "ruleset": 3,
  "claims": [
   {
    "name": "poster-kev",
@@ -12,13 +12,13 @@
      "cve_id": "CVE-2026-0001",
      "name": "Anthropic Claude Code"
     },
-    "ruleset": 2,
+    "ruleset": 3,
     "level": "critical",
     "confirmed_at": 1795000000,
     "checked_at": 1795000000
    },
-   "canonical": "{\"checked_at\":1795000000,\"confirmed_at\":1795000000,\"fields\":{\"cve_id\":\"CVE-2026-0001\",\"name\":\"Anthropic Claude Code\"},\"id\":\"CVE-2026-0001\",\"level\":\"critical\",\"ruleset\":2,\"source\":\"kev\"}",
-   "sha256": "9edac1b7881adea470122eef2797be8d89c2dda64ed6016e1437473e5f43476b"
+   "canonical": "{\"checked_at\":1795000000,\"confirmed_at\":1795000000,\"fields\":{\"cve_id\":\"CVE-2026-0001\",\"name\":\"Anthropic Claude Code\"},\"id\":\"CVE-2026-0001\",\"level\":\"critical\",\"ruleset\":3,\"source\":\"kev\"}",
+   "sha256": "2ccaa2fc8b411a6f01b2438a1b1f87997b9ad2322d7ce5ff3b3b26af8b1a056b"
   },
   {
    "name": "poster-ghsa-page",
@@ -49,13 +49,13 @@
       }
      ]
     },
-    "ruleset": 2,
-    "level": "high",
+    "ruleset": 3,
+    "level": "notice",
     "confirmed_at": 1795000000,
     "checked_at": 1795000000
    },
-   "canonical": "{\"checked_at\":1795000000,\"confirmed_at\":1795000000,\"fields\":{\"cvss_vector\":null,\"cwes\":[],\"ghsa_id\":\"GHSA-aaaa-bbbb-cccc\",\"packages\":[{\"ecosystem\":\"npm\",\"first_patched\":\"1.9.5\",\"name\":\"@anthropic-ai/claude-code\",\"range\":\"< 1.9.5\"},{\"ecosystem\":\"npm\",\"first_patched\":\"2.1.0\",\"name\":\"@anthropic-ai/claude-code\",\"range\":\">= 2.0.0, < 2.1.0\"}],\"repository\":\"anthropics/claude-code\",\"severity\":\"high\",\"type\":null,\"withdrawn_at\":null},\"id\":\"GHSA-aaaa-bbbb-cccc\",\"level\":\"high\",\"ruleset\":2,\"source\":\"ghsa\"}",
-   "sha256": "b805d56985db483c8d0d91a7deeadeab126591d8cc7b520f5801cc2dbd003334"
+   "canonical": "{\"checked_at\":1795000000,\"confirmed_at\":1795000000,\"fields\":{\"cvss_vector\":null,\"cwes\":[],\"ghsa_id\":\"GHSA-aaaa-bbbb-cccc\",\"packages\":[{\"ecosystem\":\"npm\",\"first_patched\":\"1.9.5\",\"name\":\"@anthropic-ai/claude-code\",\"range\":\"< 1.9.5\"},{\"ecosystem\":\"npm\",\"first_patched\":\"2.1.0\",\"name\":\"@anthropic-ai/claude-code\",\"range\":\">= 2.0.0, < 2.1.0\"}],\"repository\":\"anthropics/claude-code\",\"severity\":\"high\",\"type\":null,\"withdrawn_at\":null},\"id\":\"GHSA-aaaa-bbbb-cccc\",\"level\":\"notice\",\"ruleset\":3,\"source\":\"ghsa\"}",
+   "sha256": "dc7da44549dd09350ddfd62ee09151eb154bc990f793c05714ed8230137b728a"
   },
   {
    "name": "ghsa-malware",
@@ -80,13 +80,13 @@
       }
      ]
     },
-    "ruleset": 2,
+    "ruleset": 3,
     "level": "critical",
     "confirmed_at": 1795000000,
     "checked_at": 1795003600
    },
-   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cvss_vector\":null,\"cwes\":[],\"ghsa_id\":\"GHSA-mmmm-2222-wwww\",\"packages\":[{\"ecosystem\":\"npm\",\"first_patched\":null,\"name\":\"@anthropic-ai/claude-code\",\"range\":\">= 0\"}],\"repository\":null,\"severity\":null,\"type\":\"malware\",\"withdrawn_at\":null},\"id\":\"GHSA-mmmm-2222-wwww\",\"level\":\"critical\",\"ruleset\":2,\"source\":\"ghsa\"}",
-   "sha256": "31af0c4cb595e4674ca5c15ceebbb58609af49c7a345d010e1d1da41c5ab468e"
+   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cvss_vector\":null,\"cwes\":[],\"ghsa_id\":\"GHSA-mmmm-2222-wwww\",\"packages\":[{\"ecosystem\":\"npm\",\"first_patched\":null,\"name\":\"@anthropic-ai/claude-code\",\"range\":\">= 0\"}],\"repository\":null,\"severity\":null,\"type\":\"malware\",\"withdrawn_at\":null},\"id\":\"GHSA-mmmm-2222-wwww\",\"level\":\"critical\",\"ruleset\":3,\"source\":\"ghsa\"}",
+   "sha256": "c21a397883e6f2c50cba6eccf6830bc1399886f1cffad9d5131ce1f1aeeb004b"
   },
   {
    "name": "osv-mal",
@@ -106,13 +106,13 @@
       }
      ]
     },
-    "ruleset": 2,
+    "ruleset": 3,
     "level": "high",
     "confirmed_at": 1795000000,
     "checked_at": 1795003600
    },
-   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"osv_id\":\"MAL-2026-1234\",\"packages\":[{\"ecosystem\":\"npm\",\"first_patched\":null,\"name\":\"@anthropic-ai/claude-code\",\"range\":null}],\"withdrawn\":null},\"id\":\"MAL-2026-1234\",\"level\":\"high\",\"ruleset\":2,\"source\":\"osv\"}",
-   "sha256": "fb20507f1b27057cd224608e02c458fbe5b276ff69619c524140a07103385b09"
+   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"osv_id\":\"MAL-2026-1234\",\"packages\":[{\"ecosystem\":\"npm\",\"first_patched\":null,\"name\":\"@anthropic-ai/claude-code\",\"range\":null}],\"withdrawn\":null},\"id\":\"MAL-2026-1234\",\"level\":\"high\",\"ruleset\":3,\"source\":\"osv\"}",
+   "sha256": "eba269cc004417a86b85a022a039fb2fb0e9d07057285d61cb3094e8e1f3155e"
   },
   {
    "name": "kev-out-of-scope-is-a-notice",
@@ -124,13 +124,13 @@
      "cve_id": "CVE-2026-0002",
      "name": "Linux Kernel"
     },
-    "ruleset": 2,
+    "ruleset": 3,
     "level": "notice",
     "confirmed_at": 1795000000,
     "checked_at": 1795003600
    },
-   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cve_id\":\"CVE-2026-0002\",\"name\":\"Linux Kernel\"},\"id\":\"CVE-2026-0002\",\"level\":\"notice\",\"ruleset\":2,\"source\":\"kev\"}",
-   "sha256": "8ea20db1f14c299f92c813a5bbb8cc80269884be6de57858dd2620401ef6e974"
+   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cve_id\":\"CVE-2026-0002\",\"name\":\"Linux Kernel\"},\"id\":\"CVE-2026-0002\",\"level\":\"notice\",\"ruleset\":3,\"source\":\"kev\"}",
+   "sha256": "06bc09dfb4d66b6a6836c98366c32ee68556ee0ae0820e946e81c7e48ee2a0e8"
   },
   {
    "name": "ghsa-escapes-unbound",
@@ -155,13 +155,13 @@
       }
      ]
     },
-    "ruleset": 2,
+    "ruleset": 3,
     "level": "none",
     "confirmed_at": 1795000000,
     "checked_at": 1795003600
    },
-   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cvss_vector\":null,\"cwes\":[],\"ghsa_id\":\"GHSA-xxxx-3333-yyyy\",\"packages\":[{\"ecosystem\":\"\",\"first_patched\":\"3\",\"name\":\"A \\\"quoted\\\" tool \\\\ path/name\",\"range\":\"< 3\"}],\"repository\":null,\"severity\":\"critical\",\"type\":\"reviewed\",\"withdrawn_at\":null},\"id\":\"GHSA-xxxx-3333-yyyy\",\"level\":\"none\",\"ruleset\":2,\"source\":\"ghsa\"}",
-   "sha256": "4f016f6e97431b7ef900cdd98437c5c3739b86a2213cdc30d82ff1c10dcbc3f0"
+   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cvss_vector\":null,\"cwes\":[],\"ghsa_id\":\"GHSA-xxxx-3333-yyyy\",\"packages\":[{\"ecosystem\":\"\",\"first_patched\":\"3\",\"name\":\"A \\\"quoted\\\" tool \\\\ path/name\",\"range\":\"< 3\"}],\"repository\":null,\"severity\":\"critical\",\"type\":\"reviewed\",\"withdrawn_at\":null},\"id\":\"GHSA-xxxx-3333-yyyy\",\"level\":\"none\",\"ruleset\":3,\"source\":\"ghsa\"}",
+   "sha256": "648d83ef4ddd1e55d33e7d62200bc0fa5c487ed3c81b4b9f47621f1501d2e027"
   },
   {
    "name": "ghsa-withdrawn",
@@ -186,13 +186,13 @@
       }
      ]
     },
-    "ruleset": 2,
+    "ruleset": 3,
     "level": "none",
     "confirmed_at": 1795000000,
     "checked_at": 1795003600
    },
-   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cvss_vector\":null,\"cwes\":[],\"ghsa_id\":\"GHSA-aaaa-bbbb-cccc\",\"packages\":[{\"ecosystem\":\"npm\",\"first_patched\":\"2.1.0\",\"name\":\"@anthropic-ai/claude-code\",\"range\":\"< 2.1.0\"}],\"repository\":null,\"severity\":null,\"type\":\"malware\",\"withdrawn_at\":\"2026-11-20T00:00:00Z\"},\"id\":\"GHSA-aaaa-bbbb-cccc\",\"level\":\"none\",\"ruleset\":2,\"source\":\"ghsa\"}",
-   "sha256": "ee90cbeb9d18246ae4e139a6f5a65d3f34430e14e9e91cc6ada9eb976464ff6a"
+   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cvss_vector\":null,\"cwes\":[],\"ghsa_id\":\"GHSA-aaaa-bbbb-cccc\",\"packages\":[{\"ecosystem\":\"npm\",\"first_patched\":\"2.1.0\",\"name\":\"@anthropic-ai/claude-code\",\"range\":\"< 2.1.0\"}],\"repository\":null,\"severity\":null,\"type\":\"malware\",\"withdrawn_at\":\"2026-11-20T00:00:00Z\"},\"id\":\"GHSA-aaaa-bbbb-cccc\",\"level\":\"none\",\"ruleset\":3,\"source\":\"ghsa\"}",
+   "sha256": "eb17fa20f952a2b8f36be66995be1659ffbf4e26a7787a5122f15364aa3eaa45"
   },
   {
    "name": "kev-not-listed",
@@ -204,13 +204,13 @@
      "cve_id": "CVE-2026-0001",
      "name": null
     },
-    "ruleset": 2,
+    "ruleset": 3,
     "level": "none",
     "confirmed_at": 1795000000,
     "checked_at": 1795003600
    },
-   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cve_id\":\"CVE-2026-0001\",\"name\":null},\"id\":\"CVE-2026-0001\",\"level\":\"none\",\"ruleset\":2,\"source\":\"kev\"}",
-   "sha256": "c7fd388b9be722fbbf5b11b02b00dc2217545ab4ba67e177a4e1a48136af2098"
+   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cve_id\":\"CVE-2026-0001\",\"name\":null},\"id\":\"CVE-2026-0001\",\"level\":\"none\",\"ruleset\":3,\"source\":\"kev\"}",
+   "sha256": "3d30d5efd360032c48e73ac925cc7a30550c8321fea7cd5dc45c1050e3ae72b3"
   }
  ],
  "levels": [
@@ -514,7 +514,7 @@
    "level": "notice"
   },
   {
-   "name": "vendor advisory, severity high",
+   "name": "vendor advisory, severity high alone is a notice",
    "product": "Claude Code",
    "readings": [
     [
@@ -538,7 +538,7 @@
      }
     ]
    ],
-   "level": "high"
+   "level": "notice"
   },
   {
    "name": "vendor advisory stating embedded malicious code",
@@ -709,6 +709,213 @@
     ]
    ],
    "level": "notice"
+  }
+ ],
+ "actions": [
+  {
+   "name": "exploited, upgrade to a stated version",
+   "product": "Claude Code",
+   "level": "critical",
+   "readings": [
+    [
+     "kev",
+     {
+      "cve_id": "CVE-2026-0001",
+      "name": "Anthropic Claude Code"
+     }
+    ]
+   ],
+   "actions": [
+    [
+     "upgrade",
+     "Claude Code",
+     "2.1.0"
+    ]
+   ],
+   "want": "critical",
+   "fixed": "2.1.0"
+  },
+  {
+   "name": "exploited, no action",
+   "product": "Claude Code",
+   "level": "critical",
+   "readings": [
+    [
+     "kev",
+     {
+      "cve_id": "CVE-2026-0001",
+      "name": "Anthropic Claude Code"
+     }
+    ]
+   ],
+   "actions": [],
+   "want": "high",
+   "fixed": null
+  },
+  {
+   "name": "exploited, upgrade while the post states no fixed version",
+   "product": "Claude Code",
+   "level": "critical",
+   "readings": [
+    [
+     "kev",
+     {
+      "cve_id": "CVE-2026-0001",
+      "name": "Anthropic Claude Code"
+     }
+    ]
+   ],
+   "actions": [
+    [
+     "upgrade",
+     "Claude Code",
+     "2.1.0"
+    ]
+   ],
+   "want": "high",
+   "fixed": null
+  },
+  {
+   "name": "exploited, stop_using is not its action",
+   "product": "Claude Code",
+   "level": "critical",
+   "readings": [
+    [
+     "kev",
+     {
+      "cve_id": "CVE-2026-0001",
+      "name": "Anthropic Claude Code"
+     }
+    ]
+   ],
+   "actions": [
+    [
+     "stop_using",
+     "Claude Code",
+     null
+    ]
+   ],
+   "want": "high",
+   "fixed": null
+  },
+  {
+   "name": "exploited, upgrade of another product",
+   "product": "Claude Code",
+   "level": "critical",
+   "readings": [
+    [
+     "kev",
+     {
+      "cve_id": "CVE-2026-0001",
+      "name": "Anthropic Claude Code"
+     }
+    ]
+   ],
+   "actions": [
+    [
+     "upgrade",
+     "Codex",
+     "2.1.0"
+    ]
+   ],
+   "want": "high",
+   "fixed": "2.1.0"
+  },
+  {
+   "name": "malicious release, stop_using",
+   "product": "Claude Code",
+   "level": "critical",
+   "readings": [
+    [
+     "ghsa",
+     {
+      "ghsa_id": "GHSA-aaaa-bbbb-cccc",
+      "type": "malware",
+      "withdrawn_at": null,
+      "repository": null,
+      "severity": null,
+      "cvss_vector": null,
+      "cwes": [],
+      "packages": [
+       {
+        "ecosystem": "npm",
+        "name": "@anthropic-ai/claude-code",
+        "range": null,
+        "first_patched": null
+       }
+      ]
+     }
+    ]
+   ],
+   "actions": [
+    [
+     "stop_using",
+     "Claude Code",
+     null
+    ]
+   ],
+   "want": "critical",
+   "fixed": null
+  },
+  {
+   "name": "malicious release with a patched version needs the upgrade",
+   "product": "Claude Code",
+   "level": "critical",
+   "readings": [
+    [
+     "ghsa",
+     {
+      "ghsa_id": "GHSA-aaaa-bbbb-cccc",
+      "type": "malware",
+      "withdrawn_at": null,
+      "repository": null,
+      "severity": null,
+      "cvss_vector": null,
+      "cwes": [],
+      "packages": [
+       {
+        "ecosystem": "npm",
+        "name": "@anthropic-ai/claude-code",
+        "range": null,
+        "first_patched": "2.1.0"
+       }
+      ]
+     }
+    ]
+   ],
+   "actions": [
+    [
+     "stop_using",
+     "Claude Code",
+     null
+    ]
+   ],
+   "want": "high",
+   "fixed": null
+  },
+  {
+   "name": "stop_using with no reading",
+   "product": "Claude Code",
+   "level": "critical",
+   "readings": [],
+   "actions": [
+    [
+     "stop_using",
+     "Claude Code",
+     null
+    ]
+   ],
+   "want": "high",
+   "fixed": null
+  },
+  {
+   "name": "a high needs no action",
+   "product": "Claude Code",
+   "level": "high",
+   "readings": [],
+   "actions": [],
+   "want": "high",
+   "fixed": null
   }
  ]
 }
