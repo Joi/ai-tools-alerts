@@ -11,6 +11,13 @@ manifest by that manifest's event id, and expires. Content::
     {"v": 1, "manifest_id", "manifest_version", "checkpoint_key",
      "issued_at", "expires_at"}
 
+and two optional keys: ``min_cli`` (a release, "N.N.N"; readers at 0.1.7 and
+earlier ignore it) and ``ruleset`` (the root's pin of the ruleset,
+``{"version", "sha256", "min_version"}``, read by ``ruleset.parse_pin``;
+readers at 0.1.8 and earlier ignore it). A ``ruleset`` value this reader
+cannot read does not refuse the certificate: the root pinned something, this
+reader cannot tell what, and so it counts as out of date (``ruleset_unreadable``).
+
 The **checkpoint** (``checkpoint.json``) is signed by the certified key, off
 the machine that serves the mirror, on a schedule. It lists the ids of the
 events its signer vouches for. Content::
@@ -38,7 +45,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from . import nostr
+from . import nostr, ruleset
 from .manifest import Manifest
 
 __all__ = ["KIND", "CERT_D_TAG", "CHECKPOINT_D_TAG", "VERSION", "MAX_CERT_BYTES", "MAX_CHECKPOINT_BYTES",
@@ -81,6 +88,12 @@ class Cert:
     # The oldest CLI release the root says can read the feed; None: no floor. The CLI
     # only reports it (cli.UPGRADE_LINE): nothing is refused because of it.
     min_cli: str | None = None
+    # The ruleset the root pins; None: no pin. A reader whose own ruleset is out of
+    # date under it (ruleset.outdated) says so and judges no level (cli.OUTDATED_LINE).
+    ruleset: ruleset.Pin | None = None
+    # The root signed a ``ruleset`` value this reader cannot read (a later form of
+    # the pin): there is a pin, so this reader is out of date, whatever it says.
+    ruleset_unreadable: bool = False
 
 
 @dataclass(frozen=True)
@@ -209,8 +222,17 @@ def _parse_cert(ev) -> tuple:
     min_cli = c.get("min_cli")  # optional; readers at 0.1.7 and earlier ignore the key
     if min_cli is not None and not (isinstance(min_cli, str) and _MIN_CLI.fullmatch(min_cli)):
         raise CheckpointError("certificate: min_cli must be a version written N.N.N")
+    # Optional, like min_cli. A value that is there and does not parse is not a reason to
+    # refuse the certificate: pull._choose_cert would then go on with an older certificate
+    # and no pin at all. It is kept as "a pin this reader cannot read".
+    pin, unreadable = c.get("ruleset"), False
+    if pin is not None:
+        try:
+            pin = ruleset.parse_pin(pin)
+        except ruleset.RulesetError:
+            pin, unreadable = None, True
     return (_hex(c, "manifest_id", "certificate"), _int(c, "manifest_version", 1, MAX_INT, "certificate"),
-            key, issued, expires, min_cli)
+            key, issued, expires, min_cli, pin, unreadable)
 
 
 def load_cert(src) -> Cert:
@@ -241,7 +263,8 @@ def verify_cert(cert: Cert, root_pubkey: str) -> bool:
         if not isinstance(ev, dict) or ev.get("pubkey") != root_pubkey:
             return False
         if _parse_cert(ev) != (cert.manifest_id, cert.manifest_version, cert.checkpoint_key,
-                               cert.issued_at, cert.expires_at, cert.min_cli):
+                               cert.issued_at, cert.expires_at, cert.min_cli, cert.ruleset,
+                               cert.ruleset_unreadable):
             return False
         return nostr.verify_event(ev)
     except (ValueError, TypeError, KeyError, RecursionError):
@@ -273,9 +296,10 @@ def cert_order(new: Cert, old: Cert | None) -> str | None:
 
 
 def build_cert(root_sec: str, m: Manifest, checkpoint_key: str, issued_at: int, expires_at: int,
-               min_cli: str | None = None) -> dict:
+               min_cli: str | None = None, ruleset_pin: ruleset.Pin | None = None) -> dict:
     """The signed certificate event naming ``checkpoint_key`` for manifest ``m``.
-    ``min_cli`` (N.N.N) is written only when given."""
+    ``min_cli`` (N.N.N) and ``ruleset_pin`` (a ``ruleset.Pin``) are written only
+    when given."""
     if not _key_ok(checkpoint_key):
         raise CheckpointError("checkpoint_key is not an x-only public key (64 lowercase hex)")
     if not all(type(t) is int and 0 <= t <= MAX_TIME for t in (issued_at, expires_at)) or expires_at <= issued_at:
@@ -286,6 +310,15 @@ def build_cert(root_sec: str, m: Manifest, checkpoint_key: str, issued_at: int, 
         if not (isinstance(min_cli, str) and _MIN_CLI.fullmatch(min_cli)):
             raise CheckpointError("min_cli must be a version written N.N.N")
         content["min_cli"] = min_cli
+    if ruleset_pin is not None:
+        if not isinstance(ruleset_pin, ruleset.Pin):
+            raise CheckpointError("ruleset: the pin must be a ruleset.Pin")
+        content["ruleset"] = {"version": ruleset_pin.version, "sha256": ruleset_pin.sha256,
+                              "min_version": ruleset_pin.min_version}
+        try:  # before the key signs anything: a reader would take a malformed pin as unreadable
+            ruleset.parse_pin(content["ruleset"])
+        except ruleset.RulesetError as e:
+            raise CheckpointError(f"ruleset: {e}") from None
     ev = nostr.sign_event(root_sec, {"created_at": issued_at, "kind": KIND, "tags": [["d", CERT_D_TAG]],
                                      "content": json.dumps(content, sort_keys=True, separators=(",", ":"))})
     _parse_cert(ev)

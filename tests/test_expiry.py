@@ -375,3 +375,40 @@ def test_a_pull_refused_for_size_ages_nothing_by_the_head_it_did_not_accept(mirr
     assert res.error == "state limit reached: new events not stored"
     st = State.load()
     assert pull.head_clock(st)[0] == T0 and set(st.events) == {old["id"]}
+
+
+# ---------------------------------------------------------------- a ruleset out of date (ai-tools-alerts#ed7n)
+
+def test_decay_off_keeps_a_claim_threads_level_and_still_ends_a_curators_expiry(mirror):
+    bot_root(mirror)
+    mirror.root_post(mirror.cur_sec, advisory(expires_at=T0 + 5 * DAY), created_at=T0 + 100)
+    ts = pull.threads_from(mirror.events["feed.json"], mirror.man)
+    late = T0 + 101 + 200 * DAY
+    assert {t.adv.id: t.adv.level for t in pull.active(ts, late)} == {}
+    assert {t.adv.id: t.adv.level for t in pull.active(ts, late, decay=False)} == {CVE: "critical"}
+    assert {t.adv.id: t.adv.level for t in pull.active(ts, T0 + 101 + 14 * DAY, decay=False)} == {CVE: "critical"}
+    assert {t.adv.id: t.adv.level for t in pull.active(ts, T0 + 200, decay=False)} == {
+        CVE: "critical", "AITA-TEST-0001": "critical"}
+
+
+@pytest.mark.parametrize("outdated", [True, "unreadable", False])
+def test_check_applies_no_computed_expiry_while_its_ruleset_is_out_of_date(mirror, monkeypatch, capsys, outdated):
+    rs = ruleset.load()
+    pin = (ruleset.Pin(version=rs.version + 1, sha256="0" * 64, min_version=rs.version + 1) if outdated
+           else ruleset.Pin(version=rs.version, sha256=rs.digest, min_version=rs.version))
+    if outdated == "unreadable":
+        mirror.publish_unreadable_pin()
+    else:
+        mirror.publish_cert(ruleset_pin=pin)
+    bot_root(mirror)
+    assert pull_at(mirror, T0 + 101 + 14 * DAY).error is None
+    monkeypatch.setenv(cli.TRUST_ROOT_ENV, mirror.root)
+    config.write_default(force=True)
+    config.config_path().write_text("trust_root_override = true\n")
+    inv = Inventory(products={"claude-code": [Installed("Claude Code", "2.0.0", "/invented/bin/claude")]})
+    monkeypatch.setattr(inventory, "collect", lambda *a, **k: inv)
+    assert cli.main(["check"]) == 0
+    io = capsys.readouterr()
+    assert f"(id {CVE}, " in io.out
+    assert ("CRITICAL: " in io.out) == bool(outdated) and ("HIGH: " in io.out) != bool(outdated)
+    assert ("out of date:" in io.err) == bool(outdated)
