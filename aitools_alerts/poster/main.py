@@ -37,6 +37,14 @@ Every sent post also gets a Japanese ``lang: ja`` reply (docs/design.md "Post fo
 journaled as its own item ``<key>:ja`` once the original is recorded and sent after
 every English send; its failure waits for the next run and never holds English work.
 
+Every run also recomputes the level of each open thread the ledger marks exploited
+from the KEV catalog it read (``recompute``, ai-tools-alerts#ny5g): a raise posts at
+once; a lowering needs the same lower level held through 24 hours of complete reads
+and seven days without a level change on the thread, and is a level-only reply
+(``compose.level_post``) in each of its channels. A catalog that could not be read
+lowers nothing, and neither does what a cut one lacks. The next digest lists what
+was lowered in one line.
+
 With ``translate_curator`` on, a curator's post or amendment read from the mirror gets
 a machine translation (``translate``), journaled as ``curator:<event id>:<channel>:ja``
 after the English work of the run is saved. A 401/403 holds it until
@@ -57,7 +65,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from aitools_alerts import TRUST_ROOT_PUBKEY, check, manifest, pull, ruleset, schema
-from aitools_alerts.poster import candidates, compose, inputs, ledger, rules, signer, translate, transport
+from aitools_alerts.poster import candidates, compose, inputs, ledger, recompute, rules, signer, translate, transport
 from aitools_alerts.poster.inputs import Config, ConfigError
 from aitools_alerts.poster.ledger import Ledger, LedgerError
 from aitools_alerts.state import State
@@ -123,10 +131,25 @@ class Run:
     def save(self):
         inputs.save_state(self.config.state, self.state)
 
+    @property
+    def rc(self) -> dict:
+        """The recompute's own state (``recompute.load``), read once a run."""
+        if getattr(self, "_rc", None) is None:
+            self._rc, replaced = recompute.load(self.config.recompute_state)
+            if replaced:
+                _say(f"recompute state {self.config.recompute_state} unreadable; every wait before a lowering starts over")
+        return self._rc
+
+    def save_rc(self):
+        try:
+            recompute.save(self.config.recompute_state, self.rc)
+        except (OSError, TypeError, ValueError) as e:  # as the journal: a state that cannot be written stops the run
+            raise LedgerError(f"cannot write recompute state {self.config.recompute_state}: {e}") from None
+
     # ------------------------------------------------------------ the journal
 
     def _item(self, kind, scope, ids, channel, text, *, key_id, adv=None, exploited=False, date=None,
-              root=None, ja=None, source_title=None):
+              root=None, ja=None, source_title=None, floor=None):
         """One journal item. ``root`` fixes a reply's or copy's thread at planning time, so a
         later alias bridge cannot move it to another thread. Raises ValueError (withheld)
         for a message the transport would refuse."""
@@ -136,7 +159,8 @@ class Run:
                 "ids": list(dict.fromkeys(ids)), "channel": channel, "text": text, "adv": adv,
                 "exploited": exploited is True, "date": date, "sent": None, "root": root,
                 **({"ja": ja} if ja else {}),  # no key without a body: the poster before rd8t loads it
-                **({"source_title": source_title} if source_title else {})}
+                **({"source_title": source_title} if source_title else {}),
+                **({"floor": floor} if floor else {})}  # ny5g: a root's prose floor, for the ledger
 
     def _ja(self, fn, *a, **kw):
         """A Japanese body, or None: a Japanese failure never withholds the English post."""
@@ -472,7 +496,7 @@ class Run:
             if e is None:
                 self.led.record_root(schema.validate(it["adv"]), eid, {ch: eid}, scope=it["scope"],
                                      exploited=it["exploited"], now=self.now, ids=it["ids"],
-                                     source_title=it.get("source_title"))
+                                     source_title=it.get("source_title"), floor=it.get("floor"))
             for o in self.state["outbox"]:  # its copies now name this thread, never a lookup
                 if o["kind"] == "copy" and o["root"] is None and o["scope"] == it["scope"] \
                         and _fold(o["ids"]) & _fold(it["ids"]):
@@ -484,7 +508,15 @@ class Run:
         elif it["kind"] == "reply":
             e = self._entry(it)
             if not any(r.get(ch) == eid for r in e.replies):
-                self.led.record_reply(e.root_event_id, schema.validate(it["adv"]), {ch: eid},
+                adv = schema.validate(it["adv"])
+                m = candidates.BOT_ID.fullmatch(adv.id)
+                low = [m.group(1) if m else adv.id, adv.level]
+                if RANK[adv.level] < RANK[e.level]:  # ny5g: a lowering, recorded for its first channel
+                    if low not in self.rc["lowered"]:  # for the digest; once, though a replay comes here again
+                        self.rc["lowered"] = (self.rc["lowered"] + [low])[-recompute.MAX_LOWERED:]
+                    recompute.note(self.rc, e.root_event_id, self.now)  # the breaker counts what was sent, once
+                    self.save_rc()
+                self.led.record_reply(e.root_event_id, adv, {ch: eid},
                                       now=self.now, exploited=it["exploited"], ids=it["ids"])
         else:  # digest: acknowledge exactly the notices and ledger cutoff it was built from
             snap = set(it["adv"]["held"])
@@ -635,8 +667,21 @@ class Run:
             self.n["busy"] += 1
             self.defer([(c, scope)])  # its update (a fix, a promotion) is planned once the send resolves
             return
-        level, reason = self.level(c, scope)
         entry = self.led.lookup(ids, scope=scope.name)
+        if entry is not None and entry.lowered and c.exploited is True \
+                and not any(r[0] == "kev" for r in c.readings):
+            # ny5g: on a lowered thread the recompute holds the KEV level. A mark that no
+            # KEV entry read this run stands behind (lent by the ledger when candidates were
+            # merged, before the journal drained, or kept in the state file) raises nothing.
+            c = replace(c, exploited=False)
+        level, reason = self.level(c, scope)
+        # ny5g: what readings of prose alone give it, kept by the ledger at its highest: a
+        # reading never justifies a lowering, so the recompute never goes below this.
+        rs = ruleset.load()
+        floor = rules._prose_level(replace(c, exploited=False), scope,
+                                   any(self.confirmed.get(s.url, set()) & rules.advisory_ids(c) for s in c.sources), rs)[0]
+        if entry is not None:
+            self.led.learn_floor(entry.root_event_id, rs.highest(floor, recompute.floor(entry, rs)))
         if entry is not None and reason in ("no-action", "stop-using") and compose.schema_fixed(c.fixed) is None:
             # 9kgk: the thread already states a fix, which plan_known keeps; the upgrade is complete.
             was = (entry.advisory.get("products") or [{}])[0].get("fixed")
@@ -653,7 +698,7 @@ class Run:
             self.n["withheld"] += 1
             return
         try:
-            items = self.plan_new(c, scope, level, reason, ids) if entry is None \
+            items = self.plan_new(c, scope, level, reason, ids, floor) if entry is None \
                 else self.plan_known(c, scope, level, reason, ids, entry)
         except ValueError:  # compose refused something: the whole advisory is withheld
             self.n["withheld"] += 1
@@ -691,7 +736,7 @@ class Run:
         seen = [w[k] for k in (f"{scope}|{i.casefold()}" for i in ids) if k in w]
         return min(seen + ([held["adv"]["posted_at"]] if held else []) + [self.now])
 
-    def plan_new(self, c, scope, level, reason, ids):
+    def plan_new(self, c, scope, level, reason, ids, floor=None):
         test = self.is_synthetic(c)
         held = self._held_for(scope.name, ids)
         seen = self.first_seen(scope.name, ids, held)
@@ -731,7 +776,7 @@ class Run:
                       exploited=c.exploited is True, range_unexpressed=compose.range_unexpressed(c))
         return [self._item("root" if i == 0 else "copy", scope.name, ids, ch, text, key_id=c.id,
                            adv=asdict(adv), exploited=c.exploited, ja=ja,
-                           source_title=title if i == 0 else None)
+                           source_title=title if i == 0 else None, floor=floor if i == 0 else None)
                 for i, ch in enumerate(chans)]
 
     @staticmethod
@@ -841,8 +886,20 @@ class Run:
         items = [self._item("copy", scope.name, ids, ch, text, key_id=prev.id, exploited=c.exploited,
                             root=entry.root_event_id, ja=ja)
                  for ch in copies]
+        if changes and entry.lowered and "level" in changes:
+            # ny5g, spec/wire.md rule 2: on a thread that has had a lowering a level change
+            # travels alone; whatever else this run learned follows in a reply without it.
+            items += self._level_items(entry, changes.pop("level"))
+            prev = replace(prev, level=level)
+            if changes.get("title") == prev.title:  # it came with the level; unchanged, it is no reply
+                del changes["title"]
+            if set(changes) <= {"aliases", "sources", "advisory_severity"}:
+                # 8ke5 and 0dvh again, now that the level has gone its own way: ids, sources
+                # and a severity word alone make no reply; the sources wait for the next one.
+                self.led.learn_sources(entry.root_event_id, compose._sources(extra))
+                changes = {}
         if changes:
-            reply = compose.reply_post(prev, k, changes, reason=reason)
+            reply = compose.reply_post(prev, k, changes, reason=reason, lowered=bool(entry.lowered))
             merged = compose.parse_reply(reply, prev)
             if merged is None:
                 raise ValueError("reply does not parse back")
@@ -855,6 +912,113 @@ class Run:
                                  adv=asdict(merged), exploited=c.exploited, root=entry.root_event_id, ja=ja)
                       for ch in entry.channel_ids]
         return items
+
+    def _level_items(self, entry, level):
+        """A level change and nothing else (``compose.level_post``), one reply for each
+        channel the thread has a root in. No Japanese copy: the digest reports it."""
+        prev = schema.validate(entry.advisory)
+        text = compose.level_post(prev, level)
+        return [self._item("reply", entry.scope, entry.aliases, ch, text, key_id=f"{prev.id}#level",
+                           adv=asdict(replace(prev, level=level)), exploited=entry.exploited,
+                           root=entry.root_event_id) for ch in entry.channel_ids]
+
+    def drop_unsent_lowerings(self):
+        """Before the journal drains: a lowering no channel has yet is not sent on the
+        evidence of an earlier run. It leaves the journal, and this run sends it again
+        only if a complete read still supports it (its wait is kept). One a channel
+        already has stays, whatever this run reads: the thread's channels must agree. A
+        channel has it when the relay acknowledged it (journaled as sent, though the
+        ledger may not say so yet: a run that stopped between the two), when its outcome
+        is unknown, or when the ledger already holds the lower level."""
+        level_items = [it for it in self.state["outbox"] if it["kind"] == "reply" and "#level:" in it["key"]]
+        had = {it["root"] for it in level_items if it["sent"] is not None or self.led.has_pending(it["key"])}
+        gone = []
+        for it in level_items:
+            e = self.led.thread(it["root"])
+            if it["root"] not in had and (e is None or RANK[it["adv"]["level"]] < RANK[e.level]):
+                gone.append(it)
+        if gone:
+            self._drop(gone)
+
+    def observe(self, kev_out: dict):
+        """Judge every open thread the ledger marks exploited against this run's KEV
+        copy, and save what that does to each wait, before anything is sent (ny5g). A
+        run that then stops at a failed send has still recorded what it read: an unknown
+        read has broken the wait, another level has started it over. What the verdicts
+        send is ``recompute``'s, later in the run. Also settles the digest report of a
+        run that stopped between journaling the digest and clearing the list."""
+        st, rs = self.rc, ruleset.load()
+        if st["reported"] is not None:
+            journaled = any(it["kind"] == "digest" and it["date"] == st["reported"]
+                            for it in self.state["outbox"] + self._withheld_items())
+            if journaled or self.state["digest_date"] == st["reported"]:
+                st["lowered"] = []  # that digest carries them
+            st["reported"] = None
+        copy = self.copy = recompute.kev_copy(kev_out.get("catalog"), kev_out.get("status"), st, self.now,
+                                              kev_out.get("redirected"))
+        if copy is not None and copy.version and not copy.complete:
+            _say("kev copy is not complete (a redirect, its count, fewer entries than 98% of the largest read, "
+                 "or a version older than the latest read): its absences lower nothing")
+        self.drop_unsent_lowerings()  # first: what it removes no longer makes its thread busy
+        entries = [e for e in self.led.entries() if not compose.is_synthetic(e.advisory.get("id"))]
+        self.observed = {e.root_event_id for e in entries}
+        for k in ("dwell", "listed"):
+            st[k] = {r: v for r, v in st[k].items() if r in self.observed}
+        self.verdicts, self.judged = {}, set()
+        self._judge(entries, rs)
+        st["open"] = None  # the observation is whole and saved: the next run may count from it
+        self.save_rc()
+
+    def _judge(self, entries, rs):
+        """Judge each entry and keep its verdict by root: ("raise" | "due", level) or
+        nothing. An entry that is not KEV's, out of scope now or has work in flight is
+        not judged, and its wait takes no time for a run that did not look at it."""
+        st = self.rc
+        for e in entries:  # with no copy every read is unknown, and judge says so to each wait
+            root = e.root_event_id
+            self.verdicts.pop(root, None)
+            scope = rules.scope_of(e.scope) if e.exploited else None
+            if scope is None or scope.name != e.scope or self.busy(e.aliases, e.scope):
+                self.judged.discard(root)
+                recompute.pause(st, root)
+                continue
+            self.judged.add(root)
+            verdict = recompute.judge(e, scope, self.copy, rs, st, self.now)
+            if verdict is not None:
+                self.verdicts[root] = (e, *verdict)
+
+    def recompute(self):
+        """Send what the verdicts say (ny5g): a raise now; a lowering when the thread
+        has had seven quiet days and the circuit breaker lets it through. The run has
+        drained the journal and planned its candidates since ``observe``, so every
+        thread that was not judged there (posted by this run, or busy then), and every
+        thread whose ledger entry is no longer the one judged (a candidate added an id,
+        a floor, a fix, another level), is judged again now, from the entry as it is:
+        no verdict outlives the entry it was reached on, and the reply is composed from
+        the current advisory. The breaker's share is of the threads judged, the only
+        ones that can be lowered: a ledger full of other threads must not make a mass
+        lowering look small."""
+        st = self.rc
+        now = [e for e in self.led.entries() if not compose.is_synthetic(e.advisory.get("id"))]
+        self._judge([e for e in now if e.root_event_id not in self.judged
+                     or (e.root_event_id in self.verdicts and self.verdicts[e.root_event_id][0] != e)],
+                    ruleset.load())
+        live = {e.root_event_id for e in now}
+        # Not busy when judged, and not busy now: a candidate of this run can leave work in
+        # flight under a thread's ids without touching its entry (a refused item of a thread
+        # that shares an id), and nothing is sent on top of work in flight.
+        found = [v for root, v in self.verdicts.items() if root in live and not self.busy(v[0].aliases, v[0].scope)]
+        raises = [(e, level) for e, kind, level in found if kind == "raise"]
+        due = recompute.select([(e, level) for e, kind, level in found
+                                if kind == "due" and recompute.quiet(e, self.now)], len(self.judged), st, self.now)
+        self.save_rc()
+        for e, level in raises + due:
+            try:
+                items = self._level_items(e, level)
+            except ValueError:  # compose refused it: this thread's change is withheld
+                self.n["withheld"] += 1
+                continue
+            self.enqueue(items)  # its wait stays until the ledger shows the level: see drop_unsent_lowerings
 
     def _withdrawn(self, root, fetch=None) -> tuple[set, set]:
         """(case-folded advisory ids, root event ids) withdrawn under ``root`` as of a
@@ -936,7 +1100,7 @@ class Run:
         while True:  # the largest prefix that fits one post; the rest waits for tomorrow
             try:
                 text = compose.digest([x[0] for x in items[:keep]], local.date(), retracted=gone, now=self.now,
-                                      titles=titles)
+                                      titles=titles) + compose.level_report(self.rc["lowered"], self.rc["tripped"])
             except ValueError:
                 self.n["withheld"] += 1
                 return
@@ -956,10 +1120,22 @@ class Run:
         snap = {"held": sorted({k for _, h, _ in taken if h is not None
                                 for k in self._notice_keys(h["scope"], h["adv"])}),
                 "cutoff": cutoff, "roots": roots}
-        ja = self._ja(compose.digest, [x[0] for x in taken], local.date(), lang="ja", retracted=gone, now=self.now,
-                      titles=titles)
-        self.enqueue([self._item("digest", None, [f"digest:{today}"], "feed", text,
-                                 key_id=today, adv=snap, date=today, ja=ja)])
+        ja = self._ja(lambda: compose.digest([x[0] for x in taken], local.date(), lang="ja", retracted=gone,
+                                             now=self.now, titles=titles)
+                      + compose.level_report(self.rc["lowered"], self.rc["tripped"], "ja"))
+        item = self._item("digest", None, [f"digest:{today}"], "feed", text, key_id=today, adv=snap, date=today, ja=ja)
+        if self.rc["lowered"]:
+            # ny5g: listed once. The date is written first, so a run that stops between the
+            # two files is settled by the next one (observe): the list goes if this digest
+            # was journaled and stays if it was not.
+            self.rc["reported"] = today
+            self.save_rc()
+        self.state["outbox"].append(item)
+        self.save()
+        if self.rc["reported"] is not None:
+            self.rc.update(lowered=[], reported=None)
+            self.save_rc()
+        self.deliver(item)
 
 
 def _observed(c) -> int | None:
@@ -1043,12 +1219,14 @@ def _say(msg: str) -> None:
     print(f"aitools-alerts-poster: {msg}", file=sys.stderr)
 
 
-def gather(config: Config, state: dict, now: int, kev_fetch, counts: Counter, kev_catalog=None):
+def gather(config: Config, state: dict, now: int, kev_fetch, counts: Counter, kev_catalog=None,
+           kev_out: dict | None = None):
     """(candidates, watermarks to set when the run succeeds, input status).
 
     A rejected input sets no watermark past itself, so the next run reads it again
     (re-reading is idempotent: ledger lookup and held-notice dedup). The status dict
-    is the summary's ``inputs=`` field."""
+    is the summary's ``inputs=`` field. ``kev_out``, when given, receives the catalog this
+    run fetched from CISA and its status, for the recompute; a synthetic file never does."""
     out, marks = [], {}
     status = {"kev": "unavailable", "collector": "off", "heartbeat": "off"}
     if config.heartbeat_runs is not None:
@@ -1094,7 +1272,10 @@ def gather(config: Config, state: dict, now: int, kev_fetch, counts: Counter, ke
         out += got
         status["kev"] = "file"
     else:
-        catalog, status["kev"] = inputs.fetch_kev(config.kev_cache, kev_fetch)
+        info: dict = {}
+        catalog, status["kev"] = inputs.fetch_kev(config.kev_cache, kev_fetch, info=info)
+        if kev_out is not None:
+            kev_out.update(catalog=catalog, status=status["kev"], redirected=info.get("redirected"))
         if catalog is None:
             _say("kev unavailable: fetch failed or the catalog was refused")
         else:
@@ -1157,9 +1338,12 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
             r = Run(now, config, led, state, channels, send, page, digest_now=digest_now, skipped=skipped)
             n = r.n
             _gate(state, led)
+            recompute.begin(r.rc, now)  # ny5g: before anything is read, so a run that stops is known to have
+            r.save_rc()
             merged, english_ok = None, False  # merged: set once the old deferred list is folded in
             try:
-                cands, marks, status = gather(config, state, now, kev_fetch, skipped, kev_catalog)
+                kev_out: dict = {}
+                cands, marks, status = gather(config, state, now, kev_fetch, skipped, kev_catalog, kev_out)
                 deferred = [inputs.candidate_from(d) for d in state["deferred"]]
                 n["candidates"] = len(cands) + len(deferred)
                 review, pairs, later = [], [], []
@@ -1188,10 +1372,12 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                 if review:
                     led.add_review(review, now=now)
                 merged = ledger.merge(pairs, led)  # merge BEFORE level_for
+                r.observe(kev_out)
                 r.drain()
                 for i, (c, scope) in enumerate(merged):
                     r.one(c, scope)
                     merged[i] = None  # planned (or deferred by one() itself)
+                r.recompute()
                 r.digest(root=translate_kw.get("root", TRUST_ROOT_PUBKEY), fetch=mirror_fetch)
                 state.update(marks)  # every send of this run succeeded; busy work is deferred
                 english_ok = True
