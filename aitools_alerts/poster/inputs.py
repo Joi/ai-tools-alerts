@@ -42,7 +42,7 @@ RUN_DIR = re.compile(r"\d{4}-\d{2}-\d{2}T\d{6}Z")
 
 _STATE_KEYS = {"schema_version", "since", "heartbeat", "collector", "kev_since",
                "digest_date", "digest_at", "digest_roots", "digest_ids", "held", "digested",
-               "outbox", "deferred", "withheld", "waiting", "gate", "weekly"}
+               "outbox", "deferred", "withheld", "waiting", "gate", "weekly", "dropped"}
 MAX_WAITING = 2000  # 0dvh: first sight of a held high, per scope and id
 GATE = 1  # h340: everything unpublished in the state was admitted by an authoritative source
 MAX_DIGEST_IDS = 10  # the event ids of the last digests sent, oldest first
@@ -415,7 +415,8 @@ def new_state(now: int, backfill_days: int) -> dict:
     return {"schema_version": 1, "since": since, "heartbeat": None, "collector": None,
             "kev_since": None, "digest_date": None, "digest_at": since, "digest_roots": [], "digest_ids": [],
             "held": [], "digested": [], "outbox": [], "deferred": [], "withheld": [], "waiting": {},
-            "gate": GATE, "weekly": iso_week(now)}  # qwpw: the first summary is next Monday
+            "gate": GATE, "weekly": iso_week(now),  # qwpw: the first summary is next Monday
+            "dropped": 0}  # jsje: refused items dropped since the last digest
 
 
 def _strs(v) -> bool:
@@ -443,7 +444,8 @@ def _adv_ok(v) -> bool:
 def _item_ok(it) -> bool:
     """A journal item that a later run can finish: every field its kind needs is there
     and well formed, so nothing fails after the post is public."""
-    if not (isinstance(it, dict) and _ITEM_KEYS <= set(it) <= _ITEM_KEYS | {"ja", "source_title", "floor"}  # rd8t, r7hr, ny5g
+    if not (isinstance(it, dict) and _ITEM_KEYS <= set(it) <= _ITEM_KEYS | {"ja", "source_title", "floor", "tried"}  # rd8t, r7hr, ny5g, jsje
+            and ("tried" not in it or type(it["tried"]) is int)  # its first attempt with an unknown outcome, expired
             and ("floor" not in it or (it["kind"] == "root" and it["floor"] in schema.LEVELS))
             and all(it.get(k) is None or isinstance(it[k], str) and it[k] for k in ("ja", "source_title"))
             and isinstance(it["kind"], str)
@@ -461,8 +463,9 @@ def _item_ok(it) -> bool:
         return False  # a reply names its thread's root; a root or digest names none
     if kind == "digest":
         return (it["scope"] is None and _date_ok(it["date"]) and isinstance(adv, dict)
-                and set(adv) - {"week"} == {"held", "cutoff", "roots"} and type(adv["cutoff"]) is int
+                and set(adv) - {"week", "dropped"} == {"held", "cutoff", "roots"} and type(adv["cutoff"]) is int
                 and ("week" not in adv or week_ok(adv["week"]))
+                and ("dropped" not in adv or (type(adv["dropped"]) is int and adv["dropped"] > 0))  # jsje
                 and isinstance(adv["held"], list) and all(isinstance(k, str) for k in adv["held"])
                 and isinstance(adv["roots"], list) and all(isinstance(k, str) for k in adv["roots"]))
     if not (isinstance(it["scope"], str) and it["scope"] and it["date"] is None):
@@ -524,6 +527,8 @@ def load_state(path: Path, now: int, backfill_days: int) -> dict:
         st["waiting"] = {}  # a state file written before waiting existed (0dvh)
     if isinstance(st, dict) and "weekly" not in st:
         st["weekly"] = iso_week(now)  # written before the weekly summary (qwpw): the first is next Monday
+    if isinstance(st, dict) and "dropped" not in st:
+        st["dropped"] = 0  # written before a run dropped refused items by itself (jsje)
     if isinstance(st, dict) and "gate" not in st:
         st["gate"] = 0  # written before the h340 gate: main.run migrates it once
     if isinstance(st, dict) and set(st) == _STATE_KEYS - {"digest_ids"}:
@@ -534,6 +539,7 @@ def load_state(path: Path, now: int, backfill_days: int) -> dict:
               and type(st["since"]) is int and type(st["digest_at"]) is int
               and type(st["gate"]) is int and st["gate"] in (0, GATE)
               and week_ok(st["weekly"])
+              and type(st["dropped"]) is int and st["dropped"] >= 0
               and isinstance(st["digest_roots"], list) and all(isinstance(i, str) for i in st["digest_roots"])
               and isinstance(st["digest_ids"], list) and len(st["digest_ids"]) <= MAX_DIGEST_IDS
               and all(isinstance(i, str) and _HEX64.fullmatch(i) for i in st["digest_ids"])
