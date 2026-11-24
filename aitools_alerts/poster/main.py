@@ -515,14 +515,14 @@ class Run:
                     self.w_status = "key-error"
                     _say(f"wording off for this run: {e}")
                     return None
-            left = WORDING_SECONDS - self._wspent - (time.monotonic() - start)
-            if left <= 1:
+            # A call starts only when the API's own deadline fits in what is left: never cut
+            # short by a tighter one here, which could lose a 401 that answers late.
+            if WORDING_SECONDS - self._wspent - (time.monotonic() - start) < translate.TIMEOUT:
                 return None
             self._wasked += 1
             self.n["word_asked"] += 1
-            call = self._wcall
             try:
-                w, outcome = wording.draft(c, scope, call=lambda s, t: translate.bounded(lambda: call(s, t), left))
+                w, outcome = wording.draft(c, scope, call=self._wcall)
             except translate.AuthError as e:
                 self.w_status, self.key_refused = "held", True  # first, in memory: nothing calls again this run
                 _say(f"wording held: the API refused the key ({e}); posts keep the source title; "

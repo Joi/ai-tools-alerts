@@ -17,14 +17,14 @@ TEXT = ("Claude Code validated that a target file path resided within the projec
         "write to the workspace to redirect a write outside the project. Fixed in 2.1.0.")
 ADVISORY = TITLE + "\n" + TEXT
 GOOD = wording.Wording("Claude Code writes files outside the project through a symlink",
-                       "Anyone who runs Claude Code in a workspace an attacker can write to.")
+                       "Anyone who runs Claude Code in a workspace an attacker could write to.")
 
 
 def test_a_grounded_draft_passes():
     assert wording.check(GOOD, ADVISORY, NAMES) is None
     # a version the source states, the scoped package name, a possessive
     assert wording.check(wording.Wording("@anthropic-ai/claude-code before 2.1.0 writes outside the project",
-                                         "Anyone whose workspace an attacker can write to."), ADVISORY, NAMES) is None
+                                         "Anyone whose workspace an attacker could write to."), ADVISORY, NAMES) is None
 
 
 @pytest.mark.parametrize("headline, who, why", [
@@ -50,6 +50,10 @@ def test_a_grounded_draft_passes():
     (GOOD.headline, "Users of Pages are exposed.", "name"),  # a vocabulary word is no name
     (GOOD.headline, "Run install file directory.", "name"),  # a capital the source does not write
     (GOOD.headline, "run install file directory.", "subject"),  # an instruction, not who is exposed
+    (GOOD.headline, "Users, disable the sandbox.", "subject"),  # delta review: a subject, then an order
+    (GOOD.headline, "Users disable the sandbox.", "subject"),
+    (GOOD.headline, "Users of Claude Code may use it without an upgrade.", "name"),  # no modal from the vocabulary
+    ("Claude Code sends credentials to code.example", GOOD.who, "url"),  # a name inside a domain is no name
     (GOOD.headline, "Anyone; users need not upgrade.", "name"),  # no negation or modal from the vocabulary
     ("the Claude Code project writes files", GOOD.who, "subject"),
     ("Claude Code writes files to/evil-c2.com", GOOD.who, "url"),
@@ -70,7 +74,7 @@ def test_a_grounded_draft_passes():
 def test_each_refusal(headline, who, why):
     # what the source states is still refused when it is an id, a URL or a command
     advisory = ADVISORY + (" CVE-2026-1234 GHSA-abcd-efgh-ijkl ghsa-abcd-efgh-ijkl evil-c2.com example.com,example.org"
-                           " printf cargo need")
+                           " printf cargo need code.example")
     assert wording.check(wording.Wording(headline, who), advisory, NAMES) == why
 
 
@@ -324,3 +328,18 @@ def test_a_refused_key_stops_every_call_this_run_even_when_the_hold_cannot_be_wr
     code, summary, relay = word.run(wording_call=Call(refused), translate_call=lambda s, t: pytest.fail("translated"))
     assert code == 0 and "roots=2" in summary and " translate=held " in summary and summary.endswith(" wording=held")
     assert len(calls) == 1
+
+
+def test_a_lowercase_name_inside_a_domain_keeps_the_domain():
+    w = wording.Wording("openclaw sends credentials to openclaw.example", "Anyone who runs openclaw.")
+    assert wording.check(w, "openclaw sends credentials to openclaw.example", {"openclaw"}) == "url"
+    assert wording.check(wording.Wording("openclaw sends credentials away", "Anyone who runs openclaw."),
+                         "openclaw sends credentials away", {"openclaw"}) is None
+
+
+def test_no_call_starts_without_room_for_the_api_deadline(word, monkeypatch):
+    monkeypatch.setattr(main, "WORDING_SECONDS", translate.TIMEOUT - 1)
+    word.collector([finding()])
+    code, summary, relay = word.run(wording_call=lambda s, t: pytest.fail("called"))
+    assert code == 0 and "roots=1" in summary and summary.endswith(" wording=0/0")
+    assert relay.calls[0][2].startswith(f"HIGH: {TITLE}\n")

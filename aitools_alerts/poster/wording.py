@@ -57,6 +57,8 @@ _COMMAND = re.compile(
 # be an imperative sentence (a command to the reader), whatever words follow.
 SUBJECTS = frozenset({"anyone", "everyone", "users", "developers", "teams", "organizations", "people", "those",
                       "projects", "installations", "members", "administrators", "operators", "maintainers"})
+# The word after the subject: the line goes on to say which of them, never what to do.
+CONNECTORS = frozenset({"who", "whose", "that", "of", "with", "running", "using", "on", "in", "whom"})
 _EDGE = "'(),.;:"
 # Words any draft may use whether or not the advisory does: function words and the
 # plain vocabulary of a security notice. A word outside it must come from the
@@ -66,8 +68,8 @@ a an the this that these those it its they them their there he she we you your o
 when where while whether if unless until before after during since than then so such as at by for from in into
 of off on onto out over under up upon via with within without to too also only even just still yet
 or and but both either each every any all some most more less many much few other another same own
-is are was were be been being am do does did done doing has have had having can could may might
-will would
+is are was were be been being am do does did done doing has have had having
+
 anyone everyone someone anybody users user developers developer people person member members team
 teams account accounts organization admin admins administrator administrators operator operators maintainer
 attacker attackers adversary victim victims third party parties
@@ -143,9 +145,9 @@ def _refused(line: str, limit: int, known: set[str], cased: set[str], names: set
         return "character"
     if _ID.search(line):
         return "id"
-    bare = line
+    bare = line  # the names out, as whole tokens only: "openclaw.example" keeps its domain
     for n in sorted(names, key=len, reverse=True):
-        bare = bare.replace(n, " ")
+        bare = re.sub(rf"(?<![A-Za-z0-9.@/_-]){re.escape(n)}(?![A-Za-z0-9@/_-]|\.[A-Za-z0-9])", " ", bare)
     if _URL.search(line) or "//" in bare or _DOMAIN.search(bare):
         return "url"
     if _OPTION.search(line) or _COMMAND.search(line):
@@ -180,9 +182,9 @@ def check(w: Wording, advisory: str, names) -> str | None:
     why = _refused(w.headline, HEADLINE_CHARS, known, cased, names) or _refused(w.who, WHO_CHARS, known, cased, names)
     if why:
         return why
-    first = _tokens(w.who)[:1]
-    if not first or first[0].casefold() not in SUBJECTS:
-        return "subject"  # the Who line names who is exposed; it never tells anyone to do anything
+    raw = w.who.split()
+    if len(raw) < 2 or raw[0].casefold() not in SUBJECTS or raw[1].casefold() not in CONNECTORS:
+        return "subject"  # "Anyone who ...", "Users of ...": who is exposed, never what to do
     if not any(w.headline.startswith(n + " ") for n in names):
         return "subject"  # the headline starts with the product or package, as design section 6 says
     return None

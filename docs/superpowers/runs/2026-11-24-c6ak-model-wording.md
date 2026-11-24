@@ -1,22 +1,24 @@
 # Run: c6ak-model-wording
 Instruction: Read TASK-ai-tools-alerts#c6ak.md in this worktree root, then run `kata show ai-tools-alerts#c6ak` and follow the brief and the dispatch rules (do-it, starting rung floored at medium; the issue names the independent review on gpt-6-astra).
-Stage: code-review:delta
+Stage: verifying
 Rung: heavy (start-floor heavy: hard-trigger, credential handling: the poster reads the provider key for wording calls and writes the auth hold; BR2 REV1 NOV1 INT1 FC1 = 6)
 Lens: "The text never enters the block and the CLI never reads it as an action"; "on rejection or any model error the post uses the source title and no Who line"; "nothing may wait for a person"; with model_wording off, "no call, no read of the key" and the summary line byte for byte as today.
 Review model: gpt-6-astra (the issue calls the work security-shaped)
 Spec: docs/superpowers/specs/2026-11-24-c6ak-model-wording-design.md   Plan: docs/superpowers/plans/2026-11-24-c6ak-model-wording.md
 Agency project: —
 Kata: ai-tools-alerts#c6ak
-Last reviewed: spec 3e3130d4c21a6dcebece7beac770d282c61474c6; branch ecda40aefcb807493f2f4afb8859293b59832113 (whole branch, gpt-6-astra)
+Last reviewed: spec 3e3130d4c21a6dcebece7beac770d282c61474c6; branch ecda40aefcb807493f2f4afb8859293b59832113 (whole branch, gpt-6-astra); delta --since ecda40a at 0ab3491ccd (gpt-6-astra)
 
 ## Scorecards
 Pass 1 [spec]: 6B/0S/0C/0R · fixed -/- · velocity = (—→6, escalation no)   (fresheyes gpt-6-astra, snapshot 3e3130d4; 5 fixed in the spec, 1 rebutted: "do-it review snapshot" is the snapshot's own message, never landed)
 spec passes: 1 · plan + code: one whole-branch pass below (see Notes)
 Pass 1 [code:whole-branch]: 9B/3S/2C/0R · fixed -/- · velocity = (—→14, escalation no)   (fresheyes gpt-6-astra B=9 "major"; Stage 1 same-model S=3 C=2. Fixed: lowercase ids, domains inside tokens, capitalised names, subject rule for both lines, negations/modals out of the vocabulary, more tool invocations, '--x, shared translate-state validator, in-run key latch, one 60 s budget covering key read and calls, off-mode key-read sentinel and summary tail, plan signature, a vacuous cut assertion. Rebutted in part: commands spelled only in grounded words, cross-run hold when the write fails, a bounded delay; see the kata comment)
 
+Pass 2 [code:delta]: 4B/0S/0C/0R · fixed 9/9 prior (5 in part; rebuttals standing) · velocity ↓ (14→4, escalation no)   (fresheyes --since ecda40a --rebuttals, gpt-6-astra: a name inside a domain, "Users, disable ..." imperatives, modals left in the vocabulary, a late 401 lost to a shorter outer timeout. All four fixed in the next commit; no further pass, per the review rule)
+
 ## Chunks
-- [ ] wording module and source text
-- [ ] poster wiring, config, summary
+- [x] wording module and source text — ecda40a, fixes fba4dcc and the delta-fix commit
+- [x] poster wiring, config, summary — ecda40a, fixes fba4dcc and the delta-fix commit
 
 ## Notes
 - Prior work: bq8v (curator translation, the call path and hold this reuses), faxq (headline(), root_post shape), k5tr (mention tokens), 9mx8 section 6, h29n D2 (a model's reading may word a post, never set a level). capability-search "model headline wording check": 0 hits.

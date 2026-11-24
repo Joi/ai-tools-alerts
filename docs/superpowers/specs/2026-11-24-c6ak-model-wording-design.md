@@ -85,14 +85,17 @@ The issue text predates faxq; its note (comment ebfjm4) matches the code above.
   - names a fleet host or holds a local path or kata ref (`compose._guard`), which
     would otherwise withhold the whole post.
   - (code review pass 1) holds a domain anywhere in the line, inside a token or
-    after a comma, once the product's and package's names are taken out, or `//`;
+    after a comma, once the product's and package's names are taken out as
+    whole tokens only (a name inside `openclaw.example` is not taken out), or `//`;
     an advisory id in any case; a capitalised word the advisory does not write
     with that capital (the vocabulary never vouches for a name: "Pages users");
   - does not start with a fixed subject: the Who line with a word of
-    `wording.SUBJECTS` (Anyone, Users, Developers, …), the headline with the
+    `wording.SUBJECTS` (Anyone, Users, Developers, …) followed by a word of
+    `wording.CONNECTORS` (who, whose, of, with, running, using, …), so
+    "Users, disable the sandbox" is refused (delta review); the headline with the
     product or package name. Neither line can then be an instruction to the
-    reader. Negations and modal verbs (not, no, need, should, must, …) are not in
-    the vocabulary, so a Who line cannot say "users need not upgrade" unless the
+    reader. Negations and modal verbs (not, no, need, should, must, can, could,
+    may, might, will, would) are not in the vocabulary, so a Who line cannot say "users need not upgrade" unless the
     advisory itself says it.
 
   What this does not claim: that no sequence of advisory or vocabulary words can
@@ -133,8 +136,10 @@ The issue text predates faxq; its note (comment ebfjm4) matches the code above.
   with source prose to word, and makes at most `WORDING_CALLS` = 4 calls a run, none
   after 60 seconds of calls in that run. The same key, the same call path, the same
   model. A drafted headline that would be cut beside the level head is refused.
-  The key read and the calls share one budget of 60 seconds a run (each call is
-  bounded by what is left), so wording delays a run's posts by at most that.
+  The key read and the calls share one budget of 60 seconds a run; a call starts
+  only when the API's own 30-second deadline fits in what is left, and is never
+  cut shorter (a late 401 must still set the hold), so wording delays a run's posts
+  by at most 60 seconds plus a key read that took longer than its share.
 - **One exception boundary.** Everything `Run.wording` does (reading the translate
   state, reading the key, the call, the check, writing the hold) is inside one
   `try`; any exception other than the ones it handles by name turns wording off for
