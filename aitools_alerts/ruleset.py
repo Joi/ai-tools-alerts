@@ -397,6 +397,20 @@ class Ruleset:
         level = rule["level"] if rule else "notice"
         return self.capped(min(level, row["alone"], key=self.rank), tier)
 
+    def products(self) -> frozenset[str]:
+        """The names a reading can support: every scope product and component."""
+        return frozenset(e.name for e in self._index.values())
+
+    def lowers(self, source, fields) -> bool:
+        """Whether this reading, for a product it does not name, may justify a
+        lowering: the ``lowers`` of the first source row that matches it with no
+        product in hand (a row that needs the product, ``vendor_own``, does not).
+        False for a source the subject's attacker can write: its silence about a
+        product proves nothing. RulesetError when the reading is malformed."""
+        f = _reading(source, fields)
+        return next(r for r in self._sources if "vendor_own" not in r["when"]
+                    and self._source_matches(r, source, f, None))["lowers"]
+
     def _bound(self, source: str, f: dict) -> dict:
         """{product name: (scope entry, its packages in this reading)}."""
         out: dict = {}

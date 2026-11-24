@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from git_env import git_env_is_ours  # noqa: F401 - first: clears git's environment at import; autouse for every test
-from aitools_alerts import config, curator, pull
+from aitools_alerts import config, curator, pull, verify
 from mirror_helpers import T0, Mirror
 
 
@@ -34,6 +34,16 @@ def reader_clock(monkeypatch):
 def _home_from_env(monkeypatch):
     """Tests isolate by HOME; tests/test_home.py restores the passwd resolver."""
     monkeypatch.setattr(config, "home", Path.home)
+
+
+@pytest.fixture(autouse=True)
+def no_source_requests(monkeypatch):
+    """No test reaches a primary source: the member's source check fails every
+    read unless a test sets its own fetch."""
+    def refuse(*a, **k):
+        raise OSError("tests make no request")
+    monkeypatch.setattr(verify, "default_fetch", refuse)
+    return refuse
 
 
 @pytest.fixture
