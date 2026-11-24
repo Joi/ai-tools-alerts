@@ -579,20 +579,30 @@ class Run:
         """A candidate whose primary id is a reserved synthetic id (compose.SYNTHETIC_ID)."""
         return compose.is_synthetic(c.id)
 
+    def _former(self, scope, ids):
+        """wa6n: the scope under the product's earlier name when that name still holds this
+        advisory's thread, held notice, first sight or journaled work; else ``scope``. The
+        update then keeps that name, as the reply check requires, and nothing starts twice."""
+        if self.led.lookup(ids, scope=scope.name) is not None:
+            return scope
+        keys = _fold(ids)
+        journal = [it for it in self.state["outbox"] + self._withheld_items() if it["kind"] != "ja"]
+        for old in getattr(scope, "formerly", ()):
+            if self.led.lookup(ids, scope=old) is not None or self._held_for(old, ids) is not None \
+                    or any(f"{old}|{k}" in self.state["waiting"] or f"{old}|{k}" in self.state["digested"] for k in keys) \
+                    or any(it["scope"] == old and _fold(it["ids"]) & keys for it in journal):
+                return replace(scope, name=old, formerly=())
+        return scope
+
     def one(self, c, scope):
         ids = [c.id, *c.aliases]
+        scope = self._former(scope, ids)
         if self.busy(ids, scope.name):
             self.n["busy"] += 1
             self.defer([(c, scope)])  # its update (a fix, a promotion) is planned once the send resolves
             return
         level, reason = self.level(c, scope)
         entry = self.led.lookup(ids, scope=scope.name)
-        for old in getattr(scope, "formerly", ()) if entry is None else ():
-            # wa6n: a thread posted under the product's earlier name is its thread; the
-            # update keeps that name, as the reply check requires, and no second root starts.
-            if (entry := self.led.lookup(ids, scope=old)) is not None:
-                scope = replace(scope, name=old, formerly=())
-                break
         if entry is None and not rules.starts(scope, level):  # wa6n: out of the community service
             self.n["out"] += 1
             return
@@ -651,6 +661,8 @@ class Run:
                 and seen - published > AGE_LIMIT:
             level = "notice"  # 0dvh: old news when first seen goes to the digest, never a root
             self.n["aged"] += 1
+            if not rules.starts(scope, level):  # wa6n: an out product's old news goes nowhere
+                return []
         elif level == "high" and not test and c.exploited is not True and not _stated(c.fixed) \
                 and not _stated(c.affected) and self.now - seen < HOLD_SECONDS \
                 and (key in w or len(w) < inputs.MAX_WAITING):

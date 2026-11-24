@@ -43,7 +43,8 @@ _REDIRECTS = frozenset({301, 302, 303, 307, 308})
 
 # Vendors behind channel products whose names do not spell them. Together with the
 # first word of each channel entry's name they flag unmatched text for review.
-EXTRA_VENDOR_WORDS = frozenset({"anthropic", "openai", "anysphere", "nousresearch", "nous", "google"})
+EXTRA_VENDOR_WORDS = frozenset({"anthropic", "openai", "anysphere", "nousresearch", "nous", "google",
+                                "mcp", "modelcontextprotocol"})  # wa6n: MCP entries are named by package
 
 # Advisory text that names code execution, credential theft or data loss.
 _SEVERE = re.compile(
@@ -141,8 +142,7 @@ def level_for(c: Candidate, scope: schema.ScopeEntry, source_ok: bool) -> tuple[
     ``high`` with reason ``reading``.
 
     Reasons: kev-tier1, reading, unverified, fix-rce-tier1, severity-tier1,
-    kev-tier2, fields, notice (the names predate scope classes: tier1 is the channel
-    class, kev-tier2 a KEV entry raised outside it). severity-tier1 is a channel
+    fields, notice (the names predate scope classes: tier1 is the channel class). severity-tier1 is a channel
     candidate with a CVE or GHSA id whose advisory severity is the word "high" or
     "critical"; it needs no fix, and it never makes a critical. ``source_ok`` is "a page
     authoritative for this product named this advisory" (``evidence``) and counts only when it is the
@@ -166,15 +166,15 @@ def _prose_level(c, scope, verified: bool, rs) -> tuple[str, str]:
     notice, except that one whose entry carries channel_if takes the reading clauses
     of a code-execution flaw (wa6n); the severity word alone never raises it."""
     channel = _class(scope) == "channel"
-    if c.exploited is True:  # only candidates.from_kev sets it; the KEV row is mechanical: no fetch needed
-        level = rs.class_level("kev", scope)
-        return level, "kev-tier1" if channel else ("kev-tier2" if level != "notice" else "notice")
+    if c.exploited is True and channel:  # only candidates.from_kev sets it; the KEV row is mechanical
+        return rs.class_level("kev", scope), "kev-tier1"
+    # Outside the channel KEV alone is a notice (ruleset): it neither raises nor masks the clauses below.
     if not channel and not getattr(scope, "channel_if", None):
         return "notice", "notice"
     cap = rs.reading_cap  # a reading never makes a critical
     trojanized = c.trojanized is True
     injection = c.injection_exec is True and bool(c.fixed)
-    if trojanized or injection and channel:  # injection_exec does not say remote: channel only
+    if (trojanized or injection) and channel:  # neither flag says remote code execution: channel only
         return cap, "reading" if verified else "unverified"
     severity = c.advisory_severity
     if c.fixed and isinstance(severity, str) and (_SEVERE if channel else _REMOTE_CODE).search(_norm(severity)):

@@ -105,7 +105,8 @@ def index(entries) -> dict[str, schema.ScopeEntry]:
             continue
         for c in getattr(e, "components", ()):
             own = c.authority if getattr(c, "authority", None) is not None else e.authority
-            hit = replace(e, name=c.name, match=list(c.match), authority=tuple(own), components=())
+            hit = replace(e, name=c.name, match=list(c.match), authority=tuple(own), components=(),
+                          package=getattr(c, "package", None))
             for m in c.match:
                 out.setdefault(norm(m).strip(), hit)
         whole = replace(e, components=())
@@ -338,6 +339,12 @@ class Ruleset:
             _fail("sources must name each class once and end every source with its one row that has no condition")
         self._rules = [self._rule_row(r, set(classes)) for r in self._rows(data["rules"], "rules")]
         self._index = index(entries)
+        # wa6n: a thread keeps the name its product had (scope ``formerly``); a claim about
+        # it names that product, which stands for each entry that lists the name.
+        self._former: dict[str, set[str]] = {}
+        for e in entries:
+            for old in getattr(e, "formerly", ()):
+                self._former.setdefault(old, set()).add(e.name)
         self.digest: str = hashlib.sha256(canonical({"ruleset": data, "scope": scope})).hexdigest()
 
     @staticmethod
@@ -458,8 +465,9 @@ class Ruleset:
         """The level the readings support for ``product``: the highest any one of them
         gives, NONE when none supports it. Nothing adds up: two readings never make
         a level neither makes alone."""
-        live = [s for source, fields in readings
-                if (s := self.read(source, fields).get(product)) is not None and s.level != NONE]
+        names = self._former.get(product, {product})
+        live = [s for source, fields in readings for name, s in self.read(source, fields).items()
+                if name in names and s.level != NONE]
         if not live:
             return NONE
         return self.highest(*(s.level for s in live))

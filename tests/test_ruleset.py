@@ -209,6 +209,8 @@ def test_a_package_with_no_ecosystem_binds_by_name():
     assert RS.level([soft], "OpenSSH") == "notice"  # OpenSSH is out (wa6n)
     mcp = ghsa(repository="modelcontextprotocol/servers", severity="high", packages=[pkg("mcp-server-git", ecosystem="pypi")])
     assert RS.level([mcp], "mcp-server-git") == "high"  # an MCP server is named by its package (wa6n)
+    assert RS.level([mcp], "MCP servers and clients") == "high"  # its thread under the old name keeps the level
+    assert RS.level([mcp], "MCP Inspector") == NONE
     sdk = ghsa(repository="modelcontextprotocol/typescript-sdk", severity="critical", type="reviewed", cvss_vector=V31,
                cwes=["CWE-94"], packages=[pkg("@modelcontextprotocol/sdk", ecosystem="npm")])
     assert RS.level([sdk], "@modelcontextprotocol/sdk") == "notice"  # catalog: never the channel
@@ -222,6 +224,9 @@ def test_a_package_with_no_ecosystem_binds_by_name():
     assert RS.level([git], "git") == "high"  # out, but a code-execution flaw agents reach posts, at high at most
     assert RS.level([ghsa(repository="git/git", severity="critical", packages=[pkg("git-scm", ecosystem="")])], "git") == "notice"
     by = {e.name: e for e in schema.load_scope()}
+    parent = schema.ScopeEntry("P", "p", "channel", ["p"], package="npm:p", components=(
+        schema.ScopeComponent("C", ("c", "npm:c"), package="npm:c"),))
+    assert ruleset.index([parent])["npm:c"].package == "npm:c" and ruleset.index([parent])["p"].package == "npm:p"
     assert [RS.class_level("kev", by[n]) for n in ("Claude Code", "mcp", "OpenSSH", "git")] \
         == ["critical", "notice", "notice", "notice"]  # KEV alone never meets channel_if
 

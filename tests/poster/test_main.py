@@ -2261,3 +2261,27 @@ def test_a_saved_notice_of_an_out_product_is_never_digested(env):
     inputs.save_state(env.config.state, old)
     env.run()
     assert [h["scope"] for h in env.state()["held"]] == ["Claude Code"]
+
+
+def test_an_old_code_execution_flaw_in_git_is_never_held(env):
+    rce = finding(fid="GHSA-wxyz-wxyz-wxyz", product="git/git", fixed="2.47.1", severity="high",
+                  sources=("https://github.com/git/git/security/advisories/GHSA-wxyz-wxyz-wxyz",))
+    rce["sources"][0].update(title="Remote code execution on recursive clone", published_at="2026-10-01T00:00:00Z")
+    env.collector([rce])
+    code, summary, relay = env.run()
+    assert code == 0 and "aged=1" in summary and "roots=0" in summary and env.state()["held"] == []
+
+
+def test_a_notice_held_under_a_former_name_is_not_held_twice(env):
+    f = finding(fid="GHSA-4fc4-wcmh-4g86", product="npm:@modelcontextprotocol/inspector", severity=None,
+                fixed=None, sources=(INSPECTOR,))
+    env.collector([f])
+    env.run()
+    st = env.state()
+    (h,) = st["held"]
+    h["scope"] = "MCP Inspector"  # held by the poster before scope classes
+    st["waiting"] = {k.replace("@modelcontextprotocol/inspector|", "MCP Inspector|"): t for k, t in st["waiting"].items()}
+    env.config.state.write_text(json.dumps(st))
+    env.collector([f], name="2026-11-05T020000Z")
+    env.run(now=T0 + 3600)
+    assert [h["scope"] for h in env.state()["held"]] == ["MCP Inspector"]

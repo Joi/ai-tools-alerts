@@ -110,7 +110,10 @@ def test_channel_if_takes_remote_code_execution_only():
                {"advisory_severity": "arbitrary code execution"}, {"injection_exec": True}):
         assert level(cand(product_text="Git Git", fixed="2.47.1", **kw)) == ("notice", "notice"), kw
     assert level(cand(product_text="Git Git", advisory_severity="RCE")) == ("notice", "notice")  # no fix
-    assert level(cand(product_text="Git Git", trojanized=True), True) == ("high", "reading")
+    assert level(cand(product_text="Git Git", trojanized=True), True) == ("notice", "notice")  # says no RCE
+    kev_rce = cand(product_text="Git Git", exploited=True, fixed="2.47.1", advisory_severity="RCE on clone")
+    assert level(kev_rce) == ("high", "fix-rce-tier1")  # KEV alone is a notice here, and masks nothing
+    assert level(cand(product_text="Git Git", exploited=True), True) == ("notice", "notice")
     assert level(cand(product_text="Node.js", fixed="22.11.1", advisory_severity="RCE")) == ("notice", "notice")
     assert level(cand(product_text="mcp inspector", fixed="1.0.3", advisory_severity="RCE")) == \
         ("high", "fix-rce-tier1")
@@ -186,7 +189,9 @@ def test_unmatched_log_is_caller_owned():
 
 def test_vendor_words_from_tier1_names():
     words = rules.vendor_words(schema.load_scope())
-    assert {"claude", "codex", "cursor", "git", "anthropic", "openai", "@modelcontextprotocol/inspector"} <= words
+    assert {"claude", "codex", "cursor", "git", "anthropic", "openai", "mcp", "@modelcontextprotocol/inspector"} <= words
+    log: list[str] = []
+    assert rules.scope_of("mcp server for jira", log) is None and log == ["mcp server for jira"]  # any publisher's
     assert not {"ubuntu", "macos", "docker", "go", "runc"} & words  # out, no channel_if (wa6n)
 
 

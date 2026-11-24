@@ -382,7 +382,8 @@ def test_load_scope_rejects_bad_entries(tmp_path):
                 dict(good, **{"class": "out"}, channel_if="any"), dict(good, package="npm:@x/y"),  # listed twice
                 dict(good, package="NPM:z"), dict(good, package="z"), dict(good, package="npm:Z"),
                 dict(good, package=["npm:z"]), dict(good, components=[{"name": "C"}]),
-                dict(good, formerly=[]), dict(good, formerly="Old"), dict(good, formerly=["X"]),  # its own name
+                dict(good, **{"class": "out"}, channel_if=[]), dict(good, **{"class": "out"}, channel_if={}),
+                dict(good, **{"class": ["out"]}), dict(good, formerly=[]), dict(good, formerly="Old"), dict(good, formerly=["X"]),  # its own name
                 dict(good, match_mode="word"), dict(good, not_match=["y"]),  # the word rule is gone (h340)
                 dict(good, authority=["github.com/anthropics/"]),  # an owner is not a product
                 dict(good, authority=["github.com/attacker/claude-code-router/"]),  # owner not on the primary list
@@ -484,7 +485,7 @@ def test_scope_identities_and_ecosystems():
     assert len(ids) == len(set(ids)) and all(m == m.lower().strip() for m in ids)
     for text in ("rust cargo", "truncate", "cargo", "python", "go", "git", "rust", "cursor", "anthropic"):
         assert text not in ids, text  # a bare common word is nobody's identity
-    for text in ("anthropic claude code", "apple macos", "opencontainers runc"):
+    for text in ("anthropic claude code", "apple macos", "opencontainers runc", "npm:@anthropic-ai/claude-code"):
         assert text in ids, text
     assert [e.ecosystem for e in entries] == [
         "claude-code", "codex", "cursor", "gemini-cli", "hermes", "openclaw",

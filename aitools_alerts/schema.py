@@ -456,9 +456,10 @@ def load_scope(path: Path | None = None, domains: dict | None = None) -> list[Sc
         if not {"match", "package", "components"} & set(e):
             _fail(at, "needs match, package or components")
         name = _scope_name(e["name"], at + ".name", names)
-        if e["class"] not in SCOPE_CLASSES:
+        if type(e["class"]) is not str or e["class"] not in SCOPE_CLASSES:
             _fail(at + ".class", f"not one of {', '.join(SCOPE_CLASSES)}")
-        if "channel_if" in e and (e["channel_if"] not in CHANNEL_IF or e["class"] == "channel"):
+        if "channel_if" in e and (type(e["channel_if"]) is not str or e["channel_if"] not in CHANNEL_IF
+                                  or e["class"] == "channel"):
             _fail(at + ".channel_if", "code-execution, on a catalog or out entry only")
         components, own = [], set()
         for j, c in enumerate(_list(e["components"], at + ".components", 1, 50)

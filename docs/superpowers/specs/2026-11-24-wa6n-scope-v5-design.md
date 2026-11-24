@@ -105,7 +105,7 @@ so this file is version 6.
   refuses `tier`, an unknown class, `channel_if` on a channel entry, a malformed
   package, and a package that repeats an identity.
 - No entry or component is named "MCP servers and clients"; every MCP entry's
-  `name` and `ecosystem` equal its `package`.
+  `name` is its package's name and its `ecosystem` is `mcp`.
 - A GHSA reading of `pypi:mcp-server-git` binds to `mcp-server-git` at channel
   levels; one of `npm:@modelcontextprotocol/sdk` is notice whatever its fields;
   one of the Inspector with network vector, CWE-94 and a fix is high, with CWE-522
