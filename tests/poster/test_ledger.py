@@ -369,3 +369,46 @@ def test_a_ledger_with_a_malformed_recompute_key_is_refused(tmp_path, bad):  # n
     path.write_text(json.dumps(data))
     with pytest.raises(LedgerError, match="malformed"):
         Ledger(path).__enter__()
+
+
+# ---------------------------------------------------------------- faxq: one release, one post
+
+def _gh(gid, **kw):
+    return cand(id=gid, sources=(Source(f"https://github.com/anthropics/claude-code/security/advisories/{gid}", None),),
+                **kw)
+
+
+def test_advisories_one_release_fixes_merge_into_one_candidate():
+    a = _gh("GHSA-aaaa-aaaa-aaaa", fixed="2.1.0", affected="<2.1.0", injection_exec=True)
+    b = _gh("GHSA-bbbb-bbbb-bbbb", fixed="v2.1.0", affected="<2.1.0", exploited=True)
+    c = _gh("GHSA-cccc-cccc-cccc", fixed="2.2.0")  # another release
+    d = _gh("GHSA-dddd-dddd-dddd")  # no fix: never grouped
+    e = _gh("GHSA-eeee-eeee-eeee", fixed="2.1.0", product_text="docker engine")  # another product
+    f = _gh("CVE-2099-0003", fixed="2.1.0")  # a synthetic id is never grouped with a real one
+    g = _gh("GHSA-gggg-gggg-gggg", fixed="2.1.0-rc 1")  # a fix the schema cannot say
+    groups = {}
+    out = ledger.merge([pair(x) for x in (a, b, c, d, e, f, g)], groups=groups)
+    assert sorted(m.id for m, _ in out) == sorted(x.id for x in (a, c, d, e, f, g))
+    (ab, s), = [(m, s) for m, s in out if m.id == a.id]
+    assert ab.aliases == ("GHSA-bbbb-bbbb-bbbb",) and ab.exploited and ab.injection_exec  # the loudest member
+    assert ab.fixed == "2.1.0" and ab.affected == "<2.1.0" and len(ab.sources) == 2
+    assert [m.id for m in groups[("Claude Code", a.id.casefold())]] == [a.id, b.id] and len(groups) == 1
+
+
+@pytest.mark.parametrize("ranges,want", [
+    (("<2.1.0", "<2.1.0"), "<2.1.0"),
+    ((">=2.0,<2.1.0", ">=1.0,<2.1.0"), "<2.1.0"),  # every member's installations, and more
+    (("<2.1.0", None), None),  # one states none: the group states none
+])
+def test_a_fix_groups_range_covers_every_member(ranges, want):
+    (m, _), = ledger.merge([pair(_gh(f"GHSA-aaaa-aaaa-aa{i:02d}", fixed="2.1.0", affected=r))
+                            for i, r in enumerate(ranges)])
+    assert m.affected == want
+
+
+def test_a_candidate_with_a_thread_joins_no_fix_group(tmp_path):
+    a = _gh("GHSA-aaaa-aaaa-aaaa", fixed="2.1.0")
+    b = _gh("GHSA-bbbb-bbbb-bbbb", fixed="2.1.0")
+    with Ledger(tmp_path / "l.json") as led:
+        led.record_root(adv_for(a, "high"), "r1", {"feed": "r1"}, scope="Claude Code", exploited=False, now=T0)
+        assert len(ledger.merge([pair(a), pair(b)], led)) == 2  # two threads never become one

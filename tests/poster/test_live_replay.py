@@ -10,6 +10,7 @@ equal to the thread's state after that event, so it sees what the live poster sa
 
 import datetime as dt
 import json
+import os
 import re
 from pathlib import Path
 
@@ -244,21 +245,42 @@ def test_replay_11_07_posts_no_old_root(env, monkeypatch, capsys):  # noqa: F811
     assert len(held_ids) == 16 and held_ids <= noticed and not any("32846" in i for i in noticed)
 
 
-def test_replay_11_18_posts_each_once_with_its_fix(env, monkeypatch):  # noqa: F811
-    """Three roots at 10:20Z with no fix, the fix at 11:20Z with two more: five roots, each
-    once, each with its fix, no reply, no "check the vendor"."""
-    sent, summaries = _replay(env, monkeypatch, _batch_steps(18))
+GOLDEN = FIXTURE.parent / "golden" / "11-18-root.txt"
+
+
+def test_replay_11_18_posts_one_root_for_the_one_fix(env, monkeypatch):  # noqa: F811
+    """faxq (design sections 5 and 6): three advisories at 10:20Z with no fix, the fix at
+    11:20Z with two more. One release fixes all five, so the member's one upgrade is one
+    post listing each id: one root, no reply, no "check the vendor". Its text is the
+    golden file's (the design's example with the source's own title as the headline and
+    no Who line, which slice 7 adds); the block line is compared parsed."""
+    # The live collector read no range (design: "versions not stated" on all 28); GitHub's
+    # pages state one with the fix, as slice 2's collector reads it, so the vendor's page here does.
+    steps = [(t, [main.replace(c, affected="<2026.11.18") if c.fixed == "2026.11.18" else c for c in cs])
+             for t, cs in _batch_steps(18)]
+    sent, summaries = _replay(env, monkeypatch, steps)
     # 9kgk: with no fix yet they are notices (a consequence counts with its fix), held, not waiting
     assert "held=3" in summaries[0] and "roots=0" in summaries[0]
-    assert len(sent) == 5 and all(reply is None for _, _, reply, _ in sent)
+    assert "roots=1" in summaries[1] and "replies=0" in summaries[1]
+    assert len(sent) == 1 and sent[0][2] is None
     want = {"GHSA-87qg-cmw8-jc5m", "GHSA-9vjp-x34c-xg6v", "GHSA-h2g3-rwxm-xfm3", "GHSA-8wv7-r664-7594",
             "GHSA-pm7p-vphh-2cg7"}
-    heads = {}
-    for t, ch, reply, text in sent:
-        assert t == sent[0][0] and "Fixed in 2026.11.18." in text and "vendor" not in text, text
-        adv = schema.parse_post(text)  # what a v0.1.4 reader parses: the block's keys are unchanged
-        assert adv is not None and adv.products[0].fixed == "2026.11.18" and adv.id.endswith(":mcp-server")
-        heads[text.splitlines()[0]] = adv.id
-    assert {re.search(r"\((GHSA-[^)]+)\)$", h).group(1) for h in heads} == want  # public ids only
-    assert all(":mcp-server" not in h for h in heads)
+    text = sent[0][3]
+    if os.environ.get("AITOOLS_WRITE_GOLDEN") == "1":  # regenerate after a deliberate wording change
+        GOLDEN.parent.mkdir(exist_ok=True)
+        GOLDEN.write_text(text)
+    body, block = text.split("\n\n```aitools-alert\n")
+    golden_body, golden_block = GOLDEN.read_text().split("\n\n```aitools-alert\n")
+    assert body == golden_body
+    assert json.loads(block.removesuffix("\n```\n")) == json.loads(golden_block.removesuffix("\n```\n"))
+    assert block.count("\n") == 2 and "vendor" not in text and "watch this thread" not in text
+    adv = schema.parse_post(text)  # what a v0.1.4 reader parses: the block's keys are unchanged
+    assert adv is not None and adv.products[0].fixed == "2026.11.18" and adv.id.endswith(":mcp-server")
+    assert want <= {a for a in adv.aliases} | {adv.id.split(":")[0]}
+    lines = body.split("\n")
+    assert len(lines[0]) <= compose.HEADLINE_MAX and not re.search(r"GHSA|CVE-|:mcp-server", lines[0])
+    assert lines[1] == "Affected: mcp-server-git before 2026.11.18 (PyPI)."  # as the design's example
+    assert lines[2] == "Do: upgrade mcp-server-git to 2026.11.18 or later."
+    assert lines[3].startswith("Covers 5 advisories: ") and set(lines[3].split(": ", 1)[1].split(", ")) == want
+    assert lines[4].startswith("Source: https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-")
     assert env.state()["deferred"] == []  # nothing waits; first sight stays for AGE_LIMIT

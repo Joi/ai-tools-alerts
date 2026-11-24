@@ -36,7 +36,7 @@ _PATCH_KEYS = frozenset(schema.Advisory.__dataclass_fields__) - {"id", "posted_b
 _REPLY_KEYS = frozenset({"level", "title", "products", "actions", "aliases", "sources",
                          "expires_at", "advisory_severity"})
 _NULLABLE = frozenset({"advisory_severity", "expires_at"})
-_OPS = {"<": "below", "<=": "up to", ">": "above", ">=": "from", "=": "exactly"}
+_OPS = {"<": "before", "<=": "up to", ">": "after", ">=": "from", "=": "exactly"}
 _COMPARATOR = re.compile(r"(<=|>=|<|>|=)(.+)")
 _KINDS = ("known exploited vulnerability", "trojanized release",
           "injection to code execution", "security advisory")
@@ -269,9 +269,82 @@ def _upstream(t) -> str | None:
         return None
 
 
+HEADLINE_MAX = 90  # design section 6: level, package, what goes wrong
+_REGISTRY = {"pypi": "PyPI", "npm": "npm", "cargo": "crates.io", "crates": "crates.io", "go": "Go",
+             "gem": "RubyGems", "rubygems": "RubyGems", "maven": "Maven", "nuget": "NuGet"}
+
+
+def package_of(scope) -> tuple[str, str | None]:
+    """(the package a member types, its registry's name) from the scope entry's
+    ``package`` (``pypi:mcp-server-git``); the product name and None without one."""
+    pkg = getattr(scope, "package", None)
+    if isinstance(pkg, str) and ":" in pkg:
+        eco, name = pkg.split(":", 1)
+        return name, _REGISTRY.get(eco, eco)
+    return scope.name, None
+
+
+def headline(head: str, name: str, title: str | None, fallback: str) -> str:
+    """The first line: ``head``, a colon, then what goes wrong in at most HEADLINE_MAX
+    characters. In this slice the text is the source's own title, after the product name
+    when the title does not name it; with no title, ``fallback``. No id. The title is cut
+    at a word boundary to fit; the markers in ``head`` are never cut."""
+    text = title if title else fallback
+    if title and name.casefold() not in title.casefold():
+        text = f"{name}: {title}"
+    room = max(HEADLINE_MAX - len(head) - 2, 20)
+    if len(text) > room:
+        cut = text[:room - 1]
+        cut = cut[:cut.rfind(" ")] if " " in cut[len(name) + 2:] else cut
+        text = cut.rstrip(" ,;:-") + "…"
+    return f"{head}: {text}"
+
+
+def covers(adv: schema.Advisory) -> tuple[int, list[str]]:
+    """(how many advisories, their public ids): the id's public form, then the public
+    aliases, once each. A GHSA is one advisory and its CVE an alias of it, so the count
+    is the GHSA ids when there are any, else every id."""
+    ids, seen = [], set()
+    for i in (public_form(adv.id), *adv.aliases):
+        if public_id(i) and i.casefold() not in seen:
+            seen.add(i.casefold())
+            ids.append(i)
+    ghsa = sum(i.upper().startswith("GHSA-") for i in ids)
+    return (ghsa or len(ids)), ids
+
+
+def _covers_line(adv, ja=False) -> list[str]:
+    n, ids = covers(adv)
+    if not ids:
+        return []
+    return [f"対象: アドバイザリ {n} 件: {', '.join(ids)}" if ja
+            else f"Covers {n} advisor{'y' if n == 1 else 'ies'}: {', '.join(ids)}"]
+
+
+def _do(name, fixed, *, stop=False, unexpressed=False, exploited=False, ja=False) -> str:
+    """The one action sentence (design section 6): never "check the vendor"."""
+    if ja:
+        if fixed:
+            return f"対応: {name} を {fixed} 以降に更新してください。"
+        if stop:
+            return f"対応: 修正版はまだありません。修正版が出るまで {name} の使用を停止してください。"
+        if unexpressed:
+            return f"対応: {name} を出典に記載された修正版に更新してください。"
+        return ("対応: 悪用が確認されています。" if exploited else "対応: ") \
+            + "出典に回避策があれば適用し、修正版が出るまで続けてください。"
+    if fixed:
+        return f"Do: upgrade {name} to {fixed} or later."
+    if stop:
+        return f"Do: no fix yet. Stop using {name} until one ships."
+    if unexpressed:
+        return f"Do: upgrade {name} to the fixed release the source names."
+    return ("Do: this is exploited in the wild. Apply" if exploited else "Do: apply") \
+        + " the source's workaround, if it gives one, until a fixed release ships."
+
+
 def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, schema.Advisory]:
-    """(post text, Advisory) for a new thread: four body lines (five with the source's
-    own title second; one fewer when the fix cannot be expressed), then the block.
+    """(post text, Advisory) for a new thread: five body lines (headline, Affected, Do,
+    Covers, Source; design section 6), then the block on one line.
     ``c.id`` must be a CVE or GHSA id, bare or as a thread key (``candidates.BOT_ID``).
     ``level`` is ``rules.level_for``'s (level, reason), or a bare level. A reserved
     primary id (a synthetic check, ``run --kev-file``) marks the head line, and
@@ -304,20 +377,14 @@ def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, sc
     p = adv.products[0]
     head = adv.level.upper() + (f" ({SYNTHETIC})" if is_synthetic(adv.id) else "") \
         + (f" ({UNVERIFIED})" if reason == "unverified" else "")
-    unexpressed = fix_unexpressed(c)
-    title = source_title(c)
-    # No version is not no fix: a KEV entry carries no version data at all (4yr1).
-    # A fix the schema cannot express gets no action sentence: the post names no version (h340).
-    action = [f"Action: stop using {p.name} until a fixed release ships."] if stop else [] if unexpressed else [
-        f"Action: upgrade {p.name} to {fixed} or later." if fixed
-        else "Action: check the vendor for an update; this is exploited in the wild, "
-             "so update now if a release is out." if c.exploited is True or _exploited(adv)
-        else "Action: check the vendor for an update and apply it."]
-    body = [f"{head}: {adv.title}", *([title] if title else []),
-            f"Affected: {p.name}{_words(p.affected, range_unexpressed(c))}."
-            + (f" Fixed in {fixed}." if fixed else " A fix is listed upstream; see the source."
-               if unexpressed else " The source does not state a fixed version; check the vendor's advisory."),
-            *action, f"Source: {_primary(adv.sources)}"]
+    # No version is not no fix: a KEV entry carries no version data at all (4yr1). A fix
+    # the schema cannot express is named by the source, never by a version here (h340).
+    pkg, registry = package_of(scope)
+    body = [headline(head, p.name, source_title(c), f"{p.name}: {_kind(c, reason)}"),
+            f"Affected: {pkg}{_words(p.affected, range_unexpressed(c))}" + (f" ({registry})." if registry else "."),
+            _do(p.name, fixed, stop=stop, unexpressed=fix_unexpressed(c),
+                exploited=c.exploited is True or _exploited(adv)),
+            *_covers_line(adv), f"Source: {_primary(adv.sources)}"]
     return _guard(schema.render_post(adv, _inline("\n".join(body)))), adv
 
 
@@ -338,27 +405,32 @@ def _ja_title(adv: schema.Advisory) -> str:
     return adv.title
 
 
+def _ja_kind(adv: schema.Advisory) -> str:
+    """The template title's product and kind in Japanese, without the id: the headline
+    when there is no source title."""
+    t = _ja_title(adv)
+    return re.sub(r" \([^()]*\)$", "", t)
+
+
 def root_post_ja(adv: schema.Advisory, reason: str | None = None, unexpressed: bool = False,
-                 title: str | None = None, *, exploited: bool = False, range_unexpressed: bool = False) -> str:
-    """root_post's body lines in Japanese, from the Advisory root_post returned; ``title``
-    (``source_title``) stays in English on its own line after 原題:. ``exploited`` is the
-    candidate's: a thread keeps its first title unless its level rises, so the title
-    alone can miss a KEV entry learned later."""
+                 title: str | None = None, *, exploited: bool = False, range_unexpressed: bool = False,
+                 package: tuple[str, str | None] | None = None) -> str:
+    """root_post's five body lines in Japanese, from the Advisory root_post returned. The
+    headline is the same ``title`` (``source_title``), in English as the source wrote it.
+    ``exploited`` is the candidate's: a thread keeps its first title unless its level
+    rises, so the title alone can miss a KEV entry learned later. ``package`` is
+    ``package_of(scope)``; without it the product name and no registry."""
     exploited = exploited or _exploited(adv)
     p, fixed = adv.products[0], adv.products[0].fixed
     head = _JA_LEVEL[adv.level] + (f" ({SYNTHETIC})" if is_synthetic(adv.id) else "") \
         + (f" ({UNVERIFIED})" if reason == "unverified" else "")
     stop = not fixed and any(a.verb == "stop_using" for a in adv.actions)
-    action = [f"対応: 修正版が出るまで {p.name} の使用を停止してください。"] if stop else [] if unexpressed and not fixed else [
-        f"対応: {p.name} を {fixed} 以降に更新してください。" if fixed
-        else "対応: ベンダーの更新情報を確認してください。悪用が確認されているため、リリースがあれば直ちに更新してください。"
-        if exploited else "対応: ベンダーの更新情報を確認し、リリースがあれば適用してください。"]
+    pkg, registry = package or (p.name, None)
     return _inline("\n".join([
-        f"{head}: {_ja_title(adv)}", *([f"原題: {title}"] if title else []),
-        f"影響: {p.name}{_words_ja(p.affected, range_unexpressed)}。"
-        + (f" 修正版: {fixed}。" if fixed else " 修正は上流で公開されています。出典を参照してください。"
-           if unexpressed else " 出典には修正版の記載がありません。ベンダーのアドバイザリを確認してください。"),
-        *action, f"出典: {_primary(adv.sources)}"]))
+        headline(head, p.name, _upstream(title), _ja_kind(adv)),
+        f"影響: {pkg}{_words_ja(p.affected, range_unexpressed)}" + (f"（{registry}）。" if registry else "。"),
+        _do(p.name, fixed, stop=stop, unexpressed=unexpressed and not fixed, exploited=exploited, ja=True),
+        *_covers_line(adv, ja=True), f"出典: {_primary(adv.sources)}"]))
 
 
 def _change_line_ja(k: str, adv: schema.Advisory, unexpressed: bool = False) -> str:
@@ -366,9 +438,9 @@ def _change_line_ja(k: str, adv: schema.Advisory, unexpressed: bool = False) -> 
     return {
         "level": f"レベルは{_JA_LEVEL[adv.level]}になりました。",
         "products": f"影響: {p.name}{_words_ja(p.affected, unexpressed)}。" + (f" 修正版: {p.fixed}。" if p.fixed else ""),
-        "actions": f"対応: {p.name} を {p.fixed} 以降に更新してください。" if adv.actions
-        else "現在、記載された対応はありません。",
-        "title": f"件名: {_ja_title(adv)}",
+        "actions": _do(p.name, p.fixed, ja=True) if p.fixed and adv.actions
+        else _do(p.name, None, stop=True, ja=True) if adv.actions else "現在、記載された対応はありません。",
+        "title": "",  # it changes with the level, whose line says so (faxq)
         "expires_at": "有効期限は解除されました。" if adv.expires_at is None
         else "このアドバイザリには有効期限が設定されました。",
         "aliases": "別名: " + ", ".join(a for a in adv.aliases if public_id(a)) + "。",
@@ -381,7 +453,7 @@ def _change_line_ja(k: str, adv: schema.Advisory, unexpressed: bool = False) -> 
 def reply_post_ja(merged: schema.Advisory, c, keys, *, reason: str | None = None) -> str:
     """reply_post's body lines in Japanese for the changed ``keys``; no block."""
     body = [UNVERIFIED[0].upper() + UNVERIFIED[1:] + "."] if reason == "unverified" else []
-    body += [_change_line_ja(k, merged, range_unexpressed(c)) for k in sorted(keys)]
+    body += [line for k in sorted(keys) if (line := _change_line_ja(k, merged, range_unexpressed(c)))]
     body.append(f"出典: {_primary(_sources(c.sources) or merged.sources)}")
     return _inline("\n".join(body))
 
@@ -450,8 +522,9 @@ def _change_line(k: str, adv: schema.Advisory, unexpressed: bool = False) -> str
     return {
         "level": f"Level is now {adv.level}.",
         "products": f"Affected: {p.name}{_words(p.affected, unexpressed)}." + (f" Fixed in {p.fixed}." if p.fixed else ""),
-        "actions": f"Action: upgrade {p.name} to {p.fixed} or later." if adv.actions else "No action listed now.",
-        "title": f"Now: {adv.title}",
+        "actions": _do(p.name, p.fixed) if p.fixed and adv.actions
+        else _do(p.name, None, stop=True) if adv.actions else "No action listed now.",
+        "title": "",  # it changes with the level, whose line says so (faxq)
         "expires_at": "Expiry cleared." if adv.expires_at is None else "This advisory now expires.",
         "aliases": "Also known as: " + ", ".join(a for a in adv.aliases if public_id(a)) + ".",
         "sources": "New sources listed.",
@@ -506,9 +579,9 @@ def reply_post(prev: schema.Advisory, c, changes: dict, *, reason: str | None = 
     merged = apply_patch(prev, patch)
     _publishable(prev, merged, patch)
     body = [UNVERIFIED[0].upper() + UNVERIFIED[1:] + "."] if reason == "unverified" else []
-    body += [_change_line(k, merged, range_unexpressed(c)) for k in sorted(patch)]
+    body += [line for k in sorted(patch) if (line := _change_line(k, merged, range_unexpressed(c)))]
     body.append(f"Source: {_primary(_sources(c.sources) or merged.sources)}")
-    block = json.dumps(patch, indent=2, ensure_ascii=False)
+    block = json.dumps(patch, ensure_ascii=False, separators=(",", ":"))  # one line (faxq)
     out = _inline("\n".join(body)) + f"\n\n```{schema.INFO_STRING}\n{block}\n```\n"
     if parse_reply(out, prev) != merged:
         raise ValueError("reply does not parse back")
@@ -530,7 +603,7 @@ def level_post(prev: schema.Advisory, level: str) -> str:
     if not isinstance(level, str) or level not in wire.LEVELS or level == prev.level:
         raise ValueError("level change: the level must be a known level other than the thread's")
     merged = apply_patch(prev, patch)
-    out = _inline(_change_line("level", merged)) + f"\n\n```{schema.INFO_STRING}\n{json.dumps(patch)}\n```\n"
+    out = _inline(_change_line("level", merged)) + f"\n\n```{schema.INFO_STRING}\n{json.dumps(patch, separators=(',', ':'))}\n```\n"
     if parse_reply(out, prev) != merged or json.loads(schema._last_block(out)) != patch:
         raise ValueError("level change does not parse back")
     return _guard(out)

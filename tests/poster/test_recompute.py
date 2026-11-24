@@ -16,19 +16,26 @@ from test_main import GHSA, FakeKEV, FakeRelay, T0, env, finding, kev_item  # no
 HOUR, DAY = 3600, 86400
 
 
+def _fix_for(cid):
+    """A fix of its own for each CVE (faxq: advisories one release fixes are one thread),
+    2.1.0 for the first: these threads are about when each one's level may fall."""
+    return f"2.1.{int(cid.rsplit('-', 1)[1]) - 1}" if cid.rsplit("-", 1)[1].isdigit() else "2.1.0"
+
+
 @pytest.fixture(autouse=True)
 def _kev_with_its_fix(monkeypatch, request):
     """9kgk: a critical needs a complete action, and a KEV entry states no version. These
     tests are about when a level may fall, written with KEV threads at critical, so here
     an admitted KEV candidate states its fix, as if the vendor's page gave it, without the
-    GHSA alias such a page would add (which no reader here can look up). The rule's own
+    GHSA alias such a page would add (which no reader here can look up), each its own release
+    (``_fix_for``). The rule's own
     meeting with the recompute is tested at the end of this file, without this."""
     if "no_fix" in request.node.name:
         return
     from aitools_alerts.poster import main
     real = main.Run.admit
     monkeypatch.setattr(main.Run, "admit", lambda self, c, scope: (
-        lambda a: main.replace(a, fixed=a.fixed or "2.1.0") if a is not None and a.exploited is True else a)(
+        lambda a: main.replace(a, fixed=a.fixed or _fix_for(a.id)) if a is not None and a.exploited is True else a)(
             real(self, c, scope)))
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "poster"
 CVE = "CVE-2026-0001"
@@ -705,7 +712,7 @@ def test_the_breakers_share_is_of_the_threads_it_judges(env):
     """Three KEV threads all due beside many other threads in the ledger: three is more
     than two and all of what can be lowered, so none is."""
     post(env, *FIVE[:3])
-    env.collector([finding(fid=f"GHSA-aaaa-bbbb-cc{n:02d}") for n in range(20)])
+    env.collector([finding(fid=f"GHSA-aaaa-bbbb-cc{n:02d}", fixed=f"2.2.{n}") for n in range(20)])  # faxq: 20 threads
     one(env, 1, FIVE[:3])
     assert len(env.ledger()[0]) == 23
     assert hours(env, 2, 30) == [] and state(env)["tripped"]["due"] == 3

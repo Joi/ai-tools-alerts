@@ -462,36 +462,77 @@ def _union(a, b) -> list[str]:
     return out
 
 
-def merge(pairs, ledger: Ledger | None = None) -> list:
+def _fix_key(c) -> set[str]:
+    """faxq: advisories of one product fixed by one release are one post. The key is
+    the fixed version as the schema states it; none for no fix, an unexpressible one,
+    or a synthetic id (never grouped with a real advisory)."""
+    fixed = (c.fixed or "").lstrip("vV") if isinstance(c.fixed, str) else ""
+    if not schema._FIXED.fullmatch(fixed) or schema.is_synthetic(c.id):
+        return set()
+    return {f"\0fix:{fixed}"}  # NUL: never an id
+
+
+def _components(items, keys_of) -> list[list]:
+    """items grouped by any shared key (union-find), in first-seen order."""
+    parent = list(range(len(items)))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    seen: dict[str, int] = {}
+    for i, it in enumerate(items):
+        for k in keys_of(it):
+            if k in seen:
+                parent[root(i)] = root(seen[k])
+            else:
+                seen[k] = i
+    comps: dict[int, list] = {}
+    for i in range(len(items)):
+        comps.setdefault(root(i), []).append(items[i])
+    return list(comps.values())
+
+
+def merge(pairs, ledger: Ledger | None = None, groups: dict | None = None) -> list:
     """Merge (Candidate, ScopeEntry) pairs that share an id or alias under the same
-    scope entry. ``exploited`` crosses only within one scope: a candidate under
-    another scope never inherits the KEV clause, even if it names the KEV CVE."""
+    scope entry, then (faxq) those that state the same fixed version: advisories of one
+    product fixed by one release are one post. ``exploited`` crosses only within one
+    scope: a candidate under another scope never inherits the KEV clause, even if it
+    names the KEV CVE.
+
+    A merged candidate that already has a thread in ``ledger`` joins nothing by its fix:
+    two threads never become one, and a thread keeps its range. A fix group's range is
+    one that covers every member's: theirs when they agree, none stated when one states
+    none, else everything before the fix. ``groups``, when given, receives
+    ``{(scope, id casefolded): [the id-merged members]}`` for every fix group, so a
+    caller that defers the group can keep each member re-admittable on its own."""
     out = []
     by_scope: dict[str, list] = {}
     for c, s in pairs:
         by_scope.setdefault(s.name, []).append((c, s))
     for name, group in by_scope.items():
-        parent = list(range(len(group)))
+        by_id = [_merged(m, name, ledger) for m in _components(
+            [c for c, _ in group], lambda c: _keys([c.id, *c.aliases]))]
 
-        def root(i):
-            while parent[i] != i:
-                parent[i] = parent[parent[i]]
-                i = parent[i]
-            return i
+        def fix_keys(c):
+            return set() if ledger is not None and ledger.lookup_all([c.id, *c.aliases], name) else _fix_key(c)
 
-        seen: dict[str, int] = {}
-        for i, (c, _) in enumerate(group):
-            for k in _keys([c.id, *c.aliases]):
-                if k in seen:
-                    parent[root(i)] = root(seen[k])
-                else:
-                    seen[k] = i
-        comps: dict[int, list] = {}
-        for i in range(len(group)):
-            comps.setdefault(root(i), []).append(group[i][0])
-        for members in comps.values():
-            out.append((_merged(members, name, ledger), group[0][1]))
+        for members in _components(by_id, fix_keys):
+            c = members[0] if len(members) == 1 else _fix_group(members, name, ledger)
+            if len(members) > 1 and groups is not None:
+                groups[(name, c.id.casefold())] = members
+            out.append((c, group[0][1]))
     return out
+
+
+def _fix_group(members, scope_name, ledger):
+    c = _merged(members, scope_name, ledger)
+    fixed = (c.fixed or "").lstrip("vV")
+    ranges = {m.affected.strip() if isinstance(m.affected, str) and m.affected.strip() else None for m in members}
+    affected = ranges.pop() if len(ranges) == 1 else None if None in ranges else f"<{fixed}"
+    return replace(c, affected=affected)
 
 
 def _merged(members, scope_name, ledger):

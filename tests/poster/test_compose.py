@@ -39,15 +39,19 @@ def root(c, level=("critical", "injection-exec-fixed")):
     return compose.root_post(c, level, scope(c), posted_at=NOW)
 
 
-def test_root_post_body_has_four_lines_and_block():
+def test_root_post_body_has_five_lines_and_a_one_line_block():
+    """faxq (design section 6): headline, Affected, Do, Covers, Source, then the block on one line."""
     text, adv = root(cand())
     body, rest = text.split("\n\n```aitools-alert\n", 1)
     lines = body.split("\n")
-    assert len(lines) == 4
-    assert lines[0] == "CRITICAL: Claude Code: injection to code execution (CVE-2026-0001)"
-    assert lines[1] == "Affected: Claude Code below 2.1.0. Fixed in 2.1.0."
-    assert lines[2] == "Action: upgrade Claude Code to 2.1.0 or later."
-    assert lines[3] == f"Source: {GHSA}"  # the primary source, though listed second
+    assert lines == ["CRITICAL: Claude Code: injection to code execution",  # no id in the headline
+                     "Affected: `@anthropic-ai/claude-code` before 2.1.0 (npm).",
+                     "Do: upgrade Claude Code to 2.1.0 or later.",
+                     "Covers 1 advisory: CVE-2026-0001, GHSA-abcd-efgh-ijkl",
+                     f"Source: {GHSA}"]  # the primary source, though listed second
+    block, end = rest.split("\n", 1)
+    assert end == "```\n" and json.loads(block) == json.loads(json.dumps(dataclasses.asdict(adv)))
+    assert "\n" not in block and block == json.dumps(json.loads(block), ensure_ascii=False, separators=(",", ":"))
     assert schema.parse_post(text) == adv
     assert adv.posted_by == "relay-bot" and adv.advisory_severity is None
     assert adv.products == [schema.Product("Claude Code", "claude-code", "<2.1.0", "2.1.0")]
@@ -62,9 +66,9 @@ def test_root_post_without_fix_and_unverified():
     lines = text.split("\n")
     assert lines[0].startswith("HIGH (unverified")
     assert "unverified" in lines[0]
-    assert lines[1] == ("Affected: Claude Code, versions not stated. "
-                        "The source does not state a fixed version; check the vendor's advisory.")
-    assert lines[2] == "Action: check the vendor for an update and apply it."
+    assert lines[1] == "Affected: `@anthropic-ai/claude-code`, versions not stated (npm)."
+    assert lines[2] == "Do: apply the source's workaround, if it gives one, until a fixed release ships."
+    assert "vendor" not in text and "watch this thread" not in text
     assert adv.actions == [] and "trojanized release" in adv.title
     # A bare level string is accepted.
     assert compose.root_post(c, "notice", scope(c), posted_at=NOW)[1].level == "notice"
@@ -203,7 +207,7 @@ def test_review_fixes_publication():
     assert _block(tup)["aliases"] == ["GHSA-abcd-efgh-ijkl", "CVE-2026-0009"]  # union, CVE and GHSA ids only
     # A fix the schema cannot express is not "no fix".
     text, adv = root(cand(fixed="2.0.0-rc.1"), ("high", "fix-rce-tier1"))  # 9kgk: a critical needs a stated version
-    assert "A fix is listed upstream" in text and "no fix" not in text and adv.actions == []
+    assert "the fixed release the source names" in text and "no fix" not in text and adv.actions == []
     # Unverified survives into the title, so the digest and replies keep it.
     _, unv = root(cand(injection_exec=False, trojanized=True), ("high", "unverified"))
     assert "unverified" in compose.digest([unv], "2026-11-05")
@@ -232,8 +236,7 @@ def test_guard_keeps_apple_developer_library_urls():
 def test_synthetic_root_marks_the_block_title():
     text, adv = root(cand(id="CVE-2099-0010", aliases=()))
     head = text.split("\n")[0]
-    assert head == ("CRITICAL (SYNTHETIC TEST): SYNTHETIC TEST: Claude Code: "
-                    "injection to code execution (CVE-2099-0010)")
+    assert head == "CRITICAL (SYNTHETIC TEST): Claude Code: injection to code execution"  # the head marks it
     assert adv.title.startswith("SYNTHETIC TEST: Claude Code") and adv.title.count("SYNTHETIC") == 1
     assert schema.parse_post(text).title == adv.title
     assert schema.parse_post(schema.render_post(adv, "Body.")).title == adv.title  # one mark
@@ -341,7 +344,7 @@ def test_containerd_kev_composes_containerd():
     assert adv.title == "containerd: known exploited vulnerability (CVE-2026-0901)"
     assert [(p.name, p.ecosystem, p.fixed) for p in adv.products] == [("containerd", "docker", "1.7.29")]
     assert [(a.verb, a.target, a.value) for a in adv.actions] == [("upgrade", "containerd", "1.7.29")]
-    assert "Action: upgrade containerd to 1.7.29 or later." in text.split("\n")
+    assert "Do: upgrade containerd to 1.7.29 or later." in text.split("\n")
     assert "Docker" not in text
 
 
@@ -363,30 +366,33 @@ def test_root_post_ja_keeps_names_ids_versions_urls():
     c = cand()
     _, adv = root(c)
     lines = compose.root_post_ja(adv, None, compose.fix_unexpressed(c)).split("\n")
-    assert lines == ["緊急: Claude Code: コード実行につながるインジェクション (CVE-2026-0001)",
-                     "影響: Claude Code（2.1.0 未満）。 修正版: 2.1.0。",
+    assert lines == ["緊急: Claude Code: コード実行につながるインジェクション",
+                     "影響: Claude Code（2.1.0 未満）。",
                      "対応: Claude Code を 2.1.0 以降に更新してください。",
+                     "対象: アドバイザリ 1 件: CVE-2026-0001, GHSA-abcd-efgh-ijkl",
                      f"出典: {GHSA}"]
+    pkg = compose.package_of(scope(c))
+    assert pkg == ("@anthropic-ai/claude-code", "npm")
+    assert compose.root_post_ja(adv, package=pkg).split("\n")[1] == "影響: `@anthropic-ai/claude-code`（2.1.0 未満）（npm）。"
     c = cand(injection_exec=False, trojanized=True, fixed=None, affected=None)
     _, adv = root(c, ("high", "unverified"))
     lines = compose.root_post_ja(adv, "unverified").split("\n")
     assert lines[0] == ("重要 (unverified: no primary source confirmed it): "
-                        "Claude Code: unverified 改ざんされたリリース (CVE-2026-0001)")
-    assert lines[1] == ("影響: Claude Code（バージョン不明）。 "
-                        "出典には修正版の記載がありません。ベンダーのアドバイザリを確認してください。")
-    assert lines[2] == "対応: ベンダーの更新情報を確認し、リリースがあれば適用してください。"
+                        "Claude Code: unverified 改ざんされたリリース")
+    assert lines[1] == "影響: Claude Code（バージョン不明）。"
+    assert lines[2] == "対応: 出典に回避策があれば適用し、修正版が出るまで続けてください。"
     syn = cand(id="CVE-2099-0001", aliases=())
     _, adv = root(syn, ("high", "high"))
     assert compose.root_post_ja(adv).startswith(
-        "重要 (SYNTHETIC TEST): SYNTHETIC TEST: Claude Code: コード実行につながるインジェクション (CVE-2099-0001)")
+        "重要 (SYNTHETIC TEST): SYNTHETIC TEST: Claude Code: コード実行につながるインジェクション\n")
 
 
 _NO_FIX_CLAIMS = ("no fix", "No fixed version is known", "watch this thread", "修正版はまだ", "修正はまだ")
 
 
 def test_root_post_kev_without_version_never_says_no_fix():
-    """A KEV entry carries no version data: the post says the source states none and
-    sends the reader to the vendor, and a known-exploited one says to update now."""
+    """A KEV entry carries no version data: the post never says there is no fix, and a
+    known-exploited one says so in its one action sentence (faxq: never "check the vendor")."""
     kev = cand(id="CVE-2026-1253", aliases=(), product_text="Chrome", exploited=True,
                injection_exec=False, fixed=None, affected=None, sources=(Source(BLOG, None),))
     for level, mark in ((("high", "high"), ""), (("high", "unverified"), "unverified ")):
@@ -394,14 +400,14 @@ def test_root_post_kev_without_version_never_says_no_fix():
         assert adv.title == f"Chrome: {mark}known exploited vulnerability (CVE-2026-1253)"
         lines = text.split("\n\n```")[0].split("\n")
         assert lines[1:3] == [
-            "Affected: Chrome, versions not stated. "
-            "The source does not state a fixed version; check the vendor's advisory.",
-            "Action: check the vendor for an update; this is exploited in the wild, "
-            "so update now if a release is out."]
+            "Affected: Chrome, versions not stated.",
+            "Do: this is exploited in the wild. Apply the source's workaround, if it gives one, "
+            "until a fixed release ships."]
+        assert "vendor" not in text.split("\n\n```")[0]
         ja = compose.root_post_ja(adv, level[1], compose.fix_unexpressed(kev))
         assert ja.split("\n")[1:3] == [
-            "影響: Chrome（バージョン不明）。 出典には修正版の記載がありません。ベンダーのアドバイザリを確認してください。",
-            "対応: ベンダーの更新情報を確認してください。悪用が確認されているため、リリースがあれば直ちに更新してください。"]
+            "影響: Chrome（バージョン不明）。",
+            "対応: 悪用が確認されています。出典に回避策があれば適用し、修正版が出るまで続けてください。"]
         digests = compose.digest([adv], "2026-11-11") + compose.digest([adv], "2026-11-11", lang="ja")
         for claim in _NO_FIX_CLAIMS:
             assert claim not in text and claim not in ja and claim not in digests
@@ -410,33 +416,34 @@ def test_root_post_kev_without_version_never_says_no_fix():
     tro = dataclasses.replace(kev, exploited=False, trojanized=True)
     _, adv = compose.root_post(tro, ("high", "high"), scope(tro), posted_at=NOW)
     assert "trojanized release" in adv.title
-    assert compose.root_post_ja(adv).split("\n")[2] == "対応: ベンダーの更新情報を確認し、リリースがあれば適用してください。"
-    assert "直ちに更新" in compose.root_post_ja(adv, exploited=True).split("\n")[2]
+    assert compose.root_post_ja(adv).split("\n")[2] == "対応: 出典に回避策があれば適用し、修正版が出るまで続けてください。"
+    assert "悪用が確認" in compose.root_post_ja(adv, exploited=True).split("\n")[2]
     # A synthetic KEV check keeps the exploited action.
     syn = dataclasses.replace(kev, id="CVE-2099-0001")
     text, adv = compose.root_post(syn, ("high", "high"), scope(syn), posted_at=NOW)
-    assert "update now if a release is out" in text
-    assert "直ちに更新" in compose.root_post_ja(adv)
+    assert "exploited in the wild" in text
+    assert "悪用が確認" in compose.root_post_ja(adv)
 
 
 def test_root_post_fixed_line_unchanged_and_unexpressed_has_no_action():
-    """The fixed branch reads exactly as before 4yr1."""
+    """The fixed branch: the upgrade sentence, exploited or not."""
     kev = cand(exploited=True, injection_exec=False)
     text, adv = root(kev)
-    assert text.split("\n")[1:3] == ["Affected: Claude Code below 2.1.0. Fixed in 2.1.0.",
-                                     "Action: upgrade Claude Code to 2.1.0 or later."]
+    assert text.split("\n")[1:3] == ["Affected: `@anthropic-ai/claude-code` before 2.1.0 (npm).",
+                                     "Do: upgrade Claude Code to 2.1.0 or later."]
     assert compose.root_post_ja(adv).split("\n")[1:3] == [
-        "影響: Claude Code（2.1.0 未満）。 修正版: 2.1.0。", "対応: Claude Code を 2.1.0 以降に更新してください。"]
+        "影響: Claude Code（2.1.0 未満）。", "対応: Claude Code を 2.1.0 以降に更新してください。"]
     for c in (cand(fixed="2.0.0-rc.1"), cand(fixed="2.0.0-rc.1", exploited=True, injection_exec=False)):
         text, adv = root(c, ("high", "fix-rce-tier1"))  # 9kgk: a critical needs a stated version
-        # h340: a fix the schema cannot express names no version and gets no action sentence.
+        # h340: a fix the schema cannot express names no version; the sentence sends the
+        # member to the release the source names, and the block carries no action.
         assert text.split("\n")[1:3] == [
-            "Affected: Claude Code below 2.1.0. A fix is listed upstream; see the source.", f"Source: {GHSA}"]
-        assert "Action:" not in text and adv.actions == []
+            "Affected: `@anthropic-ai/claude-code` before 2.1.0 (npm).",
+            "Do: upgrade Claude Code to the fixed release the source names."]
+        assert "2.0.0-rc" not in text.split("\n\n```")[0] and adv.actions == []
         ja = compose.root_post_ja(adv, None, True)
         assert ja.split("\n")[1:3] == [
-            "影響: Claude Code（2.1.0 未満）。 修正は上流で公開されています。出典を参照してください。", f"出典: {GHSA}"]
-        assert "対応:" not in ja
+            "影響: Claude Code（2.1.0 未満）。", "対応: Claude Code を出典に記載された修正版に更新してください。"]
 
 
 def test_a_critical_carries_a_complete_action():
@@ -444,8 +451,9 @@ def test_a_critical_carries_a_complete_action():
     other critical does not post. A bare level (a thread's standing one) composes."""
     text, adv = root(cand(fixed=None), ("critical", "stop-using"))
     assert [(a.verb, a.target, a.value) for a in adv.actions] == [("stop_using", "Claude Code", None)]
-    assert "Action: stop using Claude Code until a fixed release ships." in text.split("\n")
-    assert "対応: 修正版が出るまで Claude Code の使用を停止してください。" in compose.root_post_ja(adv).split("\n")
+    assert "Do: no fix yet. Stop using Claude Code until one ships." in text.split("\n")
+    assert "対応: 修正版はまだありません。修正版が出るまで Claude Code の使用を停止してください。" \
+        in compose.root_post_ja(adv).split("\n")
     for reason in ("kev-tier1", "fields", "reading"):
         with pytest.raises(ValueError, match="complete action"):
             root(cand(fixed=None), ("critical", reason))
@@ -535,16 +543,29 @@ def test_lang_reply_header_and_refusals():
 TOCTOU = "TOCTOU Race in Edit Tool Allows File Writes Outside the Workspace"
 
 
-def test_root_post_carries_the_source_title_second():
+def test_the_source_title_is_the_headline():
+    """faxq: in this slice the headline is the source's own title, after the product
+    name when the title does not name it; the block's title keeps its template."""
     c = cand(source_title=TOCTOU)
     text, adv = root(c, ("high", None))
     lines = text.split("\n\n```aitools-alert\n", 1)[0].split("\n")
-    assert lines[0] == "HIGH: Claude Code: injection to code execution (CVE-2026-0001)"
-    assert lines[1] == TOCTOU and len(lines) == 5
+    assert lines[0] == f"HIGH: Claude Code: {TOCTOU}" and len(lines) == 5
     assert TOCTOU not in adv.title and schema.parse_post(text) == adv  # never in the block
     ja = compose.root_post_ja(adv, None, False, compose.source_title(c)).split("\n")
-    assert ja[1] == f"原題: {TOCTOU}"
-    assert root(cand())[0] == root(cand(source_title=None))[0]  # no title: exactly as before
+    assert ja[0] == f"重要: Claude Code: {TOCTOU}" and not any("原題" in x for x in ja)
+    named = root(cand(source_title="Claude Code: edit tool writes outside the workspace"), ("high", None))[0]
+    assert named.split("\n")[0] == "HIGH: Claude Code: edit tool writes outside the workspace"  # not twice
+    assert root(cand())[0] == root(cand(source_title=None))[0]
+
+
+def test_the_headline_is_at_most_90_characters_and_cut_at_a_word():
+    long = "A deliberately long advisory title that keeps going well past what fits on one line of a post"
+    head = root(cand(source_title=long), ("high", None))[0].split("\n")[0]
+    assert len(head) <= compose.HEADLINE_MAX and head.endswith("…") and head.startswith("HIGH: Claude Code: A ")
+    assert long.startswith(head[len("HIGH: Claude Code: "):-1])  # cut, not rewritten
+    assert not head[:-1].endswith(" ")
+    marked = root(cand(source_title=long), ("high", "unverified"))[0].split("\n")[0]
+    assert marked.startswith(f"HIGH ({compose.UNVERIFIED}): ")  # the mark is never cut
 
 
 def test_source_title_equal_to_a_template_kind_is_dropped():
@@ -601,8 +622,8 @@ def test_root_and_digest_wrap_a_scoped_package_title():
 
 def test_title_backtick_cannot_pair_with_ours():
     c = cand(source_title="a `b @scope/pkg c")
-    line = root(c, ("high", None))[0].split("\n")[1]
-    assert line == "a b `@scope/pkg` c"
+    line = root(c, ("high", None))[0].split("\n")[0]
+    assert line == "HIGH: Claude Code: a b `@scope/pkg` c"
 
 
 def test_digest_shaped_like_2026_11_08_has_no_bare_mention():
@@ -755,7 +776,9 @@ def test_a_published_ledger_key_stays_in_the_list_and_off_the_line():
 def test_a_title_names_the_public_id_and_the_block_keeps_the_key():
     text, adv = root(cand(id="CVE-2026-103435:claude-code", aliases=("CVE-2026-103435",), injection_exec=False),
                      ("high", "severity-tier1"))
-    assert text.split("\n")[0] == "HIGH: Claude Code: security advisory (CVE-2026-103435)"
+    assert text.split("\n")[0] == "HIGH: Claude Code: security advisory"  # faxq: no id in the headline
+    assert "Covers 1 advisory: CVE-2026-103435" in text.split("\n")
+    assert adv.title == "Claude Code: security advisory (CVE-2026-103435)"  # the block's names the public id
     assert adv.id == "CVE-2026-103435:claude-code" and ":claude-code" not in json.dumps(adv.aliases)
     assert schema.parse_post(text) == adv  # a v0.1.4 reader's parse: same block, same keys
 
@@ -773,7 +796,7 @@ def test_a_thread_titled_with_its_ledger_key_still_matches_the_templates():
 
 
 @pytest.mark.parametrize("affected,words", [
-    (None, "versions not stated"), (">=1.0 || <0.5", "affected versions: see the source"), ("< 2.1.0", "below 2.1.0")])
+    (None, "versions not stated"), (">=1.0 || <0.5", "affected versions: see the source"), ("< 2.1.0", "before 2.1.0")])
 def test_versions_not_stated_only_without_a_range(affected, words):
     c = cand(affected=affected, fixed=None, injection_exec=False)
     text, adv = root(c, ("high", "severity-tier1"))
