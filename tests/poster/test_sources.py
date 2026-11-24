@@ -78,32 +78,49 @@ def test_a_lane_stops_after_its_seconds():
     api = Api()
 
     def fetch(*a):
-        now[0] += 21.0 if len(api.calls) == 0 else 3.0
+        now[0] += 21.0 if len(api.calls) == 0 else 8.0
         return api(*a)
     reader = sources.Reader(fetch, clock=lambda: now[0])
     assert reader.read(G, "wait") is None and reader.read(G2, "wait") is None and len(api.calls) == 1
     assert reader.unread == {G2}
     a, b = "GHSA-aaaa-bbbb-cc01", "GHSA-aaaa-bbbb-cc02"
-    reader.read(a, "rest"), reader.read(b, "rest")
+    reader.read(a, "rest")
+    now[0] += 500.0  # a slow vendor page between two reads is not the lane's time
+    reader.read(b, "rest")
     assert api.timeouts == [5.0, 5.0, 5.0] and len(api.calls) == 3
-    now[0] += 10.0  # 16 of the lane's 20 seconds are gone
-    reader.read("GHSA-aaaa-bbbb-cc03", "rest")
+    reader.read("GHSA-aaaa-bbbb-cc03", "rest")  # 16 of the lane's 20 seconds were spent in its two requests
     assert api.timeouts[-1] == 4.0
+    assert reader.read("GHSA-aaaa-bbbb-cc04", "rest") is None and len(api.calls) == 4  # 24: spent
 
 
 def test_default_fetch_is_looked_up_at_call_time():
     assert sources.Reader().read(G) is None  # the suite's own refusal (conftest): no request, no exception
 
 
-def test_tied_is_the_sources_word():
+def test_tied_is_the_sources_word_about_the_ids_a_member_reads():
     reads = {G: sources.Reader(Api(**{G: ghsa_json(G, cve=CVE, identifiers=[MAL])})).read(G),
              G2: sources.Reader(Api(**{G2: ghsa_json(G2, type="unreviewed", repo=None, cve=CVE)})).read(G2)}
-    assert sources.tied(CVE, G, reads.get) and not sources.tied("CVE-2026-0002", G, reads.get)
-    assert not sources.tied(CVE, G2, reads.get)  # an unreviewed advisory ties nothing
+    assert sources.tied(CVE, G, reads.get, [G]) and not sources.tied("CVE-2026-0002", G, reads.get, [G])
+    assert not sources.tied(CVE, G, reads.get)  # not among the thread's published aliases: a member never reads it
+    assert not sources.tied(CVE, G2, reads.get, [G2])  # an unreviewed advisory ties nothing
     assert sources.tied(G, G, reads.get) and sources.tied(G, MAL, reads.get) and not sources.tied(G, G2, reads.get)
+    assert sources.tied(G, CVE, reads.get)  # the first id's response names the CVE: KEV is read for it
     assert not sources.tied(G2, MAL, reads.get) and not sources.tied(None, G, reads.get)
-    assert not sources.tied(G, CVE, reads.get)  # a CVE is KEV's to read
-    assert sources.related(G, reads.get) == ([CVE, MAL], True) and sources.related(G2, reads.get) == ([], True)
-    assert sources.related(CVE, reads.get) == ([], True) and sources.related(G, lambda i: None) == ([], True)
-    many = sources.Reader(Api(**{G: ghsa_json(G, identifiers=[f"MAL-2026-{n}" for n in range(4)])})).read(G)
-    assert sources.related(G, {G: many}.get)[1] is False
+    assert not sources.tied(CVE, CVE, reads.get) and not sources.tied(G, None, reads.get)
+    assert sources.chosen(G, [], reads.get) == ([CVE, MAL], True) and sources.chosen(G2, [], reads.get) == ([], True)
+    assert sources.chosen(G, [], lambda i: None) == ([], True) and sources.chosen("LEAD-1", [G], reads.get) == ([], True)
+    assert sources.chosen(CVE, [G, "CVE-2026-0002", G, G2], reads.get) == ([G, G2], True)
+
+
+def test_only_the_ids_a_member_reads_are_chosen():
+    """A member's check reads three ids beside the first (verify.MAX_ALIASES), in its own
+    order. The poster counts no other: a fourth could support a level no member confirms."""
+    four = [f"MAL-2026-{n}" for n in range(4)]
+    many = sources.Reader(Api(**{G: ghsa_json(G, identifiers=four)})).read(G)
+    assert sources.chosen(G, [], {G: many}.get) == (four[:3], False)
+    assert sources.tied(G, four[2], {G: many}.get) and not sources.tied(G, four[3], {G: many}.get)
+    aliases = [f"GHSA-aaaa-bbbb-cc{n:02d}" for n in range(4)]
+    assert sources.chosen(CVE, aliases, lambda i: None) == (aliases[:3], False)
+    last = sources.Reader(Api(**{aliases[3]: ghsa_json(aliases[3], cve=CVE)})).read(aliases[3])
+    assert last.lowers and CVE in last.names and not sources.tied(CVE, aliases[3], {aliases[3]: last}.get, aliases)
+    assert verify.MAX_ALIASES == 3

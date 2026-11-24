@@ -69,7 +69,7 @@ class Copy:
 
 def new_state() -> dict:
     return {"kev": None, "direct": None, "listed": {}, "dwell": {}, "lowered": [], "reported": None,
-            "recent": [], "tripped": None, "open": None, "exploited": []}
+            "recent": [], "tripped": None, "open": None, "exploited": {}}
 
 
 def _shaped(v, shape: dict) -> bool:
@@ -83,7 +83,9 @@ def _ok(st) -> bool:
             and all(isinstance(k, str) and isinstance(v, list) and all(isinstance(i, str) for i in v)
                     for k, v in st["listed"].items())
             and isinstance(st["dwell"], dict)
-            and isinstance(st["exploited"], list) and all(isinstance(r, str) for r in st["exploited"])
+            and isinstance(st["exploited"], dict)
+            and all(isinstance(k, str) and isinstance(v, list) and v and all(isinstance(i, str) for i in v)
+                    for k, v in st["exploited"].items())
             and all(isinstance(k, str) and isinstance(v, dict) and (v.get("last") is None or type(v["last"]) is int)
                     and "last" in v and "version" in v and (v["version"] is None or isinstance(v["version"], str))
                     and _shaped({x: v[x] for x in v if x not in ("last", "version")}, _DWELL) and v["level"] in _LEVELS
@@ -115,7 +117,7 @@ def load(path: Path) -> tuple[dict, bool]:
         return new_state(), True
     try:
         if isinstance(st, dict):
-            st.setdefault("exploited", [])  # 3qyq: a state written before it has none
+            st.setdefault("exploited", {})  # 3qyq: a state written before it has none
         return (st, False) if _ok(st) else (new_state(), True)
     except Exception:  # noqa: BLE001 - whatever the file holds, it is one that does not read
         return new_state(), True
@@ -226,38 +228,49 @@ def judged(entry) -> bool:
     return entry.exploited is True or any(sources.advisory_id(i) for i in bare_ids(entry) or ())
 
 
+def published_aliases(entry) -> list:
+    """The thread's published aliases as lookups write them, in order: what a member's
+    check sees of it."""
+    return [x for x in (lookup_id(a) for a in entry.advisory.get("aliases") or ()) if x is not None]
+
+
 def support(entry, scope, copy: Copy | None, rs, read=None) -> tuple[str, bool, set, set, bool]:
     """(found, known, listed, gone, stop): the level the thread's sources state for its
     product by their fields (``ruleset.NONE`` when none does); whether every source
-    was read whole; the thread's CVEs the copy lists as this product, and those it
-    does not list; whether a read gives ``found`` through a stop_using row.
+    was read whole; the CVEs the copy lists as this product, and those it does not
+    list; whether a read gives ``found`` through a stop_using row.
 
-    The ids judged are the thread's own and, when its first id is a GHSA id whose
-    response may lower, every id that response names: which ids are one advisory is
-    the source's word, as in the member's check (``verify._Run.thread``). ``read``:
-    advisory id -> ``sources.Read`` or None (None: every advisory id is unread).
+    The ids that count are the ones a member's check reads (``sources.chosen``,
+    ``verify._Run.thread``), so no level is published that it could not confirm: the
+    first id; beside a CVE first id, the first three advisory ids among the published
+    aliases, each only when its own response may lower and names that CVE, and (as
+    ny5g) the thread's other CVEs; beside a GHSA first id whose response may lower,
+    the first three ids that response names, CVEs among them, carried by the thread
+    or not. That is how an OSV entry is reached. ``read``: advisory id ->
+    ``sources.Read`` or None (None: every advisory id is unread).
 
-    Not known: an id of another shape; with a CVE among the ids, no complete KEV copy;
-    a CVE beside an advisory first id whose response does not name it (not counted);
-    a CVE the catalog lists under a name that is not this product (a rename is not a
-    removal) or that is not a reading; an advisory id that was not read, that the
-    source does not tie to the first id (``sources.tied``), or whose class for this
-    product cannot lower (3qyq: its support, a notice at most, is not counted); a
-    first response that names more ids than a member reads."""
+    Not known: an id of another shape; with a CVE among the ids that count, no
+    complete KEV copy; a CVE the catalog lists under a name that is not this product
+    (a rename is not a removal) or that is not a reading; an advisory id that was not
+    read; any id of the thread a member's check does not read or the source does not
+    tie (it is not counted either: neither a listing nor an absence of it says
+    anything about this thread); a response whose class for this product cannot
+    lower (3qyq: its support, a notice at most, is not counted); a first response
+    that names more ids than a member reads."""
     ids = bare_ids(entry)
     read = read or (lambda i: None)
     found, listed, gone, stop = ruleset.NONE, set(), set(), False
     if ids is None:
         return found, False, listed, gone, stop
     first = lookup_id(entry.advisory.get("id"))
-    named, few = sources.related(first, read)
-    ids, known = ids | set(named), few
-    if any(ruleset.source_of(i) == "kev" for i in ids) and not (copy is not None and copy.complete):
-        known = False
-    for i in sorted(ids):
+    aliases = published_aliases(entry)
+    picked, known = sources.chosen(first, aliases, read)
+    first_kev = ruleset.source_of(first) == "kev"
+    for i in sorted(ids | set(picked)):
         if ruleset.source_of(i) != "kev":
-            r = read(i) if sources.advisory_id(i) else None
-            if r is None or not sources.tied(first, i, read):
+            # tied first: an id a member's check does not read is not asked for either
+            r = read(i) if sources.tied(first, i, read, aliases) else None
+            if r is None:
                 known = False
                 continue
             own = r.support.get(scope.name)
@@ -268,12 +281,11 @@ def support(entry, scope, copy: Copy | None, rs, read=None) -> tuple[str, bool, 
                     found, stop = own[0], False
                 stop = stop or (own[0] == found and own[2])
             continue
-        if sources.advisory_id(first) and i not in named:
-            # A CVE the bot lists beside an advisory that does not name it: neither its
-            # listing nor its absence says anything about this thread (a member reads
-            # only the CVEs the first id's response names).
-            known = False
+        if not first_kev and i not in picked:
+            known = False  # a CVE the first id's response does not name, or names past what a member reads
             continue
+        if copy is None or not copy.complete:
+            known = False
         item = copy.index.get(i) if copy is not None else None
         if item is None:
             gone.add(i)  # a contradiction when the copy is complete, nothing otherwise
@@ -292,16 +304,20 @@ def support(entry, scope, copy: Copy | None, rs, read=None) -> tuple[str, bool, 
     return found, known, listed, gone, stop
 
 
-def held(entry, scope, found: str, rs, stop: bool = False) -> str:
+def held(entry, scope, found: str, rs, stop: bool = False, infer: bool = True) -> str:
     """``found`` as the thread can carry it (9kgk, ``Ruleset.action_level``): with its
     published actions and the fix its root stated, the one every reader keeps (tyje). A
     KEV listing of a thread with no such fix supports high, not critical. ``stop``: a
     read of this run gives ``found`` through a stop_using row (3qyq), so a published
-    stop_using completes it again after the advisory was withdrawn and came back."""
+    stop_using completes it again after the advisory was withdrawn and came back.
+    ``infer``: some source was not read whole, so a thread standing at ``found`` by a
+    published stop_using is taken to stand there by a reading that said so. With
+    every source read (``infer`` false) only what this run read says so: an advisory
+    that now states a patched version no longer completes the level by stop_using,
+    as a member's check of the same response finds."""
     acts = [(a.get("verb"), a.get("target"), a.get("value")) for a in entry.advisory.get("actions") or []
             if isinstance(a, dict)]
-    # a thread standing at the level by stop_using was admitted there by a reading that said so
-    stop = stop or (found == entry.level and any(v == "stop_using" and t == scope.name for v, t, _ in acts))
+    stop = stop or (infer and found == entry.level and any(v == "stop_using" and t == scope.name for v, t, _ in acts))
     capped = rs.action_level(found, acts, scope.name, entry.fix_at_root, stop_using=stop or None)
     if not entry.root_known:  # an entry from before root_fixed, already replied to: raise-only
         return rs.highest(capped, min(found, entry.level, key=rs.rank))
@@ -317,15 +333,24 @@ def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int, read=None, in
     The two rules about a CVE's absence from KEV (it must have been seen listed by a
     complete copy; the wait must end on a later catalog) govern a thread the ledger
     marks exploited, and one a copy, complete or not, has ever listed for this product
-    (``st["exploited"]``, recorded here whether or not a level changes). A thread KEV
-    never listed does not rest on it: that absence is not what lowers it (3qyq)."""
+    (``st["exploited"]``: per thread the CVEs listed, recorded here whether or not a
+    level changes; ``Run.recompute`` then marks the ledger). Such a thread is not
+    known without a complete copy, while a CVE once listed is no longer among the ids
+    judged (an advisory that stopped naming it says nothing about KEV), and when no
+    CVE of it is judged at all. A thread KEV never listed does not rest on it: that
+    absence is not what lowers it (3qyq)."""
     found, known, listed, gone, stop = support(entry, scope, copy, rs, read)
+    root, dwell = entry.root_event_id, st["dwell"]
+    ever = set(st["exploited"].get(root, ()))
+    if listed - ever:
+        ever |= listed
+        st["exploited"][root] = sorted(ever)
+    kev = entry.exploited is True or bool(ever)
+    if kev and (copy is None or not copy.complete or ever - (listed | gone) or not (listed | gone)):
+        known = False
     if info is not None:
         info.update(known=known, listed=listed)
-    found = held(entry, scope, found, rs, stop)
-    root, dwell = entry.root_event_id, st["dwell"]
-    if listed and root not in st["exploited"]:
-        st["exploited"].append(root)
+    found = held(entry, scope, found, rs, stop, infer=not known)
     if rs.rank(found) > rs.rank(entry.level):
         dwell.pop(root, None)
         return "raise", found
@@ -338,7 +363,6 @@ def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int, read=None, in
         # no completeness, and it ends a wait for a lower one.
         dwell.pop(root, None)
         return None
-    kev = entry.exploited is True or root in st["exploited"]
     if not known or (kev and gone - seen):
         # Unknown, or gone from the catalog without this state ever having seen it there
         # (absence proves nothing yet): nothing moves. A wait already running keeps its

@@ -11,7 +11,8 @@ body arrived whole, parsed strictly and is a reading the ruleset accepts. A time
 a 3xx (no redirect is followed), 403, 404, 429 and 5xx are all None, and a 404 is
 never a withdrawal. Nothing is kept between runs and nothing a response says is printed.
 
-A run makes at most ``LANE_READS`` requests in ``LANE_SECONDS`` in each of three
+A run makes at most ``LANE_READS`` requests, in at most ``LANE_SECONDS`` spent inside
+them, in each of three
 lanes, which cannot spend each other's share: ``admit`` (new candidates), ``wait``
 (threads with a wait for a lowering running) and ``rest`` (every other thread).
 """
@@ -23,11 +24,11 @@ from dataclasses import dataclass
 
 from aitools_alerts import ruleset, verify
 
-__all__ = ["LANES", "LANE_READS", "LANE_SECONDS", "TIMEOUT", "Read", "Reader", "advisory_id", "tied", "related"]
+__all__ = ["LANES", "LANE_READS", "LANE_SECONDS", "TIMEOUT", "Read", "Reader", "advisory_id", "tied", "chosen"]
 
 LANES = ("admit", "wait", "rest")
 LANE_READS = 10  # GitHub allows one address 60 unauthenticated requests an hour; a run is hourly
-LANE_SECONDS = 20.0  # from the lane's first request; the ledger lock is held
+LANE_SECONDS = 20.0  # spent inside the lane's requests; the ledger lock is held
 TIMEOUT = 5.0  # one request, from the call to the last byte
 
 
@@ -60,15 +61,15 @@ class Reader:
         self._fetch = fetch if fetch is not None else (lambda *a: verify.default_fetch(*a))
         self._clock, self._rs = clock, rs
         self._memo: dict = {}
-        self._lanes: dict = {}  # lane -> [requests, the clock at its first request]
+        self._lanes: dict = {}  # lane -> [requests, seconds spent inside them]
         self.requests = 0
         self.unread: set = set()  # ids not asked for: their lane's share was spent
 
     def _spend(self, lane: str) -> float | None:
         """Count one request of ``lane`` and give its timeout, or None when the lane's
         requests or seconds are used up."""
-        used = self._lanes.setdefault(lane, [0, self._clock()])
-        left = LANE_SECONDS - (self._clock() - used[1])
+        used = self._lanes.setdefault(lane, [0, 0.0])
+        left = LANE_SECONDS - used[1]
         if used[0] >= LANE_READS or left <= 0:
             return None
         used[0] += 1
@@ -88,7 +89,11 @@ class Reader:
             self.unread.add(i)
             return None  # not memoised: another lane may still ask
         self.unread.discard(i)
+        start = self._clock()
         self._memo[i] = got = self._get(i, timeout)
+        # Only the time inside its own requests: a candidate's page fetch between two
+        # reads is not the lane's, or five slow vendor pages would end admission's reads.
+        self._lanes[lane][1] += max(0.0, self._clock() - start)
         return got
 
     def _get(self, i: str, timeout: float) -> Read | None:
@@ -105,34 +110,40 @@ class Reader:
             return None
 
 
-def tied(first, i, read) -> bool:
-    """Whether the source ties id ``i`` to a thread whose first id is ``first``, as the
-    member's check requires (``verify._Run.thread``). ``read``: id -> Read or None.
+def chosen(first, aliases, read) -> tuple[list, bool]:
+    """(the ids a member's check reads beside the first id, in its order; whether that
+    is all of them): ``verify._Run.thread``'s own selection, so the poster counts no
+    id a member never reads. ``first`` a CVE: the advisory ids among ``aliases`` (the
+    thread's published aliases, in lookup form, in order). ``first`` a GHSA or MAL id
+    whose response may lower: the ids that response names, CVEs among them, sorted.
+    Only the first ``verify.MAX_ALIASES`` are read; with more, the thread is not read
+    whole. ``read``: id -> Read or None."""
+    if not isinstance(first, str):
+        return [], True
+    if ruleset.source_of(first) == "kev":
+        ids = list(dict.fromkeys(a for a in aliases if advisory_id(a) is not None))
+    elif advisory_id(first) is not None:
+        r = read(first)
+        ids = [n for n in r.names if n != first] if r is not None and r.lowers else []
+    else:
+        return [], True
+    return ids[:verify.MAX_ALIASES], len(ids) <= verify.MAX_ALIASES
 
-    ``first`` a CVE: ``i``'s own response may lower and names that CVE. ``first`` a GHSA
-    or MAL id: ``i`` is that id, or the first id's response may lower and names ``i``.
-    The bot's word that two ids are one advisory counts for nothing."""
-    if not isinstance(first, str) or advisory_id(i) is None:
+
+def tied(first, i, read, aliases=()) -> bool:
+    """Whether a member's check would count id ``i`` for a thread whose first id is
+    ``first`` (``verify._Run.thread``). ``i`` is the first id itself, an advisory id; or
+    it is one of the ids that check reads (``chosen``) and the source ties it: for a
+    CVE first id, ``i``'s own response may lower and names that CVE; for a GHSA or MAL
+    first id, being named by the first id's response is the tie. The bot's word that
+    two ids are one advisory counts for nothing."""
+    if not isinstance(first, str) or not isinstance(i, str):
+        return False
+    if i == first:
+        return advisory_id(first) is not None
+    if i not in chosen(first, aliases, read)[0]:
         return False
     if ruleset.source_of(first) == "kev":
         r = read(i)
         return r is not None and r.lowers and first in r.names
-    if advisory_id(first) is None:
-        return False
-    if i == first:
-        return True
-    r = read(first)
-    return r is not None and r.lowers and i in r.names
-
-
-def related(first, read) -> tuple[list, bool]:
-    """(the ids the first id's response names, whether they are few enough to read): the
-    ids a member's check reads beside a GHSA or MAL first id whose response may lower.
-    Past ``verify.MAX_ALIASES`` of them the thread is not read whole, as for the member."""
-    if advisory_id(first) is None:
-        return [], True
-    r = read(first)
-    if r is None or not r.lowers:
-        return [], True
-    names = [n for n in r.names if n != first]
-    return names, len(names) <= verify.MAX_ALIASES
+    return True

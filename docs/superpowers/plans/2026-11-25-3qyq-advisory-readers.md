@@ -45,6 +45,16 @@ The review (fresheyes run 20261125-060607-9c8ff0) found seven BLOCKERs and two S
 10. **Exploitation observed** is kept in the recompute state (`exploited`: a list of roots; `judge` adds, `Run.observe` prunes and saves), not in the ledger: `plan_known` reads the ledger's mark to decide whether "exploitation learned" earns a reply. `Ledger.mark_exploited` is not built.
 11. **Found while building:** a recompute raise to critical on a feed-only thread posts no copy in the critical channel. Filed as ai-tools-alerts#3t4p; the spec says so under "Not in this slice".
 
+## Amendments after the code review
+
+The whole-branch review (fresheyes run 20261125-063720-3aaa76) found four BLOCKERs and one SUBSTANTIVE point; the spec's "What the code review changed" states the design. In code:
+
+12. `sources.related` is replaced by `sources.chosen(first, aliases, read) -> (list, bool)` and `sources.tied(first, i, read, aliases=())`; `recompute.published_aliases(entry)` gives the aliases. `support` counts only chosen ids. This supersedes amendments 3, 4 and 10 where they differ.
+13. `recompute` state: `exploited` is `{root: [CVE]}`. `judge` makes a KEV-governed thread not known without a complete copy, with a once-listed CVE no longer judged, or with no CVE judged; so the catalog version compared at the end is never null. `Ledger.mark_exploited(root)` is built after all and called at the start of `Run.recompute`.
+14. `ledger.merge(..., loud=None)`: members ordered by `(loud(c, scope), published)`; `main.run` passes `rules.evidence_rank`.
+15. `recompute.held(entry, scope, found, rs, stop=False, infer=True)`; `judge` passes `infer=not known`.
+16. Tests, in `tests/poster/test_advisory_recompute.py`: `test_an_id_a_member_never_reads_raises_nothing`, `test_a_cve_the_advisory_stops_naming_and_a_kev_outage_lower_nothing`, `test_a_patched_version_ends_what_stop_using_completed`, `test_a_fix_group_posts_under_its_loudest_member_and_at_that_members_level`, `test_a_kev_listed_member_is_the_fix_groups_first_id`, and the state-loss half of `test_kev_listing_a_critical_thread_is_remembered_and_its_later_absence_lowers_nothing`; in `tests/poster/test_sources.py`, `test_only_the_ids_a_member_reads_are_chosen`.
+
 ---
 
 ### Task 1: The reader

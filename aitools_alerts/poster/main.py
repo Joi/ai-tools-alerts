@@ -761,8 +761,10 @@ class Run:
         thread's first id and ignores an advisory that id's source does not name. So
         does the level (3qyq)."""
         first = recompute.lookup_id(entry.advisory.get("id") if entry is not None else c.id)
+        aliases = recompute.published_aliases(entry) if entry is not None else \
+            [x for x in map(recompute.lookup_id, c.aliases) if x is not None]
         keep = tuple(r for r in c.readings if r[0] != "ghsa"
-                     or sources.tied(first, json.loads(r[1]).get("ghsa_id"), self._admit_read))
+                     or sources.tied(first, json.loads(r[1]).get("ghsa_id"), self._admit_read, aliases))
         return c if keep == tuple(c.readings) else replace(c, readings=keep)
 
     def one(self, c, scope):
@@ -1100,8 +1102,9 @@ class Run:
             self._drop(gone)
 
     def observe(self, kev_out: dict):
-        """Judge every open thread the ledger marks exploited against this run's KEV
-        copy, and save what that does to each wait, before anything is sent (ny5g). A
+        """Judge every open thread that has a source to judge it by (the ledger marks it
+        exploited, or it carries an advisory id: ``recompute.judged``) against this run's KEV
+        copy and advisory reads, and save what that does to each wait, before anything is sent (ny5g). A
         run that then stops at a failed send has still recorded what it read: an unknown
         read has broken the wait, another level has started it over. What the verdicts
         send is ``recompute``'s, later in the run. Also settles the digest report of a
@@ -1123,7 +1126,7 @@ class Run:
         self.observed = {e.root_event_id for e in entries}
         for k in ("dwell", "listed"):
             st[k] = {r: v for r, v in st[k].items() if r in self.observed}
-        st["exploited"] = [r for r in st["exploited"] if r in self.observed]
+        st["exploited"] = {r: v for r, v in st["exploited"].items() if r in self.observed}
         self.verdicts, self.judged, self.known = {}, set(), set()
         self._judge(self._in_turn(entries), rs)
         if self.api.unread:
@@ -1186,6 +1189,9 @@ class Run:
         ones that can be lowered: a ledger full of other threads must not make a mass
         lowering look small."""
         st = self.rc
+        for root in st["exploited"]:  # 3qyq: KEV listed it; the ledger says so from now on, after
+            if self.led.thread(root) is not None:  # this run's candidates were planned (plan_known reads the mark)
+                self.led.mark_exploited(root)
         now = [e for e in self.led.entries() if not compose.is_synthetic(e.advisory.get("id"))]
         self._judge([e for e in now if e.root_event_id not in self.judged
                      or (e.root_event_id in self.verdicts and self.verdicts[e.root_event_id][0] != e)],
@@ -1638,7 +1644,8 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                 # faxq: in flight, an id joins no fix group (that send would record the group's ids)
                 settled = {f"{it['scope']}|{i.casefold()}" for it in state["outbox"] + r._withheld_items()
                            for i in it["ids"]}
-                merged = ledger.merge(pairs, led, r.groups, settled=settled)  # BEFORE level_for
+                merged = ledger.merge(pairs, led, r.groups, settled=settled,  # BEFORE level_for
+                                      loud=rules.evidence_rank)
                 r.observe(kev_out)
                 r.drain()
                 for i, (c, scope) in enumerate(merged):

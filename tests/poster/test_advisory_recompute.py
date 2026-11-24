@@ -32,7 +32,7 @@ def thread(ids=(G,), level="high", exploited=False, actions=(), **more):
            "posted_by": "relay-bot", "posted_at": 1, "expires_at": None}
     return Entry(root_event_id="a" * 64, channel_ids={"feed": "a" * 64}, level=level, aliases=list(ids),
                  posted_at=1, last_change=1, scope="Claude Code", exploited=exploited, advisory=adv, replies=[],
-                 root_fixed="2.1.0", floor="notice", **more)
+                 **{"root_fixed": "2.1.0", "floor": "notice", **more})
 
 
 def reads(**answers):
@@ -81,8 +81,30 @@ def test_a_first_ghsa_names_what_else_is_read():
     assert support(thread(), reads(**{G: first}), catalog("v"))[:2] == ("notice", False)  # the named entry unread
     assert support(thread(), read, catalog("v", CVE)) == ("critical", True, {CVE}, set(), False)  # the named CVE, in KEV
     assert support(thread(), read, None)[:2] == ("high", False)
-    four = ghsa_json(G, identifiers=[f"MAL-2026-{n}" for n in range(4)])
+    four = ghsa_json(G, identifiers=[f"MAL-2026-{n}" for n in range(4)], **WEAK)
     assert support(thread(), reads(**{G: four}))[1] is False  # more than a member reads
+
+
+def test_an_id_a_member_never_reads_raises_nothing():
+    """A member's check reads three ids beside the first. A fourth the response names,
+    or a fourth advisory alias of a CVE thread, is not counted: its level could never
+    be confirmed. Nor is an id the ledger holds and the thread never published."""
+    mals = [f"MAL-2026-{n}" for n in range(4)]
+    first = ghsa_json(G, identifiers=mals, **WEAK)
+    quiet = {m: osv_json(m, packages=[("npm", "left-pad")]) for m in mals[:3]}
+    read = sources.Reader(Api(**{G: first, **quiet, mals[3]: osv_json(mals[3])})).read
+    assert read(mals[3]).support["Claude Code"][0] == "high"  # the fourth alone would raise
+    assert support(thread(level="notice"), read)[:2] == ("notice", False)
+    late = ghsa_json(G, cve=CVE, identifiers=["CVE-2026-0002", "CVE-2026-0003", "CVE-2026-0004"], **WEAK)
+    got = support(thread(level="notice"), reads(**{G: late}), catalog("v", "CVE-2026-0004"))
+    assert got == ("notice", False, set(), {CVE, "CVE-2026-0002", "CVE-2026-0003"}, False)  # KEV lists the fourth: unread
+    ghsas = [f"GHSA-aaaa-bbbb-cc{n:02d}" for n in range(4)]
+    answers = {g: ghsa_json(g, cve=CVE, type="malware" if g == ghsas[3] else "reviewed", **WEAK) for g in ghsas}
+    e = thread((CVE, *ghsas), level="notice")
+    assert support(e, sources.Reader(Api(**answers)).read, catalog("v"))[:2] == ("notice", False)
+    unpublished = thread((CVE,), level="notice")
+    unpublished.aliases.append(ghsas[3])  # the ledger's identity set holds it; no post ever named it
+    assert support(unpublished, sources.Reader(Api(**answers)).read, catalog("v"))[:2] == (ruleset.NONE, False)
 
 
 def test_a_ghsa_first_thread_whose_alias_the_first_read_does_not_name_is_unknown():
@@ -150,12 +172,50 @@ def test_a_kev_listing_is_remembered_whether_or_not_a_level_changes():
     e, st = thread((G, CVE), level="critical", actions=stop), recompute.new_state()
     cut = {**catalog("v1", CVE), "count": 1}  # not complete: it lists the CVE all the same
     assert recompute.judge(e, CLAUDE, kc(cut, "ok", st, 0), RS, st, 0, read) is None
-    assert st["exploited"] == ["a" * 64] and st["listed"] == {}  # listed, never by a complete copy
+    assert st["exploited"] == {"a" * 64: [CVE]} and st["listed"] == {}  # listed, never by a complete copy
     weak = reads(**{G: ghsa_json(G, cve=CVE, **WEAK)})
     got, _ = hourly(e, weak, 60, st, cat=lambda h: catalog(f"v{h // 6 + 2}"))
     assert got == [None] * 61  # the absence proves nothing: no complete copy ever listed it
     fresh, _ = hourly(e, weak, 24, cat=lambda h: catalog(f"v{h // 6 + 2}"))
     assert fresh[24] == ("due", "notice")  # the same thread had KEV never listed it
+
+
+def test_a_cve_the_advisory_stops_naming_and_a_kev_outage_lower_nothing():
+    """A GHSA thread with no CVE of its own; its response names a CVE that KEV lists.
+    Then the response stops naming it. The thread rested on KEV: with the CVE no longer
+    judged it is unknown, with or without a catalog, and no run stops on it."""
+    e, st = thread(level="critical", actions=[{"verb": "upgrade", "target": "Claude Code", "value": "2.1.0"}]), \
+        recompute.new_state()
+    named = reads(**{G: ghsa_json(G, cve=CVE, **WEAK)})
+    assert recompute.judge(e, CLAUDE, kc(catalog("v1", CVE), "ok", st, 0), RS, st, 0, named) is None
+    assert st["exploited"] == {"a" * 64: [CVE]}
+    silent = reads(**{G: ghsa_json(G, **WEAK)})
+    info = {}
+    assert recompute.judge(e, CLAUDE, kc(catalog("v2"), "ok", st, HOUR), RS, st, HOUR, silent, info) is None
+    assert info["known"] is False and st["dwell"] == {}
+    for h in range(2, 60):  # KEV down, then back with later catalogs: never due, never an exception
+        copy = None if h < 30 else kc(catalog(f"v{h}"), "ok", st, h * HOUR)
+        assert recompute.judge(e, CLAUDE, copy, RS, st, h * HOUR, silent) is None
+    marked = thread(level="critical", exploited=True, actions=e.advisory["actions"])  # the ledger's mark alone,
+    fresh = recompute.new_state()  # the recompute file lost: still no CVE to judge, still unknown
+    assert hourly(marked, silent, 30, fresh, cat=lambda h: catalog(f"v{h // 6 + 1}"))[0] == [None] * 31
+
+
+def test_a_patched_version_ends_what_stop_using_completed():
+    """Posted at critical with stop_using, no fix. The advisory then states a patched
+    version: the ruleset still gives critical, but nothing completes it now (the thread
+    has no upgrade to offer), and a member's check of the same response finds high.
+    The level falls to high after the day; with the advisory unread it stands."""
+    stop = [{"verb": "stop_using", "target": "Claude Code", "value": None}]
+    e = thread(level="critical", actions=stop, root_fixed="")
+    patched = reads(**{G: ghsa_json(G, type="malware")})
+    got, _ = hourly(e, patched, 24)
+    assert got[:24] == [None] * 24 and got[24] == ("due", "high")
+    assert hourly(e, reads(**{G: ghsa_json(G, type="malware", packages=NO_FIX)}), 30)[0] == [None] * 31
+    assert hourly(e, reads(**{G: 503}), 30)[0] == [None] * 31
+    rec = verify._record(RS, "ghsa", [patched(G).fields], [], None, 0)
+    member = verify.judge("critical", "Claude Code", [rec], True, RS, [("stop_using", "Claude Code", None)], None)
+    assert (member["result"], member["source"]) == ("contradicted", "high")
 
 
 def test_a_raise_needs_no_complete_read_and_ends_a_wait():
@@ -171,12 +231,12 @@ def test_states_written_before_this_change_still_load(tmp_path):
     old["dwell"] = {"a" * 64: {"level": "high", "version": "2026.11.24", "last": 5, "held": 7}}
     inputs.write_json(tmp_path / "s.json", old)
     st, replaced = recompute.load(tmp_path / "s.json")
-    assert not replaced and st["exploited"] == [] and st["dwell"] == old["dwell"]
+    assert not replaced and st["exploited"] == {} and st["dwell"] == old["dwell"]
     st["dwell"]["a" * 64]["version"] = None  # a thread with no CVE has no catalog version to wait on
-    st["exploited"] = ["a" * 64]
+    st["exploited"] = {"a" * 64: [CVE]}
     recompute.save(tmp_path / "s.json", st)
     assert recompute.load(tmp_path / "s.json") == (st, False)
-    for bad in ({**st, "exploited": [1]}, {**st, "exploited": None},
+    for bad in ({**st, "exploited": ["a" * 64]}, {**st, "exploited": None}, {**st, "exploited": {"a": []}},
                 {**st, "dwell": {"a" * 64: {"level": "high", "version": "x", "last": 5, "held": 7}}},
                 {**st, "dwell": {"a" * 64: {"level": "high", "last": 5, "held": 7}}}):
         inputs.write_json(tmp_path / "s.json", bad)
@@ -324,9 +384,12 @@ def test_kev_listing_a_critical_thread_is_remembered_and_its_later_absence_lower
     assert e["level"] == "critical" and CVE in e["aliases"] and e["exploited"] is False
     old = {**kev_item(CVE), "dateAdded": "2026-09-01"}  # before the watermark: no candidate, only the recompute
     relay = run(env, 1, kev=FakeKEV(catalog={**catalog("v1", old), "count": 1}))  # a cut copy that lists it
-    assert relay.calls == [] and state(env)["exploited"] == [e["root_event_id"]]
+    assert relay.calls == [] and state(env)["exploited"] == {e["root_event_id"]: [CVE]}
+    assert entries(env)[0]["exploited"] is True  # the ledger says so from the end of that run
     env.api.put(G, ghsa_json(G, cve=CVE, **WEAK))
-    sent = [x for h in range(2, 62) for x in levels(run(env, h, kev=FakeKEV(catalog=catalog(f"v{h // 6 + 2}"))))]
+    sent = [x for h in range(2, 32) for x in levels(run(env, h, kev=FakeKEV(catalog=catalog(f"v{h // 6 + 2}"))))]
+    env.config.recompute_state.unlink()  # the recompute file lost: the ledger's mark still governs
+    sent += [x for h in range(32, 62) for x in levels(run(env, h, kev=FakeKEV(catalog=catalog(f"v{h // 6 + 2}"))))]
     assert sent == [] and entries(env)[0]["level"] == "critical"
 
 
@@ -360,21 +423,44 @@ def threads(env, n, **api):
 
 def test_reads_that_keep_failing_do_not_keep_another_thread_unread(env):
     """Fourteen threads share the ten reads of their lane; thirteen answer 404 for ever.
-    The fourteenth, whose advisory comes to support critical, is first in line within
-    fourteen hours and is raised. No run makes more than thirty requests."""
+    The order starts one thread further on each hour, so in fourteen hours every thread
+    has been asked for, ten a run, and the one whose advisory comes to support critical
+    is raised whichever place it holds."""
     ids, h = threads(env, 14)
     for i in ids:
         env.api.put(i, 404)
-    target = ids[7]
-    env.api.put(target, ghsa_json(target, type="malware"))
-    raised = None
+    asked, per_run = set(), []
     for k in range(h, h + 14):
         before = len(env.api.calls)
-        if levels(run(env, k)) == [{"level": "critical"}]:
-            raised = k
-        assert len(env.api.calls) - before <= 30
-    assert raised is not None
-    assert [e["level"] for e in entries(env)].count("critical") == 1
+        assert levels(run(env, k)) == []
+        now = {u.rsplit("/", 1)[1] for u in env.api.calls[before:]}
+        per_run.append(len(now))
+        asked |= now
+    assert per_run == [10] * 14 and asked == set(ids)  # a fixed order would leave four never asked
+    target = ids[-1]
+    skipped = [k for k in range(h + 14, h + 28) if target not in _asked_in(env, k)]
+    assert len(skipped) == 4  # four hours in fourteen it is past the tenth place
+    env.api.put(target, ghsa_json(target, type="malware"))
+    raised = [k for k in range(h + 28, h + 42) if levels(run(env, k)) == [{"level": "critical"}]]
+    assert len(raised) == 1 and [e["level"] for e in entries(env)].count("critical") == 1
+
+
+def _asked_in(env, hour):
+    before = len(env.api.calls)
+    run(env, hour)
+    return {u.rsplit("/", 1)[1] for u in env.api.calls[before:]}
+
+
+def test_threads_with_a_wait_are_read_in_a_lane_of_their_own(env):
+    """Twelve threads. Ten are read in a run and begin a wait; from the next run those
+    ten are read in the wait lane and the other two in the rest lane: twelve requests,
+    where one shared lane allows ten."""
+    ids, h = threads(env, 12)
+    for i in ids:
+        env.api.put(i, ghsa_json(i, **WEAK))
+    assert len(_asked_in(env, h)) == 10 and len(state(env)["dwell"]) == 10
+    assert _asked_in(env, h + 1) == set(ids) and len(state(env)["dwell"]) == 12
+    assert len(_asked_in(env, h + 2)) == 10  # twelve waits now: the wait lane's ten, in turn
 
 
 def test_many_candidates_leave_the_threads_their_reads(env):
@@ -448,18 +534,53 @@ def member(env, entry):
     return verify.result_for(adv, cache)
 
 
-def test_a_fix_groups_other_member_lends_no_level(env):
-    """Two advisories one release fixes are one post, under the first one's id. The
-    second supports critical; the first does not name it. A member's check reads the
-    first and ignores the second, and so does the level, now and when the second is
-    sighted again alone."""
+def test_a_fix_group_posts_under_its_loudest_member_and_at_that_members_level(env):
+    """Two advisories one release fixes are one post. Its first id is the member whose
+    own evidence supports most, so the level is one a member's check of that id finds."""
     env.api.put(G, ghsa_json(G))
     env.api.put(G2, ghsa_json(G2, type="malware"))
     env.collector([finding(fid=G, severity="moderate"), finding(fid=G2, severity="moderate")])
     run(env, 0)
     (e,) = entries(env)
-    assert e["level"] == "high" and {a.upper() for a in e["aliases"]} >= {G.upper(), G2.upper()}
+    assert e["level"] == "critical" and e["advisory"]["id"].upper() == G2.upper()
     assert member(env, e)["Claude Code"]["result"] == "confirmed"
+
+
+def test_a_kev_listed_member_is_the_fix_groups_first_id(env):
+    """A GHSA published later would have been the group's first id, with the level of
+    another member's KEV listing: critical under an id whose source says high."""
+    env.kev.catalog = {"vulnerabilities": [kev_item(CVE)]}
+    later = finding(fid=G2, severity="moderate")
+    later["sources"][0]["published_at"] = "2026-11-05T00:00:00Z"
+    env.api.put(G2, ghsa_json(G2))
+    env.collector([later, finding(fid=CVE, severity="moderate", fixed="2.1.0")])
+    run(env, 0)
+    (e,) = entries(env)
+    assert e["level"] == "critical" and e["advisory"]["id"] == CVE
+
+    def fetch(url, etag, limit, timeout):
+        if url == verify.KEV_URL:
+            body = json.dumps({"catalogVersion": "1", "count": 1, "vulnerabilities": [kev_item(CVE)]}).encode()
+            return 200, None, body
+        return env.api(url, etag, limit, timeout)
+    adv = schema.validate(e["advisory"])
+    got = verify.result_for(adv, verify.run([adv], [adv], env.config.ledger.parent, fetch=fetch, now=T0))
+    assert got["Claude Code"]["result"] == "confirmed"
+
+
+def test_a_fix_groups_other_member_lends_no_level(env):
+    """The post's first id supports high; the other member a notice. When that other
+    member comes to support critical and is sighted again alone, under its own id, the
+    thread is not raised: its first id's source does not name it, a member's check
+    ignores it, and so do the candidate's level and the recompute."""
+    env.api.put(G, ghsa_json(G))
+    env.api.put(G2, ghsa_json(G2, **WEAK))
+    env.collector([finding(fid=G, severity="moderate"), finding(fid=G2, severity="moderate")])
+    run(env, 0)
+    (e,) = entries(env)
+    assert e["level"] == "high" and e["advisory"]["id"].upper() == G.upper() and len(e["aliases"]) == 2
+    assert member(env, e)["Claude Code"]["result"] == "confirmed"
+    env.api.put(G2, ghsa_json(G2, type="malware"))
     env.collector([finding(fid=G2, severity="moderate", affected="<2.1.0")])  # the second, alone, with something new
     relay = run(env, 1)
     assert levels(relay) == [] and entries(env)[0]["level"] == "high"

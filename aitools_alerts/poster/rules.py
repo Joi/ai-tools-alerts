@@ -202,6 +202,17 @@ def _prose_level(c, scope, verified: bool, rs) -> tuple[str, str]:
     return "notice", "notice"  # 9kgk: the severity word alone never raises
 
 
+def evidence_rank(c, scope) -> int:
+    """How high the candidate's own structured evidence reaches for this product: its
+    readings by the ruleset, and the KEV row when it is marked exploited. Orders the
+    members of a fix group (``ledger.merge``), loudest first; prose is not counted."""
+    rs = ruleset.load()
+    level = _fields_level(c, scope)
+    if c.exploited is True:
+        level = rs.highest(level, rs.class_level("kev", scope))
+    return rs.rank(level)
+
+
 def basis(c: Candidate, scope: schema.ScopeEntry, level: str) -> str:
     """``fields`` when the level rests on structured source fields: the candidate's
     readings support it, or it is the KEV row's (``exploited``). ``reading`` when it
