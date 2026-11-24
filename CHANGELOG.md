@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.8 — 2026-11-24
+## Unreleased
 
 A curator's word on one of the relay bot's alerts is now checked and held for 14 days, and it no longer silences the bot (design review of 2026-11-23, finding D9, ai-tools-alerts#c1g2). Until now one curator signature lowered or retracted any alert for good with no check, and every later reply from the bot to that thread was ignored, so the thread could never be raised or corrected again. The one curator in the manifest is a shared key, and no curator has posted.
 
@@ -11,7 +11,9 @@ A curator's word on one of the relay bot's alerts is now checked and held for 14
 - An alert a curator posted is unchanged: a curator's word on its own alert stands, the bot's replies to it are discussion, and only such an alert is ever auto-applied.
 - `curator amend` and `curator retract` work on an alert as it stands now, after any lapse, and say when the hold ends.
 
-What stays open: a curator key can renew a hold every 14 days where a member's source cannot settle the question, and can narrow an alert's products unchecked for 14 days. The next manifest names no curator, and the role then moves to a key used for nothing else (ai-tools-alerts#r98k). A released CLI (0.1.7 and earlier) still takes a curator's word as final. No wire format, schema, manifest or state file changes.
+What stays open: a curator key can renew a hold every 14 days where a member's source cannot settle the question, and can narrow an alert's products unchecked for 14 days. The next manifest names no curator, and the role then moves to a key used for nothing else (ai-tools-alerts#r98k). A released CLI (0.1.8 and earlier) still takes a curator's word as final. No wire format, schema, manifest or state file changes.
+
+## 0.1.8 — 2026-11-24
 
 A level is now set by its consequence to the member, and a critical needs an action the member can take (ai-tools-alerts#9kgk, design section 4 of ai-tools-alerts#9mx8). Ruleset version 3: a critical stands only when the post carries a complete action, an upgrade while the post states the fixed version, or `stop_using` for a malicious release a reading confirms (GitHub malware, a vendor's CWE-506); otherwise it is `high`. A KEV listing with no fix known therefore posts at `high`. The upstream severity word is printed and never sets a level. A channel product's `high` needs code execution, credential or token theft, or a sandbox or approval bypass, with a fix; everything else is a notice, denial of service included. The poster, the curator command and the member's source check (`verify`) apply the same rule (`Ruleset.action_level`). A known thread is raised to critical only when its root stated the fix, because every reader holds a fix that a later reply adds (ai-tools-alerts#tyje); such a thread stays `high` with its fix until a source check can confirm the held fix. The synthetic check (`run --kev-file`) now posts at `high` (ai-tools-alerts#a3xh).
 

@@ -48,7 +48,7 @@ From the release after 0.1.7 (ai-tools-alerts#r0ra). Released readers do none of
 
 ## A curator's reply to a relay-bot thread
 
-From the release after 0.1.7 (ai-tools-alerts#c1g2). No event differs; only what a reader does with it.
+From the release after 0.1.8 (ai-tools-alerts#c1g2). No event differs; only what a reader does with it.
 
 - Released readers take a curator's `retract`, `level:` line or block as final, and read every later relay-bot reply to that thread as discussion.
 - This reader holds it for 14 days from the reply's `created_at`, judged by the checkpoint's time under a checkpoint that lists the root. A curator's later action renews the hold; `curator renew` signs the held action again. After the hold the thread is its widest state: every reply, the curator's too, applied under the relay bot's rules.
