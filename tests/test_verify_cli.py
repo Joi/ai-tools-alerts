@@ -177,8 +177,8 @@ def test_a_cli_the_root_calls_too_old_does_not_say_the_source_supports_more(feed
 
 
 def test_an_alert_the_source_does_not_support_is_flagged_per_product(feed, monkeypatch, capsys):
-    feed([bot(id=CVE, level="critical", products=("Claude Code", "git", "Nobody Runs This"))], 'verify = "all"\n')
-    use(monkeypatch, Net().set(verify.KEV_URL, kev((CVE, "Git", "Git"))))
+    feed([bot(id=CVE, level="critical", products=("Claude Code", "Codex", "Nobody Runs This"))], 'verify = "all"\n')
+    use(monkeypatch, Net().set(verify.KEV_URL, kev((CVE, "OpenAI", "Codex"))))
     _, out, _ = out_of(capsys, ["run"])
     assert out.count("source check:") == 1
     assert f"source check: the source does not support {CVE} for Claude Code\n" in out

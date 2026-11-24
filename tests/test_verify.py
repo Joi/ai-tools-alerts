@@ -306,10 +306,10 @@ def test_a_real_exploited_cve_on_the_wrong_product_is_contradicted(tmp_path):
 
 
 def test_one_supported_product_does_not_confirm_another(tmp_path):
-    a = adv(id=CVE, level="critical", products=("git", "Claude Code"))
-    go(tmp_path, [a], net((verify.KEV_URL, kev((CVE, "Git", "Git")))))
+    a = adv(id=CVE, level="critical", products=("Codex", "Claude Code"))
+    go(tmp_path, [a], net((verify.KEV_URL, kev((CVE, "OpenAI", "Codex")))))
     r = res(tmp_path, a)
-    assert (r["git"]["result"], r["Claude Code"]["result"], r["Claude Code"]["why"]) == \
+    assert (r["Codex"]["result"], r["Claude Code"]["result"], r["Claude Code"]["why"]) == \
         ("confirmed", "contradicted", "unsupported")
     assert verify.summary(r) == ("contradicted", "unsupported")
 
