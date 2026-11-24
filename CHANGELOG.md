@@ -18,6 +18,16 @@ The wire format of the self-correcting design is fixed before anything uses it (
 - A relay-bot post sets no expiry: `expires_at` stays null in an alert and is never in a reply (the composer refuses it). Every released reader stops showing an alert at that time and takes no renewal from the bot, so an expiry in the block would end true alerts on old CLIs. The design's expiry will be computed from the claim.
 - The trust root can name the oldest release that reads the feed in full: `min_cli`, an optional key of the checkpoint key certificate (`scripts/sign-checkpoint-key.py --min-cli N.N.N`). A CLI older than it prints one `upgrade:` line after every command that reads the feed and keeps working; `run --json` gains the key `min_cli`. It is in the certificate and not in the manifest, where the design had put it, because of the second fact above. No certificate carries it yet. The 0.1.7 release and earlier ignore the key and never print the line; it speaks to the next release and later ones.
 
+Expiry is computed by the reader and judged by the signed checkpoint, not by the member's clock (design review of 2026-11-23, finding D5, ai-tools-alerts#r0ra). Before, an alert with `expires_at` ended when the machine's clock passed it: a frozen mirror ended it with no key, a clock set ahead ended it at once, and the relay-bot key could post an alert that expired one second later. Now:
+
+- A relay-bot alert's `expires_at` is not read. Only a curator's ends a thread.
+- An alert whose first post carries a claim stands for the days `spec/ruleset.json` gives its level after the claim's `confirmed_at` (critical 14, high 30, notice 90). A later claim on the thread renews it. A check that could not confirm holds the level up to 45 days from the last confirmation. When a level's days run out the alert shows at the next level down that still stands (a critical is high until day 30 and notice until day 90), and then it is gone. The longest claim counts; a short one shortens nothing, and a reply that sets a level counts from its own date.
+- The clock for all of this is the issue time of the newest checkpoint the CLI holds, and an alert decays only under a checkpoint that lists it. A frozen mirror, a mirror that withholds a renewal (already refused as `mirror incomplete`) and a wrong clock expire nothing; the stale warning says why.
+- A pull no longer ages stored alerts out by the machine's clock when it holds a checkpoint: a clock a year ahead used to delete every stored alert older than 35 days.
+- A relay-bot alert whose first post has no claim does not expire. That is every relay-bot alert on the feed today: the poster sends no claim yet (ai-tools-alerts#gtw9). A curator's alert with `expires_at` still ends, now by the checkpoint's time: it stays while the CLI holds no checkpoint past that time that lists it.
+
+Not done: the issue asked that an event dated after the checkpoint that lists it be refused. The poster's own checkpoint lists the posts of its run, which are dated after it, so the CLI does not judge an alert's expiry while one of its claims is dated after the checkpoint; the next checkpoint judges it.
+
 Nothing on the wire changes with this release: the poster sends no claim and no lowering yet.
 
 ## 0.1.7 — 2026-11-24

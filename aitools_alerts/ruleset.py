@@ -12,6 +12,8 @@ is the level those readings support for that product, or ``NONE``. A claim is th
 tuple a poster signs, ``{id, source, fields, ruleset, level, confirmed_at,
 checked_at}``; ``canonical`` is its byte form and ``check_claim`` the offline check:
 this reader's own ruleset must give the claim's level for the claim's fields.
+``Ruleset.stands_until`` and ``level_at`` say how long a level stands after a claim's
+``confirmed_at`` and ``checked_at`` (r0ra): the reader's computed expiry.
 No function here fetches anything, and no string of a reading is ever printed.
 """
 
@@ -29,9 +31,13 @@ from . import schema
 
 __all__ = ["VERSION", "NONE", "RulesetError", "Support", "Ruleset", "Pin", "load", "canonical",
            "parse_claim", "parse_pin", "check_claim", "source_of", "ordered",
-           "cvss_metrics", "norm", "tier_of", "index"]
+           "cvss_metrics", "norm", "tier_of", "index", "UNCONFIRMED_DAYS"]
 
 VERSION = 1  # the only ruleset version this reader evaluates
+# A check that could not confirm (confirmed_at unchanged, checked_at new) holds a level
+# no longer than this after the last confirmation. A constant until a ruleset version
+# carries it: a new key in spec/ruleset.json changes the digest the trust root pins.
+UNCONFIRMED_DAYS = 45
 NONE = "none"  # no reading supports the product: unlisted, withdrawn or not bound
 SOURCES = ("kev", "ghsa", "osv")
 MAX_INT = 2**53 - 1
@@ -457,6 +463,24 @@ class Ruleset:
         if not live:
             return NONE
         return self.highest(*(s.level for s in live))
+
+    def stands_until(self, level: str, confirmed_at: int, checked_at: int) -> int:
+        """The last second one claim keeps ``level`` standing: its TTL after the
+        confirmation, or after a later check that could not confirm, but then never
+        past UNCONFIRMED_DAYS from the confirmation."""
+        ttl = self.ttl_days[level] * 86400
+        return max(confirmed_at + ttl, min(checked_at + ttl, confirmed_at + UNCONFIRMED_DAYS * 86400))
+
+    def level_at(self, level: str, renewals, now: int) -> str:
+        """The level a thread held at ``level`` shows at ``now``, given its renewals
+        [(confirmed_at, checked_at)]: the highest level, from ``level`` down, that any
+        of them keeps standing by that level's own TTL; NONE when none stands. The
+        longest renewal counts and a shorter one changes nothing. A higher ``level``
+        never gives a lower answer, so raising a thread cannot shorten what it shows."""
+        for lv in reversed(self.levels[:self.levels.index(level) + 1]):
+            if any(self.stands_until(lv, c, k) >= now for c, k in renewals):
+                return lv
+        return NONE
 
     def claim(self, source, fields, product: str, confirmed_at: int, checked_at: int) -> dict:
         """The claim for one reading about ``product``: its level is this ruleset's."""
