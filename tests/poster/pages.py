@@ -33,6 +33,7 @@ def advisory_page(ghsa, package="@anthropic-ai/claude-code", ecosystem="npm", af
 
 _CVE = re.compile(r"CVE-\d{4}-\d{4,}", re.I)
 _SEVERE = re.compile(r"execution|credential|data loss|high|critical", re.I)
+_CONSEQUENCE = re.compile(r"execution|credential|data loss", re.I)  # what a vendor's title would say (9kgk)
 _NAMES = " ".join(sorted({n for e in schema.load_scope() for n in [e.name, *(c.name for c in e.components)]}))
 
 
@@ -63,6 +64,8 @@ class Pages:
         ids = [i for i in [f.get("id"), *(f.get("aliases") or [])] if isinstance(i, str)]
         sev = f.get("advisory_severity")
         title = next((s["title"] for s in f.get("sources") or [] if s.get("url") == url and s.get("title")), "")
+        if not title and isinstance(sev, str) and _CONSEQUENCE.search(sev):
+            title = sev  # 9kgk: the page's title names the consequence; the severity word alone sets nothing
         pkg = f.get("package")
         name, eco = (pkg["name"], pkg["ecosystem"]) if isinstance(pkg, dict) else (f.get("product") or "", None)
         return 200, advisory_page(

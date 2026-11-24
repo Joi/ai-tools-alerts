@@ -14,6 +14,9 @@ checked_at}``; ``canonical`` is its byte form and ``check_claim`` the offline ch
 this reader's own ruleset must give the claim's level for the claim's fields.
 ``Ruleset.stands_until`` and ``level_at`` say how long a level stands after a claim's
 ``confirmed_at`` and ``checked_at`` (r0ra): the reader's computed expiry.
+``Ruleset.action_level`` holds a level to ``action_cap`` when the post's actions are not
+complete (9kgk): a critical needs an upgrade to a stated version, or stop_using where a
+reading of a malicious release gives it.
 No function here fetches anything, and no string of a reading is ever printed.
 """
 
@@ -33,7 +36,7 @@ __all__ = ["VERSION", "NONE", "RulesetError", "Support", "Ruleset", "Pin", "load
            "parse_claim", "parse_pin", "check_claim", "source_of", "ordered",
            "cvss_metrics", "norm", "class_of", "index", "UNCONFIRMED_DAYS"]
 
-VERSION = 2  # the only ruleset version this reader evaluates (wa6n: scope classes)
+VERSION = 3  # the only ruleset version this reader evaluates (9kgk: levels by consequence)
 # A check that could not confirm (confirmed_at unchanged, checked_at new) holds a level
 # no longer than this after the last confirmation. A constant until a ruleset version
 # carries it: a new key in spec/ruleset.json changes the digest the trust root pins.
@@ -68,9 +71,9 @@ _GHSA_TYPES = frozenset({"reviewed", "unreviewed", "malware"})
 _SEVERITIES = frozenset({"low", "medium", "high", "critical"})
 _PACKAGE_KEYS = frozenset({"ecosystem", "name", "range", "first_patched"})
 _SOURCE_WHEN = frozenset({"type", "vendor_own", "id_prefix"})
-_RULE_WHEN = frozenset({"scope", "channel_if", "cwe_any", "severity_in", "cvss_av", "patched"})
+_RULE_WHEN = frozenset({"scope", "channel_if", "cwe_any", "cvss_av", "patched"})
 _TOP_KEYS = frozenset({"version", "description", "levels", "ttl_days", "class_cap", "channel_if_cap", "reading_cap",
-                       "fields", "sources", "rules"})
+                       "action_cap", "fields", "sources", "rules"})
 _FIELDS = {"kev": ("cve_id", "name"),
            "ghsa": ("ghsa_id", "type", "withdrawn_at", "repository", "severity", "cvss_vector", "cwes", "packages"),
            "osv": ("osv_id", "withdrawn", "packages")}
@@ -298,11 +301,14 @@ def _attack_vector(vector) -> str | None:
 @dataclass(frozen=True)
 class Support:
     """What one reading gives one product. ``level`` is NONE for a withdrawn reading.
-    ``lowers``: a change or withdrawal of this source may justify a lowering."""
+    ``lowers``: a change or withdrawal of this source may justify a lowering.
+    ``stop_using``: the level came from a row marked stop_using and the reading states
+    no first patched version for this product, so ``stop_using`` completes it (9kgk)."""
     level: str
     cls: str
     scope_class: str
     lowers: bool
+    stop_using: bool = False
 
 
 class Ruleset:
@@ -335,6 +341,9 @@ class Ruleset:
         if data["reading_cap"] not in ("notice", "high"):
             _fail("reading_cap must be notice or high: a reading never makes a critical")
         self.reading_cap: str = data["reading_cap"]
+        if data["action_cap"] not in ("notice", "high"):
+            _fail("action_cap must be notice or high: a critical needs a complete action")
+        self.action_cap: str = data["action_cap"]
         if data["fields"] != {s: list(k) for s, k in _FIELDS.items()}:
             _fail("fields must list each source's keys as this reader knows them")
         self._sources = [self._source_row(r) for r in self._rows(data["sources"], "sources")]
@@ -377,19 +386,20 @@ class Ruleset:
 
     def _rule_row(self, r: dict, classes: set) -> dict:
         when = r.get("when", {})
-        if not {"class", "level"} <= set(r) <= {"class", "level", "when"} or type(r["class"]) is not str \
+        if not {"class", "level"} <= set(r) <= {"class", "level", "when", "stop_using"} or type(r["class"]) is not str \
                 or r["class"] not in classes \
                 or r["level"] not in self.levels or type(when) is not dict or not set(when) <= _RULE_WHEN:
             _fail(f"rules row {r.get('class')!r} is malformed or has an unknown condition")
         known = {"scope": lambda x: type(x) is str and x in schema.SCOPE_CLASSES,
                  "cwe_any": lambda x: type(x) is str and _CWE.fullmatch(x) is not None,
-                 "severity_in": lambda x: type(x) is str and x in _SEVERITIES,
                  "cvss_av": lambda x: type(x) is str and x in _NAL}
         for key, ok in known.items():
             if key in when and not (type(when[key]) is list and when[key] and all(ok(x) for x in when[key])):
                 _fail(f"rules row {r['class']!r}: {key} must be a non-empty list of values this reader knows")
         if when.get("patched", True) is not True or when.get("channel_if", True) is not True:
             _fail(f"rules row {r['class']!r}: patched and channel_if must be true")
+        if r.get("stop_using", True) is not True:
+            _fail(f"rules row {r['class']!r}: stop_using must be true when present")
         return dict(r, when=dict(when))
 
     # -------------------------------------------------------------- evaluation
@@ -460,8 +470,6 @@ class Ruleset:
             return False
         if "cwe_any" in when and not set(when["cwe_any"]) & set(f.get("cwes") or ()):
             return False
-        if "severity_in" in when and f.get("severity") not in when["severity_in"]:
-            return False
         if "cvss_av" in when and _attack_vector(f.get("cvss_vector")) not in when["cvss_av"]:
             return False
         return "patched" not in when or any(p["first_patched"] is not None for p in packages)
@@ -474,11 +482,12 @@ class Ruleset:
         out = {}
         for name, (entry, packages) in self._bound(source, f).items():
             row = next(r for r in self._sources if self._source_matches(r, source, f, entry))
-            level = next((r["level"] for r in self._rules if r["class"] == row["class"]
-                          and self._rule_matches(r["when"], f, entry, packages)), "notice")
-            level = self.capped(min(level, row["alone"], key=self.rank), entry)
+            rule = next((r for r in self._rules if r["class"] == row["class"]
+                         and self._rule_matches(r["when"], f, entry, packages)), None)
+            level = self.capped(min(rule["level"] if rule else "notice", row["alone"], key=self.rank), entry)
+            stop = bool(rule and rule.get("stop_using")) and not any(p["first_patched"] for p in packages)
             out[name] = Support(level=NONE if withdrawn else level, cls=row["class"], scope_class=class_of(entry),
-                                lowers=row["lowers"])
+                                lowers=row["lowers"], stop_using=stop and not withdrawn)
         return out
 
     def level(self, readings, product: str) -> str:
@@ -491,6 +500,35 @@ class Ruleset:
         if not live:
             return NONE
         return self.highest(*(s.level for s in live))
+
+    def action_level(self, level: str, actions, product: str, fixed, readings=(), *, stop_using=None) -> str:
+        """``level`` as a post may carry it (9kgk): a level above ``action_cap`` stands
+        only when ``actions`` (``(verb, target, value)`` tuples or objects with those
+        attributes) hold a complete action for ``product``: an upgrade of it while
+        ``fixed``, the version the post states for the product (``products[].fixed``,
+        which a member's planner upgrades to whatever the action's value says), is
+        stated; or stop_using it when one of ``readings`` gives ``level`` for it through a
+        stop_using row (or, when the caller already knows that, ``stop_using`` True: a
+        member's kept support). Otherwise ``action_cap``. A level at or below the cap,
+        and NONE, pass unchanged."""
+        if level == NONE or self.rank(level) <= self.rank(self.action_cap):
+            return level
+        names = self._former.get(product, {product})
+        stop = stop_using  # computed once, only when a stop_using action is offered
+        for a in actions:
+            verb, target, value = a if type(a) is tuple else (getattr(a, "verb", None), getattr(a, "target", None),
+                                                              getattr(a, "value", None))
+            if target != product:
+                continue
+            if verb == "upgrade" and type(fixed) is str and fixed.strip():
+                return level
+            if verb == "stop_using":
+                if stop is None:
+                    stop = any(s.stop_using and s.level == level for source, fields in readings
+                               for name, s in self.read(source, fields).items() if name in names)
+                if stop:
+                    return level
+        return self.action_cap
 
     def stands_until(self, level: str, confirmed_at: int, checked_at: int) -> int:
         """The last second one claim keeps ``level`` standing: its TTL after the

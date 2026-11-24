@@ -386,7 +386,8 @@ def test_partial_critical_post_names_the_recovery(mirror, capsys, monkeypatch):
             raise relay.RelayError("relay connection failed: ConnectionResetError")
         return ev["id"], True, ""
     monkeypatch.setattr(relay, "send", fake_send)
-    argv = POST_ARGV[:2] + ["--level", "critical"] + POST_ARGV[4:] + ["--id", "AITA-TEST-0044"]
+    argv = POST_ARGV[:2] + ["--level", "critical"] + POST_ARGV[4:] + ["--id", "AITA-TEST-0044",
+                                                                     "--action", "stop_using:Claude Code"]
     assert cli.main(argv) == 1
     err = capsys.readouterr().err
     assert "1 of 2 sent" in err and "--id AITA-TEST-0044 --channel feed" in err
@@ -506,3 +507,33 @@ def test_curator_amends_and_retracts_a_thread_no_checkpoint_lists_yet(mirror, ca
     st = State.load()
     assert pull.fetch("https://mirror.example.invalid/alerts", st, fetch=mirror.fetch, root_pubkey=mirror.root).error is None
     assert [t.root_id for t in pull.advisories(State.load())] == [first["id"]] and late["id"] not in State.load().events
+
+
+def test_a_curator_critical_needs_a_complete_action(mirror, monkeypatch):
+    """9kgk: a critical carries a verb with a target; an upgrade needs a fixed version."""
+    monkeypatch.setattr(curator, "_curator_pub", lambda *a: None)
+    post = lambda **kw: curator.post_events(mirror.cur_sec, None, "0" * 64, level="critical", title="Invented",  # noqa: E731
+                                            product="Claude Code", ecosystem="claude-code", sources=[PRIMARY], **kw)
+    for kw in ({}, {"actions": [curator.parse_action("upgrade:Claude Code")]}):
+        with pytest.raises(curator.CuratorError, match="complete action"):
+            post(**kw)
+    assert len(post(fixed="2.1.0", actions=[curator.parse_action("upgrade:Claude Code:2.1.0")])) == 2
+    assert len(post(actions=[curator.parse_action("stop_using:Claude Code")])) == 2
+
+
+def test_a_curator_amend_never_makes_an_actionless_critical(mirror, monkeypatch):
+    """9kgk, delta review: an amend that raises to critical, or takes away a critical's last
+    complete action, is refused before signing; a critical already without one (posted
+    before the rule) still takes a title or a lowering."""
+    bare = publish(mirror, *post(mirror, actions=[], channel="feed"))
+    with pytest.raises(curator.CuratorError, match="complete action"):
+        amend(mirror, bare, level="critical")
+    ok = publish(mirror, *post(mirror, level="critical", channel="feed",
+                               actions=[Action("stop_using", "Claude Code", None)]))
+    with pytest.raises(curator.CuratorError, match="complete action"):
+        amend(mirror, ok, actions=[])
+    with monkeypatch.context() as mp:
+        mp.setattr(curator, "_actionable", lambda adv: True)  # as posted before the rule
+        old = publish(mirror, *post(mirror, level="critical", channel="feed", actions=[]))
+    assert amend(mirror, old, title="A better title")
+    assert amend(mirror, old, level="high")

@@ -164,6 +164,9 @@ def _batch_steps(day):
         if not _is_reply(e):
             threads[e["id"]] = schema.parse_post(e["content"])
             root = e["id"]
+            second = e["content"].split("\n")[1]  # the vendor's own title, when the post carried one
+            if not second.startswith("Affected:"):
+                TITLES[threads[root].id.split(":")[0]] = second
         else:
             root = next(t[1] for t in e["tags"] if t[0] == "e")
             threads[root] = compose.parse_reply(e["content"], threads[root])
@@ -172,6 +175,8 @@ def _batch_steps(day):
         steps.setdefault(run, {})[root] = _candidate(threads[root], False)
     return [(t, list(c.values())) for t, c in sorted(steps.items())]
 
+
+TITLES = {}  # base id: the vendor page's title, as the live root quoted it (9kgk: the title states the consequence)
 
 # The package each product's repository advisory page names (dmmf): (name, ecosystem),
 # ecosystem None for GitHub's "Software" label.
@@ -198,7 +203,8 @@ def _pages(env, cands):
                 base = c.id.split(":")[0]
                 env.pages.put(s.url, advisory_page(
                     m.group(2), package=name, ecosystem=eco, affected=c.affected, patched=c.fixed,
-                    cve=base if base.startswith("CVE-") else None, repo=m.group(1)))
+                    cve=base if base.startswith("CVE-") else None, repo=m.group(1),
+                    title=TITLES.get(base, "A flaw")))
         out.append(c)
     return out
 
@@ -226,9 +232,11 @@ def test_replay_11_07_posts_no_old_root(env, monkeypatch, capsys):  # noqa: F811
     # product: it is dropped before any level, so it is neither aged nor posted.
     vendor = [[c for c in cs if c.product_text != "OpenClaw"] for _, cs in steps]
     assert [sum(c.product_text == "OpenClaw" for c in cs) for _, cs in steps] == [0, 1]
-    # wa6n: the SDK and Inspector items are catalog notices, held without aging; the channel ones age.
+    # wa6n: the SDK and Inspector items are catalog notices. 9kgk: the Claude Code ones are
+    # notices too (their pages state the word "High" and no consequence), so none ages from a high.
     channel = [[c for c in cs if main.rules.scope_of(c.product_text).scope_class == "channel"] for cs in vendor]
-    assert [int(re.search(r" aged=(\d+)", s).group(1)) for s in summaries] == [len(c) for c in channel] == [3, 3]
+    assert [len(c) for c in channel] == [3, 3]
+    assert [int(re.search(r" aged=(\d+)", s).group(1)) for s in summaries] == [0, 0]
     assert "skipped: no authoritative source=1" in capsys.readouterr().err
     st = env.state()  # each is a notice for the digest: listed by 11-07's (sent 11:30 Tokyo) or still held
     noticed = {k.split("|", 1)[1] for k in st["digested"]} | {h["adv"]["id"].casefold() for h in st["held"]}
@@ -240,7 +248,8 @@ def test_replay_11_18_posts_each_once_with_its_fix(env, monkeypatch):  # noqa: F
     """Three roots at 10:20Z with no fix, the fix at 11:20Z with two more: five roots, each
     once, each with its fix, no reply, no "check the vendor"."""
     sent, summaries = _replay(env, monkeypatch, _batch_steps(18))
-    assert "waiting=3" in summaries[0] and "roots=0" in summaries[0]
+    # 9kgk: with no fix yet they are notices (a consequence counts with its fix), held, not waiting
+    assert "held=3" in summaries[0] and "roots=0" in summaries[0]
     assert len(sent) == 5 and all(reply is None for _, _, reply, _ in sent)
     want = {"GHSA-87qg-cmw8-jc5m", "GHSA-9vjp-x34c-xg6v", "GHSA-h2g3-rwxm-xfm3", "GHSA-8wv7-r664-7594",
             "GHSA-pm7p-vphh-2cg7"}

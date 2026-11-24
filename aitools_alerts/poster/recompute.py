@@ -234,11 +234,26 @@ def support(entry, scope, copy: Copy | None, rs) -> tuple[str, bool, set, set]:
     return found, known, listed, gone
 
 
+def held(entry, scope, found: str, rs) -> str:
+    """``found`` as the thread can carry it (9kgk, ``Ruleset.action_level``): with its
+    published actions and the fix its root stated, the one every reader keeps (tyje). A
+    KEV listing of a thread with no such fix supports high, not critical."""
+    acts = [(a.get("verb"), a.get("target"), a.get("value")) for a in entry.advisory.get("actions") or []
+            if isinstance(a, dict)]
+    # a thread standing at the level by stop_using was admitted there by a reading that said so
+    stop = found == entry.level and any(v == "stop_using" and t == scope.name for v, t, _ in acts)
+    capped = rs.action_level(found, acts, scope.name, entry.fix_at_root, stop_using=stop or None)
+    if not entry.root_known:  # an entry from before root_fixed, already replied to: raise-only
+        return rs.highest(capped, min(found, entry.level, key=rs.rank))
+    return capped
+
+
 def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int):
     """("raise", level), ("due", level) or None for one thread; keeps its wait in
     ``st["dwell"]``. A raise rests on a source's fields alone and needs no complete
     read: an unread source can only add."""
     found, known, listed, gone = support(entry, scope, copy, rs)
+    found = held(entry, scope, found, rs)
     root, dwell = entry.root_event_id, st["dwell"]
     if rs.rank(found) > rs.rank(entry.level):
         dwell.pop(root, None)

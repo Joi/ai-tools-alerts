@@ -91,6 +91,24 @@ class _Stop(Exception):
     """A send failed or its outcome is unknown: send nothing more this run."""
 
 
+def _block(text):
+    """The advisory a journaled copy carries, as a dict (a copy keeps no ``adv``)."""
+    adv = schema.parse_post(text) if isinstance(text, str) else None
+    return asdict(adv) if adv is not None else None
+
+
+def _complete(adv) -> bool:
+    """False for a journaled critical whose block holds no complete action (9kgk): no
+    upgrade while its product states a fixed version, and no stop_using. A stop_using in
+    the journal was written by level_for under this rule, which a reading gave."""
+    if not isinstance(adv, dict) or adv.get("level") != "critical":
+        return True
+    prods, acts = adv.get("products") or [{}], adv.get("actions") or []
+    fixed = prods[0].get("fixed") if isinstance(prods[0], dict) else None
+    return any(isinstance(a, dict) and (a.get("verb") == "stop_using" or a.get("verb") == "upgrade" and fixed)
+               for a in acts)
+
+
 def _fold(ids) -> set[str]:
     return {i.casefold() for i in ids if isinstance(i, str)}
 
@@ -178,6 +196,16 @@ class Run:
             if it["kind"] == "root" and self.led.lookup(it["ids"], scope=it["scope"]) is not None:
                 # Its ids were widened into a known thread while it waited: never a second
                 # thread. Drop it and its copies; the candidate is planned as known next run.
+                self._drop([it] + [o for o in self.state["outbox"] if o["kind"] == "copy"
+                                   and o["root"] is None and _fold(o["ids"]) & _fold(it["ids"])])
+                self.n["withheld"] += 1
+                return
+            if not _complete(it.get("adv") or _block(it["text"])) and (
+                    it["kind"] in ("root", "copy") or self._entry(it).level != "critical"):
+                # 9kgk: a critical journaled before this rule (no fix, no action) never posts, nor
+                # does a reply that would raise a thread to one; a reply on a thread already
+                # critical keeps its standing level, which a run never lowers (h29n does);
+                # the candidate is planned again from its sources next run. Its copies go too.
                 self._drop([it] + [o for o in self.state["outbox"] if o["kind"] == "copy"
                                    and o["root"] is None and _fold(o["ids"]) & _fold(it["ids"])])
                 self.n["withheld"] += 1
@@ -647,13 +675,20 @@ class Run:
             # merged, before the journal drained, or kept in the state file) raises nothing.
             c = replace(c, exploited=False)
         level, reason = self.level(c, scope)
+        # 9kgk: a fix the thread already states counts as this candidate's (plan_known keeps it)
+        was = (entry.advisory.get("products") or [{}])[0].get("fixed") if entry is not None else None
+        known_fix = c.fixed if compose.schema_fixed(c.fixed) is not None else was
         # ny5g: what readings of prose alone give it, kept by the ledger at its highest: a
         # reading never justifies a lowering, so the recompute never goes below this.
         rs = ruleset.load()
-        floor = rules._prose_level(replace(c, exploited=False), scope,
+        floor = rules._prose_level(replace(c, exploited=False, fixed=known_fix), scope,
                                    any(self.confirmed.get(s.url, set()) & rules.advisory_ids(c) for s in c.sources), rs)[0]
         if entry is not None:
             self.led.learn_floor(entry.root_event_id, rs.highest(floor, recompute.floor(entry, rs)))
+        if entry is not None and reason in ("no-action", "stop-using") and compose.schema_fixed(c.fixed) is None:
+            # 9kgk: the thread already states a fix, which plan_known keeps; the upgrade is complete.
+            if compose.schema_fixed(was):
+                level, reason = self.level(replace(c, fixed=was), scope)
         if entry is None and not rules.starts(scope, level):  # wa6n: out of the community service
             self.n["out"] += 1
             return
@@ -789,6 +824,12 @@ class Run:
 
     def plan_known(self, c, scope, level, reason, ids, entry):
         prev = schema.validate(entry.advisory)
+        if level == "critical" and entry.level != "critical" and (
+                reason == "stop-using" or not compose.schema_fixed(entry.fix_at_root)):
+            # 9kgk: a reply cannot add stop_using, and a fix a reply adds where the root had
+            # none is held by every reader (tyje): the member would hold a critical with no
+            # version. A thread is raised to critical only when its root stated the fix.
+            level, reason = ruleset.load().action_cap, "no-action"
         if RANK[level] <= RANK[entry.level]:  # a run never lowers a level; a curator does
             level, reason = entry.level, None
         was = prev.products[0]

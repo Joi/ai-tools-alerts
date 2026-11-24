@@ -4,6 +4,7 @@ import json
 import logging
 
 import pytest
+from dataclasses import replace
 
 from aitools_alerts.poster import compose, ledger, rules
 from aitools_alerts.poster.candidates import Candidate, Source
@@ -197,13 +198,14 @@ def test_merge_keeps_severity_and_one_fix_in_either_order():
         assert (m.fixed, m.affected) == ("2.1.0", "<2.1.0")
 
 
-def test_merge_keeps_severity_tier1():
+def test_merged_severity_words_alone_stay_a_notice():
+    """9kgk: the upstream severity never sets the level alone, merged or not."""
     a = cand(advisory_severity="high", fixed=None)
     b = cand(id="GHSA-5xjx-9qx6-jcrv", aliases=("CVE-2026-0001",), advisory_severity="Critical")
     c = cand(id="CVE-2026-0001", aliases=(), advisory_severity="moderate")
     for order in ([a, b], [b, a], [c, a], [a, c]):
         (m, s), = ledger.merge([pair(x) for x in order])
-        assert rules.level_for(m, s, False) == ("high", "severity-tier1"), m.advisory_severity
+        assert rules.level_for(m, s, False) == ("notice", "notice"), m.advisory_severity
 
 
 def test_delta_fixes(tmp_path, monkeypatch):
@@ -309,6 +311,21 @@ def test_learned_sources_wait_for_the_next_reply(tmp_path):
         posted = dataclasses.replace(adv, sources=[*adv.sources, schema.Source(GHSA, None)])
         led.record_reply("r1", posted, {"feed": "a1"}, now=T0 + 10)
         assert GHSA not in [x["url"] for x in led.thread("r1").learned_sources]
+
+
+def test_a_legacy_entry_keeps_its_root_fix_through_its_first_reply(tmp_path):
+    """Delta review: an entry written before root_fixed infers it from the advisory while no
+    reply changed it, and keeps it when the first reply is recorded."""
+    from aitools_alerts.poster.ledger import Ledger
+    with Ledger(tmp_path / "ledger.json") as led:
+        _, adv = compose.root_post(cand(fixed="2.1.0"), ("high", "fix-rce-tier1"), rules.scope_of("Claude Code"),
+                                   posted_at=1795000000)
+        led.record_root(adv, "r" * 64, {"feed": "r" * 64}, scope="Claude Code", exploited=False, now=1795000000)
+        led._state()["entries"][0].pop("root_fixed")  # as written before 9kgk
+        assert led.thread("r" * 64).fix_at_root == "2.1.0"
+        wider = replace(adv, products=[replace(adv.products[0], affected="<2.5.0", fixed="2.5.0")])
+        led.record_reply("r" * 64, wider, {"feed": "e" * 64}, now=1795000600)
+        assert led.thread("r" * 64).fix_at_root == "2.1.0"
 
 
 def test_a_level_change_is_counted_once_and_a_lowering_marks_the_thread(tmp_path):  # ny5g

@@ -14,6 +14,22 @@ from aitools_alerts.poster.ledger import Entry, Ledger, LedgerError
 from test_main import GHSA, FakeKEV, FakeRelay, T0, env, finding, kev_item  # noqa: F401  (env is a fixture)
 
 HOUR, DAY = 3600, 86400
+
+
+@pytest.fixture(autouse=True)
+def _kev_with_its_fix(monkeypatch, request):
+    """9kgk: a critical needs a complete action, and a KEV entry states no version. These
+    tests are about when a level may fall, written with KEV threads at critical, so here
+    an admitted KEV candidate states its fix, as if the vendor's page gave it, without the
+    GHSA alias such a page would add (which no reader here can look up). The rule's own
+    meeting with the recompute is tested at the end of this file, without this."""
+    if "no_fix" in request.node.name:
+        return
+    from aitools_alerts.poster import main
+    real = main.Run.admit
+    monkeypatch.setattr(main.Run, "admit", lambda self, c, scope: (
+        lambda a: main.replace(a, fixed=a.fixed or "2.1.0") if a is not None and a.exploited is True else a)(
+            real(self, c, scope)))
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "poster"
 CVE = "CVE-2026-0001"
 FIVE = [f"CVE-2026-000{i}" for i in range(1, 6)]
@@ -480,7 +496,7 @@ def test_a_candidate_merged_before_the_journal_drained_does_not_lend_the_exploit
     the drain then records the lowering. The vendor's page supports high: that is what the
     thread is raised to, alone, and KEV is not even readable this run."""
     _lowering_acknowledged_but_not_recorded(env, monkeypatch)
-    env.collector([finding(fid=CVE, sources=(GHSA,), fixed="2.1.0", severity="high")], name="2026-11-07T000000Z")
+    env.collector([finding(fid=CVE, sources=(GHSA,), fixed="2.1.0", severity="remote code execution")], name="2026-11-07T000000Z")
     relay = one(env, 26, kev=down(503))
     assert levels(relay) == [{"level": "notice"}, {"level": "high"}] and entry(env)["level"] == "high"
     assert levels(relay, "critical") == [{"level": "high"}]
@@ -596,12 +612,12 @@ def test_a_candidate_on_the_run_a_lowering_falls_due_is_seen_before_anything_is_
     reader and a floor of high. Nothing is lowered, and the fix is in the ledger."""
     post(env)
     assert hours(env, 1, 24) == []
-    env.collector([finding(fid=CVE, sources=(GHSA,), fixed="2.1.0", severity="high")], name="2026-11-07T000000Z")
+    env.collector([finding(fid=CVE, sources=(GHSA,), fixed="2.1.1", severity="remote code execution")], name="2026-11-07T000000Z")
     relay = one(env, 25)
     assert levels(relay) == [] and len(replies(relay)) == 2  # the fix, in both channels
     e = entry(env)
     assert e["level"] == "critical" and e["floor"] == "high" and "lowered" not in e
-    assert e["advisory"]["products"][0]["fixed"] == "2.1.0" and "GHSA-abcd-efgh-ijkl" in e["aliases"]
+    assert e["advisory"]["products"][0]["fixed"] == "2.1.1" and "GHSA-abcd-efgh-ijkl" in e["aliases"]
     assert hours(env, 26, 60) == []
 
 
@@ -723,14 +739,14 @@ def test_on_a_lowered_thread_a_candidate_raise_travels_alone_before_its_fix(env)
     post(env)
     hours(env, 1, 25)
     assert entry(env)["level"] == "notice"
-    env.collector([finding(fid=CVE, sources=(GHSA,), fixed="2.1.0", severity="high")], name="2026-11-07T000000Z")
+    env.collector([finding(fid=CVE, sources=(GHSA,), fixed="2.1.1", severity="remote code execution")], name="2026-11-07T000000Z")
     relay = one(env, 26)
     feed = [text for ch, reply, text in relay.calls if ch == "feed" and reply is not None]
     assert len(feed) == 2 and json.loads(schema._last_block(feed[0])) == {"level": "high"}
     second = json.loads(schema._last_block(feed[1]))
-    assert "level" not in second and second["products"][0]["fixed"] == "2.1.0"
+    assert "level" not in second and second["products"][0]["fixed"] == "2.1.1"
     e = entry(env)
-    assert e["level"] == "high" and e["advisory"]["products"][0]["fixed"] == "2.1.0" and e["floor"] == "high"
+    assert e["level"] == "high" and e["advisory"]["products"][0]["fixed"] == "2.1.1" and e["floor"] == "high"
     assert hours(env, 27, 27 + 9 * 24) == []  # the reading holds it: gone from KEV lowers it no further
 
 
@@ -740,7 +756,7 @@ def test_a_prose_floor_outlives_restarts_and_later_candidates(env):
     and a later candidate with no severity does not lower the floor. The page's GHSA
     id is one of the thread's ids, and it has no reader yet, so when CISA drops the
     entry this thread is not lowered at all."""
-    env.collector([finding(fid=CVE, sources=(GHSA,), fixed="2.1.0", severity="high")])
+    env.collector([finding(fid=CVE, sources=(GHSA,), fixed="2.1.0", severity="remote code execution")])
     post(env)
     (e,) = env.ledger()[0]
     assert e["level"] == "critical" and e["floor"] == "high" and "GHSA-abcd-efgh-ijkl" in e["aliases"]
@@ -785,7 +801,8 @@ def test_the_rollback_steps_name_every_key_an_older_poster_refuses(env):
     one(env, 27, BACK)  # the lowered thread is raised
     e = next(e for e in env.ledger()[0] if e["exploited"])
     assert {"lowered", "changed", "floor"} <= set(e) and len(e["changed"]) == 2
-    assert all(set(x) - {"lowered", "changed", "floor"} <= OLD_ENTRY_KEYS for x in env.ledger()[0])
+    assert all(set(x) - {"lowered", "changed", "floor", "root_fixed"} <= OLD_ENTRY_KEYS for x in env.ledger()[0])
+    # 9kgk: root_fixed too (CHANGELOG)
 
 
 def test_the_openssh_thread_is_lowered_to_high_with_no_human(env):
@@ -817,3 +834,42 @@ def test_level_report_prints_bare_ids_only():
     assert text == "\n\nLowered since the last digest: CVE-2026-0001 to notice."
     assert compose.level_report([], None) == "" and compose.level_report([], None, "ja") == ""
     assert "CVE-2026-0001 (注意)" in compose.level_report([["CVE-2026-0001", "notice"]], {"due": 3}, "ja")
+
+
+def test_a_kev_thread_with_no_fix_is_never_raised_to_critical_no_fix(env):
+    """9kgk: a KEV listing supports critical only with an upgrade the readers keep; the
+    recompute holds the source's level to the thread's own action and root fix."""
+    env.kev = FakeKEV(catalog=catalog("v0", CVE))
+    assert env.run(now=T0)[0] == 0 and entry(env)["level"] == "high"
+    assert hours(env, 1, 30, BACK) == [] and entry(env)["level"] == "high"
+
+
+def test_a_critical_posted_with_no_fix_is_lowered_to_high_no_fix(env, monkeypatch):
+    """9kgk with ny5g: a critical an older poster sent with no fix (still listed by KEV) is
+    lowered to high, the level its source supports with no complete action, once."""
+    from aitools_alerts.poster import main
+    with monkeypatch.context() as mp:
+        mp.setattr(main.rules, "level_for", lambda c, scope, ok: ("critical", None))  # as an older poster
+        mp.setattr(main, "_complete", lambda adv: True)
+        env.kev = FakeKEV(catalog=catalog("v0", CVE))
+        assert env.run(now=T0)[0] == 0 and entry(env)["level"] == "critical"
+    sent = hours(env, 1, 40, BACK)
+    assert [lvl for _, lvl in sent] == ["high"] and entry(env)["level"] == "high"
+
+
+def test_held_caps_by_the_roots_fix_and_never_lowers_an_unknown_root_no_fix():
+    """9kgk, integration review: the source's level is held to what the thread can carry.
+    An entry from before root_fixed that has replies has an unknown root: raise-only."""
+    rs, scope = ruleset.load(), next(e for e in schema.load_scope() if e.name == "Claude Code")
+    up = [{"verb": "upgrade", "target": "Claude Code", "value": "2.1.0"}]
+    fixed = lambda e: (e.advisory["products"][0].update(fixed="2.1.0"), e.advisory.update(actions=up), e)[2]  # noqa: E731
+    assert recompute.held(_thread(level="high", root_fixed=""), scope, "critical", rs) == "high"
+    assert recompute.held(fixed(_thread(level="high", root_fixed="2.1.0")), scope, "critical", rs) == "critical"
+    assert recompute.held(fixed(_thread(level="high", root_fixed="")), scope, "critical", rs) == "high"  # a reply's fix
+    from dataclasses import replace
+    legacy = fixed(replace(_thread(level="critical"), replies=[{"feed": "b" * 64}]))  # root_fixed unknown
+    assert recompute.held(legacy, scope, "critical", rs) == "critical"  # never below where it stands
+    assert recompute.held(replace(_thread(level="high"), replies=[{"feed": "b" * 64}]), scope, "critical", rs) == "high"
+    stop = _thread(level="critical", root_fixed="")
+    stop.advisory["actions"] = [{"verb": "stop_using", "target": "Claude Code", "value": None}]
+    assert recompute.held(stop, scope, "critical", rs) == "critical"  # admitted there by a stop_using reading

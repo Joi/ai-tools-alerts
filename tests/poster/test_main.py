@@ -81,6 +81,19 @@ def kev_item(cve="CVE-2026-0001", added="2026-11-04"):
 REPO = GHSA.rsplit("/", 1)[0] + "/"
 
 
+def bare_high(**kw):
+    """A high with no fix known (9kgk): the vendor's page confirms the record's trojanized
+    flag. The severity word alone sets nothing; a consequence in prose needs the fix."""
+    return {**finding(severity="high", **kw), "trojanized": True}
+
+
+def kev_fixed(env, *items):
+    """KEV lists the CVE and the vendor's page states its fix: the critical a member can
+    act on (9kgk). KEV alone, with no fix known, posts at high."""
+    env.kev.catalog = {"vulnerabilities": list(items) or [kev_item()]}
+    env.collector([finding(fid=i["cveID"], fixed="2.1.0") for i in env.kev.catalog["vulnerabilities"]])
+
+
 def finding(fid="GHSA-abcd-efgh-ijkl", product="Claude Code", severity="remote code execution",
             fixed="2.1.0", sources=None, aliases=(), observed="2026-11-05T00:00:00Z", affected=None):
     """A collector finding. Its default source is the vendor's own page for it (h340): the
@@ -168,7 +181,7 @@ def test_send_failure_leaves_advisory_unposted(env):
 
 
 def test_critical_posts_to_both_channels_in_order(env):
-    env.kev.catalog = {"vulnerabilities": [kev_item()]}
+    kev_fixed(env)
     code, summary, relay = env.run()
     assert code == 0, summary
     assert chans(relay) == [("critical", None), ("feed", None)]
@@ -248,6 +261,7 @@ def test_kev_fetch_not_modified_uses_cache(env):
     lm = "Tue, 03 Nov 2026 10:00:00 GMT"
     env.config.kev_cache.write_text(json.dumps({"last_modified": lm,
                                                 "catalog": {"vulnerabilities": [kev_item()]}}))
+    env.collector([finding(fid="CVE-2026-0001", fixed="2.1.0")])  # 9kgk: the fix makes it critical
     kev = FakeKEV(status=304)
     code, _, relay = env.run(kev=kev)
     assert code == 0 and kev.headers == [{"If-Modified-Since": lm}]
@@ -415,7 +429,7 @@ def test_ledger_error_stops_sends_and_replays_without_sending(env, monkeypatch):
 
 
 def test_feed_failure_after_critical_completes_next_run(env):
-    env.kev.catalog = {"vulnerabilities": [kev_item()]}
+    kev_fixed(env)
     code, _, relay = env.run(relay=FakeRelay("ok", "fail"))
     assert code == 1 and chans(relay) == [("critical", None), ("feed", None)]
     (e,), pending = env.ledger()
@@ -427,10 +441,10 @@ def test_feed_failure_after_critical_completes_next_run(env):
 
 
 def test_partial_reply_retried_in_failed_channel_only(env):
-    env.kev.catalog = {"vulnerabilities": [kev_item()]}
+    kev_fixed(env)
     env.run()
     (e,), _ = env.ledger()
-    env.collector([finding(fid="CVE-2026-0001", sources=(GHSA2,))])  # a fix and a new source
+    env.collector([finding(fid="CVE-2026-0001", fixed="2.1.1", sources=(GHSA2,))])  # a new fix and source
     code, _, relay = env.run(now=T0 + 3600, relay=FakeRelay("ok", "fail"))
     assert code == 1
     assert chans(relay) == [("critical", e["channel_ids"]["critical"]), ("feed", e["channel_ids"]["feed"])]
@@ -442,8 +456,8 @@ def test_partial_reply_retried_in_failed_channel_only(env):
 
 
 def test_a_refused_reply_is_fixed_and_requeued_when_its_sibling_recorded(env, tmp_path):  # 8acj
-    env.kev.catalog = {"vulnerabilities": [kev_item()]}
-    env.run(), env.collector([finding(fid="CVE-2026-0001", sources=(GHSA2,))])
+    kev_fixed(env)
+    env.run(), env.collector([finding(fid="CVE-2026-0001", fixed="2.1.1", sources=(GHSA2,))])
     assert "withheld=1" in env.run(now=T0 + 3600, relay=FakeRelay("refuse"))[1]  # critical refused, feed recorded
     (w,) = env.state()["withheld"]
     assert main.resolve(T0, env.config, w["key"], requeue=True, text="no alert block")[0] == 2
@@ -597,11 +611,11 @@ def test_affected_range_correction_posts_a_reply(env):
 
 
 def test_busy_update_survives_its_source_being_replaced(env):
-    env.collector([finding(fixed=None, severity=None, fid="CVE-2026-0001")])
+    env.collector([finding(fixed="2.0.0", severity=None, fid="CVE-2026-0001")])  # 9kgk: critical needs a fix
     env.kev.catalog = {"vulnerabilities": [kev_item()]}
     env.run(relay=FakeRelay("ok", "unknown"))  # critical root ok, feed copy unknown
     env.kev.catalog = {"vulnerabilities": []}
-    env.collector([finding(fid="CVE-2026-0001", sources=(GHSA2,))])  # the fix arrives while busy
+    env.collector([finding(fid="CVE-2026-0001", sources=(GHSA2,))])  # a newer fix arrives while busy
     code, _, relay = env.run(now=T0 + 3600)
     assert code == 0 and relay.calls == []
     st = env.state()
@@ -632,14 +646,14 @@ def test_finished_send_clears_pending_before_the_item_goes(env, monkeypatch):
 def test_range_correction_without_a_fix_posts_a_reply(env):
     first = finding(fid="CVE-2026-0001", fixed=None)
     first["affected"] = "<2.0.0"
-    env.kev.catalog = {"vulnerabilities": [kev_item()]}  # critical, with no fix known
+    env.kev.catalog = {"vulnerabilities": [kev_item()]}  # exploited, no fix known: high (9kgk)
     env.collector([first])
     assert "roots=1" in env.run()[1]
     corrected = finding(fid="CVE-2026-0001", fixed=None)
     corrected["affected"] = "<2.5.0"
     env.collector([corrected])
     code, summary, relay = env.run(now=T0 + 3600)
-    assert code == 0 and "replies=2" in summary  # the thread is in both channels
+    assert code == 0 and "replies=1" in summary  # the thread is in the feed: high until its fix
     assert all("below 2.5.0" in c[2] for c in relay.calls)
 
 
@@ -647,7 +661,7 @@ def test_only_ids_the_vendor_page_assigns_are_learned(env):  # h340 (was: ids le
     """A record's aliases are claims. The thread learns the ids the vendor's page assigns to
     the advisory and no other, so an alias cannot bridge threads or carry text."""
     env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", package="Claude Code", ecosystem=None,
-                                      cve="CVE-2026-0777", severity="High"))
+                                      cve="CVE-2026-0777", severity="High", title="Remote code execution"))
     env.collector([finding(aliases=[f"A-{i:03d}" for i in range(8)] + ["CVE-2026-0555", "GHSA-mnop-qrst-uvwx"])])
     _, _, relay = env.run()
     (e,), _ = env.ledger()
@@ -772,7 +786,7 @@ def test_digest_backlog_moves_forward_day_by_day(env, monkeypatch):
 def test_new_roots_copy_stays_on_its_thread(env):
     env.collector([finding(fid="GHSA-zzzz-zzzz-zzzz")])  # an older feed thread A
     env.run()
-    env.kev.catalog = {"vulnerabilities": [kev_item()]}  # a new critical thread B
+    kev_fixed(env)  # a new critical thread B
     env.run(now=T0 + 3600, relay=FakeRelay("ok", "unknown"))
     entries, _ = env.ledger()
     b = next(e for e in entries if "CVE-2026-0001" in e["aliases"])
@@ -943,9 +957,9 @@ def test_kev_file_bypasses_fetch_and_marks_posts(env):
     assert code == 0, summary
     assert kev.headers == [] and not env.config.kev_cache.exists()
     assert "inputs=kev:file," in summary and "roots=1" in summary
-    assert chans(relay) == [("critical", None), ("feed", None)]
-    assert all(c[2].startswith("CRITICAL (SYNTHETIC TEST): SYNTHETIC TEST: Claude Code") and "CVE-2099-0010" in c[2]
-               for c in relay.calls)  # the root and its feed copy
+    assert chans(relay) == [("feed", None)]  # 9kgk: a KEV entry states no fix, so high until one is known
+    assert all(c[2].startswith("HIGH (SYNTHETIC TEST): SYNTHETIC TEST: Claude Code") and "CVE-2099-0010" in c[2]
+               for c in relay.calls)
     assert env.state()["kev_since"] is None  # the real catalog was not read
     code, summary, relay = env.run(now=at(20, 7), kev=kev, kev_catalog=catalog)
     assert code == 0 and relay.calls == [] and "withheld=1" in summary  # known: never a reply
@@ -999,7 +1013,7 @@ def test_synthetic_advisory_is_left_out_of_the_digest(env):
     assert body == "Daily digest for 2026-11-05: no advisories."  # ai-tools-alerts#d3f6
     env.kev.catalog = {"vulnerabilities": [kev_item(cve="CVE-2099-0003")]}  # any input: the id decides
     _, _, relay = env.run(now=at(6, 6))
-    assert relay.calls and all(c[2].startswith("CRITICAL (SYNTHETIC TEST)") for c in relay.calls)
+    assert relay.calls and all(c[2].startswith("HIGH (SYNTHETIC TEST)") for c in relay.calls)  # no fix: high
 
 
 def test_kev_floor_without_watermark_is_the_state_floor(env):
@@ -1009,7 +1023,7 @@ def test_kev_floor_without_watermark_is_the_state_floor(env):
     assert env.state()["kev_since"] is None
     env.kev.catalog = {"vulnerabilities": [kev_item(added="2026-11-04")]}
     code, _, relay = env.run(now=at(10, 6))
-    assert code == 0 and chans(relay) == [("critical", None), ("feed", None)]  # not lost to the outage
+    assert code == 0 and chans(relay) == [("feed", None)]  # not lost to the outage; high until its fix (9kgk)
 
 
 def test_digest_now_while_a_digest_is_journaled(env, capsys):
@@ -1056,14 +1070,14 @@ def test_synthetic_never_merges_with_a_real_advisory(env, order, capsys):
     real = finding()
     fake = finding(fid="CVE-2099-0010", aliases=("GHSA-abcd-efgh-ijkl",), fixed=None)
     env.collector([real, fake] if order == 0 else [fake, real])
-    env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl"))  # one page, whatever the order (dmmf)
+    env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", title="Remote code execution"))  # one page (dmmf)
     code, summary, relay = env.run(kev_catalog=inputs.read_kev_file(SYNTHETIC))
     assert code == 0, summary
     assert "reserved synthetic id=1" in capsys.readouterr().err
     texts = [c[2] for c in relay.calls]
     assert any(t.startswith("HIGH: Claude Code") and "GHSA-abcd-efgh-ijkl" in t and "CVE-2099" not in t
                for t in texts)  # the real advisory: unmerged, unmarked, not promoted
-    assert all(t.startswith("CRITICAL (SYNTHETIC TEST)") for t in texts if "CVE-2099" in t)
+    assert all(t.startswith("HIGH (SYNTHETIC TEST)") for t in texts if "CVE-2099" in t)  # KEV, no fix: high
     entries, _ = env.ledger()
     real_e = next(e for e in entries if "GHSA-abcd-efgh-ijkl" in [e["advisory"]["id"], *e["aliases"]])
     assert real_e["level"] == "high" and not any("2099" in a for a in real_e["aliases"])
@@ -1076,7 +1090,7 @@ def test_kev_added_on_the_floor_day_is_not_old(env):
     env.run(now=start)
     env.kev.catalog = {"vulnerabilities": [kev_item(added="2026-11-05")]}
     code, summary, relay = env.run(now=start + 5 * 3600)
-    assert code == 0 and "old=0" in summary and len(relay.calls) == 2
+    assert code == 0 and "old=0" in summary and len(relay.calls) == 1  # high (no fix): the feed only
 
 
 def test_deferred_candidate_dropped_by_scope_reaches_the_review_list(env, monkeypatch):
@@ -1103,8 +1117,7 @@ def test_deferred_candidate_dropped_by_scope_reaches_the_review_list(env, monkey
 
 @pytest.mark.parametrize("critical", [False, True])
 def test_root_gets_a_japanese_reply_in_each_channel(env, critical):
-    env.kev.catalog = {"vulnerabilities": [kev_item()] if critical else []}
-    env.collector([] if critical else [finding()])
+    kev_fixed(env) if critical else env.collector([finding()])
     code, summary, relay = env.run()
     chs = ["critical", "feed"] if critical else ["feed"]
     assert code == 0 and f"ja={len(chs)} ja_failed=0" in summary and env.state()["outbox"] == []
@@ -1119,16 +1132,16 @@ def test_change_reply_japanese_names_it_in_of(env):
     env.kev.catalog = {"vulnerabilities": [kev_item()]}
     env.collector([first])
     _, _, ssh0 = env.run()
-    roots = dict(zip(["critical", "feed"], ssh0.ids))
+    roots = dict(zip(["feed"], ssh0.ids))  # exploited with no fix: high, the feed only (9kgk)
     corrected = finding(fid="CVE-2026-0001", fixed=None)
     corrected["affected"] = "<2.5.0"
     env.collector([corrected])
     code, summary, relay = env.run(now=T0 + 3600)
-    assert code == 0 and "replies=2" in summary and "ja=2" in summary
+    assert code == 0 and "replies=1" in summary and "ja=1" in summary
     for (ch, reply_to, text), (ech, _, _), eid in zip(relay.ja, relay.calls, relay.ids):
         assert ch == ech and reply_to == roots[ch]
         assert text.startswith(f"lang: ja\nof: {eid}\n\n") and "（2.5.0 未満）" in text
-        assert "\n\n緊急: Claude Code: 悪用が確認された脆弱性 (CVE-2026-0001)\n" in text  # the current version
+        assert "\n\n重要: Claude Code: 悪用が確認された脆弱性 (CVE-2026-0001)\n" in text  # the current version
 
 
 def test_digest_gets_a_japanese_reply(env):
@@ -1360,7 +1373,7 @@ TOCTOU = "TOCTOU Race in Edit Tool Allows File Writes Outside the Workspace"
 
 def _cfe8(title=TOCTOU):
     """Shaped like the 2026-11-07T012306Z collector record's CVE-2026-88968 finding."""
-    f = finding(fid="CVE-2026-88968", severity="high", fixed=None, sources=(GHSA, "https://example.org/write-up"),
+    f = finding(fid="CVE-2026-88968", severity="high", fixed="2.1.251", sources=(GHSA, "https://example.org/write-up"),
                 aliases=("GHSA-abcd-efgh-ijkl",), affected="<2.1.0")
     f["sources"][0]["title"] = title
     f["sources"][1]["title"] = "a non-primary source's words"
@@ -1379,20 +1392,24 @@ def test_root_and_digest_carry_the_source_title(env):
 
 
 def test_a_title_learned_later_posts_nothing_and_reaches_the_digest(env):
-    env.collector([_cfe8(title=None)])
+    # 9kgk: with no title the page's prose is its severity word, which sets nothing; the
+    # record's verified trojanized flag (it cites the vendor's page alone) makes the high here.
+    flagged = lambda f: {**f, "trojanized": True, "sources": f["sources"][:1]}  # noqa: E731
+    env.collector([flagged(_cfe8(title=None))])
     _, _, relay = env.run()
     assert relay.calls[0][2].split("\n")[1].startswith("Affected:")  # exactly as before r7hr
     assert "source_title" not in env.ledger()[0][0]
-    env.collector([_cfe8()])
+    env.collector([flagged(_cfe8())])
     _, _, relay = env.run(now=T0 + 600)
     assert relay.calls == []  # no reply for a title
     assert env.ledger()[0][0]["source_title"] == TOCTOU
 
 
 def test_a_fence_in_the_title_never_withholds_the_advisory(env):
-    env.collector([_cfe8(title="Race ~~~aitools-alert ``` in Edit")])
+    env.collector([_cfe8(title="Race ~~~aitools-alert ``` in Edit writes outside the workspace")])
     _, _, relay = env.run()
-    assert relay.calls and relay.calls[0][2].split("\n")[1] == "Race ~aitools-alert in Edit"  # k5tr: no backtick
+    assert relay.calls and relay.calls[0][2].split("\n")[1] == \
+        "Race ~aitools-alert in Edit writes outside the workspace"  # k5tr: no backtick
 
 
 def test_a_held_notice_learns_its_title_for_the_digest(env):
@@ -1428,7 +1445,7 @@ def test_a_refused_item_is_withheld_and_the_run_goes_on(env, capsys):
 
 
 def test_a_refused_root_withholds_its_copy(env):
-    env.kev.catalog = {"vulnerabilities": [kev_item()]}
+    kev_fixed(env)
     code, summary, relay = env.run(relay=FakeRelay("refuse"))
     assert code == 0 and chans(relay) == [("critical", None)] and "withheld=1" in summary
     assert [it["kind"] for it in env.state()["withheld"][0]["items"]] == ["root", "copy"] and not env.state()["outbox"]
@@ -1489,14 +1506,15 @@ def test_japanese_roots_carry_the_candidates_exploited_state(env, monkeypatch): 
     corrected["affected"] = "<2.5.0"
     env.collector([corrected])
     _, summary, relay = env.run(now=T0 + 3600)
-    assert "replies=2" in summary and len(seen) == 2 and all(s is True for s in seen)  # the new root, then the reply
+    assert "replies=1" in summary and len(seen) == 2 and all(s is True for s in seen)  # the root, then the reply
+    # (9kgk: exploited with no fix is high, so the thread is in the feed only)
     assert all("直ちに更新" in text for _, _, text in relay.ja)
 
 
-def test_kev_learned_on_a_flagged_thread_raises_it_and_makes_the_japanese_action_urgent(env):  # 4yr1, s6mt
+def test_kev_learned_on_a_flagged_thread_replies_and_makes_the_japanese_action_urgent(env):  # 4yr1, s6mt, 9kgk
     """A verified trojanized release with no fix is high: a model's reading never makes a
-    critical (s6mt). KEV listing it later raises the thread to critical, by a field. The
-    Japanese advisory of that run says it is exploited."""
+    critical (s6mt). KEV listing it later, still with no fix, keeps it high (9kgk: a
+    critical needs a complete action) and replies; the Japanese advisory says it is exploited."""
     first = finding(fid="CVE-2026-0001", fixed=None, affected="<99.0.0")  # a range: the hold for a bare high is not this test's
     first["trojanized"] = True
     env.collector([first])
@@ -1507,10 +1525,10 @@ def test_kev_learned_on_a_flagged_thread_raises_it_and_makes_the_japanese_action
     assert e["level"] == "high" and e["advisory"]["title"] == "Claude Code: trojanized release (CVE-2026-0001)"
     env.kev.catalog = {"vulnerabilities": [kev_item()]}
     code, summary, relay = env.run(now=T0 + 3600)
-    assert code == 0 and "copies=1" in summary and "replies=1" in summary and "ja=2" in summary
+    # 9kgk: exploited with no fix known stays high (no copy); learning it still replies.
+    assert code == 0 and "copies=0" in summary and "replies=1" in summary and "ja=1" in summary
     (e,), _ = env.ledger()
-    assert e["level"] == "critical"
-    assert e["advisory"]["title"] == "Claude Code: known exploited vulnerability (CVE-2026-0001)"
+    assert e["level"] == "high"
     assert relay.ja
     for _, _, text in relay.ja:
         assert "悪用が確認されているため、リリースがあれば直ちに更新してください。" in text
@@ -1521,8 +1539,8 @@ def test_a_level_rise_copy_gets_the_exploited_flag(env, monkeypatch):  # 4yr1
     real = main.compose.root_post_ja
     monkeypatch.setattr(main.compose, "root_post_ja",
                         lambda *a, **kw: seen.append(kw.get("exploited")) or real(*a, **kw))
-    env.collector([finding(fid="GHSA-abcd-efgh-ijkl", severity="high", fixed=None,
-                           aliases=("CVE-2026-0001",), affected="<2.1.0")])
+    env.collector([finding(fid="GHSA-abcd-efgh-ijkl", aliases=("CVE-2026-0001",), affected="<2.1.0")])
+    # 9kgk: the thread states its fix, so a KEV listing of it is critical with that upgrade
     _, summary, _ = env.run()
     assert "roots=1" in summary and seen == [False]  # high, not exploited
     env.kev.catalog = {"vulnerabilities": [kev_item()]}
@@ -1533,9 +1551,9 @@ def test_a_level_rise_copy_gets_the_exploited_flag(env, monkeypatch):  # 4yr1
 def test_a_change_in_the_digest_run_is_listed_that_day_only(env):  # 8ke5
     """Live 11-10/11-11: a reply recorded in the digest's own run was listed again the
     next day, because a digest that took everything recorded no roots at its cutoff."""
-    env.collector([finding(fixed=None, severity="high", affected="<2.1.0")])
+    env.collector([bare_high(fixed=None, affected="<2.1.0")])
     assert "roots=1" in env.run()[1]
-    env.collector([finding(fixed="2.1.0", severity="high")])  # the fix, in the 09:20 run
+    env.collector([bare_high(fixed="2.1.0")])  # the fix, in the 09:20 run
     _, summary, relay = env.run(now=at(5, 9))
     assert "replies=1" in summary and [c[2].startswith("Daily digest") for c in relay.calls] == [False, True]
     assert "GHSA-abcd-efgh-ijkl" in relay.calls[1][2]
@@ -1607,11 +1625,11 @@ def _roots(ssh):
 
 
 def test_a_high_with_no_fix_waits_and_posts_with_its_fix(env):  # 0dvh
-    env.collector([finding(fixed=None, severity="high")])
+    env.collector([bare_high(fixed=None)])
     _, summary, ssh = env.run()
     assert "waiting=1" in summary and _roots(ssh) == []
     assert list(env.state()["waiting"]) == ["Claude Code|ghsa-abcd-efgh-ijkl"]  # saved: a restart keeps it
-    env.collector([finding(fixed="2.1.0", severity="high")])  # the next run reads the fix
+    env.collector([bare_high(fixed="2.1.0")])  # the next run reads the fix
     _, summary, ssh = env.run(now=T0 + 3600)
     assert "roots=1" in summary and len(_roots(ssh)) == 1 and "Fixed in 2.1.0." in _roots(ssh)[0][2]
     assert env.state()["deferred"] == []
@@ -1620,7 +1638,7 @@ def test_a_high_with_no_fix_waits_and_posts_with_its_fix(env):  # 0dvh
 
 
 def test_a_hold_ends_after_six_hours_with_what_is_known(env):  # 0dvh
-    env.collector([finding(fixed=None, severity="high")])
+    env.collector([bare_high(fixed=None)])
     env.run()
     _, summary, ssh = env.run(now=T0 + main.HOLD_SECONDS - 60)
     assert "waiting=1" in summary and _roots(ssh) == []
@@ -1634,31 +1652,31 @@ def test_these_never_wait(env, kind):  # 0dvh: a KEV entry (critical, exploited)
     if kind == "kev":
         env.kev.catalog = {"vulnerabilities": [kev_item()]}
     else:
-        env.collector([finding(fixed=None, severity="high", affected="<2.1.0")])
+        env.collector([bare_high(fixed=None, affected="<2.1.0")])
     _, summary, ssh = env.run()
     assert "waiting=0" in summary and _roots(ssh), summary
 
 
 def test_a_full_waiting_map_holds_nothing_new(env, monkeypatch):  # 0dvh: never a state it refuses
     monkeypatch.setattr(main.inputs, "MAX_WAITING", 1)
-    env.collector([finding(fixed=None, severity="high"),
-                   finding(fid="GHSA-mnop-qrst-uvwx", fixed=None, severity="high", sources=(GHSA2,))])
+    env.collector([bare_high(fixed=None),
+                   bare_high(fid="GHSA-mnop-qrst-uvwx", fixed=None, sources=(GHSA2,))])
     _, summary, ssh = env.run()
     assert "waiting=1" in summary and len(_roots(ssh)) == 1 and len(env.state()["waiting"]) == 1
 
 
 def test_an_old_source_posts_no_root_and_reaches_the_digest_notices(env):  # 0dvh
-    old = finding(fixed=None, severity="critical")
+    old = bare_high(fixed=None)
     old["sources"][0]["published_at"] = "2026-10-20T00:00:00Z"  # 16 days before first sight
     env.collector([old])
     _, summary, ssh = env.run()
     assert "aged=1" in summary and ssh.calls == []
-    fixed = finding(fixed="2.1.0", severity="critical")
+    fixed = bare_high(fixed="2.1.0")
     fixed["sources"][0]["published_at"] = None  # the date comes from the held notice
     env.collector([fixed])
     _, summary, ssh = env.run(now=T0 + 3600)
     assert "aged=1" in summary and ssh.calls == []
-    env.collector([finding(fixed=None, severity="critical", affected="<2.1.0")])  # no fix: the fix stays
+    env.collector([bare_high(fixed=None, affected="<2.1.0")])  # no fix: the fix stays
     env.run(now=T0 + 7200)
     p = env.state()["held"][0]["adv"]["products"][0]
     assert (p["fixed"], p["affected"]) == ("2.1.0", "<2.1.0")
@@ -1673,7 +1691,7 @@ def test_first_sight_as_a_notice_dates_the_age_limit(env):  # 0dvh
     env.collector([note])
     env.run()
     assert env.state()["held"]
-    env.collector([{**note, "fixed": "2.1.0", "advisory_severity": "high"}])
+    env.collector([{**note, "fixed": "2.1.0", "advisory_severity": "remote code execution"}])
     _, summary, ssh = env.run(now=T0 + 2 * 86400 - 3600)  # eight days after the source; before the digest
     assert "aged=0" in summary and "roots=1" in summary and len(_roots(ssh)) == 1
 
@@ -1688,7 +1706,7 @@ def test_an_old_critical_posts_in_neither_channel(env, monkeypatch):  # 0dvh
 
 
 def test_the_japanese_root_says_a_range_is_in_the_source(env):  # 0dvh
-    env.collector([finding(fixed=None, severity="high", affected=">=1.0 || <0.5")])
+    env.collector([bare_high(fixed=None, affected=">=1.0 || <0.5")])
     _, _, ssh = env.run()
     assert "affected versions: see the source" in _roots(ssh)[0][2]
     assert "影響バージョンは出典を参照" in ssh.ja[0][2]
@@ -1696,7 +1714,7 @@ def test_the_japanese_root_says_a_range_is_in_the_source(env):  # 0dvh
 
 def test_the_block_carries_the_vendor_pages_severity_word(env):  # 0dvh, dmmf: the page's, never the record's
     env.collector([finding(severity="low")])
-    env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", severity="Critical"))
+    env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", severity="Critical", title="Remote code execution"))
     _, _, ssh = env.run()
     assert schema.parse_post(_roots(ssh)[0][2]).advisory_severity == "critical"
 
@@ -1704,7 +1722,7 @@ def test_the_block_carries_the_vendor_pages_severity_word(env):  # 0dvh, dmmf: t
 def test_a_records_severity_rates_but_never_reaches_the_block(env):  # dmmf, h340 criterion 4
     """The page states no severity word; the record, citing only the vendor's page, says
     "critical". It may rate the advisory (h340 keeps it for the level); the block says nothing."""
-    env.collector([finding(severity="critical")])
+    env.collector([bare_high()])
     env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", severity="Unrated", title=""))
     _, summary, ssh = env.run()
     assert "roots=1" in summary
@@ -1715,15 +1733,16 @@ def test_a_records_severity_rates_but_never_reaches_the_block(env):  # dmmf, h34
 def test_a_severity_change_rides_a_reply_and_never_posts_alone(env):  # 0dvh, dmmf: the page's word
     def page(sev, patched):
         env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", severity=sev, affected="< 2.1.0", patched=patched))
-    env.collector([finding(fixed=None, severity="low")])
+    low = {**finding(fixed=None, severity="low"), "trojanized": True}  # 9kgk: a high with no fix
+    env.collector([low])
     page("High", None)
     _, summary, _ = env.run()
     assert "roots=1" in summary  # a range is stated: no hold
-    env.collector([finding(fixed=None, severity="low")])
+    env.collector([low])
     page("Critical", None)
     _, summary, ssh = env.run(now=T0 + 600)
     assert "replies=0" in summary and ssh.calls == []
-    env.collector([finding(fixed=None, severity="low")])
+    env.collector([low])
     page("Critical", "2.1.0")
     _, summary, ssh = env.run(now=T0 + 1200)
     assert "replies=1" in summary and "Upstream severity: critical." in ssh.calls[0][2]
@@ -1737,7 +1756,7 @@ def test_a_kev_listing_of_an_old_advisory_still_posts(env):  # 0dvh: KEV's listi
     env.collector([old])
     env.kev.catalog = {"vulnerabilities": [kev_item()]}
     _, summary, ssh = env.run()
-    assert "aged=0" in summary and "roots=1" in summary and "copies=1" in summary
+    assert "aged=0" in summary and "roots=1" in summary and "copies=0" in summary  # 9kgk: no fix, high
 
 
 def test_first_sight_outlives_the_digest_that_lists_the_notice(env):  # 0dvh
@@ -1747,19 +1766,19 @@ def test_first_sight_outlives_the_digest_that_lists_the_notice(env):  # 0dvh
     env.run()
     _, _, ssh = env.run(now=at(6, 9))  # the digest lists it; the held entry goes
     assert env.state()["held"] == [] and "GHSA-abcd-efgh-ijkl" in ssh.calls[0][2]
-    env.collector([{**note, "fixed": "2.1.0", "advisory_severity": "high"}])
+    env.collector([{**note, "fixed": "2.1.0", "advisory_severity": "remote code execution"}])
     _, summary, ssh = env.run(now=at(7, 6))  # eight days after the source, two after first sight
     assert "aged=0" in summary and "roots=1" in summary
 
 
 def test_a_waiting_candidate_survives_a_run_that_dies(env, monkeypatch):  # 0dvh
-    env.collector([finding(fixed=None, severity="high")])
+    env.collector([bare_high(fixed=None)])
     monkeypatch.setattr(main.Run, "digest", lambda self, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
     code, summary, _ = env.run()
     assert code == 1 and "waiting=1" in summary
     assert [d["id"] for d in env.state()["deferred"]] == ["GHSA-abcd-efgh-ijkl"]
     monkeypatch.undo()
-    env.collector([finding(fixed="2.1.0", severity="high")])
+    env.collector([bare_high(fixed="2.1.0")])
     _, summary, ssh = env.run(now=T0 + 3600)
     assert "roots=1" in summary and "Fixed in 2.1.0." in _roots(ssh)[0][2]
 
@@ -1784,7 +1803,7 @@ def test_a_fieldless_sighting_keeps_the_notice_fix_and_first_sight(env, capsys):
 
 
 def test_a_spaced_timestamp_dates_the_age_limit(env):  # 0dvh
-    old = finding(fixed=None, severity="high")
+    old = bare_high(fixed=None)
     old["sources"][0]["published_at"] = "2026-10-01 00:00:00Z"
     env.collector([old])
     _, summary, ssh = env.run()
@@ -1793,29 +1812,29 @@ def test_a_spaced_timestamp_dates_the_age_limit(env):  # 0dvh
 
 def test_a_hold_keeps_its_place_when_the_primary_id_changes(env, monkeypatch):  # 0dvh
     monkeypatch.setattr(main.inputs, "MAX_WAITING", 1)
-    env.collector([finding(fixed=None, severity="high", aliases=("CVE-2026-0002",))])
+    env.collector([bare_high(fixed=None, aliases=("CVE-2026-0002",))])
     env.run()
-    env.collector([finding(fid="CVE-2026-0002", fixed=None, severity="high", aliases=("GHSA-abcd-efgh-ijkl",))])
+    env.collector([bare_high(fid="CVE-2026-0002", fixed=None, aliases=("GHSA-abcd-efgh-ijkl",))])
     _, summary, ssh = env.run(now=T0 + 3600)
     assert "waiting=1" in summary and _roots(ssh) == []
 
 
 def test_a_reply_says_a_range_is_in_the_source(env):  # 0dvh
-    env.collector([finding(fixed=None, severity="high", affected=">=1.0 || <0.5")])
+    env.collector([bare_high(fixed=None, affected=">=1.0 || <0.5")])
     env.run()
-    env.collector([finding(fixed="2.1.0", severity="high", affected=">=1.0 || <0.5")])
+    env.collector([bare_high(fixed="2.1.0", affected=">=1.0 || <0.5")])
     _, summary, ssh = env.run(now=T0 + 600)
     assert "replies=1" in summary and "affected versions: see the source" in ssh.calls[0][2]
     assert "影響バージョンは出典を参照" in ssh.ja[0][2]
 
 
 def test_a_spaced_timestamp_survives_in_the_held_notice(env):  # 0dvh delta review
-    old = finding(fixed=None, severity="high")
+    old = bare_high(fixed=None)
     old["sources"][0]["published_at"] = "2026-10-01 00:00:00Z"
     env.collector([old])
     env.run()
     assert env.state()["held"][0]["adv"]["sources"][0]["published_at"] == "2026-10-01T00:00:00Z"
-    env.collector([finding(fixed="2.1.0", severity="high")])  # undated this time
+    env.collector([bare_high(fixed="2.1.0")])  # undated this time
     _, summary, ssh = env.run(now=T0 + 3600)
     assert "aged=1" in summary and ssh.calls == []
 
@@ -1824,18 +1843,18 @@ def test_a_date_learned_while_held_is_kept_for_a_later_undated_sighting(env):  #
     low = finding(severity=None, fixed=None)  # undated: a held notice
     env.collector([low])
     assert "held=1" in env.run()[1]
-    dated = finding(fixed="2.1.0", severity="high")
+    dated = bare_high(fixed="2.1.0")
     dated["sources"][0]["published_at"] = "2026-10-01T00:00:00Z"  # 35 days before T0
     env.collector([dated])
     assert "aged=1" in env.run(now=T0 + 600)[1]
-    env.collector([finding(fixed="2.1.0", severity="high")])  # undated again
+    env.collector([bare_high(fixed="2.1.0")])  # undated again
     _, summary, ssh = env.run(now=T0 + 1200)
     assert "aged=1" in summary and "roots=0" in summary and ssh.calls == []
 
 
 def test_first_sight_is_the_run_that_deferred_on_a_failed_fetch(env):  # dmmf review
     """Seen six days after its source, its page failing for two days: judged at six days."""
-    young = finding(fixed="2.1.0", severity="high")
+    young = bare_high(fixed="2.1.0")
     young["sources"][0]["published_at"] = "2026-10-30T00:00:00Z"  # six days before T0
     env.collector([young])
     env.pages.put(GHSA, "", status=503)
@@ -1850,7 +1869,7 @@ def test_an_unconfirmed_alias_never_takes_another_advisorys_first_sight(env):  #
     env.pages.put(GHSA, "", status=503)
     env.collector([finding(severity=None, fixed=None)])  # A: deferred, first sight now
     env.run(now=T0 - 3 * 86400)
-    b = finding(fid="GHSA-mnop-qrst-uvwx", aliases=("GHSA-abcd-efgh-ijkl",), fixed="2.1.0", severity="high")
+    b = finding(fid="GHSA-mnop-qrst-uvwx", aliases=("GHSA-abcd-efgh-ijkl",), fixed="2.1.0")
     b["sources"][0]["published_at"] = "2026-10-30T00:00:00Z"  # six days before T0
     env.collector([b])  # B claims A's id; its page fails too
     env.pages.put(other, "", status=503)
@@ -1862,7 +1881,7 @@ def test_an_unconfirmed_alias_never_takes_another_advisorys_first_sight(env):  #
 
 
 def test_the_hold_counts_from_the_run_that_deferred_on_a_failed_fetch(env):  # dmmf review
-    env.collector([finding(fixed=None, severity="high")])
+    env.collector([bare_high(fixed=None)])
     env.pages.put(GHSA, "", status=503)
     env.run()
     del env.pages.fixed[GHSA]  # seven hours later the page answers, still with no fix
@@ -1931,10 +1950,12 @@ def _poisoned():
     return {**f, "affected": "<99.0.0", "trojanized": True, "injection_exec": True}
 
 
-@pytest.mark.parametrize("severity,level", [("Moderate", "notice"), ("High", "high")])
-def test_a_record_about_a_real_advisory_posts_what_the_vendor_page_says(env, severity, level):
+@pytest.mark.parametrize("severity,race,level", [  # 9kgk: the severity word alone sets nothing
+    ("Moderate", "Race in the Edit tool", "notice"), ("High", "Race in the Edit tool", "notice"),
+    ("High", "Race in the Edit tool writes outside the workspace", "high")])
+def test_a_record_about_a_real_advisory_posts_what_the_vendor_page_says(env, severity, race, level):
     env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", cve="CVE-2026-0007", affected=">= 1.0, < 2.1.251",
-                                      patched="2.1.251", severity=severity, title="Race in the Edit tool"))
+                                      patched="2.1.251", severity=severity, title=race))
     env.collector([_poisoned()])
     code, summary, relay = env.run()
     assert code == 0, summary
@@ -1945,11 +1966,11 @@ def test_a_record_about_a_real_advisory_posts_what_the_vendor_page_says(env, sev
     else:
         (e,), _ = env.ledger()
         adv, title, text = e["advisory"], e["source_title"], relay.calls[0][2]
-        assert text.split("\n")[:4] == ["HIGH: Claude Code: security advisory (CVE-2026-0007)", "Race in the Edit tool",
+        assert text.split("\n")[:4] == ["HIGH: Claude Code: security advisory (CVE-2026-0007)", race,
                                         "Affected: Claude Code from 1.0 and below 2.1.251. Fixed in 2.1.251.",
                                         "Action: upgrade Claude Code to 2.1.251 or later."]
     # The level, version, range, title, ids and sources are the page's; the record's are gone.
-    assert adv["level"] == level and title == "Race in the Edit tool"
+    assert adv["level"] == level and title == race
     assert adv["products"] == [{"name": "Claude Code", "ecosystem": "claude-code", "affected": ">=1.0,<2.1.251",
                                 "fixed": "2.1.251"}]
     assert adv["aliases"] == ["GHSA-abcd-efgh-ijkl"] and [s["url"] for s in adv["sources"]] == [GHSA]
@@ -1960,7 +1981,8 @@ def test_a_record_about_a_real_advisory_posts_what_the_vendor_page_says(env, sev
 def test_fixed_is_read_from_the_page_not_picked_from_it(env):
     """The page says "affects 1.0 to 2.0, fixed in 3.0". A record that names 2.0, a version
     on that page, as the fix changes nothing."""
-    env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", affected=">= 1.0, <= 2.0", patched="3.0"))
+    env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", affected=">= 1.0, <= 2.0", patched="3.0",
+                                      title="Remote code execution"))
     env.collector([{**finding(fixed="2.0"), "affected": "<2.0"}])
     _, _, relay = env.run()
     assert "Action: upgrade Claude Code to 3.0 or later." in relay.calls[0][2] and "to 2.0 or later" not in relay.calls[0][2]
@@ -2119,13 +2141,13 @@ def test_a_fresh_state_is_already_past_the_gate(env, capsys):
 
 
 def test_sources_a_thread_learned_before_the_gate_are_listed_only_if_the_vendors(env):
-    env.collector([finding(fixed=None, affected="< 2.1.1")])  # a range: posts now, never waits (0dvh)
+    env.collector([{**finding(fixed=None, affected="< 2.1.1"), "trojanized": True}])  # a range: posts now (0dvh)
     env.run()
     with Ledger(env.config.ledger) as led:
         (e,) = led._state()["entries"]
         led.learn_sources(e["root_event_id"], [main.schema.Source("https://example.org/write-up", None),
                                                main.schema.Source(ROUTER, None), main.schema.Source(GHSA2, None)])
-    env.collector([finding(fixed="2.1.1")])  # a fix: a real reply, which carries the learned sources
+    env.collector([{**finding(fixed="2.1.1"), "trojanized": True}])  # a fix: a real reply with the learned sources
     _, summary, relay = env.run(now=T0 + 3600)
     assert "replies=1" in summary
     reply = relay.calls[0][2]
@@ -2135,7 +2157,8 @@ def test_sources_a_thread_learned_before_the_gate_are_listed_only_if_the_vendors
 def test_an_unexpressible_vendor_fix_gets_no_action_line_through_a_whole_run(env):
     """The vendor's page states a fix the schema cannot carry: the post says a fix is listed,
     names no version and has no action sentence, in English and in Japanese."""
-    env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", affected="< 2.0.0", patched="2.0.0-rc.1"))
+    env.pages.put(GHSA, advisory_page("GHSA-abcd-efgh-ijkl", affected="< 2.0.0", patched="2.0.0-rc.1",
+                                      title="Remote code execution"))
     env.collector([finding(fixed="2.0.0")])
     _, summary, relay = env.run()
     text, ja = relay.calls[0][2], relay.ja[0][2]
@@ -2165,7 +2188,7 @@ def test_a_kev_entry_posts_though_the_page_budget_is_spent(env, monkeypatch):
     monkeypatch.setattr(main, "MAX_RUN_PAGES", 0)
     env.kev.catalog = {"vulnerabilities": [{**kev_item(), "notes": "https://www.anthropic.com/security/advisory-7"}]}
     _, summary, relay = env.run()
-    assert "roots=1" in summary and relay.calls[0][2].startswith("CRITICAL: Claude Code: known exploited vulnerability")
+    assert "roots=1" in summary and relay.calls[0][2].startswith("HIGH: Claude Code: known exploited vulnerability")
     assert env.state()["deferred"] == []
 
 
@@ -2191,7 +2214,7 @@ def test_admit_puts_the_readings_on_what_the_level_is_computed_from(env, monkeyp
     assert fields["ghsa"]["repository"] == "anthropics/claude-code" and fields["ghsa"]["severity"] == "high"
     assert [(p["ecosystem"], p["name"], p["first_patched"]) for p in fields["ghsa"]["packages"]] == [("", "Claude Code", "2.1.0")]
     claims = main.rules.claims_for(c, scope, T0)
-    assert sorted(x["level"] for x in claims) == ["critical", "high"]
+    assert sorted(x["level"] for x in claims) == ["critical", "notice"]  # 9kgk: the page's severity sets nothing
     assert all(ruleset.check_claim(x, scope.name) == "ok" for x in claims)
     assert "readings" not in json.dumps(env.state())  # never in the state file
 
@@ -2201,7 +2224,8 @@ def test_a_page_confirmed_finding_alone_has_one_ghsa_reading(env, monkeypatch):
     (_, summary, _), seen = _levelled(env, monkeypatch)
     ((c, scope),) = seen
     assert [s for s, _ in c.readings] == ["ghsa"] and json.loads(c.readings[0][1])["ghsa_id"] == "GHSA-abcd-efgh-ijkl"
-    assert main.rules.basis(c, scope, "high") == "fields"
+    assert main.rules.basis(c, scope, "notice") == "fields"
+    assert main.rules.basis(c, scope, "high") == "reading"  # 9kgk: a severity word is no field rule
 
 
 def test_a_later_run_without_the_flag_lowers_nothing(env):
@@ -2302,3 +2326,127 @@ def test_a_root_after_a_notice_under_a_former_name_takes_the_current_name(env):
     assert "roots=1" in summary and relay.calls[0][2].startswith("HIGH: `@modelcontextprotocol/inspector`")
     (e,), _ = env.ledger()
     assert e["scope"] == "@modelcontextprotocol/inspector" and e["advisory"]["products"][0]["name"] == e["scope"]
+
+
+# ---------------------------------------------------------------- 9kgk: a critical needs a complete action
+
+def test_a_journaled_critical_with_no_action_never_posts(env):
+    """The outbox of a poster from before 9kgk can hold a critical with no fix and no
+    action. It is dropped with its copy, not sent; the candidate is planned again later."""
+    kev_fixed(env)
+    code, _, _ = env.run(relay=FakeRelay("fail"))
+    st = env.state()
+    root = next(it for it in st["outbox"] if it["kind"] == "root")
+    assert code == 1 and root["adv"]["level"] == "critical" and any(it["kind"] == "copy" for it in st["outbox"])
+    root["adv"]["actions"], root["adv"]["products"][0]["fixed"] = [], None  # as the older poster wrote it
+    env.config.state.write_text(json.dumps(st))
+    env.kev.catalog = {"vulnerabilities": []}
+    env.collector([])
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "withheld=1" in summary, summary
+    # what posts is the candidate the failed run deferred, planned again: with its upgrade
+    assert relay.calls and all("Action: upgrade Claude Code to 2.1.0 or later." in c[2] for c in relay.calls)
+    assert not [it for it in env.state()["outbox"] if it["kind"] in ("root", "copy")]
+
+
+def test_a_stop_using_critical_never_raises_a_thread(env, monkeypatch):
+    """A reply can carry no stop_using action, so a thread is raised to critical only by
+    a fix: a stop_using critical on a known thread stays at action_cap (high)."""
+    env.collector([bare_high(fixed=None, affected="<2.1.0")])
+    assert "roots=1" in env.run()[1]
+    monkeypatch.setattr(main.rules, "level_for", lambda c, scope, ok: ("critical", "stop-using"))
+    env.collector([bare_high(fixed=None, affected="<2.1.0")])
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "copies=0" in summary and all(c[0] != "critical" for c in relay.calls), summary
+    (e,), _ = env.ledger()
+    assert e["level"] == "high" and "critical" not in e["channel_ids"]
+
+
+def test_a_kev_listing_of_a_thread_that_states_its_fix_is_critical(env):
+    """The KEV entry states no version, but the thread already does: the upgrade is complete."""
+    env.collector([finding(fid="GHSA-abcd-efgh-ijkl", aliases=("CVE-2026-0001",), affected="<2.1.0")])
+    assert "roots=1" in env.run()[1]
+    env.collector([])
+    env.kev.catalog = {"vulnerabilities": [kev_item()]}
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "copies=1" in summary and relay.calls[0][0] == "critical", summary
+    assert "Action: upgrade Claude Code to 2.1.0 or later." in relay.calls[0][2]
+
+
+def test_a_standing_critical_with_no_fix_still_takes_its_updates(env, monkeypatch):
+    """Stage-1 review: a critical thread posted before this rule with no fix (the OpenSSH
+    case) keeps its standing level; a later reply that is not a fix is sent, not dropped."""
+    monkeypatch.setattr(main.rules, "level_for", lambda c, scope, ok: ("critical", None))  # as an older poster
+    monkeypatch.setattr(main, "_complete", lambda adv: True)  # posted before the outbox guard existed
+    env.collector([bare_high(fixed=None, affected="<2.0.0")])
+    assert "roots=1" in env.run()[1]
+    monkeypatch.undo()
+    env.collector([bare_high(fixed=None, affected="<2.5.0")])
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "replies=2" in summary and "withheld=0" in summary, summary
+    assert all("below 2.5.0" in c[2] for c in relay.calls)
+
+
+def test_a_stop_using_critical_with_the_threads_fix_raises_it(env, monkeypatch):
+    """Stage-1 review: the thread already states its fix, so the upgrade is complete."""
+    env.collector([finding(fid="GHSA-abcd-efgh-ijkl", affected="<2.1.0")])
+    assert "roots=1" in env.run()[1]
+    real = main.rules.level_for
+    monkeypatch.setattr(main.rules, "level_for", lambda c, scope, ok: (
+        ("critical", "stop-using") if not c.fixed else ("critical", "fields")) if c.trojanized else real(c, scope, ok))
+    env.collector([{**finding(fid="GHSA-abcd-efgh-ijkl", fixed=None, affected="<2.1.0"), "trojanized": True}])
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "copies=1" in summary and relay.calls[0][0] == "critical", summary
+    assert "Action: upgrade Claude Code to 2.1.0 or later." in relay.calls[0][2]
+
+
+def test_a_fix_reply_never_raises_a_thread_whose_root_had_no_fix(env):
+    """Whole-branch review: every reader holds a fix a reply adds where the root had none
+    (tyje), so a raise in that reply would leave members a critical with no version.
+    The thread stays high with its fix until a source check confirms it."""
+    env.kev.catalog = {"vulnerabilities": [kev_item()]}
+    assert "roots=1" in env.run()[1]  # exploited, no fix: high
+    env.collector([finding(fid="CVE-2026-0001", sources=(GHSA2,))])  # the vendor's fix
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "copies=0" in summary and "replies=1" in summary, summary
+    assert all(c[0] == "feed" for c in relay.calls) and "Fixed in 2.1.0." in relay.calls[0][2]
+    (e,), _ = env.ledger()
+    assert e["level"] == "high" and e["root_fixed"] == ""  # the root stated no fix
+
+
+def test_a_journaled_critical_copy_with_no_action_never_posts(env):
+    """Whole-branch review: a known thread's copy keeps no adv; its text's block is checked."""
+    kev_fixed(env)
+    env.run(relay=FakeRelay("ok", "fail"))  # the critical root sent, the feed copy kept
+    st = env.state()
+    (cp,) = [it for it in st["outbox"] if it["kind"] == "copy"]
+    bare = main.compose.root_post(main.candidates.Candidate(
+        id="CVE-2026-0001", aliases=(), product_text="Claude Code", advisory_severity=None, local_level_hint=None,
+        exploited=True, trojanized=False, injection_exec=False, fixed=None, affected=None,
+        sources=(main.candidates.Source(GHSA, None),), observed_at=None), "critical",
+        main.rules.scope_of("Claude Code"), posted_at=T0)  # as an older poster wrote it
+    cp["adv"], cp["text"] = None, bare[0]  # a known thread's copy keeps only its text
+    env.config.state.write_text(json.dumps(st))
+    env.collector([])
+    env.kev.catalog = {"vulnerabilities": []}
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "withheld=1" in summary, summary  # the old copy dropped; the replanned one acts
+    assert all("Action: upgrade Claude Code to 2.1.0 or later." in c[2] for c in relay.calls)
+
+
+def test_a_journaled_reply_raising_a_thread_to_an_actionless_critical_never_posts(env):
+    """Delta review: replies are exempt only on a thread already critical."""
+    env.collector([finding(fid="GHSA-abcd-efgh-ijkl", aliases=("CVE-2026-0001",), affected="<2.1.0")])
+    assert "roots=1" in env.run()[1]
+    env.collector([])
+    env.kev.catalog = {"vulnerabilities": [kev_item()]}
+    env.run(now=T0 + 3600, relay=FakeRelay("fail"))  # the raise is journaled, nothing sent
+    st = env.state()
+    (rp,) = [it for it in st["outbox"] if it["kind"] == "reply"]
+    assert rp["adv"]["level"] == "critical"
+    rp["adv"]["actions"], rp["adv"]["products"][0]["fixed"] = [], None  # as an older poster wrote it
+    env.config.state.write_text(json.dumps(st))
+    env.kev.catalog = {"vulnerabilities": []}
+    code, summary, relay = env.run(now=T0 + 7200)
+    assert code == 0 and "withheld=1" in summary, summary  # dropped; the replanned raise carries its upgrade
+    assert any(c[0] == "feed" and "Level is now critical." in c[2] for c in relay.calls)
