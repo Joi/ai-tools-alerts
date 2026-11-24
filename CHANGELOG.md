@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.8 — 2026-11-24
 
 The CLI now matches an MCP server by the package it runs, not only by the key it is configured under (ai-tools-alerts#0xq6, design section 8 of ai-tools-alerts#9mx8). For each server in the Claude Code, Codex and Cursor configs it reads `command` and `args` and works out the package: `npx`/`bunx` with an npm name, `uvx`, `uv tool run` and `pipx run` with a PyPI name, a path into `node_modules` (the version from that package's `package.json`), or a path into a virtual environment's `bin` (the version from its `.dist-info`). A pinned version (`@1.2.3`, `==1.2.3`) is kept; a tag or a range is not a version. Only the package name and the version enter the inventory, each in a fixed grammar; no argument, environment value or URL does, and nothing is run. An alert names the package (`spec/scope.json`), and the scope entry's `package` says which registry the name belongs to, so an npm package that happens to share a PyPI server's name does not match it. Nothing on the wire changes.
 
@@ -51,7 +51,7 @@ Expiry is computed by the reader and judged by the signed checkpoint, not by the
 
 Not done: the issue asked that an event dated after the checkpoint that lists it be refused. The poster's own checkpoint lists the posts of its run, which are dated after it, so the CLI does not judge an alert's expiry while one of its claims is dated after the checkpoint; the next checkpoint judges it.
 
-Nothing on the wire changes with this release: the poster sends no claim and no lowering yet.
+The poster sends no claim yet (ai-tools-alerts#3qyq). The one new event it sends is the level-only lowering described above. The relay was checked before this release: it stores and returns a 2048-byte claim tag, and the mirror exporter copies it, byte for byte (ai-tools-alerts#yw7r).
 
 ## 0.1.7 — 2026-11-24
 
