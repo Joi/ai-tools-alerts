@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.8 — 2026-11-24
 
 The trust root can pin the ruleset, and a CLI whose ruleset is out of date says so and stops judging (design review of 2026-11-23, finding D10, ai-tools-alerts#ed7n; the second half of ai-tools-alerts#s6mt). The pin is `ruleset: {version, sha256, min_version}`, an optional key of the checkpoint key certificate beside `min_cli`, signed with `scripts/sign-checkpoint-key.py --ruleset-min-version N`: the version and digest are those of the checkout the root signs from. A CLI is out of date when its ruleset is below `min_version`, or is the pinned version with another digest (`ruleset.outdated`, which `ruleset.check_claim` now shares). It then prints one `out of date:` line after every command that reads the feed, and `run --json` gains the key `ruleset_outdated`.
 
@@ -51,7 +51,7 @@ Expiry is computed by the reader and judged by the signed checkpoint, not by the
 
 Not done: the issue asked that an event dated after the checkpoint that lists it be refused. The poster's own checkpoint lists the posts of its run, which are dated after it, so the CLI does not judge an alert's expiry while one of its claims is dated after the checkpoint; the next checkpoint judges it.
 
-Nothing on the wire changes with this release: the poster sends no claim and no lowering yet.
+The poster sends no claim yet (ai-tools-alerts#3qyq). The one new event it sends is the level-only lowering described above. The relay was checked before this release: it stores and returns a 2048-byte claim tag, and the mirror exporter copies it, byte for byte (ai-tools-alerts#yw7r).
 
 ## 0.1.7 — 2026-11-24
 
