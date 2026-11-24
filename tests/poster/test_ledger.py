@@ -443,3 +443,21 @@ def test_an_id_with_work_in_flight_or_a_thread_under_a_former_name_joins_no_grou
         adv = adv_for(a, "high")
         led.record_root(adv, "r1", {"feed": "r1"}, scope="MCP servers and clients", exploited=False, now=T0)
         assert len(ledger.merge([pair(a), pair(b)], led)) == 2
+
+
+def test_the_newest_member_is_found_whatever_form_its_date_takes():
+    """Delta review: a space before the time, an offset or a date alone do not sort as strings."""
+    url = "https://github.com/anthropics/claude-code/security/advisories/"
+    old = cand(id="GHSA-aaaa-aaaa-aaaa", fixed="2.1.0", sources=(Source(url + "GHSA-aaaa-aaaa-aaaa", "2026-11-17T00:00:00Z"),))
+    for when in ("2026-11-17 23:00:00Z", "2026-11-18T08:00:00+09:00", "2026-11-18"):
+        new = cand(id="GHSA-bbbb-bbbb-bbbb", fixed="2.1.0", sources=(Source(url + "GHSA-bbbb-bbbb-bbbb", when),))
+        (m, _), = ledger.merge([pair(old), pair(new)])
+        assert m.id == new.id, when
+
+
+def test_a_groups_members_are_keyed_under_its_former_names_too():
+    a = _gh("GHSA-aaaa-aaaa-aaaa", fixed="2.1.0", product_text="pypi:mcp-server-git")
+    b = _gh("GHSA-bbbb-bbbb-bbbb", fixed="2.1.0", product_text="pypi:mcp-server-git")
+    groups = {}
+    (m, _), = ledger.merge([pair(a), pair(b)], groups=groups)
+    assert set(groups) == {("mcp-server-git", m.id.casefold()), ("MCP servers and clients", m.id.casefold())}

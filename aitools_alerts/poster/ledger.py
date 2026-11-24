@@ -17,6 +17,7 @@ import os
 import tempfile
 import unicodedata
 from dataclasses import asdict, dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 from aitools_alerts import schema, wire
@@ -533,8 +534,8 @@ def merge(pairs, ledger: Ledger | None = None, groups: dict | None = None, settl
         for component in _components(by_id, fix_keys):
             for members in _chunks(sorted(component, key=_published_key, reverse=True)):
                 c = members[0] if len(members) == 1 else _fix_group(members, name, ledger)
-                if len(members) > 1 and groups is not None:
-                    groups[(name, c.id.casefold())] = members
+                if len(members) > 1 and groups is not None:  # under former names too (Run._former)
+                    groups.update({(n, c.id.casefold()): members for n in names})
                 out.append((c, group[0][1]))
     return out
 
@@ -554,11 +555,20 @@ def _chunks(members, cap: int = 51) -> list[list]:
     return out
 
 
-def _published_key(c) -> str:
-    """The member's primary source's publication date as written (ISO 8601 sorts), or ""."""
+def _published_key(c) -> float:
+    """When the member's primary source was published, as a UTC instant; -inf when it
+    does not say. The accepted forms (a space or a T, Z or an offset, a date alone) do
+    not sort as strings."""
     src = next((s for s in c.sources if schema.is_primary(s.url)), None)
     pub = getattr(src, "published_at", None) if src is not None else None
-    return pub if isinstance(pub, str) else ""
+    if not isinstance(pub, str):
+        return float("-inf")
+    raw = pub.strip().replace(" ", "T", 1).replace("Z", "+00:00").replace("z", "+00:00")
+    try:
+        t = datetime.fromisoformat(raw)
+    except ValueError:
+        return float("-inf")
+    return (t if t.tzinfo else t.replace(tzinfo=timezone.utc)).timestamp()
 
 
 def _fix_group(members, scope_name, ledger):

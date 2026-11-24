@@ -2568,3 +2568,26 @@ def test_an_advisory_with_a_send_in_flight_joins_no_group(env):
     out = [it for it in env.state()["outbox"] if it["kind"] == "root"]
     assert all(GHSA_Z.casefold() not in {i.casefold() for i in it["ids"]} for it in out
                if "abcd" in it["key"])
+
+
+def test_a_groups_range_widens_for_a_members_later_fix(env):
+    """Delta review: A's vendor corrects its fix to 2.2.0 and its range to <2.2.0; the
+    group's range must reach 2.1.5, which the new fix covers."""
+    env.collector([finding(affected="<2.1.0"), finding(fid=GHSA_Z, affected="<2.1.0")])
+    code, summary, _ = env.run()
+    assert "roots=1" in summary
+    env.collector([finding(affected="<2.2.0", fixed="2.2.0")])
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "replies=1" in summary
+    (entry,), _ = env.ledger()
+    assert entry["advisory"]["products"][0] == {**entry["advisory"]["products"][0], "affected": "<2.2.0", "fixed": "2.2.0"}
+
+
+def test_a_cve_assigned_after_the_digest_is_not_listed_again(env):
+    """Delta review: an id new to a listed advisory is not a new member."""
+    env.collector([finding(severity=None)])
+    code, summary, _ = env.run(digest_now=True)
+    assert "digest=1" in summary
+    env.collector([finding(severity=None, aliases=("CVE-2026-7777",))])
+    code, summary, _ = env.run(now=T0 + 3600)
+    assert code == 0 and env.state()["held"] == []

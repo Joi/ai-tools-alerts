@@ -640,9 +640,7 @@ class Run:
                 continue  # never kept: a later run would post it without its marker
             # faxq: a fix group is kept as its members, each re-admitted alone next run
             # (admit keeps only the ids the primary's own page assigns), then grouped again.
-            group = self.groups.get((scope.name, c.id.casefold())) or next(  # _former may rename the scope
-                (v for (_, i), v in self.groups.items() if i == c.id.casefold()), [c])
-            for m in group:
+            for m in self.groups.get((scope.name, c.id.casefold()), [c]):  # merge keys former names too
                 self.deferred[(scope.name, m.id.casefold())] = m.to_dict()
 
     @staticmethod
@@ -841,8 +839,11 @@ class Run:
                             or not p["fixed"] else f"<{p['fixed']}"
                     h["adv"] = {**h["adv"], "aliases": ids, "products": [p]}
                     self.save()
-            fresh = [i for i in compose._ids([a["id"], *a["aliases"]], None)
-                     if f"{scope}|{i.casefold()}" not in known]
+            # Members, not ids: an id new to a listed advisory (a CVE assigned later) is not news.
+            fresh = [i for m in self.groups.get((scope, a["id"].casefold()), ())
+                     if not any(f"{scope}|{k.casefold()}" in known for k in (m.id, *m.aliases))
+                     for i in compose._ids([m.id, *m.aliases], None)]
+            fresh = list(dict.fromkeys(fresh))
             if fresh and not any(h["scope"] == scope and set(self._notice_keys(scope, h["adv"]))
                                  & set(self._notice_keys(scope, a)) for h in self.state["held"]):
                 # faxq: a fix group met a member a digest already listed: the members it has
@@ -900,8 +901,9 @@ class Run:
             c, id=prev.id, aliases=tuple(prev.aliases) + tuple(unpublished),
             fixed=c.fixed if own_fix else was.fixed,
             # a range the schema cannot say is kept raw when none is known: no "not stated" (0dvh)
-            # faxq: one member's sighting never narrows a fix group's range, which covers them all
-            affected=was.affected if compose.covers(prev)[0] not in (0, 1)
+            # faxq: one member's sighting never narrows a fix group's range, which covers them
+            # all; a range that differs widens it to everything before the fix
+            affected=_group_range(was, c, c.fixed if own_fix else was.fixed) if compose.covers(prev)[0] not in (0, 1)
             else c.affected if compose.schema_affected(c.affected) else (was.affected or c.affected),
             sources=tuple(prev.sources) + tuple(extra),
             source_title=compose.source_title(c) or entry.source_title)  # faxq: a copy's headline
@@ -1203,6 +1205,17 @@ def _epoch(v) -> int | None:
     if len(v) == 10:  # a date only (KEV dateAdded): judged at its day's end, so an
         return int(t.timestamp()) + 86399  # entry added on the floor's own day is never "old"
     return int(t.timestamp())
+
+
+def _group_range(was, c, fixed) -> str | None:
+    """A fix group thread's range after one member's sighting: the thread's when they
+    agree or the sighting states none, none stated when the thread states none, else
+    everything before the fix (which covers both)."""
+    new = compose.schema_affected(c.affected)
+    if new is None or new == was.affected or was.affected is None:
+        return was.affected
+    fixed = compose.schema_fixed(fixed)
+    return f"<{fixed}" if fixed else None
 
 
 def _published(sources) -> int | None:
