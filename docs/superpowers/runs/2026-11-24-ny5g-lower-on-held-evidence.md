@@ -1,12 +1,13 @@
 # Run: ny5g-lower-on-held-evidence
 Instruction: ai-tools-alerts#ny5g (starting rung floored at medium): the poster lowers only on positive evidence held 24 h; outage, 404 and flapping lower nothing (findings D4, D13 and D15 of the design review on ai-tools-alerts#h29n)
-Stage: verifying
+Stage: done
 Rung: heavy from the spec pass on (one BLOCKER of the spec pass is not fixed in this slice: see finding 4); started medium (start-floor medium: constraint-lens and FC=2, BR1 REV2 NOV1 INT1 FC2 = 7; the dispatch brief floors it at medium too)
 Lens: "Nothing you build may wait for a person to act."; "`unknown` (timeout, 3xx, 403, 404, 429, 5xx, parse error, truncated or oversized body) changes no level and does not count toward expiry"; "A 404 is never a withdrawal."; "The bot does not get `retract`"; "`fetch_kev` already separates `unavailable`; keep that through the recompute."
 Last reviewed: spec 7882422261538c32c5b289a756319316061c0e68, then the delta at b05a51660891e93b426e112a343e9959af692861
 Last reviewed: plan b0d8fdb37e08fc1017fe1ad4ac45fc8dfe5d3b12, then the delta at 1a2cddb0a5f16aacd355df089da1e99bf6281319
 Last reviewed: code d389897214eb710a576249ebbfc9e71a5920a85a (the whole branch), then the delta `--since d389897214eb710a576249ebbfc9e71a5920a85a` at b973e755b84b6b479afa794b2224525faeea7a8c
-Unreviewed after the delta: the commit that fixes what the delta raised (named in the close-out comment on the issue)
+Unreviewed after the delta: 6a357815b7ae0958099d94c9203f5531b08e0812, the fix of what the delta raised, and the second merge of origin/main (20294f2df57e28344afcbc28111616dcacff6b99; one conflict, in the changelog)
+Gate: `scripts/test-gate.sh` exit 0 at 20294f2df57e28344afcbc28111616dcacff6b99 (the public scan, then 2277 passed and 1 skipped), run in a clone holding this branch alone
 Review tier: gpt-6-astra at high (h29n calls the work security-shaped)
 Spec: docs/superpowers/specs/2026-11-24-ny5g-lower-on-held-evidence-design.md   Plan: docs/superpowers/plans/2026-11-24-ny5g-lower-on-held-evidence.md
 Agency project: — (this session has no Agency tools; see Notes)
@@ -85,8 +86,12 @@ Code findings, pass 2 (the delta), and what was done:
 4. COSMETIC (Stage 1), fixed: the stderr line names the older-version cause; on a lowered thread, once the level has gone alone, ids, sources and a severity word make no reply of their own.
 
 ## Chunks
-- [x] recompute: the evidence rules, the KEV reader, the ledger marks, the digest line (59bdcf9, merge d389897, review fixes in the commit after)
+- [x] recompute: the evidence rules, the KEV reader, the ledger marks, the digest line (59bdcf9; merge d389897; review fixes b973e75; delta fixes 6a35781; merge 20294f2)
 
 ## Notes
+- Size: 1,900 changed lines with tests and documents, of which about 620 are poster code. The split kept the readers and the `withdrawn` state out; what grew the rest was the reviews, which found a crash or replay boundary in each round, each fixed with its test. It stayed one deliverable.
+- The public scan fails in the clone the worktrees share, on objects of other sessions' branches: none of its 66 hit ids is reachable from this branch or from origin/main. The gate was run in a clone made with `git clone --single-branch` of this branch, where the scan passes.
+- Main moved twice during the run (wa6n and r0ra, then fv4g). The first merge changed the ground: scope classes replaced tiers, and OpenSSH left the channel class, so the OpenSSH thread is now lowered to high under the shipped ruleset and the acceptance line that waited for 9kgk is met here.
+- Skip-temptations: none acted on. The plan review was run although the code already existed by then; it found four blockers the code review might not have.
 - Split before building (decided comment on ny5g, 2026-11-24): this run is the evidence rules and the KEV reader; 3qyq is the rest.
 - Agency: the skill's Step 3 names Agency for execution. Its tools are not offered to this session, and the seat rules forbid looking at the host to find out why. The chunk is built in this session and reviewed as the rung requires.
