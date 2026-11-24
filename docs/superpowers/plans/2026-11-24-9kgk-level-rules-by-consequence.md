@@ -19,13 +19,13 @@ poster does not follow fails the vector tests).
       `_rule_row` accepts optional `stop_using` (must be `True`); `Support` gains
       `stop_using: bool = False`; `read` sets it from the matched row and "no package of
       this product has first_patched"; `_rule_matches` loses the severity clause.
-- [ ] New `Ruleset.action_level(level, actions, product, readings=()) -> str` (spec 1).
+- [ ] New `Ruleset.action_level(level, actions, product, fixed, readings=(), *, stop_using=None) -> str` (spec 1).
       Accept action entries as `(verb, target, value)` tuples or objects with
       `verb/target/value` attributes (`schema.Action`). Add to `__all__` nothing new
       (method). Module docstring: one sentence.
 - [ ] `spec/claim-vectors.json`: `ruleset` 3; the "vendor advisory, severity high" level
       vector becomes notice (renamed "...severity high alone is a notice"); add an
-      `actions` list of vectors `{name, product, level, readings, actions, want}`:
+      `actions` list of vectors `{name, product, level, readings, actions, fixed, want}`:
       kev critical with upgrade+version -> critical; kev critical with no action -> high;
       kev critical with stop_using -> high; malware critical with stop_using -> critical;
       high with no action -> high. Description gains one sentence on `actions`.
@@ -37,7 +37,7 @@ Verify: `python3 -m pytest tests/test_ruleset.py -q` (after Task 3's test edits)
 - [ ] `rules.py`: delete the severity-tier1 clause and `_HIGH_WORDS`; extend `_SEVERE`
       (spec 2); `level_for` docstring reasons: drop severity-tier1, add no-action and
       stop-using; after computing `(level, reason)`, build the would-be action and apply
-      `rs.action_level(level, [action], scope.name, _readings(c))`; capped ->
+      `rs.action_level(level, [action], scope.name, fixed, _readings(c))`; capped ->
       `("high"... i.e. rs.action_cap, "no-action")`; critical through stop_using ->
       reason `stop-using`. Module docstring: critical needs a complete action.
 - [ ] `compose.root_post`: `actions` = upgrade when fixed; `stop_using` when level is

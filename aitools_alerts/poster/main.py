@@ -83,6 +83,12 @@ class _Stop(Exception):
     """A send failed or its outcome is unknown: send nothing more this run."""
 
 
+def _block(text):
+    """The advisory a journaled copy carries, as a dict (a copy keeps no ``adv``)."""
+    adv = schema.parse_post(text) if isinstance(text, str) else None
+    return asdict(adv) if adv is not None else None
+
+
 def _complete(adv) -> bool:
     """False for a journaled critical whose block holds no complete action (9kgk): no
     upgrade while its product states a fixed version, and no stop_using. A stop_using in
@@ -170,7 +176,7 @@ class Run:
                                    and o["root"] is None and _fold(o["ids"]) & _fold(it["ids"])])
                 self.n["withheld"] += 1
                 return
-            if it["kind"] == "root" and not _complete(it.get("adv")):
+            if it["kind"] in ("root", "copy") and not _complete(it.get("adv") or _block(it["text"])):
                 # 9kgk: a critical root journaled before this rule (no fix, no action) never posts;
                 # a reply keeps a thread's standing level, which a run never lowers (h29n does);
                 # the candidate is planned again from its sources next run. Its copies go too.
@@ -769,9 +775,11 @@ class Run:
 
     def plan_known(self, c, scope, level, reason, ids, entry):
         prev = schema.validate(entry.advisory)
-        if level == "critical" and reason == "stop-using" and entry.level != "critical":
-            # 9kgk: a relay-bot reply's only action is an upgrade (compose._publishable), so a
-            # thread is raised to critical only by a fix; stop_using makes a critical root only.
+        if level == "critical" and entry.level != "critical" and (
+                reason == "stop-using" or not compose.schema_fixed(entry.fix_at_root)):
+            # 9kgk: a reply cannot add stop_using, and a fix a reply adds where the root had
+            # none is held by every reader (tyje): the member would hold a critical with no
+            # version. A thread is raised to critical only when its root stated the fix.
             level, reason = ruleset.load().action_cap, "no-action"
         if RANK[level] <= RANK[entry.level]:  # a run never lowers a level; a curator does
             level, reason = entry.level, None

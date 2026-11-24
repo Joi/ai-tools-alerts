@@ -170,6 +170,27 @@ package with no fix is critical with `stop_using`.
   bare level is a thread's standing level, which `plan_known` never lowers (the OpenSSH
   thread keeps taking updates; lowering it is h29n's).
 
+Added after the whole-branch review (independent model, and the stage-1 pass):
+
+- **A raise needs the root's fix.** Every reader holds a fix that a reply adds where the
+  root had none (tyje: it cannot tell a real fix from a thief's `0.0.1`). A thread raised
+  to critical in that reply would show members a critical whose upgrade has no version,
+  and `verify.judge` would call it above the source. So `plan_known` raises a known
+  thread to critical only when its root stated a fixed version: the ledger entry keeps
+  `root_fixed` (for an entry written before it, the thread's fix when no reply changed
+  it). A thread whose root had no fix stays high with its fix until a member's source
+  check can confirm the held fix (h29n, tavj). The common order (the vendor's advisory
+  with its fix first, KEV later) still raises.
+- The outbox check covers new roots and their copies (a copy's block is read from its
+  text when it keeps no `adv`); replies keep a thread's standing level.
+- A reply that is not a fix keeps a root's `stop_using`, and `_publishable` allows it
+  while no fix is stated. `Run.one` counts the thread's fix for a `stop-using` critical
+  too. A fix the schema cannot express never yields `stop_using`.
+- **Curator.** `curator post` and `curator amend` refuse a critical with no complete
+  action (any verb with a target; an upgrade needs the product's fixed version). A curator
+  critical already without one may still take a note. Readers are unchanged: nothing
+  already published is hidden.
+
 ### Consequences for other behaviour
 
 - A non-exploited flaw with no fix known is a notice, held for the digest, and posts a

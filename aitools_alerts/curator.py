@@ -129,6 +129,17 @@ def _body(adv: schema.Advisory) -> str:
     return "\n".join(lines)
 
 
+_NEEDS_ACTION = "a critical needs a complete action: --fixed with an upgrade, or another --action verb:target"
+
+
+def _actionable(adv) -> bool:
+    """9kgk: a critical carries a verb with a target; an upgrade needs the product's fixed version."""
+    if adv.level != "critical":
+        return True
+    fixed = {p.name: p.fixed for p in adv.products}
+    return any(a.target and (a.verb != "upgrade" or fixed.get(a.target)) for a in adv.actions)
+
+
 def post_events(sec: str, m, root: str, *, level, title, product, ecosystem, sources,
                 affected=None, fixed=None, actions=(), adv_id=None, aliases=(), severity=None,
                 expires_at=None, channel=None, now: int | None = None) -> list[dict]:
@@ -157,6 +168,8 @@ def post_events(sec: str, m, root: str, *, level, title, product, ecosystem, sou
         content = schema.render_post(adv, _body(adv))
     except ValueError as e:
         raise CuratorError(f"not a valid advisory: {e}") from None
+    if not _actionable(adv):
+        raise CuratorError(_NEEDS_ACTION)
     return [_sign(sec, [["h", ids[c]]], content, now) for c in chans]
 
 
@@ -286,6 +299,8 @@ def amend_event(sec: str, m, root: str, st: State, thread, root_ev: dict, *, lev
         merged = replace(merged, **long)
     except ValueError as e:
         raise CuratorError(f"the amended advisory is not valid: {e}") from None
+    if not _actionable(merged) and ("level" in patch or "actions" in patch or "products" in patch):
+        raise CuratorError(_NEEDS_ACTION)  # a critical already without one may still take a note
     # The first line is always ours: a note can never read as retract or level.
     lines = [f"level: {lower}" if lower else f"Amended: {merged.title}"]
     note = _one_line(note, "--note")

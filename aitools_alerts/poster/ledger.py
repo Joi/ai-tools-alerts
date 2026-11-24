@@ -53,6 +53,17 @@ class Entry:
     # 8ke5: sources learned with no reply (a source-only change posts nothing); the next
     # reply with a real change publishes them. [{"url", "published_at"}].
     learned_sources: list | None = None
+    # 9kgk: the fixed version the root stated. A reply that adds a fix where the root had
+    # none is held by every reader (tyje), so only this one makes a raise to critical complete.
+    root_fixed: str | None = None
+
+    @property
+    def fix_at_root(self) -> str | None:
+        """The root's fixed version; for an entry written before root_fixed, the thread's
+        when no reply has changed it."""
+        if self.root_fixed is not None or self.replies:
+            return self.root_fixed
+        return ((self.advisory.get("products") or [{}])[0] or {}).get("fixed")
 
     @property
     def listed(self) -> int:
@@ -85,6 +96,7 @@ def _entry_ok(e) -> bool:
             and isinstance(e["replies"], list) and all(_ids_map(r) for r in e["replies"])
             and (e.get("source_title") is None or isinstance(e["source_title"], str))
             and ("listed_at" not in e or type(e["listed_at"]) is int)
+            and (e.get("root_fixed") is None or isinstance(e["root_fixed"], str))
             and ("learned_sources" not in e or (
                 isinstance(e["learned_sources"], list) and len(e["learned_sources"]) <= MAX_LEARNED
                 and all(isinstance(x, dict) and isinstance(x.get("url"), str) for x in e["learned_sources"]))))
@@ -226,7 +238,8 @@ class Ledger:
         e = dict(root_event_id=root_event_id, channel_ids=dict(channel_ids), level=adv.level,
                  aliases=ids, posted_at=now, last_change=now, listed_at=now, scope=scope,
                  exploited=exploited is True, advisory=asdict(adv), replies=[],
-                 **({"source_title": source_title} if source_title else {}))
+                 **({"source_title": source_title} if source_title else {}),
+                 **({"root_fixed": adv.products[0].fixed} if adv.products and adv.products[0].fixed else {}))
         self._state()["entries"].append(e)
         self._save()
         return Entry(**e)

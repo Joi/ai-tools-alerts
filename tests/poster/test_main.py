@@ -2398,3 +2398,38 @@ def test_a_stop_using_critical_with_the_threads_fix_raises_it(env, monkeypatch):
     code, summary, relay = env.run(now=T0 + 3600)
     assert code == 0 and "copies=1" in summary and relay.calls[0][0] == "critical", summary
     assert "Action: upgrade Claude Code to 2.1.0 or later." in relay.calls[0][2]
+
+
+def test_a_fix_reply_never_raises_a_thread_whose_root_had_no_fix(env):
+    """Whole-branch review: every reader holds a fix a reply adds where the root had none
+    (tyje), so a raise in that reply would leave members a critical with no version.
+    The thread stays high with its fix until a source check confirms it."""
+    env.kev.catalog = {"vulnerabilities": [kev_item()]}
+    assert "roots=1" in env.run()[1]  # exploited, no fix: high
+    env.collector([finding(fid="CVE-2026-0001", sources=(GHSA2,))])  # the vendor's fix
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "copies=0" in summary and "replies=1" in summary, summary
+    assert all(c[0] == "feed" for c in relay.calls) and "Fixed in 2.1.0." in relay.calls[0][2]
+    (e,), _ = env.ledger()
+    assert e["level"] == "high" and "root_fixed" not in e
+
+
+def test_a_journaled_critical_copy_with_no_action_never_posts(env):
+    """Whole-branch review: a known thread's copy keeps no adv; its text's block is checked."""
+    kev_fixed(env)
+    env.run(relay=FakeRelay("ok", "fail"))  # the critical root sent, the feed copy kept
+    st = env.state()
+    (cp,) = [it for it in st["outbox"] if it["kind"] == "copy"]
+    bare = main.compose.root_post(main.candidates.Candidate(
+        id="CVE-2026-0001", aliases=(), product_text="Claude Code", advisory_severity=None, local_level_hint=None,
+        exploited=True, trojanized=False, injection_exec=False, fixed=None, affected=None,
+        sources=(main.candidates.Source(GHSA, None),), observed_at=None), "critical",
+        main.rules.scope_of("Claude Code"), posted_at=T0)  # as an older poster wrote it
+    cp["adv"], cp["text"] = main.asdict(bare[1]), bare[0]
+    assert main._complete(main._block(bare[0])) is False  # a known thread's copy has only its text
+    env.config.state.write_text(json.dumps(st))
+    env.collector([])
+    env.kev.catalog = {"vulnerabilities": []}
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "withheld=1" in summary, summary  # the old copy dropped; the replanned one acts
+    assert all("Action: upgrade Claude Code to 2.1.0 or later." in c[2] for c in relay.calls)
