@@ -412,3 +412,34 @@ def test_a_candidate_with_a_thread_joins_no_fix_group(tmp_path):
     with Ledger(tmp_path / "l.json") as led:
         led.record_root(adv_for(a, "high"), "r1", {"feed": "r1"}, scope="Claude Code", exploited=False, now=T0)
         assert len(ledger.merge([pair(a), pair(b)], led)) == 2  # two threads never become one
+
+
+def test_a_fix_groups_first_member_is_the_newest():
+    """Review: the age limit reads the group's primary source, so the newest member's."""
+    old = cand(id="GHSA-aaaa-aaaa-aaaa", fixed="2.1.0", sources=(Source(
+        "https://github.com/anthropics/claude-code/security/advisories/GHSA-aaaa-aaaa-aaaa", "2026-10-01T00:00:00Z"),))
+    new = cand(id="GHSA-bbbb-bbbb-bbbb", fixed="2.1.0", sources=(Source(
+        "https://github.com/anthropics/claude-code/security/advisories/GHSA-bbbb-bbbb-bbbb", "2026-11-04T00:00:00Z"),))
+    for order in ((old, new), (new, old)):
+        (m, _), = ledger.merge([pair(x) for x in order])
+        assert m.id == new.id and m.aliases == (old.id,)
+
+
+def test_a_fix_group_is_cut_to_what_one_block_can_name():
+    """Review: a block names an id and at most 50 aliases; a member past that would be
+    recorded as posted and never named."""
+    many = [_gh(f"GHSA-aaaa-aaaa-{i:04d}", fixed="2.1.0", aliases=(f"CVE-2026-{1000 + i}",)) for i in range(30)]
+    out = ledger.merge([pair(x) for x in many])
+    assert len(out) == 2 and all(1 + len(m.aliases) <= 51 for m, _ in out)
+    assert sum(1 + len(m.aliases) for m, _ in out) == 60
+
+
+def test_an_id_with_work_in_flight_or_a_thread_under_a_former_name_joins_no_group(tmp_path):
+    a = _gh("GHSA-aaaa-aaaa-aaaa", fixed="2.1.0", product_text="pypi:mcp-server-git")
+    b = _gh("GHSA-bbbb-bbbb-bbbb", fixed="2.1.0", product_text="pypi:mcp-server-git")
+    assert len(ledger.merge([pair(a), pair(b)])) == 1
+    assert len(ledger.merge([pair(a), pair(b)], settled={"mcp-server-git|ghsa-aaaa-aaaa-aaaa"})) == 2
+    with Ledger(tmp_path / "l.json") as led:
+        adv = adv_for(a, "high")
+        led.record_root(adv, "r1", {"feed": "r1"}, scope="MCP servers and clients", exploited=False, now=T0)
+        assert len(ledger.merge([pair(a), pair(b)], led)) == 2

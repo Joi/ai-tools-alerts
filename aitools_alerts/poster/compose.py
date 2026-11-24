@@ -290,9 +290,10 @@ def headline(head: str, name: str, title: str | None, fallback: str) -> str:
     when the title does not name it; with no title, ``fallback``. No id. The title is cut
     at a word boundary to fit; the markers in ``head`` are never cut."""
     text = title if title else fallback
-    if title and name.casefold() not in title.casefold():
+    if title and not re.search(rf"(?<![\w@/-]){re.escape(name)}(?![\w-])", title, re.I):
         text = f"{name}: {title}"
-    room = max(HEADLINE_MAX - len(head) - 2, 20)
+    # _inline later wraps each mention-shaped token in two backticks
+    room = max(HEADLINE_MAX - len(head) - 2 - 2 * len(_MENTION.findall(text)), 20)
     if len(text) > room:
         cut = text[:room - 1]
         cut = cut[:cut.rfind(" ")] if " " in cut[len(name) + 2:] else cut
@@ -300,23 +301,28 @@ def headline(head: str, name: str, title: str | None, fallback: str) -> str:
     return f"{head}: {text}"
 
 
-def covers(adv: schema.Advisory) -> tuple[int, list[str]]:
+def covers(adv: schema.Advisory) -> tuple[int | None, list[str]]:
     """(how many advisories, their public ids): the id's public form, then the public
-    aliases, once each. A GHSA is one advisory and its CVE an alias of it, so the count
-    is the GHSA ids when there are any, else every id."""
+    aliases, once each. A GHSA is one advisory and a CVE usually an alias of one, so with
+    no more CVE ids than GHSA ids the count is the GHSA ids; with none of one kind it is
+    every id; otherwise (a group mixing GHSA advisories and CVE-only entries) the flat
+    list cannot say, and the count is None."""
     ids, seen = [], set()
     for i in (public_form(adv.id), *adv.aliases):
         if public_id(i) and i.casefold() not in seen:
             seen.add(i.casefold())
             ids.append(i)
     ghsa = sum(i.upper().startswith("GHSA-") for i in ids)
-    return (ghsa or len(ids)), ids
+    cve = len(ids) - ghsa
+    return (len(ids) if not ghsa or not cve else ghsa if cve <= ghsa else None), ids
 
 
 def _covers_line(adv, ja=False) -> list[str]:
     n, ids = covers(adv)
     if not ids:
         return []
+    if n is None:
+        return [f"対象: {', '.join(ids)}" if ja else f"Covers: {', '.join(ids)}"]
     return [f"対象: アドバイザリ {n} 件: {', '.join(ids)}" if ja
             else f"Covers {n} advisor{'y' if n == 1 else 'ies'}: {', '.join(ids)}"]
 
@@ -380,7 +386,7 @@ def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, sc
     # No version is not no fix: a KEV entry carries no version data at all (4yr1). A fix
     # the schema cannot express is named by the source, never by a version here (h340).
     pkg, registry = package_of(scope)
-    body = [headline(head, p.name, source_title(c), f"{p.name}: {_kind(c, reason)}"),
+    body = [headline(head, p.name, source_title(c), f"{p.name}: {_kind(c, None)}"),  # the head marks unverified
             f"Affected: {pkg}{_words(p.affected, range_unexpressed(c))}" + (f" ({registry})." if registry else "."),
             _do(p.name, fixed, stop=stop, unexpressed=fix_unexpressed(c),
                 exploited=c.exploited is True or _exploited(adv)),
@@ -419,8 +425,9 @@ def _ja_title(adv: schema.Advisory) -> str:
 def _ja_kind(adv: schema.Advisory) -> str:
     """The template title's product and kind in Japanese, without the id: the headline
     when there is no source title."""
-    t = _ja_title(adv)
-    return re.sub(r" \([^()]*\)$", "", t)
+    t = re.sub(r" \([^()]*\)$", "", _ja_title(adv))
+    t = t.removeprefix(f"{SYNTHETIC}: ")  # the head marks both
+    return t.replace(": unverified ", ": ", 1)
 
 
 def root_post_ja(adv: schema.Advisory, reason: str | None = None, unexpressed: bool = False,
@@ -464,7 +471,8 @@ def _change_line_ja(k: str, adv: schema.Advisory, unexpressed: bool = False) -> 
 def reply_post_ja(merged: schema.Advisory, c, keys, *, reason: str | None = None) -> str:
     """reply_post's body lines in Japanese for the changed ``keys``; no block."""
     body = [UNVERIFIED[0].upper() + UNVERIFIED[1:] + "."] if reason == "unverified" else []
-    body += [line for k in sorted(keys) if (line := _change_line_ja(k, merged, range_unexpressed(c)))]
+    body += [line for k in sorted(keys) if (line := _change_line_ja(k, merged, range_unexpressed(c))
+                                             or k == "title" and "level" not in keys and f"件名: {_ja_kind(merged)}")]
     body.append(f"出典: {_primary(_sources(c.sources) or merged.sources)}")
     return _inline("\n".join(body))
 
@@ -526,6 +534,11 @@ def _publishable(prev: schema.Advisory, merged: schema.Advisory, patch: dict) ->
         raise ValueError("reply: the only action is upgrade to products[0].fixed")
     if {s.url for s in _sources(asdict(s) for s in merged.sources)} != {s.url for s in merged.sources}:
         raise ValueError("reply: a source fails the publication checks")
+
+
+def _headline_kind(adv: schema.Advisory) -> str:
+    """The block's template title without its id: what a title-only reply says."""
+    return re.sub(r" \([^()]*\)$", "", adv.title)
 
 
 def _change_line(k: str, adv: schema.Advisory, unexpressed: bool = False) -> str:
@@ -590,7 +603,8 @@ def reply_post(prev: schema.Advisory, c, changes: dict, *, reason: str | None = 
     merged = apply_patch(prev, patch)
     _publishable(prev, merged, patch)
     body = [UNVERIFIED[0].upper() + UNVERIFIED[1:] + "."] if reason == "unverified" else []
-    body += [line for k in sorted(patch) if (line := _change_line(k, merged, range_unexpressed(c)))]
+    body += [line for k in sorted(patch) if (line := _change_line(k, merged, range_unexpressed(c))
+                                              or k == "title" and "level" not in patch and f"Now: {_headline_kind(merged)}.")]
     body.append(f"Source: {_primary(_sources(c.sources) or merged.sources)}")
     block = json.dumps(patch, ensure_ascii=False, separators=(",", ":"))  # one line (faxq)
     out = _inline("\n".join(body)) + f"\n\n```{schema.INFO_STRING}\n{block}\n```\n"

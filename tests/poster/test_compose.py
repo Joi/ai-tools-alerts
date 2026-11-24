@@ -378,13 +378,13 @@ def test_root_post_ja_keeps_names_ids_versions_urls():
     _, adv = root(c, ("high", "unverified"))
     lines = compose.root_post_ja(adv, "unverified").split("\n")
     assert lines[0] == ("重要 (unverified: no primary source confirmed it): "
-                        "Claude Code: unverified 改ざんされたリリース")
+                        "Claude Code: 改ざんされたリリース")  # the head marks it, once
     assert lines[1] == "影響: Claude Code（バージョン不明）。"
     assert lines[2] == "対応: 出典に回避策があれば適用し、修正版が出るまで続けてください。"
     syn = cand(id="CVE-2099-0001", aliases=())
     _, adv = root(syn, ("high", "high"))
     assert compose.root_post_ja(adv).startswith(
-        "重要 (SYNTHETIC TEST): SYNTHETIC TEST: Claude Code: コード実行につながるインジェクション\n")
+        "重要 (SYNTHETIC TEST): Claude Code: コード実行につながるインジェクション\n")
 
 
 _NO_FIX_CLAIMS = ("no fix", "No fixed version is known", "watch this thread", "修正版はまだ", "修正はまだ")
@@ -848,3 +848,36 @@ def test_root_post_takes_the_thread_key_form_and_publishes_bare_aliases():
     assert adv.id == "CVE-2026-88968:claude-code" and adv.aliases == ["CVE-2026-88968", "GHSA-5xjx-9qx6-jcrv"]
     assert schema.parse_post(text) == adv  # the block is the one a v0.1.4 reader parses: no new key
     assert set(json.loads(text.split("```aitools-alert\n", 1)[1].rsplit("\n```", 1)[0])) == set(schema.Advisory.__dataclass_fields__)
+
+
+# ---------------------------------------------------------------- faxq review
+
+def test_covers_counts_only_what_the_ids_can_say():
+    _, adv = root(cand())
+    one = dataclasses.replace(adv, aliases=["GHSA-abcd-efgh-ijkl", "GHSA-zzzz-zzzz-zzzz"])
+    assert compose.covers(one)[0] == 2  # two GHSA advisories, the CVE an alias of one
+    mixed = dataclasses.replace(adv, aliases=["GHSA-abcd-efgh-ijkl", "CVE-2026-0002", "CVE-2026-0003"])
+    assert compose.covers(mixed) == (None, ["CVE-2026-0001", "GHSA-abcd-efgh-ijkl", "CVE-2026-0002", "CVE-2026-0003"])
+    assert "Covers: CVE-2026-0001, GHSA-abcd-efgh-ijkl, CVE-2026-0002, CVE-2026-0003" in compose._covers_line(mixed)
+    cves = dataclasses.replace(adv, aliases=["CVE-2026-0002"])
+    assert compose.covers(cves)[0] == 2
+
+
+def test_a_headline_with_a_mention_still_fits_after_wrapping():
+    long = "@scope/pkg " + "and a long description of what goes wrong when it is used " * 2
+    head = root(cand(source_title=long), ("high", None))[0].split("\n")[0]
+    assert "`@scope/pkg`" in head and len(head) <= compose.HEADLINE_MAX
+    git = root(cand(source_title="digital signature bypass"), ("high", None))[0].split("\n")[0]
+    assert git == "HIGH: Claude Code: digital signature bypass"
+
+
+def test_a_title_change_without_the_level_still_says_something():
+    """Review: on a lowered thread the level travels alone; a title change left in the
+    other reply gets its own line, never a body of only "Source:"."""
+    c = cand(injection_exec=False, trojanized=True)
+    _, prev = root(c, ("high", "high"))
+    new_title = "Claude Code: known exploited vulnerability (CVE-2026-0001)"
+    out = compose.reply_post(prev, c, {"title": new_title})
+    assert out.split("\n")[0] == "Now: Claude Code: known exploited vulnerability."
+    ja = compose.reply_post_ja(compose.parse_reply(out, prev), c, {"title": new_title})
+    assert ja.split("\n")[0] == "件名: Claude Code: 悪用が確認された脆弱性"

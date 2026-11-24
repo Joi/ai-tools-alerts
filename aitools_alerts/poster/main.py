@@ -640,7 +640,9 @@ class Run:
                 continue  # never kept: a later run would post it without its marker
             # faxq: a fix group is kept as its members, each re-admitted alone next run
             # (admit keeps only the ids the primary's own page assigns), then grouped again.
-            for m in self.groups.get((scope.name, c.id.casefold()), [c]):
+            group = self.groups.get((scope.name, c.id.casefold())) or next(  # _former may rename the scope
+                (v for (_, i), v in self.groups.items() if i == c.id.casefold()), [c])
+            for m in group:
                 self.deferred[(scope.name, m.id.casefold())] = m.to_dict()
 
     @staticmethod
@@ -832,9 +834,25 @@ class Run:
                                 **{k: h["adv"][k] for k in ("products", "actions", "posted_at")}}
                     self.save()
                 ids = compose._ids([*h["adv"]["aliases"], a["id"], *a["aliases"]], h["adv"]["id"])[:50]
-                if ids != h["adv"]["aliases"]:  # faxq: a fix group's new members are listed with it
-                    h["adv"] = {**h["adv"], "aliases": ids}
+                if ids != h["adv"]["aliases"]:  # faxq: a fix group's new members are listed with it,
+                    p = dict(h["adv"]["products"][0])  # under a range that covers them too
+                    if p["affected"] != a["products"][0]["affected"]:
+                        p["affected"] = None if None in (p["affected"], a["products"][0]["affected"]) \
+                            or not p["fixed"] else f"<{p['fixed']}"
+                    h["adv"] = {**h["adv"], "aliases": ids, "products": [p]}
                     self.save()
+            fresh = [i for i in compose._ids([a["id"], *a["aliases"]], None)
+                     if f"{scope}|{i.casefold()}" not in known]
+            if fresh and not any(h["scope"] == scope and set(self._notice_keys(scope, h["adv"]))
+                                 & set(self._notice_keys(scope, a)) for h in self.state["held"]):
+                # faxq: a fix group met a member a digest already listed: the members it has
+                # not listed are held under their own ids, so each is listed once.
+                old = compose.public_form(a["id"])
+                a = {**a, "id": fresh[0], "aliases": fresh[1:50],
+                     "title": a["title"].replace(f"({old})", f"({fresh[0]})")}
+                self.state["held"].append({"scope": scope, "adv": a, **({"source_title": title} if title else {})})
+                self.save()
+                self.n["held"] += 1
             return
         self.state["held"].append({"scope": scope, "adv": a, **({"source_title": title} if title else {})})
         self.save()
@@ -882,9 +900,11 @@ class Run:
             c, id=prev.id, aliases=tuple(prev.aliases) + tuple(unpublished),
             fixed=c.fixed if own_fix else was.fixed,
             # a range the schema cannot say is kept raw when none is known: no "not stated" (0dvh)
-            affected=c.affected if compose.schema_affected(c.affected) else (was.affected or c.affected),
+            # faxq: one member's sighting never narrows a fix group's range, which covers them all
+            affected=was.affected if compose.covers(prev)[0] not in (0, 1)
+            else c.affected if compose.schema_affected(c.affected) else (was.affected or c.affected),
             sources=tuple(prev.sources) + tuple(extra),
-            source_title=c.source_title or entry.source_title)  # faxq: a copy's headline
+            source_title=compose.source_title(c) or entry.source_title)  # faxq: a copy's headline
         text, new = compose.root_post(k, (level, reason), scope, posted_at=prev.posted_at)
         changes = {}
         if RANK[level] > RANK[prev.level]:
@@ -1417,7 +1437,10 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                 pairs = [(a, scope) for c, scope in pairs if (a := r.admit(c, scope)) is not None]
                 if review:
                     led.add_review(review, now=now)
-                merged = ledger.merge(pairs, led, r.groups)  # merge BEFORE level_for
+                # faxq: in flight, an id joins no fix group (that send would record the group's ids)
+                settled = {f"{it['scope']}|{i.casefold()}" for it in state["outbox"] + r._withheld_items()
+                           for i in it["ids"]}
+                merged = ledger.merge(pairs, led, r.groups, settled=settled)  # BEFORE level_for
                 r.observe(kev_out)
                 r.drain()
                 for i, (c, scope) in enumerate(merged):

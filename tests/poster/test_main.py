@@ -2517,3 +2517,54 @@ def test_a_held_notice_takes_the_ids_of_its_fix_group(env):
     assert code == 0 and "roots=0" in summary
     (held,) = env.state()["held"]
     assert GHSA_Z in held["adv"]["aliases"]
+
+
+def test_one_members_sighting_never_narrows_its_groups_range(env):
+    """Review: A affects <2.1.0 and B >=1.5,<2.1.0; the root states <2.1.0. B, or A,
+    seen again alone, must not send a reply narrowing it."""
+    env.collector([finding(affected="<2.1.0"), finding(fid=GHSA_Z, affected=">=1.5,<2.1.0")])
+    code, summary, relay = env.run()
+    assert code == 0 and "roots=1" in summary
+    assert "Affected: `@anthropic-ai/claude-code` before 2.1.0 (npm)." in relay.calls[0][2].split("\n")
+    env.collector([finding(fid=GHSA_Z, affected=">=1.5,<2.1.0")])
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "replies=0" in summary and relay.calls == []
+    (entry,), _ = env.ledger()
+    assert entry["advisory"]["products"][0]["affected"] == "<2.1.0"
+
+
+def test_a_group_meeting_a_listed_notice_holds_the_rest(env):
+    """Review: notice A is listed by a digest; a later run groups A with new notice Z.
+    Z is held under its own id and listed once; A is not listed again."""
+    env.collector([finding(severity=None)])
+    code, summary, _ = env.run(digest_now=True)
+    assert "digest=1" in summary and env.state()["held"] == []
+    env.collector([finding(severity=None), finding(fid=GHSA_Z, severity=None)])
+    code, summary, _ = env.run(now=T0 + 3600)
+    assert code == 0 and "held=1" in summary
+    (held,) = env.state()["held"]
+    assert held["adv"]["id"] == GHSA_Z and "GHSA-abcd-efgh-ijkl" not in held["adv"]["aliases"]
+
+
+def test_a_held_notice_widens_its_range_for_a_member_with_none(env):
+    env.collector([finding(severity=None, affected=">=2.0,<2.1.0")])
+    env.run()
+    env.collector([finding(severity=None, affected=">=2.0,<2.1.0"), finding(fid=GHSA_Z, severity=None)])
+    env.run(now=T0 + 3600)
+    (held,) = env.state()["held"]
+    assert GHSA_Z in held["adv"]["aliases"] and held["adv"]["products"][0]["affected"] is None
+
+
+def test_an_advisory_with_a_send_in_flight_joins_no_group(env):
+    """Review: a root's send outcome is unknown; its advisory and a new one with the same
+    fix must not group, or resolving the send would record the new one's ids unnamed."""
+    env.collector([finding()])
+    code, _, _ = env.run(relay=FakeRelay("unknown"))
+    assert code == 1
+    env.collector([finding(), finding(fid=GHSA_Z)])
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert "roots=1" in summary and [c[0] for c in relay.calls] == ["feed"]
+    assert "Covers 1 advisory: GHSA-zzzz-zzzz-zzzz" in relay.calls[0][2].split("\n")
+    out = [it for it in env.state()["outbox"] if it["kind"] == "root"]
+    assert all(GHSA_Z.casefold() not in {i.casefold() for i in it["ids"]} for it in out
+               if "abcd" in it["key"])
