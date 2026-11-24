@@ -483,8 +483,10 @@ class Run:
                 adv = schema.validate(it["adv"])
                 m = candidates.BOT_ID.fullmatch(adv.id)
                 low = [m.group(1) if m else adv.id, adv.level]
-                if RANK[adv.level] < RANK[e.level] and low not in self.rc["lowered"]:
-                    self.rc["lowered"] = (self.rc["lowered"] + [low])[-recompute.MAX_LOWERED:]  # ny5g: for the digest
+                if RANK[adv.level] < RANK[e.level]:  # ny5g: a lowering, recorded for its first channel
+                    if low not in self.rc["lowered"]:  # for the digest; once, though a replay comes here again
+                        self.rc["lowered"] = (self.rc["lowered"] + [low])[-recompute.MAX_LOWERED:]
+                    self.rc["recent"].append(self.now)  # for the breaker: only a lowering that was sent counts
                     self.save_rc()
                 self.led.record_reply(e.root_event_id, adv, {ch: eid},
                                       now=self.now, exploited=it["exploited"], ids=it["ids"])
@@ -850,6 +852,8 @@ class Run:
             # travels alone; whatever else this run learned follows in a reply without it.
             items += self._level_items(entry, changes.pop("level"))
             prev = replace(prev, level=level)
+            if changes.get("title") == prev.title:  # it came with the level; unchanged, it is no reply
+                del changes["title"]
         if changes:
             reply = compose.reply_post(prev, k, changes, reason=reason, lowered=bool(entry.lowered))
             merged = compose.parse_reply(reply, prev)
@@ -916,43 +920,50 @@ class Run:
         self.observed = {e.root_event_id for e in entries}
         for k in ("dwell", "listed"):
             st[k] = {r: v for r, v in st[k].items() if r in self.observed}
-        self.raises, self.due, self.judged = [], [], 0
+        self.verdicts, self.judged = {}, set()
         self._judge(entries, rs)
+        st["open"] = None  # the observation is whole and saved: the next run may count from it
         self.save_rc()
 
     def _judge(self, entries, rs):
+        """Judge each entry and keep its verdict by root: ("raise" | "due", level) or
+        nothing. An entry that is not KEV's, out of scope now or has work in flight is
+        not judged, and its wait takes no time for a run that did not look at it."""
         st = self.rc
         for e in entries:  # with no copy every read is unknown, and judge says so to each wait
+            root = e.root_event_id
+            self.verdicts.pop(root, None)
             scope = rules.scope_of(e.scope) if e.exploited else None
             if scope is None or scope.name != e.scope or self.busy(e.aliases, e.scope):
-                # Not KEV's, out of scope now, or work in flight: judged another run, and a
-                # wait takes no time for a run that did not look.
-                recompute.pause(st, e.root_event_id)
+                self.judged.discard(root)
+                recompute.pause(st, root)
                 continue
-            self.judged += 1
+            self.judged.add(root)
             verdict = recompute.judge(e, scope, self.copy, rs, st, self.now)
             if verdict is not None:
-                (self.raises if verdict[0] == "raise" else self.due).append((e, verdict[1]))
+                self.verdicts[root] = (e, *verdict)
 
     def recompute(self):
-        """Send what ``observe`` found (ny5g): a raise now; a lowering when the thread
-        has had seven quiet days and the circuit breaker lets it through. A thread the
-        run has changed since it was judged, or that has work in flight, is left for the
-        next run. The breaker's share is of the threads judged, the only ones that can
-        be lowered: a ledger full of other threads must not make a mass lowering look
-        small."""
+        """Send what the verdicts say (ny5g): a raise now; a lowering when the thread
+        has had seven quiet days and the circuit breaker lets it through. The run has
+        drained the journal and planned its candidates since ``observe``, so every
+        thread that was not judged there (posted by this run, or busy then), and every
+        thread whose ledger entry is no longer the one judged (a candidate added an id,
+        a floor, a fix, another level), is judged again now, from the entry as it is:
+        no verdict outlives the entry it was reached on, and the reply is composed from
+        the current advisory. The breaker's share is of the threads judged, the only
+        ones that can be lowered: a ledger full of other threads must not make a mass
+        lowering look small."""
         st = self.rc
-        # A thread this run posted was not there to judge: it is judged now, which records
-        # that a complete copy lists it (without that its later absence proves nothing).
-        self._judge([e for e in self.led.entries() if e.root_event_id not in self.observed
-                     and not compose.is_synthetic(e.advisory.get("id"))], ruleset.load())
-
-        def still(pairs):
-            return [(e, level) for e, level in pairs
-                    if recompute.fresh(e, self.led.thread(e.root_event_id)) and not self.busy(e.aliases, e.scope)]
-        raises = still(self.raises)
-        due = recompute.select([d for d in still(self.due) if recompute.quiet(d[0], self.now)],
-                               self.judged, st, self.now)
+        now = [e for e in self.led.entries() if not compose.is_synthetic(e.advisory.get("id"))]
+        self._judge([e for e in now if e.root_event_id not in self.judged
+                     or (e.root_event_id in self.verdicts and self.verdicts[e.root_event_id][0] != e)],
+                    ruleset.load())
+        live = {e.root_event_id for e in now}
+        found = [v for root, v in self.verdicts.items() if root in live]  # judged, so not busy when judged
+        raises = [(e, level) for e, kind, level in found if kind == "raise"]
+        due = recompute.select([(e, level) for e, kind, level in found
+                                if kind == "due" and recompute.quiet(e, self.now)], len(self.judged), st, self.now)
         self.save_rc()
         for e, level in raises + due:
             try:
@@ -1280,6 +1291,8 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
             r = Run(now, config, led, state, channels, send, page, digest_now=digest_now, skipped=skipped)
             n = r.n
             _gate(state, led)
+            recompute.begin(r.rc, now)  # ny5g: before anything is read, so a run that stops is known to have
+            r.save_rc()
             merged, english_ok = None, False  # merged: set once the old deferred list is folded in
             try:
                 kev_out: dict = {}

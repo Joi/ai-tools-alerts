@@ -25,9 +25,16 @@ def catalog(version, *items, pad=200):
     """A KEV catalog as CISA serves it: a version, its own count, and enough other
     entries that one leaving is well inside the 2% rule."""
     items = [kev_item(i) if isinstance(i, str) else i for i in items]
+    if not version[:1].isdigit():  # "v7" is the catalog after "v6": versions order, as CISA's dates do
+        version = f"1.{int(version[1:] or 0)}"
     items += [{"cveID": f"CVE-2020-{n:04d}", "vendorProject": "Cisco", "product": "IOS", "dateAdded": "2020-01-01"}
               for n in range(1000, 1000 + pad)]
     return {"catalogVersion": version, "count": len(items), "vulnerabilities": items}
+
+
+def kc(cat, status, st, now, redirected=False):
+    """``recompute.kev_copy`` for an answer that came direct, unless the test says otherwise."""
+    return recompute.kev_copy(cat, status, st, now, redirected)
 
 
 def levels(relay, channel="feed"):
@@ -84,34 +91,35 @@ def down(status):
 
 def test_kev_copy_tells_no_copy_from_an_incomplete_one():
     st, good = recompute.new_state(), catalog("v1", CVE, pad=99)
-    assert recompute.kev_copy(good, "unavailable", st, 0) is None
-    assert recompute.kev_copy(good, "file", st, 0) is None  # the synthetic --kev-file
-    assert recompute.kev_copy({**good, "vulnerabilities": good["vulnerabilities"][:-1] + ["x"]}, "ok", st, 0) is None
+    assert kc(good, "unavailable", st, 0) is None
+    assert kc(good, "file", st, 0) is None  # the synthetic --kev-file
+    assert kc({**good, "vulnerabilities": good["vulnerabilities"][:-1] + ["x"]}, "ok", st, 0) is None
     for cut in ({**good, "catalogVersion": " "}, {k: v for k, v in good.items() if k != "catalogVersion"},
+                {**good, "catalogVersion": "synthetic-1"}, {**good, "catalogVersion": "2026"},  # no order to advance in
                 {**good, "count": 99}, {k: v for k, v in good.items() if k != "count"},
                 {**good, "vulnerabilities": good["vulnerabilities"] + [kev_item(CVE)], "count": 101},
                 {"catalogVersion": "v", "count": 0, "vulnerabilities": []}):
-        copy = recompute.kev_copy(cut, "ok", st, 0)
+        copy = kc(cut, "ok", st, 0)
         assert copy is not None and not copy.complete and st["kev"] is None
-    assert CVE in recompute.kev_copy({**good, "count": 99}, "ok", st, 0).index  # what it lists still counts
-    assert not recompute.kev_copy(good, "304", st, 4).complete  # a cached body no fetch of this state vouched for
-    assert recompute.kev_copy(good, "ok", st, 5).complete
-    copy = recompute.kev_copy(good, "304", st, 5)
-    assert copy.complete and copy.version == "v1" and CVE in copy.index
-    assert st["kev"] == {"version": "v1", "peak": 100, "at": 5}
+    assert CVE in kc({**good, "count": 99}, "ok", st, 0).index  # what it lists still counts
+    assert not kc(good, "304", st, 4).complete  # a cached body no fetch of this state vouched for
+    assert kc(good, "ok", st, 5).complete
+    copy = kc(good, "304", st, 5)
+    assert copy.complete and copy.version == "1.1" and CVE in copy.index
+    assert st["kev"] == {"version": "1.1", "peak": 100, "at": 5}
     lower = {**good, "vulnerabilities": [{**kev_item(CVE), "cveID": " cve-2026-0001 "}] + good["vulnerabilities"][1:]}
-    assert CVE in recompute.kev_copy(lower, "ok", st, 6).index  # looked up as the thread's id is written
+    assert CVE in kc(lower, "ok", st, 6).index  # looked up as the thread's id is written
 
 
 def test_the_measure_is_the_largest_complete_copy_and_never_falls():
     st = recompute.new_state()
-    assert recompute.kev_copy(catalog("v1", pad=100), "ok", st, 0).complete
-    assert recompute.kev_copy(catalog("v2", pad=98), "ok", st, 1).complete  # 2% down: complete
+    assert kc(catalog("v1", pad=100), "ok", st, 0).complete
+    assert kc(catalog("v2", pad=98), "ok", st, 1).complete  # 2% down: complete
     assert st["kev"]["peak"] == 100  # and not the new measure: 1% a day never adds up
     small = catalog("v3", pad=97)
-    assert not recompute.kev_copy(small, "ok", st, 2).complete
-    assert not recompute.kev_copy(small, "ok", st, 400 * DAY).complete  # no length of time makes it complete
-    assert recompute.kev_copy(catalog("v4", pad=120), "ok", st, 3).complete and st["kev"]["peak"] == 120
+    assert not kc(small, "ok", st, 2).complete
+    assert not kc(small, "ok", st, 400 * DAY).complete  # no length of time makes it complete
+    assert kc(catalog("v4", pad=120), "ok", st, 3).complete and st["kev"]["peak"] == 120
 
 
 # ---------------------------------------------------------------- support and the floor
@@ -128,7 +136,7 @@ def _thread(aliases=(CVE,), level="critical", product="Claude Code", **more):
 
 
 def _support(entry, cat, status="ok"):
-    copy = recompute.kev_copy(cat, status, recompute.new_state(), 0) if cat else None
+    copy = kc(cat, status, recompute.new_state(), 0) if cat else None
     scope = next(e for e in schema.load_scope() if e.name == entry.scope)
     return recompute.support(entry, scope, copy, ruleset.load())
 
@@ -360,6 +368,43 @@ def test_a_lowering_one_channel_has_reaches_the_other_whatever_the_next_read(env
     assert env.state()["outbox"] == [] and len(entry(env)["changed"]) == 1
 
 
+def test_a_lowering_that_did_not_send_goes_out_when_the_evidence_still_holds(env):
+    """And a lowering that never went out is not one the breaker has seen: two failed
+    hours do not make the third run's single lowering one too many."""
+    post(env, *FIVE)
+    hours(env, 1, 24, FIVE[1:])
+    for h in (25, 26):
+        relay = one(env, h, FIVE[1:], relay=FakeRelay("fail"), code=1)
+        assert len(relay.calls) == 1 and state(env)["recent"] == []
+    relay = one(env, 27, FIVE[1:])
+    assert levels(relay) == levels(relay, "critical") == [{"level": "notice"}]
+    assert state(env)["tripped"] is None and state(env)["recent"] == [T0 + 27 * HOUR]
+
+
+def test_a_lowering_whose_outcome_is_unknown_is_neither_dropped_nor_sent_again(env):
+    post(env)
+    hours(env, 1, 24)
+    relay = one(env, 25, relay=FakeRelay("unknown"), code=1)
+    assert len(relay.calls) == 1 and len(env.ledger()[1]) == 1  # pending: the relay may have it
+    for h in (26, 27):
+        relay = one(env, h)
+        assert replies(relay) == [] and len(env.state()["outbox"]) == 2  # both kept, for the pair to finish
+    assert entry(env)["level"] == "critical"
+
+
+def test_kev_listing_a_lowered_thread_again_as_new_raises_it_once_alone(env):
+    """The entry comes back with a new dateAdded, so it is a candidate too. The level is
+    all that changes: one level-only reply a channel, nothing withheld."""
+    post(env)
+    hours(env, 1, 25)
+    again = {**kev_item(CVE), "dateAdded": "2026-11-06"}
+    env.kev = FakeKEV(catalog=catalog("v9", again))
+    code, summary, relay = env.run(now=T0 + 26 * HOUR)
+    assert code == 0 and "withheld=0" in summary, summary
+    assert levels(relay) == levels(relay, "critical") == [{"level": "critical"}] and len(replies(relay)) == 2
+    assert entry(env)["level"] == "critical"
+
+
 def _lowering_acknowledged_but_not_recorded(env, monkeypatch):
     """Hour 25: the critical channel's lowering is acknowledged and journaled, and the
     ledger write that would record it fails. The run stops there."""
@@ -428,17 +473,100 @@ def test_a_run_that_stopped_after_reading_it_listed_starts_the_wait_over(env):
 
 def test_a_cached_body_is_direct_only_when_it_is_the_body_that_came_direct():
     """A redirected 200 replaces the cache and the run stops before saying so; the next
-    fetch is a 304 for that body. It is not the body this state knows came direct."""
+    fetch is a direct 304 for that body. It is not the body this state knows came direct."""
     st = recompute.new_state()
     direct, moved = catalog("v1", CVE), catalog("v2")
-    assert recompute.kev_copy(direct, "ok", st, 0, False).complete
-    assert recompute.kev_copy(direct, "304", st, 1, None).complete  # the same body, not modified
-    assert not recompute.kev_copy(moved, "304", st, 2, None).complete  # a body nobody vouched for
-    assert not recompute.kev_copy(moved, "ok", st, 3, True).complete
-    assert not recompute.kev_copy(moved, "304", st, 4, None).complete
-    assert not recompute.kev_copy(direct, "304", st, 5, None).complete  # the last fetch was not direct
-    assert recompute.kev_copy(moved, "ok", st, 6, False).complete
-    assert not recompute.kev_copy(direct, "304", recompute.new_state(), 7, None).complete  # a lost state knows nothing
+    assert kc(direct, "ok", st, 0, False).complete
+    assert kc(direct, "304", st, 1, False).complete  # the same body, not modified
+    assert not kc(direct, "304", st, 1, True).complete  # this request was redirected, then a 304
+    assert not kc(direct, "304", st, 1, None).complete  # a fetch that did not say
+    assert not kc(moved, "304", st, 2, False).complete  # a body nobody vouched for
+    assert not kc(moved, "ok", st, 3, True).complete
+    assert not kc(moved, "304", st, 4, False).complete
+    assert not kc(direct, "304", st, 5, False).complete  # the last fetch was not direct
+    assert kc(moved, "ok", st, 6, False).complete
+    assert not kc(direct, "304", recompute.new_state(), 7, False).complete  # a lost state knows nothing
+
+
+def test_an_older_catalog_served_again_is_not_a_read_of_now():
+    st = recompute.new_state()
+    assert kc(catalog("2026.11.20", CVE), "ok", st, 0).complete
+    for old in ("2026.11.19", "2026.9.30", "2025.12.31"):
+        assert not kc(catalog(old), "ok", st, 1).complete
+    assert st["kev"]["version"] == "2026.11.20"
+    assert kc(catalog("2026.11.20"), "ok", st, 2).complete  # the same day's
+    assert kc(catalog("2026.11.21"), "ok", st, 3).complete and st["kev"]["version"] == "2026.11.21"
+
+
+def test_begin_pauses_every_wait_when_the_run_before_did_not_finish_observing():
+    st = recompute.new_state()
+    st["dwell"]["r"] = {"level": "notice", "version": "1.1", "last": 5, "held": 9}
+    recompute.begin(st, 10)
+    assert st["open"] == 10 and st["dwell"]["r"]["last"] == 5  # the run before closed its observation
+    recompute.begin(st, 20)  # this one finds it open
+    assert st["open"] == 20 and st["dwell"]["r"] == {"level": "notice", "version": "1.1", "last": None, "held": 9}
+
+
+def test_a_run_that_stopped_before_saving_what_it_read_gives_no_time(env):
+    """22 hours held at hour 23. The run of hour 24 stops after it began and before it
+    saved what it read (a crash, a full disk): the file says an observation is open. The
+    complete read of hour 25 is two hours after the last saved one and takes nothing."""
+    post(env)
+    assert hours(env, 1, 23) == []
+    st = state(env)
+    assert st["open"] is None
+    st["open"] = T0 + 24 * HOUR
+    recompute.save(env.config.recompute_state, st)
+    assert hours(env, 25, 26) == [] and hours(env, 27, 27) == [(27, "notice")]
+
+
+def test_old_catalogs_served_in_turn_lower_nothing(env):
+    """After the entry was listed, the poster is served two catalogs from before the
+    entry was added, turn about. Both are whole and of fair size, and neither is a read
+    of now: no catalog ever dropped the entry."""
+    env.kev = FakeKEV(catalog=catalog("2026.11.20", CVE))
+    assert env.run(now=T0)[0] == 0 and entry(env)["level"] == "critical"
+    for h in range(1, 61):
+        old = catalog("2026.11.18" if h % 12 < 6 else "2026.11.19")
+        assert replies(one(env, h, kev=FakeKEV(catalog=old))) == []
+    assert state(env)["dwell"] == {} and entry(env)["level"] == "critical"
+
+
+def test_a_cut_catalog_that_lists_the_entry_ends_a_wait_for_a_lower_level(env):
+    """22 hours held. A catalog that disagrees with its own count lists the entry: that
+    is evidence for critical, and the wait for notice is over, not merely paused."""
+    post(env)
+    assert hours(env, 1, 23) == []
+    cut = {**catalog("v9", CVE), "count": 3}
+    assert replies(one(env, 24, kev=FakeKEV(catalog=cut))) == [] and state(env)["dwell"] == {}
+    assert hours(env, 25, 48) == [] and hours(env, 49, 49) == [(49, "notice")]
+
+
+def test_a_candidate_on_the_run_a_lowering_falls_due_is_seen_before_anything_is_lowered(env):
+    """Hour 25: the lowering to notice is due, and the same run reads the vendor's
+    advisory: a GHSA id, a fix, a severity of high. The thread now has a source with no
+    reader and a floor of high. Nothing is lowered, and the fix is in the ledger."""
+    post(env)
+    assert hours(env, 1, 24) == []
+    env.collector([finding(fid=CVE, sources=(GHSA,), fixed="2.1.0", severity="high")], name="2026-11-07T000000Z")
+    relay = one(env, 25)
+    assert levels(relay) == [] and len(replies(relay)) == 2  # the fix, in both channels
+    e = entry(env)
+    assert e["level"] == "critical" and e["floor"] == "high" and "lowered" not in e
+    assert e["advisory"]["products"][0]["fixed"] == "2.1.0" and "GHSA-abcd-efgh-ijkl" in e["aliases"]
+    assert hours(env, 26, 60) == []
+
+
+def test_a_thread_whose_lowering_finishes_in_this_run_is_still_raised_in_it(env):
+    """One channel had the lowering; the other's send failed. The next run finishes it
+    from the journal, and the catalog it read lists the entry again: the raise goes
+    out in that run, to both channels."""
+    post(env)
+    hours(env, 1, 24)
+    one(env, 25, relay=FakeRelay("ok", "fail"), code=1)
+    relay = one(env, 26, BACK)
+    assert levels(relay) == [{"level": "notice"}, {"level": "critical"}]
+    assert levels(relay, "critical") == [{"level": "critical"}] and entry(env)["level"] == "critical"
 
 
 # ---------------------------------------------------------------- the circuit breaker and the digest
@@ -453,9 +581,10 @@ def test_many_due_at_once_lower_none_and_the_digest_says_so(env):
     assert hours(env, 1, 26, FIVE[:1]) == []  # four of five due from hour 25
     assert [e["level"] for e in env.ledger()[0]] == ["critical"] * 5
     relay = one(env, 27, FIVE[:1])  # 09:20 Tokyo: the digest goes out
-    assert "\n\nLevel check: 4 threads are due to be lowered at once and are held back." in _digest(relay)
+    assert _digest(relay).endswith("\n\nLevel check: more threads fell due to be lowered within a day than "
+                                   "the limit allows; held back: 4.")
     assert "Lowered since" not in _digest(relay)
-    assert any("4 件" in text for ch, reply, text in relay.ja)
+    assert any("保留中: 4 件" in text for ch, reply, text in relay.ja)
 
 
 def test_two_due_at_once_are_lowered_and_listed_in_one_digest_line(env):
@@ -488,6 +617,23 @@ def test_a_run_that_stopped_after_journaling_the_digest_does_not_list_them_twice
 
 def test_a_run_that_stopped_before_journaling_the_digest_lists_them_in_the_next(env):
     assert "Lowered since the last digest: CVE-2026-0001" in _crashed_digest(env, "2026-11-30")  # no such digest
+
+
+def test_a_digest_still_in_the_journal_settles_the_report_too(env):
+    """The digest that lists them is journaled and its send fails; the recompute file is
+    as a stop before clearing the list leaves it. The next run sends that digest from
+    the journal with the line, and the day after has none."""
+    post(env, *FIVE)
+    hours(env, 1, 26, FIVE[2:])
+    relay = one(env, 27, FIVE[2:], relay=FakeRelay("fail"), code=1)
+    assert [it["kind"] for it in env.state()["outbox"]] == ["digest"]
+    st = state(env)
+    st.update(lowered=[[FIVE[0], "notice"], [FIVE[1], "notice"]], reported="2026-11-06")
+    recompute.save(env.config.recompute_state, st)
+    assert "Lowered since the last digest: CVE-2026-0001" in _digest(one(env, 28, FIVE[2:]))
+    assert state(env)["lowered"] == []
+    hours(env, 29, 50, FIVE[2:])
+    assert "Lowered since" not in _digest(one(env, 51, FIVE[2:]))
 
 
 def test_the_breakers_share_is_of_the_threads_it_judges(env):
@@ -560,7 +706,7 @@ def test_judge_lowers_to_the_floor_and_no_further():
     st["listed"][e.root_event_id] = [CVE]
 
     def copy(version):
-        return recompute.kev_copy(catalog(version), "ok", st, 0)
+        return kc(catalog(version), "ok", st, 0)
 
     assert recompute.judge(e, scope, copy("v1"), rs, st, 0) is None
     assert recompute.judge(e, scope, copy("v1"), rs, st, HOUR) is None

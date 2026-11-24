@@ -340,7 +340,7 @@ def _item_ok(it) -> bool:
     """A journal item that a later run can finish: every field its kind needs is there
     and well formed, so nothing fails after the post is public."""
     if not (isinstance(it, dict) and _ITEM_KEYS <= set(it) <= _ITEM_KEYS | {"ja", "source_title", "floor"}  # rd8t, r7hr, ny5g
-            and it.get("floor") in (None, *schema.LEVELS)
+            and ("floor" not in it or (it["kind"] == "root" and it["floor"] in schema.LEVELS))
             and all(it.get(k) is None or isinstance(it[k], str) and it[k] for k in ("ja", "source_title"))
             and isinstance(it["kind"], str)
             and it["kind"] in _KINDS and isinstance(it["key"], str) and it["key"]
@@ -482,7 +482,7 @@ def urllib_fetch(url: str, headers: dict, timeout: float = KEV_DEADLINE, handler
     except urllib.error.HTTPError as e:
         hdrs = dict(e.headers.items()) if e.headers else {}
         e.close()
-        return e.code, hdrs, b""
+        return e.code, {**hdrs, REDIRECTED: "1"} if seen.seen else hdrs, b""  # a 304 at the end of a redirect too
 
 
 def _header(headers: dict, name: str):
@@ -522,9 +522,9 @@ def load_kev(cache: Path, fetch=urllib_fetch, deadline: float | None = None) -> 
 def fetch_kev(cache: Path, fetch=urllib_fetch, deadline: float | None = None,
               info: dict | None = None) -> tuple[dict | None, str]:
     """(catalog, status): status ``ok`` (fetched), ``304`` (the cache, not modified)
-    or ``unavailable`` (catalog None). ``info``, when given, gets ``redirected`` for a
-    fetched catalog: whether it was reached through a redirect. A 304 says nothing
-    about that; the caller remembers what the last fetch said."""
+    or ``unavailable`` (catalog None). ``info``, when given, gets ``redirected``: whether
+    this request's answer, a 200 or a 304, came through a redirect. A 304 says only
+    that the cache is current; which fetch filled the cache is the caller's to know."""
     cached = None
     try:
         c = read_json(cache, MAX_KEV * 2)
@@ -538,6 +538,8 @@ def fetch_kev(cache: Path, fetch=urllib_fetch, deadline: float | None = None,
     if not (isinstance(got, tuple) and len(got) == 3):
         return None, "unavailable"
     status, hdrs, body = got
+    if info is not None:
+        info["redirected"] = not isinstance(hdrs, dict) or _header(hdrs, REDIRECTED) is not None
     if status == 304:
         return (cached["catalog"], "304") if cached else (None, "unavailable")
     if status != 200 or not isinstance(body, bytes) or len(body) > MAX_KEV:
@@ -549,8 +551,6 @@ def fetch_kev(cache: Path, fetch=urllib_fetch, deadline: float | None = None,
     if not _catalog_ok(catalog):
         return None, "unavailable"
     lm = _header(hdrs, "Last-Modified") if isinstance(hdrs, dict) else None
-    if info is not None:
-        info["redirected"] = not isinstance(hdrs, dict) or _header(hdrs, REDIRECTED) is not None
     try:
         write_json(cache, {"last_modified": lm if isinstance(lm, str) else None, "catalog": catalog})
     except OSError:

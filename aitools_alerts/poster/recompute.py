@@ -17,11 +17,11 @@ read that does not) or ``unknown``. Only evidence moves a level:
 - A lowering needs every source of the thread read whole; the same lower level
   held for ``DWELL``, counted only from one complete read to the next when no
   more than ``MAX_GAP`` and no unknown read lies between them, the last read of
-  another ``catalogVersion`` than the first (``judge``); for each CVE that is gone,
+  a later ``catalogVersion`` than the first (``judge``); for each CVE that is gone,
   a complete copy that listed it for this product before; no level change on the
   thread in the seven days before (``ledger.QUIET``); and a run in which no more
-  than ``TRIP_MIN`` threads or ``TRIP_SHARE`` of the open threads are due
-  (``select``).
+  than ``TRIP_MIN`` threads or ``TRIP_SHARE`` of the threads judged fall due
+  within a day (``select``).
 
 A level that rests on a reading of prose is never recomputed below it (the
 ledger's ``floor``), and ``notice`` is the lowest result: there is no withdrawn
@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,11 +48,11 @@ TRIP_MIN, TRIP_SHARE = 2, 0.2  # more than both due in one run, counting the las
 TRIP_WINDOW = 24 * 3600
 RELEASE_AFTER = 7 * 86400  # a trip this long without a break lets RELEASE lowerings a run through
 RELEASE = 2
-MAX_VERSION = 100
+_VERSION = re.compile(r"[0-9]{1,6}(?:\.[0-9]{1,6}){1,4}")  # CISA's catalogVersion: 2026.11.24
 MAX_LOWERED = 200  # ids waiting for the digest line
 _LEVELS = ("notice", "high", "critical")
 _DWELL = {"level": str, "version": str, "held": int}  # and "last": the complete read before, or None
-_KEV = {"version": str, "peak": int, "at": int}
+_KEV = {"version": str, "peak": int, "at": int}  # the latest version and the largest size of a complete copy
 _TRIP = {"since": int, "due": int}
 
 
@@ -65,7 +66,7 @@ class Copy:
 
 def new_state() -> dict:
     return {"kev": None, "direct": None, "listed": {}, "dwell": {}, "lowered": [], "reported": None,
-            "recent": [], "tripped": None}
+            "recent": [], "tripped": None, "open": None}
 
 
 def _shaped(v, shape: dict) -> bool:
@@ -88,6 +89,9 @@ def _ok(st) -> bool:
             and (st["direct"] is None or isinstance(st["direct"], str))
             and isinstance(st["recent"], list) and all(type(t) is int for t in st["recent"])
             and (st["reported"] is None or isinstance(st["reported"], str))
+            and (st["open"] is None or type(st["open"]) is int)
+            and (st["kev"] is None or version_of(st["kev"]["version"]) is not None)
+            and all(version_of(v["version"]) is not None for v in st["dwell"].values())
             and (st["tripped"] is None or _shaped(st["tripped"], _TRIP)))
 
 
@@ -112,17 +116,37 @@ def save(path: Path, st: dict) -> None:
     inputs.write_json(path, st)
 
 
-def kev_copy(catalog, status, st: dict, now: int, redirected: bool | None = False) -> Copy | None:
+def version_of(text) -> tuple | None:
+    """A catalogVersion as numbers that order (CISA writes the date: 2026.11.24), or
+    None for any other text: "advanced" has no meaning for a version that does not order."""
+    if not isinstance(text, str) or not _VERSION.fullmatch(text.strip()):
+        return None
+    return tuple(int(x) for x in text.strip().split("."))
+
+
+def begin(st: dict, now: int) -> None:
+    """A run starts observing. If the run before never finished (it stopped between
+    here and the save that ends ``Run.observe``), what it read is not known: every
+    wait takes nothing for the stretch up to the next complete read."""
+    if st["open"] is not None:
+        for root in st["dwell"]:
+            pause(st, root)
+    st["open"] = now
+
+
+def kev_copy(catalog, status, st: dict, now: int, redirected: bool | None = None) -> Copy | None:
     """This run's KEV read, or None when there is none to use: not fetched (any status
     but ``ok`` and ``304``; never the synthetic ``--kev-file``), not the CISA shape, or
     an entry that is not an object with a ``cveID``.
 
-    The copy is complete only when it was not reached through a redirect (a 3xx is not
-    an answer from the catalog's own address; ``redirected`` is what this run's fetch
-    said. A 304 stands for whatever copy the cache holds, so ``st["direct"]`` keeps the
-    digest of the last body that came direct, and a cached body is direct only when it
-    is that very body: a redirected one cached by a run that stopped before saying so
-    never matches), has a version, a ``count`` equal to its number
+    The copy is complete only when this run's answer was not reached through a
+    redirect (a 3xx is not an answer from the catalog's own address; ``redirected`` is
+    what the fetch said, for a 200 and for a 304 alike. A 304 stands for whatever copy
+    the cache holds, so ``st["direct"]`` keeps the digest of the last body that came
+    direct, and a cached body is direct only when it is that very body: a redirected
+    one cached by a run that stopped before saying so never matches), has a version
+    that orders and is not older than the latest complete copy's (an old catalog served
+    again says nothing about now), a ``count`` equal to its number
     of entries (a catalog that disagrees with its own count is cut short), and no
     fewer entries than ``SHRINK`` of the peak: the largest complete copy this state
     has read. The peak never falls, so no run of small copies, however long, becomes
@@ -134,17 +158,18 @@ def kev_copy(catalog, status, st: dict, now: int, redirected: bool | None = Fals
     if not all(isinstance(it, dict) and isinstance(it.get("cveID"), str) for it in items):
         return None
     index = {it["cveID"].strip().upper(): it for it in items}  # as bare_ids writes a CVE
-    version = version.strip() if isinstance(version, str) and 0 < len(version.strip()) <= MAX_VERSION else None
+    version = version.strip() if version_of(version) is not None else None
     try:
         digest = hashlib.sha256(json.dumps(catalog, sort_keys=True).encode("utf-8")).hexdigest()
     except (TypeError, ValueError):
         return None
     if status == "ok":
         st["direct"] = digest if redirected is False else None
-    whole = st["direct"] == digest and version is not None and bool(items) and type(catalog.get("count")) is int \
-        and catalog["count"] == len(items) == len(index)
+    whole = redirected is False and st["direct"] == digest and version is not None and bool(items) \
+        and type(catalog.get("count")) is int and catalog["count"] == len(items) == len(index)
     peak = st["kev"]["peak"] if st["kev"] else 0
-    if not whole or len(items) < SHRINK * peak:
+    latest = version_of(st["kev"]["version"]) if st["kev"] else None
+    if not whole or len(items) < SHRINK * peak or (latest is not None and version_of(version) < latest):
         return Copy(version, index, False)
     st["kev"] = {"version": version, "peak": max(peak, len(items)), "at": now}
     return Copy(version, index, True)
@@ -219,15 +244,17 @@ def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int):
     seen = set(st["listed"].get(root, ()))
     if known and listed - seen:
         st["listed"][root] = sorted(seen | listed)
+    level = rs.highest(found, floor(entry, rs), "notice")
+    if rs.rank(level) >= rs.rank(entry.level):
+        # What the copy lists holds the level, complete or not: evidence for the level needs
+        # no completeness, and it ends a wait for a lower one.
+        dwell.pop(root, None)
+        return None
     if not known or gone - seen:
         # Unknown, or gone from the catalog without this state ever having seen it there
         # (absence proves nothing yet): nothing moves. A wait already running keeps its
         # time and takes none for the stretch up to the next complete read.
         pause(st, root)
-        return None
-    level = rs.highest(found, floor(entry, rs), "notice")
-    if rs.rank(level) >= rs.rank(entry.level):
-        dwell.pop(root, None)
         return None
     rec = dwell.get(root)
     if rec is None or rec["level"] != level:
@@ -236,14 +263,9 @@ def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int):
     if rec["last"] is not None and 0 <= now - rec["last"] <= MAX_GAP:
         rec["held"] += now - rec["last"]  # from one complete read to the next, nothing unknown between
     rec["last"] = now
-    if rec["held"] >= DWELL and rec["version"] != copy.version:
-        return "due", level
+    if rec["held"] >= DWELL and version_of(copy.version) > version_of(rec["version"]):
+        return "due", level  # a later catalog than the one the wait began with still says so
     return None
-
-
-def fresh(entry, now_entry) -> bool:
-    """The thread is as it was judged: still in the ledger, at the same level."""
-    return now_entry is not None and now_entry.level == entry.level
 
 
 def pause(st: dict, root: str) -> None:
@@ -260,8 +282,9 @@ def quiet(entry, now: int) -> bool:
 
 def select(due: list, open_count: int, st: dict, now: int) -> list:
     """The circuit breaker over ``due``, [(entry, level)]; what it returns is lowered
-    now, and noted in ``st["recent"]``. The count is of the threads due plus those
-    lowered in the last ``TRIP_WINDOW``, so a source that sheds its entries a few an hour
+    now. The count is of the threads due plus those lowered in the last ``TRIP_WINDOW``
+    (``st["recent"]``, which the caller adds to when a lowering is recorded, never for
+    one that did not send), so a source that sheds its entries a few an hour
     trips it as one that sheds them at once does. More than ``TRIP_MIN`` and more than
     ``TRIP_SHARE`` of the ``open_count`` threads judged: none is lowered and
     ``st["tripped"]`` says since when, for the digest; once that has lasted
@@ -277,5 +300,4 @@ def select(due: list, open_count: int, st: dict, now: int) -> list:
         st["tripped"] = {"since": since, "due": len(due)}
         out = [] if now - since < RELEASE_AFTER else \
             sorted(due, key=lambda d: (d[0].posted_at, d[0].root_event_id))[:RELEASE]
-    st["recent"] += [now] * len(out)
     return out

@@ -95,6 +95,17 @@ Imports `ruleset`, `inputs` (read_json, write_json, `_catalog_ok`), `candidates.
 
 - [ ] `CHANGELOG.md`: Unreleased: what the poster now does, that a lowering is a level-only reply which no released reader applies (they keep the higher level), the new state file, what happens if CISA prunes the catalog by more than 2%, and the one-way rollback with its steps.
 
+### 8. Changes after the code review (2026-11-24)
+
+The whole-branch review found six things the plan above did not have. They are built and tested; the sections above are left as reviewed.
+
+- [x] `recompute.version_of`: a `catalogVersion` is dotted numbers that order; a copy whose version does not parse, or is older than the latest complete copy's, is not complete; a wait is due only at a later version than it began with.
+- [x] `inputs.urllib_fetch` marks a 304 that came through a redirect; `fetch_kev` reports `redirected` for a 304 too; `kev_copy` needs this run's answer direct as well as the cached body's digest.
+- [x] `recompute.begin` and the state key `open`: written at the start of `run`, cleared by `observe`'s save; found set, every wait is paused.
+- [x] `judge`: evidence that holds the thread's level ends a wait whether or not the read is complete.
+- [x] `Run.recompute` judges again, from the current ledger entry, every thread not judged in `observe` (posted this run, or busy then) and every thread whose entry changed since its verdict; `_level_items` is built from that entry.
+- [x] Tests for each: `test_an_older_catalog_served_again_is_not_a_read_of_now`, `test_old_catalogs_served_in_turn_lower_nothing`, the 304 cases in `test_a_catalog_reached_through_a_redirect_is_marked` and `test_a_cached_body_is_direct_only_when_it_is_the_body_that_came_direct`, `test_begin_pauses_every_wait_when_the_run_before_did_not_finish_observing`, `test_a_run_that_stopped_before_saving_what_it_read_gives_no_time`, `test_a_cut_catalog_that_lists_the_entry_ends_a_wait_for_a_lower_level`, `test_a_candidate_on_the_run_a_lowering_falls_due_is_seen_before_anything_is_lowered`, `test_a_thread_whose_lowering_finishes_in_this_run_is_still_raised_in_it`.
+
 ## Verification
 
 - `python3 -m pytest tests/poster -q` while building; `python3 -m pytest -q` before the commit.

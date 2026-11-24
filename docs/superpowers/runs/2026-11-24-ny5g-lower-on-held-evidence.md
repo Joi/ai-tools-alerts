@@ -1,10 +1,11 @@
 # Run: ny5g-lower-on-held-evidence
 Instruction: ai-tools-alerts#ny5g (starting rung floored at medium): the poster lowers only on positive evidence held 24 h; outage, 404 and flapping lower nothing (findings D4, D13 and D15 of the design review on ai-tools-alerts#h29n)
-Stage: code-review:recompute
+Stage: code-review:recompute (delta)
 Rung: heavy from the spec pass on (one BLOCKER of the spec pass is not fixed in this slice: see finding 4); started medium (start-floor medium: constraint-lens and FC=2, BR1 REV2 NOV1 INT1 FC2 = 7; the dispatch brief floors it at medium too)
 Lens: "Nothing you build may wait for a person to act."; "`unknown` (timeout, 3xx, 403, 404, 429, 5xx, parse error, truncated or oversized body) changes no level and does not count toward expiry"; "A 404 is never a withdrawal."; "The bot does not get `retract`"; "`fetch_kev` already separates `unavailable`; keep that through the recompute."
 Last reviewed: spec 7882422261538c32c5b289a756319316061c0e68, then the delta at b05a51660891e93b426e112a343e9959af692861
 Last reviewed: plan b0d8fdb37e08fc1017fe1ad4ac45fc8dfe5d3b12, then the delta at 1a2cddb0a5f16aacd355df089da1e99bf6281319
+Last reviewed: code d389897214eb710a576249ebbfc9e71a5920a85a (the whole branch)
 Review tier: gpt-6-astra at high (h29n calls the work security-shaped)
 Spec: docs/superpowers/specs/2026-11-24-ny5g-lower-on-held-evidence-design.md   Plan: docs/superpowers/plans/2026-11-24-ny5g-lower-on-held-evidence.md
 Agency project: — (this session has no Agency tools; see Notes)
@@ -58,8 +59,23 @@ Plan findings, pass 2 (the delta), and what was done:
 
 Found while building, not by a reviewer: the breaker counted one run's lowerings, so entries shed two an hour passed it. It now counts the last 24 hours (spec criterion 7).
 
+Pass 1 [code:recompute]: 5B/5S/4C/0R · fixed -/- · velocity = (—→14, escalation no)
+code passes: 1 · the whole branch at d389897214eb710a576249ebbfc9e71a5920a85a, after merging origin/main · Stage 2 gpt-6-astra (fresheyes run 20261124-162531-99d039; neither standing rebuttal overturned) · Stage 1 a same-model reviewer, which ran its findings against an export of that commit · all fixed
+
+Code findings, pass 1, and what was done:
+1. BLOCKER (both reviewers), a verdict reached before the journal drained was sent after a candidate had changed the thread: it lowered below a new floor, past an unread GHSA id, and wrote the old advisory over a recorded fix. Fixed: at send time every thread whose ledger entry is no longer the one judged is judged again, and the reply is composed from the current entry.
+2. BLOCKER (Stage 2; Stage 1 SUBSTANTIVE), a redirect that ends in 304 counted as a direct read. Fixed: the fetch marks it, `fetch_kev` reports it, `kev_copy` needs this run's answer direct.
+3. BLOCKER (Stage 2; Stage 1 SUBSTANTIVE for the window before `observe`), a run that stopped before saving what it read left the wait's last-read mark, so the next read took the time. Fixed: a run writes that it has begun before it reads; the next run finding that mark pauses every wait.
+4. BLOCKER, an older catalog served again passed as "another version". Fixed: a version is numbers that order; one older than the latest complete copy's is not complete; a wait is due only at a later version.
+5. BLOCKER, a cut catalog that lists the entry only paused a wait for a lower level. Fixed: evidence that holds the level ends the wait, complete or not.
+6. SUBSTANTIVE (Stage 2), a thread busy at the start whose work the drain finished was not judged in that run, so a catalog listing it again did not raise it until the next. Fixed: judged at send time.
+7. SUBSTANTIVE (Stage 1), the breaker counted lowerings that never sent. Fixed: counted when recorded.
+8. SUBSTANTIVE (Stage 1), on a lowered thread a raise whose only other change was an unchanged title was withheld whole. Fixed: the unchanged title is dropped and the level goes alone.
+9. SUBSTANTIVE (Stage 1), tests passed with the freshness check removed, and five paths had none. Fixed: a candidate on the due run, a failed lowering whose evidence still holds, an unknown outcome, a KEV candidate on a lowered thread, a redirect ending in 304, the digest still in the journal.
+10. COSMETIC (Stage 1), fixed: `kev_copy` defaults to "not known direct"; `floor` is accepted on a root item only; the breaker's digest line no longer says "1 threads"; the unused `fresh` helper is gone; the docstring says threads judged.
+
 ## Chunks
-- [ ] recompute: the evidence rules, the KEV reader, the ledger marks, the digest line
+- [x] recompute: the evidence rules, the KEV reader, the ledger marks, the digest line (59bdcf9, merge d389897, review fixes in the commit after)
 
 ## Notes
 - Split before building (decided comment on ny5g, 2026-11-24): this run is the evidence rules and the KEV reader; 3qyq is the rest.

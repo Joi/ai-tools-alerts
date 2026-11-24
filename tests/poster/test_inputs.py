@@ -416,10 +416,11 @@ def test_a_root_item_may_carry_its_prose_floor(tmp_path):  # ny5g
     st["outbox"].append(item(floor="high"))
     inputs.save_state(path, st)
     assert inputs.load_state(path, 0, 0)["outbox"][0]["floor"] == "high"
-    st["outbox"][0]["floor"] = "severe"
-    inputs.save_state(path, st)
-    with pytest.raises(LedgerError, match="malformed"):
-        inputs.load_state(path, 0, 0)
+    for bad in (item(floor="severe"), item(floor=None), digest_item(floor="high")):  # a level, on a root only
+        st["outbox"] = [bad]
+        inputs.save_state(path, st)
+        with pytest.raises(LedgerError, match="malformed"):
+            inputs.load_state(path, 0, 0)
 
 
 def test_a_catalog_reached_through_a_redirect_is_marked(tmp_path):  # ny5g: a 3xx is not the catalog's own answer
@@ -431,9 +432,9 @@ def test_a_catalog_reached_through_a_redirect_is_marked(tmp_path):  # ny5g: a 3x
     body = json.dumps(CATALOG).encode()
 
     class Fake(urllib.request.HTTPSHandler):
-        def __init__(self, hops):
+        def __init__(self, hops, end=200):
             super().__init__()
-            self.hops, self.urls = hops, []
+            self.hops, self.urls, self.end = hops, [], end
 
         def https_open(self, req):
             self.urls.append(req.full_url)
@@ -442,7 +443,7 @@ def test_a_catalog_reached_through_a_redirect_is_marked(tmp_path):  # ny5g: a 3x
                 msg["Location"] = "https://www.cisa.gov/elsewhere.json"
                 resp = urllib.response.addinfourl(io.BytesIO(b""), msg, req.full_url, 302)
             else:
-                resp = urllib.response.addinfourl(io.BytesIO(body), msg, req.full_url, 200)
+                resp = urllib.response.addinfourl(io.BytesIO(body if self.end == 200 else b""), msg, req.full_url, self.end)
             resp.msg = "x"
             return resp
 
@@ -456,3 +457,11 @@ def test_a_catalog_reached_through_a_redirect_is_marked(tmp_path):  # ny5g: a 3x
     assert inputs.fetch_kev(tmp_path / "kev.json", fetch, info=info) == (CATALOG, "ok") and info == {"redirected": True}
     fetch = lambda url, headers: inputs.urllib_fetch(url, headers, handlers=(Fake(0),))  # noqa: E731
     assert inputs.fetch_kev(tmp_path / "kev2.json", fetch, info=info)[1] == "ok" and info == {"redirected": False}
+    # A redirect that ends in "not modified" is marked too, and so is what fetch_kev says of the cached copy.
+    status, hdrs, got = inputs.urllib_fetch(inputs.KEV_URL, {}, handlers=(Fake(1, 304),))
+    assert (status, got) == (304, b"") and hdrs[inputs.REDIRECTED] == "1"
+    assert inputs.REDIRECTED not in inputs.urllib_fetch(inputs.KEV_URL, {}, handlers=(Fake(0, 304),))[1]
+    fetch = lambda url, headers: inputs.urllib_fetch(url, headers, handlers=(Fake(1, 304),))  # noqa: E731
+    assert inputs.fetch_kev(tmp_path / "kev2.json", fetch, info=info) == (CATALOG, "304") and info == {"redirected": True}
+    fetch = lambda url, headers: inputs.urllib_fetch(url, headers, handlers=(Fake(0, 304),))  # noqa: E731
+    assert inputs.fetch_kev(tmp_path / "kev2.json", fetch, info=info) == (CATALOG, "304") and info == {"redirected": False}
