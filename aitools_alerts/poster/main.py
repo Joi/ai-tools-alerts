@@ -1452,7 +1452,7 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
         # they cannot delay an alert post, the checkpoint or the next run.
         if cat_id and english_ok and cat_status != "error":
             try:
-                cat_status = catalog.send_pass(config, cat_id, send, cat_snap)
+                cat_status = catalog.send_pass(config, cat_id, send, cat_snap, now)
             except Exception as e:  # noqa: BLE001 - nothing here may reach the run's exit code
                 cat_status = "error"
                 _say(f"catalog pass stopped: {type(e).__name__}: {e}")

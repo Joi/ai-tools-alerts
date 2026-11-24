@@ -235,10 +235,10 @@ def test_no_catalog_file_is_touched_under_the_ledger_lock(env, monkeypatch):
     seen = []
     real = catalog.remember
 
-    def remember(path, snap):
+    def remember(path, snap, at=0):
         with Ledger(env.config.ledger):  # free: the run has released it
             seen.append(path.name)
-        return real(path, snap)
+        return real(path, snap, at)
     monkeypatch.setattr(catalog, "remember", remember)
     code, _, _ = run(env)
     assert code == 0 and seen == [env.config.catalog_known.name]
@@ -254,20 +254,6 @@ def test_a_pass_stops_at_its_deadline(env):
     assert catalog.send_pass(env.config, CATALOG, relay, snap, clock=lambda: next(ticks)) == "0/1"
     assert relay.calls == []
     assert catalog.send_pass(env.config, CATALOG, relay) == "1/0"  # the inventory kept it
-
-
-def test_the_inventory_is_written_within_its_byte_bound(env, monkeypatch, tmp_path):
-    env.collector([finding(fid=f"CVE-2026-500{i}", product="Cursor IDE", severity=None, fixed=None,
-                           sources=(test_main.APPLE,)) for i in range(4)])
-    run(env, catalog_channel=False)
-    with Ledger(env.config.ledger) as led:
-        snap = catalog.snapshot(led, env.state()["held"])
-    assert len(snap) == 4
-    one = max(catalog._size(a) + len(k) for k, a in snap.items())
-    monkeypatch.setattr(catalog, "KEEP_BYTES", 2 * one + 1)
-    path = tmp_path / "known.json"
-    assert catalog.remember(path, snap) == 2
-    assert len(catalog._read(path, "known")) == 2  # what is written reads back
 
 
 def test_catalog_paths_clash_turns_off_the_lane_only(env, tmp_path):
@@ -292,3 +278,75 @@ def test_the_checkpoint_window_never_lists_a_catalog_event():
            for ch in (CHANNELS["feed"], CATALOG)]
     assert pull._bound(evs[0], pull.channel_ids()) and not pull._bound(evs[1], pull.channel_ids())
     assert CATALOG not in pull.channel_ids()
+
+
+def _adv(product, adv_id="CVE-2026-6000", level="notice", fixed=None, eco="mcp"):
+    from dataclasses import asdict
+    return asdict(schema.validate({
+        "id": adv_id, "aliases": [], "level": level, "advisory_severity": None,
+        "title": f"{product}: a flaw ({adv_id})",
+        "products": [{"name": product, "ecosystem": eco, "affected": None, "fixed": fixed}],
+        "actions": [{"verb": "upgrade", "target": product, "value": fixed}] if fixed else [],
+        "sources": [{"url": test_main.APPLE, "published_at": None}],
+        "posted_by": "relay-bot", "posted_at": T0, "expires_at": None}))
+
+
+class _Led:
+    def __init__(self, *entries):
+        self._e = entries
+
+    def entries(self):
+        return list(self._e)
+
+
+def test_a_thread_or_notice_under_a_former_product_name_is_catalogued(tmp_path):
+    from types import SimpleNamespace
+    old = "MCP Inspector"  # formerly of @modelcontextprotocol/inspector (wa6n)
+    thread = SimpleNamespace(scope=old, level="high", advisory=_adv(old, "CVE-2026-6001", "high", "0.9.0"))
+    held = [{"scope": old, "adv": _adv(old, "CVE-2026-6002")}]
+    snap = catalog.snapshot(_Led(thread), held)
+    assert set(snap) == {f"{old}|cve-2026-6001", f"{old}|cve-2026-6002"}
+    path = tmp_path / "known.json"
+    assert catalog.remember(path, snap) == 2 and catalog.remember(path, {}) == 2  # not purged as out of scope
+
+
+def test_an_older_snapshot_never_replaces_a_newer_one(tmp_path):
+    k = "Cursor|cve-2026-6000"
+    old, new = _adv("Cursor", eco="cursor"), _adv("Cursor", fixed="2.0.0", eco="cursor")
+    path = tmp_path / "known.json"
+    catalog.remember(path, {k: new}, at=T0 + 3600)  # the later run's pass got the lock first
+    catalog.remember(path, {k: old}, at=T0)
+    assert catalog._read(path, "known")[k]["products"][0]["fixed"] == "2.0.0"
+    catalog.remember(path, {k: old}, at=T0 + 7200)  # a later snapshot does replace it
+    assert catalog._read(path, "known")[k]["products"][0]["fixed"] is None
+
+
+def test_the_byte_bound_is_measured_as_written(tmp_path, monkeypatch):
+    snap = {f"Cursor|cve-2026-60{i:02d}": {**_adv("Cursor", f"CVE-2026-60{i:02d}", eco="cursor"),
+                                           "title": "Cursor: " + "あ" * 300}  # 1 char, 6 bytes escaped
+            for i in range(20)}
+    path = tmp_path / "known.json"
+    one = catalog._encoded({"v": 1, "known": dict([next(iter(snap.items()))]), "at": {"x": 0}})
+    monkeypatch.setattr(catalog, "KEEP_BYTES", 5 * one)
+    kept = catalog.remember(path, snap)
+    assert 0 < kept < 20 and path.stat().st_size <= catalog.KEEP_BYTES
+    monkeypatch.setattr(catalog, "MAX_FILE", catalog.KEEP_BYTES)
+    assert len(catalog._read(path, "known")) == kept  # what was written reads back whole
+
+
+def test_refused_sends_count_against_the_cap(env, monkeypatch):
+    monkeypatch.setattr(catalog, "MAX_PER_RUN", 2)
+    env.collector([finding(fid=f"CVE-2026-500{i}", product="Cursor IDE", severity=None, fixed=None,
+                           sources=(test_main.APPLE,)) for i in range(3)])
+    code, summary, relay = run(env, relay=FakeRelay("refuse", "refuse", "refuse"))
+    assert code == 0 and len([c for c in relay.calls if c[0] == "catalog"]) == 2 and summary.endswith(" catalog=0/1")
+
+
+def test_a_fifo_at_the_catalog_spec_turns_the_lane_off_without_blocking(env, monkeypatch, tmp_path):
+    import os
+    fifo = tmp_path / "catalog-channel.json"
+    os.mkfifo(fifo)
+    monkeypatch.setattr(inputs, "CATALOG_SPEC", str(fifo))
+    env.collector([finding()])
+    code, summary, relay = env.run(catalog_channel=None)
+    assert code == 0 and summary.endswith(" catalog=off-bad-spec") and chans(relay) == [("feed", None)]

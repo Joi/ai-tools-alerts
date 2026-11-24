@@ -1428,3 +1428,26 @@ def test_main_exits_zero_when_only_the_catalog_fails(env, tmp_path):
     assert em.main(["--channels", str(channels), "--manifest", str(manifest), "--out", str(out),
                     "--rows-from", str(rows), "--catalog", str(path)]) == 0
     assert (out / "feed.json").exists() and not (out / "catalog.json").exists()
+
+
+def test_a_fifo_catalog_file_is_skipped_without_blocking(env):
+    path = env[2].parent / "catalog-channel.json"
+    os.mkfifo(path)
+    result = run_export(env, catalog_reader(feed=[ev(BOT_SEC, "x")]), catalog=path)
+    assert result["catalog"] == "skipped:catalog file is not a regular file" and (env[2] / "feed.json").exists()
+
+
+def test_the_catalog_step_is_cut_off_at_its_run_budget(env, monkeypatch):
+    import time as _time
+    monkeypatch.setattr(em, "CATALOG_RUN_BUDGET", 0.2)
+    path = catalog_env(env)
+
+    def slow(name, cid, limit=None):
+        if name == "catalog":
+            _time.sleep(5)
+        return [ev(BOT_SEC, "x")] if name == "feed" else []
+    t0 = _time.monotonic()
+    result = run_export(env, slow, catalog=path)
+    assert _time.monotonic() - t0 < 3
+    assert result["catalog"] == "skipped:the catalog took more than 0.2s"
+    assert (env[2] / "feed.json").exists() and not (env[2] / "catalog.json").exists()

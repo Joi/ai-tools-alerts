@@ -41,6 +41,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -75,6 +76,8 @@ PSQL_TIMEOUT = 120
 # so it never holds the alert export into the next run (q03f).
 CATALOG_START_BUDGET = 150
 CATALOG_PSQL_TIMEOUT = 45
+CATALOG_RUN_BUDGET = 75  # the whole catalog step, query to fsync: 150 + 75 s < the unit's 5 minutes
+CATALOG_MAX_READ = 24 << 20  # bytes of psql output the catalog accepts
 DEFAULT_MIRROR_URL = "https://buzz.ai-tools.md/alerts/"
 ROOT_PUB = REPO / "trust" / "root.pub"  # published beside manifest.json: a second origin for the root
 NIP01_KEYS = ("id", "pubkey", "created_at", "kind", "tags", "content", "sig")
@@ -111,6 +114,29 @@ XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
 
 class ExportError(Exception):
     """A refusal or read failure: nothing is written."""
+
+
+class _CatalogTimeout(BaseException):
+    """The catalog step ran past CATALOG_RUN_BUDGET (raised by the alarm)."""
+
+
+def _deadline(seconds):
+    """Arm a real-time alarm that raises _CatalogTimeout; returns the disarm function.
+    Off the main thread (no signals there) it arms nothing."""
+    import signal
+    import threading
+    if threading.current_thread() is not threading.main_thread():
+        return lambda: None
+
+    def fire(signum, frame):
+        raise _CatalogTimeout()
+    old = signal.signal(signal.SIGALRM, fire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+
+    def disarm():
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old)
+    return disarm
 
 
 # ---------------------------------------------------------------- inputs
@@ -151,6 +177,8 @@ def psql_reader(prefix: list[str]):
             raise ExportError(f"channel {name}: psql could not run ({e.__class__.__name__})") from None
         if proc.returncode != 0:
             raise ExportError(f"channel {name}: psql exited {proc.returncode}")
+        if limit is not None and len(proc.stdout) > CATALOG_MAX_READ:
+            raise ExportError(f"channel {name}: more than {CATALOG_MAX_READ} bytes")
         rows = []
         # psql -At ends each row with "\n"; JSON escapes "\n" inside strings
         # but not U+0085/U+2028/U+2029, which str.splitlines() would split on.
@@ -333,10 +361,21 @@ def load_catalog(path, channels: dict) -> str | None:
     does not exist. ExportError when it is not exactly {"catalog": <lowercase uuid>}
     naming neither alert channel (the caller skips the catalog; nothing else changes)."""
     try:
-        with open(path, encoding="utf-8") as f:
-            obj = json.load(f)
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)  # a FIFO at the path never holds the run
     except FileNotFoundError:
         return None
+    except OSError as e:
+        raise ExportError(f"catalog file unreadable: {e.__class__.__name__}") from None
+    try:
+        with os.fdopen(fd, "rb") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                raise ExportError("catalog file is not a regular file")
+            data = f.read(4097)
+        if len(data) > 4096:
+            raise ExportError("catalog file is too large")
+        obj = json.loads(data)
+    except ExportError:
+        raise
     except (OSError, ValueError, RecursionError) as e:
         raise ExportError(f"catalog file unreadable: {e.__class__.__name__}") from None
     cid = obj.get("catalog") if isinstance(obj, dict) and set(obj) == {"catalog"} else None
@@ -371,21 +410,28 @@ def export_catalog(path, channels: dict, m, out: Path, reader, now: int, generat
     summary of what was kept, or "skipped:<reason>" (the previous file stays).
     ``elapsed``: seconds the export has run; past CATALOG_START_BUDGET the catalog
     waits for the next run."""
+    disarm = None
     try:
         cid = load_catalog(path, channels)
         if cid is None:
             return "off"
         if elapsed >= CATALOG_START_BUDGET:
             return f"skipped:the export took {int(elapsed)}s; the catalog waits for the next run"
+        disarm = _deadline(CATALOG_RUN_BUDGET)  # query, verification and write, all of it
         admitted, _ = published_ids(out, ["catalog"])
         rows = reader("catalog", cid, limit=MAX_CHANNEL_EVENTS)
         kept, counts = clean(rows, m, frozenset({cid}), now, admitted)
         kept = newest(kept)
         write_atomic(out, "catalog.json", channel_doc("catalog", kept, generated_at))
+    except _CatalogTimeout:
+        return f"skipped:the catalog took more than {CATALOG_RUN_BUDGET}s"
     except ExportError as e:
         return f"skipped:{e}"
     except Exception as e:  # noqa: BLE001 - the catalog never costs the alert files anything
         return f"skipped:{e.__class__.__name__}"
+    finally:
+        if disarm is not None:
+            disarm()
     return (f"kept={len(kept)} capped={counts['kept'] - len(kept)} unbound={counts['unbound']}"
             f" not_poster={counts['not_poster']} bad_sig={counts['bad_sig']}")
 
@@ -854,8 +900,11 @@ def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_
     for fname, data in files:
         write_atomic(out, fname, data)
     # Last, and on its own: nothing above waits for it or depends on it (q03f).
-    cat = export_catalog(catalog if catalog is not None else CATALOG_SPEC, channels, m, out, reader, now,
-                         generated_at, time.monotonic() - started)
+    try:
+        cat = export_catalog(catalog if catalog is not None else CATALOG_SPEC, channels, m, out, reader, now,
+                             generated_at, time.monotonic() - started)
+    except _CatalogTimeout:  # the alarm fired as the step was disarming it
+        cat = f"skipped:the catalog took more than {CATALOG_RUN_BUDGET}s"
     return {"channels": counts, "atom_entries": entries, "index_advisories": listed, "checkpoint": cp_note,
             "catalog": cat}
 

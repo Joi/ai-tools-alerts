@@ -10,9 +10,9 @@ Two steps:
 - ``send_pass`` runs after the ledger lock is released and the checkpoint is signed,
   under the catalog's own lock (``Config.catalog_lock``, waited for at most
   ``LOCK_WAIT`` seconds). It merges the snapshot into the inventory
-  (``Config.catalog_known``, which keeps the newest advisory per key and outlives the
-  held list), then posts a root for every key whose advisory differs from the one
-  last sent (``Config.catalog_state``), at most ``MAX_PER_RUN`` a run and none after
+  (``Config.catalog_known``, which keeps the latest snapshot's advisory per key and
+  outlives the held list), then posts a root for every key whose advisory differs from the one
+  last sent (``Config.catalog_state``), at most ``MAX_PER_RUN`` attempts a run and none after
   ``DEADLINE`` seconds. No catalog file is read or written under the ledger lock, so
   nothing here can delay an alert post, the checkpoint or the next run.
 
@@ -32,7 +32,7 @@ import hashlib
 import json
 import sys
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 from aitools_alerts import schema
 from aitools_alerts.poster import compose, inputs, rules
@@ -72,11 +72,18 @@ def _valid(adv) -> dict | None:
 
 def _scope(name):
     """The scope entry (or resolved component) a thread or held notice is filed under,
-    by its name; None when the scope file no longer has it. A name is not always an
-    identity (the entry Cursor matches "cursor ide"), so this is not ``scope_of``."""
+    by its name, or by an earlier name in an entry's ``formerly`` (wa6n: a thread keeps
+    the name it was posted under, as ``Run._former`` does); None when the scope file has
+    neither. A name is not always an identity (the entry Cursor matches "cursor ide"),
+    so this is not ``scope_of``."""
     if not isinstance(name, str):
         return None
-    return next((s for s in rules._default_index().values() if s.name == name), None)
+    entries = list(rules._default_index().values())
+    hit = next((s for s in entries if s.name == name), None)
+    if hit is None:
+        old = next((s for s in entries if name in getattr(s, "formerly", ())), None)
+        hit = replace(old, name=name, formerly=()) if old is not None else None
+    return hit
 
 
 def _in_scope(name) -> bool:
@@ -106,39 +113,43 @@ def _read(path, field: str) -> dict:
     """The file's ``field`` map; a missing file is empty, a malformed one is empty with
     a line on stderr (the lane then sends again, which is harmless)."""
     try:
-        doc = inputs.read_json(path, MAX_FILE)
+        doc = inputs.read_regular_json(path, MAX_FILE)
     except FileNotFoundError:
         return {}
     except (OSError, ValueError, RecursionError) as e:
         _say(f"{path.name} unreadable ({type(e).__name__}); starting empty")
         return {}
-    if not (isinstance(doc, dict) and doc.get("v") == VERSION and isinstance(doc.get(field), dict)):
+    if not (isinstance(doc, dict) and doc.get("v") == VERSION and isinstance(doc.get(field, {}), dict)):
         _say(f"{path.name} malformed; starting empty")
         return {}
-    return doc[field]
+    return doc.get(field, {})
 
 
-def _size(a: dict) -> int:
-    return len(json.dumps(a, sort_keys=True, ensure_ascii=False).encode("utf-8")) + 64
+def _encoded(doc) -> int:
+    """The bytes ``inputs.write_json`` writes for ``doc`` (same encoder settings)."""
+    return len(json.dumps(doc, indent=1, sort_keys=True).encode("utf-8"))
 
 
-def remember(path, snap: dict) -> int:
-    """Merge a snapshot into the inventory; returns the number of keys kept. Called
-    under the catalog lock only. Bounded by MAX_KEYS and KEEP_BYTES, the oldest first
-    sight dropped first, so what is written is always readable (MAX_FILE)."""
+def remember(path, snap: dict, at: int = 0) -> int:
+    """Merge a snapshot taken at ``at`` (the run's clock) into the inventory; returns
+    the number of keys kept. A key the inventory holds from a later snapshot keeps that
+    one: two runs' passes can merge in either order. Called under the catalog lock only.
+    Bounded by MAX_KEYS and KEEP_BYTES, measured as written, the oldest first sight
+    dropped first, so what is written is always readable (MAX_FILE)."""
     known = {k: a for k, a in _read(path, "known").items() if _valid(a) is not None}
-    known.update(snap)
+    stamp = {k: t for k, t in _read(path, "at").items() if k in known and type(t) is int}
+    for k, a in snap.items():
+        if stamp.get(k, 0) <= at:
+            known[k], stamp[k] = a, at
     known = {k: a for k, a in known.items() if _in_scope(a["products"][0]["name"])}
-    order = sorted(known, key=lambda k: (known[k]["posted_at"], k), reverse=True)  # newest first
-    keep, total = [], 0
-    for k in order[:MAX_KEYS]:
-        total += _size(known[k]) + len(k)
-        if total > KEEP_BYTES:
+    order = sorted(known, key=lambda k: (known[k]["posted_at"], k), reverse=True)[:MAX_KEYS]  # newest first
+    while True:
+        doc = {"v": VERSION, "known": {k: known[k] for k in order}, "at": {k: stamp.get(k, 0) for k in order}}
+        if _encoded(doc) <= KEEP_BYTES or not order:
             break
-        keep.append(k)
-    known = {k: known[k] for k in keep}
-    inputs.write_json(path, {"v": VERSION, "known": known})
-    return len(known)
+        order = order[:len(order) * 9 // 10]  # the oldest tenth goes, until it fits
+    inputs.write_json(path, doc)
+    return len(order)
 
 
 def _lock(fh, clock, wait) -> bool:
@@ -158,7 +169,7 @@ def _sent_ok(v) -> bool:
             and (v["event"] is None or isinstance(v["event"], str)))
 
 
-def send_pass(config, channel_id: str, send, snap: dict | None = None, clock=time.monotonic,
+def send_pass(config, channel_id: str, send, snap: dict | None = None, at: int = 0, clock=time.monotonic,
               wait: float | None = None) -> str:
     """Merge ``snap`` into the inventory, then post what the inventory holds and the
     catalog channel lacks. Returns ``<sent>/<waiting>``, or ``busy`` when another
@@ -172,7 +183,7 @@ def send_pass(config, channel_id: str, send, snap: dict | None = None, clock=tim
         if not _lock(fh, clock, LOCK_WAIT if wait is None else wait):
             return "busy"
         if snap is not None:
-            remember(config.catalog_known, snap)
+            remember(config.catalog_known, snap, at)
         start = clock()  # the deadline counts sends, not the wait for the lock
         known = {k: a for k, a in _read(config.catalog_known, "known").items() if _valid(a) is not None}
         sent = {k: v for k, v in _read(config.catalog_state, "sent").items() if k in known and _sent_ok(v)}
@@ -182,9 +193,9 @@ def send_pass(config, channel_id: str, send, snap: dict | None = None, clock=tim
 
         todo = sorted((k for k in known if sent.get(k, {}).get("digest") != fingerprint(known[k])),
                       key=lambda k: (known[k]["posted_at"], k))
-        n = 0
+        n = tries = 0
         for k in todo:
-            if n >= MAX_PER_RUN or clock() - start >= DEADLINE:
+            if tries >= MAX_PER_RUN or clock() - start >= DEADLINE:  # attempts, refused ones too
                 break
             d = fingerprint(known[k])
             try:
@@ -193,6 +204,7 @@ def send_pass(config, channel_id: str, send, snap: dict | None = None, clock=tim
                 sent[k] = {"event": None, "digest": d}
                 save()
                 continue
+            tries += 1
             r = send(channel_id, text, None)
             if r.outcome == "ok":
                 sent[k] = {"event": r.event_id, "digest": d}

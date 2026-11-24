@@ -87,7 +87,7 @@ review B1). The send pass merges it into the catalog inventory,
 Each gives its current advisory (the ledger entry's `advisory`, which
 `record_reply` keeps merged, or the held entry's `adv`). The inventory keeps
 the newest advisory per key, persists across runs (a notice the digest later
-drops stays), and holds at most 20,000 keys (oldest `posted_at` dropped
+drops stays), and holds at most 5,000 keys and 48 MiB as written (oldest `posted_at` dropped
 first). A key whose product leaves scope is dropped. Limits stated, not
 fixed here: notices digested before the lane was first switched on are not
 in the inventory (the poster keeps only their ids), and a notice re-sighted

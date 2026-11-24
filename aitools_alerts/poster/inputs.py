@@ -13,6 +13,7 @@ import fcntl
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 import threading
@@ -144,7 +145,7 @@ class Config:
 
     @property
     def catalog_known(self) -> Path:
-        """The catalog lane's inventory (q03f): written only under the ledger lock."""
+        """The catalog lane's inventory (q03f): written only under catalog_lock."""
         return self.ledger.with_name(self.ledger.name + ".catalog-known.json")
 
     @property
@@ -294,7 +295,7 @@ def load_catalog_channel(channels: dict, path: Path | None = None) -> str | None
     ``{"catalog": <lowercase uuid>}`` naming neither alert channel."""
     path = path if path is not None else schema.SPEC_DIR / CATALOG_SPEC
     try:
-        ch = read_json(path, 4096)
+        ch = read_regular_json(path, 4096)
     except FileNotFoundError:
         return None
     except (OSError, ValueError, RecursionError) as e:
@@ -343,6 +344,26 @@ def _sync(fd: int) -> None:
         except OSError:
             pass
     os.fsync(fd)
+
+
+def read_regular_json(path: Path, limit: int):
+    """read_json for a file that must be a regular file: opened without blocking (a FIFO
+    or a device at the path never holds the run), refused with ValueError when it is not
+    a regular file. FileNotFoundError when it does not exist."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("not a regular file")
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1
+            data = fh.read(limit + 1)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if len(data) > limit:
+        raise ValueError("file too large")
+    return json.loads(data, object_pairs_hook=schema._no_duplicates,
+                      parse_constant=schema._reject_constant)
 
 
 def read_json(path: Path, limit: int):
