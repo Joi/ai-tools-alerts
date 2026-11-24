@@ -34,6 +34,18 @@ What the object holds, its canonical form and its test vectors are defined with 
 2. **On a thread that has had a lowering, every later level change is a level-only reply too.** A released reader still holds the higher level, so a raise from notice to high is a lowering to it, and it would skip a fix sent in the same reply. On a thread never lowered, a raise may share a reply. The poster knows which threads it lowered; it passes `lowered=True` to `compose.reply_post`, which then refuses any level change.
 3. **A relay-bot block sets no expiry.** A root's block has `"expires_at": null` (the schema requires the key); a reply's block leaves the key out. Expiry is computed from the claim by readers that know it.
 
+## How this reader computes expiry
+
+From the release after 0.1.7 (ai-tools-alerts#r0ra). Released readers do none of this: to them a relay-bot alert never expires.
+
+- A relay-bot root's `expires_at` is not read. A curator's is: it ends the thread.
+- A **renewal** is a relay-bot event of the thread, the root or any reply, whose claim is well formed (`ruleset.parse_claim`), names a level (not `none`) and one of the thread's ids, and has `checked_at` no later than the event's `created_at`. Its text does not matter: an event whose only news is its claim tag is a renewal.
+- A thread can decay only when its **root** carries a renewal. A relay-bot thread whose root has no claim never expires, whatever its replies carry: a reply must not be able to end an alert. An id or alias the thread has held keeps counting after a patch drops it.
+- One renewal keeps the thread's level standing until `max(confirmed_at + TTL, min(checked_at + TTL, confirmed_at + 45 days))`, with the TTL of `spec/ruleset.json` for the level the reader shows. A check that could not confirm leaves `confirmed_at` as it was and moves `checked_at`. The longest renewal counts; a shorter one changes nothing. When the level no longer stands, the thread shows at the highest lower level that still stands by the same formula (critical 14 days, then high to day 30, then notice to day 90), and then it is gone. A relay-bot reply whose block names a level counts as a renewal of its own date, with or without a claim, so raising a thread never shortens what it shows.
+- The clock is the `created_at` of the newest checkpoint the reader has accepted, never the machine's clock. A thread decays only under a checkpoint that lists its root. With a frozen mirror the checkpoint stops, so nothing expires and the reader says the feed is stale.
+- While any renewal of a thread is on an event dated after the checkpoint, the thread is not judged and keeps its level; the next checkpoint judges it with every renewal counted. The poster's checkpoint is dated at the start of its run and lists the posts of that run, so such an event is not refused, and a raise posted in that run shows at once.
+- A thread a curator posted or amended does not decay.
+
 A released reader that has refused a lowering shows the alert at its earlier, higher level for as long as the thread lasts. That is intended: the reader cannot check the lowering, and too high is the safe side.
 
 A narrowing of `products` is not covered here. v0.1.4 to v0.1.6 apply any relay-bot `products` list whole; v0.1.7 and later join it to what the thread held. That is true of the replies the poster sends today.

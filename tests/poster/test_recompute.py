@@ -3,6 +3,7 @@ and a flapping source lower nothing; evidence held 24 hours lowers once. Through
 ``main.run`` with the fake relay and fake KEV fetch of test_main, one run an hour."""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +14,7 @@ from aitools_alerts.poster.ledger import Entry, Ledger, LedgerError
 from test_main import GHSA, FakeKEV, FakeRelay, T0, env, finding, kev_item  # noqa: F401  (env is a fixture)
 
 HOUR, DAY = 3600, 86400
+FIXTURES = Path(__file__).parent.parent / "fixtures" / "poster"
 CVE = "CVE-2026-0001"
 FIVE = [f"CVE-2026-000{i}" for i in range(1, 6)]
 OPENSSH = {"cveID": "CVE-2026-123158", "vendorProject": "OpenBSD", "product": "OpenSSH", "dateAdded": "2026-11-04"}
@@ -591,32 +593,28 @@ def test_the_rollback_steps_name_every_key_an_older_poster_refuses(env):
     assert all(set(x) - {"lowered", "changed", "floor"} <= OLD_ENTRY_KEYS for x in env.ledger()[0])
 
 
-def _kev_high():
-    data = json.loads((schema.SPEC_DIR / "ruleset.json").read_text())
-    data["rules"] = [dict(r, level="high") if r["class"] == "kev" else r for r in data["rules"]]
-    return ruleset.Ruleset(data, schema._load_json(schema.SPEC_DIR / "scope.json"), schema.load_scope())
-
-
-def test_the_openssh_thread_follows_the_rule_with_no_human(env, monkeypatch):
-    """CVE-2026-123158, the one critical the service has sent. CISA lists it, so under
-    ruleset version 1 it stays critical. Under a rule that gives a KEV entry high
-    (ai-tools-alerts#9kgk writes that rule) it is lowered once, after a day of
-    complete reads, by the recompute alone."""
-    post(env, OPENSSH)
-    led = json.loads(env.config.ledger.read_text())
-    del led["entries"][0]["floor"]  # the live thread was written before the ledger kept it
-    env.config.ledger.write_text(json.dumps(led))
-    assert entry(env)["advisory"]["products"][0]["name"] == "OpenSSH"
-    assert hours(env, 1, 48, (OPENSSH,)) == [] and entry(env)["level"] == "critical"
-    rs = _kev_high()
-    monkeypatch.setattr(ruleset, "load", lambda: rs)
-    relay = None
-    for h in range(49, 74):
-        assert h == 73 or replies(relay := one(env, h, (OPENSSH,))) == []
-    relay = one(env, 73, (OPENSSH,))
+def test_the_openssh_thread_is_lowered_to_high_with_no_human(env):
+    """CVE-2026-123158, the one critical the service has sent, replayed from the live
+    feed's root as the ledger holds it: critical, in both channels, written before the
+    ledger kept a floor. CISA still lists it. Since scope version 6 OpenSSH is outside
+    the channel class, where a KEV entry supports a notice; what an old entry may have
+    rested on is a reading, which reaches high. So the recompute lowers it once, to
+    high, after a day of complete reads, and it stays there."""
+    live = json.loads((FIXTURES / "live-feed-2026-11-07-to-11.json").read_text())["events"]
+    root = next(e for e in live if e["content"].startswith("CRITICAL: OpenSSH"))
+    adv = schema.parse_post(root["content"])
+    assert adv.id == "CVE-2026-123158" and adv.level == "critical"
+    with Ledger(env.config.ledger) as led:
+        led.record_root(adv, root["id"], {"critical": "c" * 64, "feed": root["id"]}, scope="OpenSSH",
+                        exploited=True, now=root["created_at"], ids=[adv.id, "CVE-2026-123158:openssh"])
+    assert "floor" not in entry(env)
+    assert hours(env, 0, 23, (OPENSSH,)) == []
+    relay = one(env, 24, (OPENSSH,))
     assert levels(relay) == levels(relay, "critical") == [{"level": "high"}]
-    assert entry(env)["level"] == "high"
-    assert hours(env, 74, 74 + 9 * 24, (OPENSSH,)) == []
+    assert [c[1] for c in replies(relay)] == ["c" * 64, root["id"]] and relay.ja == []
+    e = entry(env)
+    assert e["level"] == "high" and e["lowered"] is True and e["advisory"]["level"] == "high"
+    assert hours(env, 25, 25 + 9 * 24, (OPENSSH,)) == []
 
 
 def test_level_report_prints_bare_ids_only():

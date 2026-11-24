@@ -2,13 +2,14 @@
 
 The law is docs/plan.md's Global Constraints. A product is resolved by exact
 identity only (``scope_of``): never by a word in free text, so a third-party
-package cannot resolve to a tier-1 product (h340). A candidate posts only when a
+package cannot resolve to a channel product (h340). A candidate posts only when a
 source authoritative for that product says so (``evidence``): the CISA KEV catalog
 this run fetched, or a page under the product's own ``authority`` prefixes that
 answers 200 and names the advisory's id. Critical fires only by rule and only by a
-field: the product is in scope tier 1 and KEV lists the CVE as exploited, or a
-reading of a source's own fields gives critical. Tier 2 never posts critical.
-Items outside both tiers do not post.
+field: the product is in the channel class and KEV lists the CVE as exploited, or
+a reading of a source's own fields gives critical. A catalog or out product is a
+notice, unless its entry's channel_if lets a code-execution flaw post at high; an
+out product's notice starts nothing (``starts``). A text no entry names does not post.
 
 The level table itself is spec/ruleset.json, evaluated by ``aitools_alerts.ruleset``
 (s6mt): ``level_for`` takes what the candidate's readings support, and a model's
@@ -40,9 +41,10 @@ MAX_PAGE_BYTES = 1024 * 1024
 USER_AGENT = "aitools-alerts-poster"
 _REDIRECTS = frozenset({301, 302, 303, 307, 308})
 
-# Vendors behind tier-1 products whose names do not spell them. Together with the
-# first word of each tier-1 entry's name they flag unmatched text for review.
-EXTRA_VENDOR_WORDS = frozenset({"anthropic", "openai", "anysphere", "nousresearch", "nous", "google"})
+# Vendors behind channel products whose names do not spell them. Together with the
+# first word of each channel entry's name they flag unmatched text for review.
+EXTRA_VENDOR_WORDS = frozenset({"anthropic", "openai", "anysphere", "nousresearch", "nous", "google",
+                                "mcp", "modelcontextprotocol"})  # wa6n: MCP entries are named by package
 
 # Advisory text that names code execution, credential theft or data loss.
 _SEVERE = re.compile(
@@ -50,11 +52,13 @@ _SEVERE = re.compile(
     r"|credential|token theft|secret exposure|data loss|data exfiltration",
     re.I,
 )
+# What a catalog or out entry's channel_if needs from prose: remote code execution, said so.
+_REMOTE_CODE = re.compile(r"remote code execution|\brce\b", re.I)
 _TOKEN = re.compile(r"(?:[^\W_]|\.)+")
 _HIGH_WORDS = frozenset({"high", "critical"})
 
 
-_norm, _tier, _index = ruleset.norm, ruleset.tier_of, ruleset.index  # one lookup for poster and CLI (s6mt)
+_norm, _class, _index = ruleset.norm, ruleset.class_of, ruleset.index  # one lookup for poster and CLI (s6mt)
 
 
 def _tokens(text: str) -> set[str]:
@@ -67,10 +71,11 @@ def _default_entries() -> tuple[schema.ScopeEntry, ...]:
 
 
 def vendor_words(entries) -> set[str]:
-    """The first word of each tier-1 entry's name, plus EXTRA_VENDOR_WORDS."""
+    """The first word of each channel entry's name, and of each entry channel_if can
+    post, plus EXTRA_VENDOR_WORDS."""
     words = set(EXTRA_VENDOR_WORDS)
     for e in entries:
-        if _tier(e) == 1:
+        if _class(e) == "channel" or getattr(e, "channel_if", None):
             first = _norm(e.name).split()
             if first and first[0].strip("."):
                 words.add(first[0].strip("."))
@@ -98,7 +103,7 @@ def scope_of(product_text, log: list[str] | None = None, entries=None) -> schema
     "vendor product". Nothing is matched by a word, a prefix or a substring, so
     "claude-code-router" is not Claude Code (h340). A component's identity comes
     back as the entry resolved to it. When nothing matches but the text holds a
-    tier-1 vendor word as a whole token, it is appended to ``log`` (a list the
+    channel vendor word as a whole token, it is appended to ``log`` (a list the
     caller owns) for review; the log decides nothing.
     """
     if not isinstance(product_text, str):
@@ -137,40 +142,45 @@ def level_for(c: Candidate, scope: schema.ScopeEntry, source_ok: bool) -> tuple[
     ``high`` with reason ``reading``.
 
     Reasons: kev-tier1, reading, unverified, fix-rce-tier1, severity-tier1,
-    kev-tier2, fields, notice. severity-tier1 is a tier-1
+    fields, notice (the names predate scope classes: tier1 is the channel class). severity-tier1 is a channel
     candidate with a CVE or GHSA id whose advisory severity is the word "high" or
     "critical"; it needs no fix, and it never makes a critical. ``source_ok`` is "a page
     authoritative for this product named this advisory" (``evidence``) and counts only when it is the
     bool True; main admits no candidate without evidence, so every level here rests on one. ``local_level_hint`` is never read: it cannot raise a level.
     """
     if scope is None:
-        raise ValueError("out of scope: an item outside both tiers does not post")
-    tier = _tier(scope)
-    if tier is None:
-        raise ValueError(f"scope tier must be 1 or 2, got {getattr(scope, 'tier', None)!r}")
+        raise ValueError("out of scope: a text no scope entry names does not post")
+    if _class(scope) is None:
+        raise ValueError(f"scope class must be channel, catalog or out, got {getattr(scope, 'scope_class', None)!r}")
     rs = ruleset.load()
-    level, reason = _prose_level(c, tier, source_ok is True, rs)
+    level, reason = _prose_level(c, scope, source_ok is True, rs)
     fields = _fields_level(c, scope)
     if rs.rank(fields) > rs.rank(level):
         return fields, "fields"
     return level, reason
 
 
-def _prose_level(c, tier: int, verified: bool, rs) -> tuple[str, str]:
+def _prose_level(c, scope, verified: bool, rs) -> tuple[str, str]:
     """The level by the KEV flag and by readings of prose, each clause as it was before
-    s6mt except that none returns a critical for a flag."""
-    if c.exploited is True:  # only candidates.from_kev sets it; the KEV row is mechanical: no fetch needed
-        return rs.class_level("kev", tier), "kev-tier1" if tier == 1 else "kev-tier2"
-    if tier == 2:
+    s6mt except that none returns a critical for a flag. A catalog or out product is a
+    notice, except that one whose entry carries channel_if takes the reading clauses
+    of a code-execution flaw (wa6n); the severity word alone never raises it."""
+    channel = _class(scope) == "channel"
+    if c.exploited is True and channel:  # only candidates.from_kev sets it; the KEV row is mechanical
+        return rs.class_level("kev", scope), "kev-tier1"
+    # Outside the channel KEV alone is a notice (ruleset): it neither raises nor masks the clauses below.
+    if not channel and not getattr(scope, "channel_if", None):
         return "notice", "notice"
     cap = rs.reading_cap  # a reading never makes a critical
     trojanized = c.trojanized is True
     injection = c.injection_exec is True and bool(c.fixed)
-    if trojanized or injection:
+    if (trojanized or injection) and channel:  # neither flag says remote code execution: channel only
         return cap, "reading" if verified else "unverified"
     severity = c.advisory_severity
-    if c.fixed and isinstance(severity, str) and _SEVERE.search(_norm(severity)):
+    if c.fixed and isinstance(severity, str) and (_SEVERE if channel else _REMOTE_CODE).search(_norm(severity)):
         return cap, "fix-rce-tier1"
+    if not channel:
+        return "notice", "notice"
     # ledger.merge joins members' severities with "; ": any one member's word counts.
     if isinstance(severity, str) and any(p.strip() in _HIGH_WORDS for p in _norm(severity).split(";")) \
             and any(isinstance(i, str) and ADVISORY_ID.fullmatch(i) for i in (c.id, *c.aliases)):
@@ -186,8 +196,21 @@ def basis(c: Candidate, scope: schema.ScopeEntry, level: str) -> str:
     rs = ruleset.load()
     held = _fields_level(c, scope)
     if c.exploited is True:
-        held = rs.highest(held, rs.class_level("kev", _tier(scope)))
+        held = rs.highest(held, rs.class_level("kev", scope))
     return "fields" if level == "notice" or rs.rank(held) >= rs.rank(level) else "reading"
+
+
+@functools.lru_cache(maxsize=1)
+def out_names() -> frozenset[str]:
+    """The entry and component names of out entries (wa6n)."""
+    return frozenset(n for e in _default_entries() if _class(e) == "out"
+                     for n in (e.name, *(c.name for c in e.components)))
+
+
+def starts(scope, level: str) -> bool:
+    """Whether a new advisory at ``level`` starts anything for this product: an out
+    product's notice starts no thread and is not held for the digest (wa6n)."""
+    return not (_class(scope) == "out" and level == "notice")
 
 
 def reading_text(source: str, fields) -> str | None:

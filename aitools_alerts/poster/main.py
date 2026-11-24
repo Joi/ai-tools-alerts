@@ -79,7 +79,7 @@ AGE_LIMIT = 7 * 86400  # 0dvh: a primary source older than this at first sight p
 MAX_JA = 200  # Japanese replies waiting in the journal; past it the oldest unsent one is dropped
 MAX_JA_BYTES = 4 * 1024 * 1024  # and their text as JSON-escaped: well inside load_state's 16 MiB
 SUMMARY = ("candidates", "in_scope", "old", "roots", "copies", "replies", "held", "withheld",
-           "busy", "digest", "digest_held", "failed", "unknown", "ja", "ja_failed", "untranslated", "translate_failed", "waiting", "aged")
+           "busy", "digest", "digest_held", "failed", "unknown", "ja", "ja_failed", "untranslated", "translate_failed", "waiting", "aged", "out")
 MAX_TRIES = 3  # failed calls (network, 5xx) before an event counts as untranslated
 PASS_DEADLINE = 300  # seconds of curator translation per run (the ledger lock is held)
 MAX_RUN_PAGES = 40  # authoritative pages fetched per run; a candidate past it waits for the next
@@ -99,6 +99,8 @@ class Run:
     def __init__(self, now, config: Config, led: Ledger, state: dict, channels, send, page,
                  *, digest_now=False, skipped: Counter | None = None):
         self.now, self.config, self.led, self.state = now, config, led, state
+        if isinstance(state.get("held"), list):  # wa6n: an out product's saved notice is never digested
+            state["held"] = [h for h in state["held"] if h.get("scope") not in rules.out_names()]
         # send(channel_id, text, reply_to) -> transport.SendResult (transport.Relay.send)
         self.channels, self.send, self.fetch_page = channels, send, page
         self.skipped = Counter() if skipped is None else skipped
@@ -607,8 +609,30 @@ class Run:
         """A candidate whose primary id is a reserved synthetic id (compose.SYNTHETIC_ID)."""
         return compose.is_synthetic(c.id)
 
+    def _former(self, scope, ids):
+        """wa6n: the scope under the product's earlier name when that name holds this
+        advisory's thread or journaled work; else ``scope``. The update then keeps the
+        thread's name, as the reply check requires, and no second root starts. Anything
+        not yet posted keeps the current name, the one a member's installation matches."""
+        if self.led.lookup(ids, scope=scope.name) is not None:
+            return scope
+        keys = _fold(ids)
+        journal = [it for it in self.state["outbox"] + self._withheld_items() if it["kind"] != "ja"]
+        for old in getattr(scope, "formerly", ()):
+            if self.led.lookup(ids, scope=old) is not None \
+                    or any(it["scope"] == old and _fold(it["ids"]) & keys for it in journal):
+                return replace(scope, name=old, formerly=())
+        return scope
+
+    def _noticed_formerly(self, scope, ids) -> bool:
+        """wa6n: a notice for these ids is held, or was digested, under a former name."""
+        keys = _fold(ids)
+        return any(self._held_for(old, ids) is not None or any(f"{old}|{k}" in self.state["digested"] for k in keys)
+                   for old in getattr(scope, "formerly", ()))
+
     def one(self, c, scope):
         ids = [c.id, *c.aliases]
+        scope = self._former(scope, ids)
         if self.busy(ids, scope.name):
             self.n["busy"] += 1
             self.defer([(c, scope)])  # its update (a fix, a promotion) is planned once the send resolves
@@ -624,10 +648,15 @@ class Run:
         # ny5g: what readings of prose alone give it, kept by the ledger at its highest: a
         # reading never justifies a lowering, so the recompute never goes below this.
         rs = ruleset.load()
-        floor = rules._prose_level(replace(c, exploited=False), ruleset.tier_of(scope),
+        floor = rules._prose_level(replace(c, exploited=False), scope,
                                    any(self.confirmed.get(s.url, set()) & rules.advisory_ids(c) for s in c.sources), rs)[0]
         if entry is not None:
             self.led.learn_floor(entry.root_event_id, rs.highest(floor, recompute.floor(entry, rs)))
+        if entry is None and not rules.starts(scope, level):  # wa6n: out of the community service
+            self.n["out"] += 1
+            return
+        if entry is None and level == "notice" and self._noticed_formerly(scope, ids):
+            return  # wa6n: held or listed under its earlier name already; once is enough
         if entry is not None and (self.is_synthetic(c) or compose.is_synthetic(entry.advisory.get("id"))):
             # A synthetic entry only ever starts a thread, and a synthetic thread takes no
             # update (copy or reply) from any input: plan_known would compose it unmarked.
@@ -683,6 +712,8 @@ class Run:
                 and seen - published > AGE_LIMIT:
             level = "notice"  # 0dvh: old news when first seen goes to the digest, never a root
             self.n["aged"] += 1
+            if not rules.starts(scope, level):  # wa6n: an out product's old news goes nowhere
+                return []
         elif level == "high" and not test and c.exploited is not True and not _stated(c.fixed) \
                 and not _stated(c.affected) and self.now - seen < HOLD_SECONDS \
                 and (key in w or len(w) < inputs.MAX_WAITING):
