@@ -1,16 +1,19 @@
 # Run: 3qyq-advisory-readers
 Instruction: ai-tools-alerts#3qyq (starting rung floored at medium): the poster reads GHSA and OSV from the fixed endpoints; the reversible withdrawn state; the claim tag on sent events (findings D4 and D13 of the design review on ai-tools-alerts#h29n)
-Stage: code-review:readers
+Stage: done
 Rung: medium (start-floor medium: constraint-lens, BR1 REV1 NOV1 INT1 FC1 = 5; the dispatch brief floors it at medium too)
 Lens: "A 404 is never a withdrawal"; "a 404 and a 429 from the advisory endpoint each lower nothing"; "a withdrawn unreviewed advisory lowers nothing"; "an advisory whose severity toggles hourly produces at most three replies in a week"; "no human in the loop; nothing you build may wait for a person to act"
 Last reviewed: spec 048e451637a8eb8d39dfc8a4d1f6f29503dd222e
 Last reviewed: plan dad276eac0b326a9e403c3b7a9d3c93b0a286fba
-Last reviewed: code a7cda1e39597b085d6f7370b43baf05950307b77 (the whole branch, `git diff origin/main...`, after the merge of main at v0.2.0)
+Last reviewed: code a7cda1e39597b085d6f7370b43baf05950307b77 (the whole branch, `git diff origin/main...`, after the merge of main at v0.2.0), then the delta `--since a7cda1e39597b085d6f7370b43baf05950307b77` at da8f7153ee97295f82a48b10036e5acf5fd1d556
+Unreviewed after the delta: eca51a3fa066a255bdf2bfb48452b23adf06e3c6 (the fix of what the delta raised), 7abf6a8d0814bc595dc92a6bfec00ba6326af1d5 (no alias counted beside a CVE with more than three, after tavj), 476c10d6541713b6e155656b36adce9d5a17d345 (a fix group's order moves only for evidence above a notice), and the merges of main 56eec4a70b20002a55f970fb84ef02bff7627658 (tavj) and a7f110535c630f0969c76db8b15f84c469993e3c (jsje)
+Gate: `scripts/test-gate.sh` exit 0 at a7f110535c630f0969c76db8b15f84c469993e3c (the public scan, then 2872 passed and 1 skipped), run in a clone holding this branch alone. In the clone the worktrees share, the scan fails on 66 objects of other sessions' branches; none is reachable from this branch.
 Review tier: gpt-6-astra at high (the issue calls the work security-shaped)
 Spec: docs/superpowers/specs/2026-11-25-3qyq-advisory-readers-design.md   Plan: docs/superpowers/plans/2026-11-25-3qyq-advisory-readers.md
 Agency project: — (this session has no Agency tools; see Notes)
 Kata: ai-tools-alerts#3qyq
 Limits: wall clock 5 hours from the 2026-11-24T20:51Z dispatch; review shape one independent pass per artifact, one delta only after a behaviour-changing BLOCKER fix; completion check `scripts/test-gate.sh` green and the pull request merged with the no-reply author.
+Follow-up filed: ai-tools-alerts#3t4p (the critical channel's copy when the recompute raises a feed-only thread)
 Split: this issue keeps build items 1 to 3 (the readers and the recompute). ai-tools-alerts#y484 takes the `withdrawn` state (item 4), ai-tools-alerts#hh5s the claim tag (item 5).
 
 ## Scorecards
@@ -65,7 +68,7 @@ Code findings, pass 2 (the delta), and what was done:
 3. The group's order counted readings the tie rule then rejects, so a member could win the first place and lose its level. Fixed: members are ranked by their tied readings; `test_a_reading_the_first_id_does_not_tie_wins_no_place_in_a_fix_group`.
 
 ## Chunks
-- [ ] readers: `poster/sources.py`, `recompute.support` and `judge`, `rules.readings_for`, `main.Run`
+- [x] readers: `poster/sources.py`, `recompute.support` and `judge`, `rules.readings_for`, `main.Run` — one whole-branch review and one delta, every finding fixed, 2 passes
 
 ## Notes
 - The delta's first launch printed `FRESHEYES_STALLED … REASON=LOG_WAIT`: a caller error (scope text given with `--since`, which fresheyes refuses before it starts), not a stall. Relaunched without the text; not counted as a retry.
