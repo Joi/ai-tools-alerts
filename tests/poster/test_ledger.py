@@ -309,3 +309,46 @@ def test_learned_sources_wait_for_the_next_reply(tmp_path):
         posted = dataclasses.replace(adv, sources=[*adv.sources, schema.Source(GHSA, None)])
         led.record_reply("r1", posted, {"feed": "a1"}, now=T0 + 10)
         assert GHSA not in [x["url"] for x in led.thread("r1").learned_sources]
+
+
+def test_a_level_change_is_counted_once_and_a_lowering_marks_the_thread(tmp_path):  # ny5g
+    import dataclasses
+    with Ledger(tmp_path / "l.json") as led:
+        adv = adv_for(cand(), "critical")
+        led.record_root(adv, "r1", {"feed": "r1", "critical": "r2"}, scope="Claude Code", exploited=True, now=T0,
+                        floor="notice")
+        assert led.thread("r1").floor == "notice" and led.thread("r1").lowered is None
+        led.record_reply("r1", dataclasses.replace(adv, title="other"), {"feed": "a0"}, now=T0 + 5)
+        assert led.thread("r1").changed is None  # the level did not change
+        low = dataclasses.replace(adv, level="notice")
+        led.record_reply("r1", low, {"critical": "a1"}, now=T0 + 10)
+        led.record_reply("r1", low, {"feed": "a2"}, now=T0 + 11)  # the other channel's copy of the same change
+        e = led.thread("r1")
+        assert e.level == "notice" and e.lowered is True and e.changed == [T0 + 10]
+        led.record_reply("r1", dataclasses.replace(adv, level="high"), {"feed": "a3"}, now=T0 + 8 * DAY)
+        e = led.thread("r1")
+        assert e.changed == [T0 + 8 * DAY] and e.lowered is True  # the older time is past seven days; the mark stays
+        led.learn_floor("r1", "high")
+        led.learn_floor("r1", "severe")  # not a level: ignored
+        assert led.thread("r1").floor == "high" and [x.root_event_id for x in led.entries()] == ["r1"]
+        # A lowered thread lends a candidate no exploited mark: the catalog dropped it.
+        (merged, _), = ledger.merge([pair(cand())], led)
+        assert merged.exploited is False
+    with Ledger(tmp_path / "m.json") as led:
+        led.record_root(adv, "r1", {"feed": "r1"}, scope="Claude Code", exploited=True, now=T0)
+        assert led.thread("r1").floor is None
+        (merged, _), = ledger.merge([pair(cand())], led)
+        assert merged.exploited is True
+
+
+@pytest.mark.parametrize("bad", [{"lowered": 1}, {"floor": "severe"}, {"floor": None}, {"changed": [1.5]},
+                                 {"changed": list(range(51))}, {"changed": 3}])
+def test_a_ledger_with_a_malformed_recompute_key_is_refused(tmp_path, bad):  # ny5g
+    path = tmp_path / "l.json"
+    with Ledger(path) as led:
+        led.record_root(adv_for(cand()), "r1", {"feed": "r1"}, scope="Claude Code", exploited=True, now=T0)
+    data = json.loads(path.read_text())
+    data["entries"][0].update(bad)
+    path.write_text(json.dumps(data))
+    with pytest.raises(LedgerError, match="malformed"):
+        Ledger(path).__enter__()

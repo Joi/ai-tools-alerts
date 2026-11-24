@@ -138,6 +138,11 @@ class Config:
         return self.ledger.with_name(self.ledger.name + ".checkpoint.json")
 
     @property
+    def recompute_state(self) -> Path:
+        """The last good KEV copy and each thread's wait before a lowering (ny5g; never the journal)."""
+        return self.ledger.with_name(self.ledger.name + ".recompute.json")
+
+    @property
     def mirror_dir(self) -> Path:
         """The verified mirror events the curator pass reads (a member-style state dir)."""
         return self.ledger.with_name(self.ledger.name + ".mirror")
@@ -145,7 +150,7 @@ class Config:
     def check_paths(self) -> None:
         """The ledger, its lock, the journal and the KEV cache are four distinct files."""
         files = [self.ledger, self.ledger.with_name(self.ledger.name + ".lock"), self.state, self.kev_cache,
-                 self.translate_state, self.owed_state]
+                 self.translate_state, self.owed_state, self.recompute_state]
         if self.checkpoint_key_file is not None:  # a cache write must never land on the key
             files.append(self.checkpoint_key_file)
         files.append(self.mirror_dir)
@@ -153,7 +158,7 @@ class Config:
         real = [os.path.realpath(p).casefold() for p in files]
         mirror = real[-1] + os.sep  # the mirror directory holds its own state files and lock
         if len(set(real)) != len(real) or any(r.startswith(mirror) for r in real[:-1]):
-            raise ConfigError("ledger, ledger lock, state, kev_cache, the translation and checkpoint files "
+            raise ConfigError("ledger, ledger lock, state, kev_cache, the translation, checkpoint and recompute files "
                               "and the checkpoint key file must differ")
 
 
@@ -334,7 +339,8 @@ def _adv_ok(v) -> bool:
 def _item_ok(it) -> bool:
     """A journal item that a later run can finish: every field its kind needs is there
     and well formed, so nothing fails after the post is public."""
-    if not (isinstance(it, dict) and _ITEM_KEYS <= set(it) <= _ITEM_KEYS | {"ja", "source_title"}  # rd8t, r7hr
+    if not (isinstance(it, dict) and _ITEM_KEYS <= set(it) <= _ITEM_KEYS | {"ja", "source_title", "floor"}  # rd8t, r7hr, ny5g
+            and it.get("floor") in (None, *schema.LEVELS)
             and all(it.get(k) is None or isinstance(it[k], str) and it[k] for k in ("ja", "source_title"))
             and isinstance(it["kind"], str)
             and it["kind"] in _KINDS and isinstance(it["key"], str) and it["key"]
@@ -451,12 +457,28 @@ def save_state(path: Path, st: dict) -> None:
 # ---------------------------------------------------------------- KEV
 
 
-def urllib_fetch(url: str, headers: dict, timeout: float = KEV_DEADLINE):
-    """(status, headers, body) for one GET; a 304 or other HTTP error has an empty body."""
+REDIRECTED = "x-aitools-alerts-redirected"  # urllib_fetch's mark on an answer that came through a redirect
+
+
+class _SeenRedirect(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect as urllib does, and remembers that it did."""
+    seen = False
+
+    def redirect_request(self, *args, **kwargs):
+        self.seen = True
+        return super().redirect_request(*args, **kwargs)
+
+
+def urllib_fetch(url: str, headers: dict, timeout: float = KEV_DEADLINE, handlers=()):
+    """(status, headers, body) for one GET; a 304 or other HTTP error has an empty body.
+    An answer reached through a redirect carries the header ``REDIRECTED`` (ny5g): its
+    entries still make candidates, and it is never a read whose absences count."""
     req = urllib.request.Request(url, headers={**headers, "User-Agent": rules.USER_AGENT})
+    seen = _SeenRedirect()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, dict(resp.headers.items()), resp.read(MAX_KEV + 1)
+        with urllib.request.build_opener(seen, *handlers).open(req, timeout=timeout) as resp:
+            hdrs = dict(resp.headers.items())
+            return resp.status, {**hdrs, REDIRECTED: "1"} if seen.seen else hdrs, resp.read(MAX_KEV + 1)
     except urllib.error.HTTPError as e:
         hdrs = dict(e.headers.items()) if e.headers else {}
         e.close()
@@ -497,9 +519,12 @@ def load_kev(cache: Path, fetch=urllib_fetch, deadline: float | None = None) -> 
     return fetch_kev(cache, fetch, deadline)[0]
 
 
-def fetch_kev(cache: Path, fetch=urllib_fetch, deadline: float | None = None) -> tuple[dict | None, str]:
+def fetch_kev(cache: Path, fetch=urllib_fetch, deadline: float | None = None,
+              info: dict | None = None) -> tuple[dict | None, str]:
     """(catalog, status): status ``ok`` (fetched), ``304`` (the cache, not modified)
-    or ``unavailable`` (catalog None)."""
+    or ``unavailable`` (catalog None). ``info``, when given, gets ``redirected`` for a
+    fetched catalog: whether it was reached through a redirect. A 304 says nothing
+    about that; the caller remembers what the last fetch said."""
     cached = None
     try:
         c = read_json(cache, MAX_KEV * 2)
@@ -524,6 +549,8 @@ def fetch_kev(cache: Path, fetch=urllib_fetch, deadline: float | None = None) ->
     if not _catalog_ok(catalog):
         return None, "unavailable"
     lm = _header(hdrs, "Last-Modified") if isinstance(hdrs, dict) else None
+    if info is not None:
+        info["redirected"] = not isinstance(hdrs, dict) or _header(hdrs, REDIRECTED) is not None
     try:
         write_json(cache, {"last_modified": lm if isinstance(lm, str) else None, "catalog": catalog})
     except OSError:

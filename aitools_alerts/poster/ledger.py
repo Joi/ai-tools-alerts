@@ -19,13 +19,14 @@ import unicodedata
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-from aitools_alerts import schema
+from aitools_alerts import schema, wire
 
 DEFAULT_PATH = Path.home() / ".local" / "state" / "aitools-alerts-poster" / "ledger.json"
 PENDING_EXPIRY = 24 * 3600
 MAX_REVIEW = 500
 MAX_REVIEW_TEXT = 300
 MAX_LEARNED = 20  # the schema's source cap
+QUIET = 7 * 86400  # ny5g: a thread is lowered only after this long without a level change
 _LISTS = ("entries", "pending", "expired", "review")
 log = logging.getLogger(__name__)
 
@@ -53,6 +54,13 @@ class Entry:
     # 8ke5: sources learned with no reply (a source-only change posts nothing); the next
     # reply with a real change publishes them. [{"url", "published_at"}].
     learned_sources: list | None = None
+    # ny5g: the thread has had a lowering, so every later level change travels alone
+    # (spec/wire.md rule 2); and when its level changed, within the last QUIET.
+    lowered: bool | None = None
+    changed: list | None = None
+    # ny5g: the highest level readings of prose alone gave the thread when it was planned.
+    # The recompute never lowers below it; absent on entries written before (recompute.floor).
+    floor: str | None = None
 
     @property
     def listed(self) -> int:
@@ -87,7 +95,11 @@ def _entry_ok(e) -> bool:
             and ("listed_at" not in e or type(e["listed_at"]) is int)
             and ("learned_sources" not in e or (
                 isinstance(e["learned_sources"], list) and len(e["learned_sources"]) <= MAX_LEARNED
-                and all(isinstance(x, dict) and isinstance(x.get("url"), str) for x in e["learned_sources"]))))
+                and all(isinstance(x, dict) and isinstance(x.get("url"), str) for x in e["learned_sources"])))
+            and ("lowered" not in e or type(e["lowered"]) is bool)
+            and ("floor" not in e or (isinstance(e["floor"], str) and e["floor"] in schema.LEVELS))
+            and ("changed" not in e or (isinstance(e["changed"], list) and len(e["changed"]) <= 50
+                                        and all(type(t) is int for t in e["changed"]))))
 
 
 def _pending_ok(p) -> bool:
@@ -203,6 +215,10 @@ class Ledger:
         hits = [x for x in (Entry(**e) for e in self._state()["entries"]) if x.listed > t]
         return sorted(hits, key=lambda x: x.listed)
 
+    def entries(self) -> list[Entry]:
+        """Every entry, oldest first (the recompute, ny5g)."""
+        return [Entry(**e) for e in sorted(self._state()["entries"], key=lambda e: e["posted_at"])]
+
     def lookup(self, aliases, scope: str | None = None) -> Entry | None:
         """The oldest entry sharing any id, optionally for one scope."""
         hits = self.lookup_all(aliases, scope)
@@ -215,7 +231,8 @@ class Ledger:
         raise LedgerError(f"no thread {root_event_id}")
 
     def record_root(self, adv: schema.Advisory, root_event_id: str, channel_ids: dict, *,
-                    scope: str, exploited: bool, now: int, ids=(), source_title: str | None = None) -> Entry:
+                    scope: str, exploited: bool, now: int, ids=(), source_title: str | None = None,
+                    floor: str | None = None) -> Entry:
         """A new thread. ``ids`` is the full identity set (the advisory's aliases are
         capped at 50 for publication; the ledger keeps every id)."""
         if not isinstance(root_event_id, str) or not _ids_map(channel_ids):
@@ -226,7 +243,8 @@ class Ledger:
         e = dict(root_event_id=root_event_id, channel_ids=dict(channel_ids), level=adv.level,
                  aliases=ids, posted_at=now, last_change=now, listed_at=now, scope=scope,
                  exploited=exploited is True, advisory=asdict(adv), replies=[],
-                 **({"source_title": source_title} if source_title else {}))
+                 **({"source_title": source_title} if source_title else {}),
+                 **({"floor": floor} if floor in schema.LEVELS else {}))
         self._state()["entries"].append(e)
         self._save()
         return Entry(**e)
@@ -276,6 +294,14 @@ class Ledger:
             e["source_title"] = title
             self._save()
 
+    def learn_floor(self, root_event_id: str, level: str) -> None:
+        """The level readings of prose alone support for this thread (ny5g). The caller
+        passes the highest it has known; the recompute never lowers below it."""
+        e = self._entry(root_event_id)
+        if level in schema.LEVELS and e.get("floor") != level:
+            e["floor"] = level
+            self._save()
+
     def learn_sources(self, root_event_id: str, sources) -> None:
         """Sources a run saw and did not post (8ke5): kept for the next real reply."""
         e = self._entry(root_event_id)
@@ -297,6 +323,10 @@ class Ledger:
             raise LedgerError("reply_ids must map channel to event id")
         e = self._entry(root_event_id)
         was, new = e["advisory"], asdict(adv)
+        if adv.level != e["level"]:  # ny5g: counted once; a second channel's copy finds it equal
+            e["changed"] = [t for t in e.get("changed", []) if now - t < QUIET][-49:] + [now]
+            if wire.is_lowering({"level": adv.level}, e["level"]):
+                e["lowered"] = True
         if _listed_fields(was) != _listed_fields(new):
             e["listed_at"] = now  # a digest lists it again
         else:  # frozen, a legacy entry's too, before last_change moves
@@ -454,7 +484,9 @@ def _merged(members, scope_name, ledger):
                 sources.append(s)
     exploited = any(c.exploited is True for c in members)
     if ledger is not None and not exploited:  # any stored entry of this scope, not only the oldest
-        exploited = any(e.exploited is True for e in ledger.lookup_all(ids, scope_name))
+        # ny5g: not from a thread that was lowered: the recompute then holds its KEV level,
+        # and the mark would raise it again on the word of a catalog that dropped it.
+        exploited = any(e.exploited is True and not e.lowered for e in ledger.lookup_all(ids, scope_name))
     # fixed and affected come from one member, preferring a fix the schema can publish.
     fix = next((c for c in members if schema._FIXED.fullmatch((c.fixed or "").lstrip("vV"))),
                next((c for c in members if c.fixed),

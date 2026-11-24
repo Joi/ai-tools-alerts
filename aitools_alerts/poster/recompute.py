@@ -1,0 +1,281 @@
+"""When a posted thread's level may fall (ai-tools-alerts#ny5g; findings D4 and D13).
+
+The poster recomputes the level of every open thread the ledger marks exploited
+from the KEV catalog it read, each run. A read of a source, for one thread, has one
+of three results: ``confirmed`` (the source states it), ``contradicted`` (a complete
+read that does not) or ``unknown``. Only evidence moves a level:
+
+- ``unknown`` changes nothing, starts no wait and adds no time to one. A fetch that
+  failed and a body that did not parse give no copy at all. A copy reached through a
+  redirect, one with no version,
+  one that disagrees with its own count, and one with fewer entries than ``SHRINK``
+  of the largest complete copy ever read are not complete (``kev_copy``): what such
+  a copy lists still counts, what it lacks proves nothing. So does any source with
+  no reader here: a thread that carries a GHSA or OSV id is never lowered by this
+  module.
+- A raise publishes in the run that sees the entry, from any copy that parses.
+- A lowering needs every source of the thread read whole; the same lower level
+  held for ``DWELL``, counted only from one complete read to the next when no
+  more than ``MAX_GAP`` and no unknown read lies between them, the last read of
+  another ``catalogVersion`` than the first (``judge``); for each CVE that is gone,
+  a complete copy that listed it for this product before; no level change on the
+  thread in the seven days before (``ledger.QUIET``); and a run in which no more
+  than ``TRIP_MIN`` threads or ``TRIP_SHARE`` of the open threads are due
+  (``select``).
+
+A level that rests on a reading of prose is never recomputed below it (the
+ledger's ``floor``), and ``notice`` is the lowest result: there is no withdrawn
+state and no retraction here. Nothing in this module sends or fetches.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass
+from pathlib import Path
+
+from aitools_alerts import ruleset
+from aitools_alerts.poster import inputs
+from aitools_alerts.poster.candidates import BOT_ID
+from aitools_alerts.poster.ledger import QUIET
+
+DWELL = 24 * 3600  # a lower level must be held this long, over complete reads
+MAX_GAP = 2 * 3600  # two complete reads further apart than this add nothing to that time
+SHRINK = 0.98  # a KEV copy with fewer entries than this share of the largest complete one is not complete
+TRIP_MIN, TRIP_SHARE = 2, 0.2  # more than both due in one run, counting the last TRIP_WINDOW's: lower none
+TRIP_WINDOW = 24 * 3600
+RELEASE_AFTER = 7 * 86400  # a trip this long without a break lets RELEASE lowerings a run through
+RELEASE = 2
+MAX_VERSION = 100
+MAX_LOWERED = 200  # ids waiting for the digest line
+_LEVELS = ("notice", "high", "critical")
+_DWELL = {"level": str, "version": str, "held": int}  # and "last": the complete read before, or None
+_KEV = {"version": str, "peak": int, "at": int}
+_TRIP = {"since": int, "due": int}
+
+
+@dataclass(frozen=True)
+class Copy:
+    """One run's KEV read. ``complete``: its absences are evidence too."""
+    version: str | None
+    index: dict
+    complete: bool
+
+
+def new_state() -> dict:
+    return {"kev": None, "direct": None, "listed": {}, "dwell": {}, "lowered": [], "reported": None,
+            "recent": [], "tripped": None}
+
+
+def _shaped(v, shape: dict) -> bool:
+    return isinstance(v, dict) and set(v) == set(shape) and all(type(v[k]) is t for k, t in shape.items())
+
+
+def _ok(st) -> bool:
+    return (isinstance(st, dict) and set(st) == set(new_state())
+            and (st["kev"] is None or _shaped(st["kev"], _KEV))
+            and isinstance(st["listed"], dict)
+            and all(isinstance(k, str) and isinstance(v, list) and all(isinstance(i, str) for i in v)
+                    for k, v in st["listed"].items())
+            and isinstance(st["dwell"], dict)
+            and all(isinstance(k, str) and isinstance(v, dict) and (v.get("last") is None or type(v["last"]) is int)
+                    and "last" in v and _shaped({x: v[x] for x in v if x != "last"}, _DWELL) and v["level"] in _LEVELS
+                    for k, v in st["dwell"].items())
+            and isinstance(st["lowered"], list)
+            and all(isinstance(x, list) and len(x) == 2 and isinstance(x[0], str) and x[1] in _LEVELS
+                    for x in st["lowered"])
+            and (st["direct"] is None or isinstance(st["direct"], str))
+            and isinstance(st["recent"], list) and all(type(t) is int for t in st["recent"])
+            and (st["reported"] is None or isinstance(st["reported"], str))
+            and (st["tripped"] is None or _shaped(st["tripped"], _TRIP)))
+
+
+def load(path: Path) -> tuple[dict, bool]:
+    """(state, replaced). A missing file is the empty state. One that does not read or
+    is malformed is replaced by the empty state: every wait starts over, and a CVE's
+    absence proves nothing again until a complete copy has listed it, so a lost file
+    can only delay a lowering."""
+    try:
+        st = inputs.read_json(path, inputs.MAX_RECORD)
+    except FileNotFoundError:
+        return new_state(), False
+    except (OSError, ValueError, RecursionError):
+        return new_state(), True
+    try:
+        return (st, False) if _ok(st) else (new_state(), True)
+    except Exception:  # noqa: BLE001 - whatever the file holds, it is one that does not read
+        return new_state(), True
+
+
+def save(path: Path, st: dict) -> None:
+    inputs.write_json(path, st)
+
+
+def kev_copy(catalog, status, st: dict, now: int, redirected: bool | None = False) -> Copy | None:
+    """This run's KEV read, or None when there is none to use: not fetched (any status
+    but ``ok`` and ``304``; never the synthetic ``--kev-file``), not the CISA shape, or
+    an entry that is not an object with a ``cveID``.
+
+    The copy is complete only when it was not reached through a redirect (a 3xx is not
+    an answer from the catalog's own address; ``redirected`` is what this run's fetch
+    said. A 304 stands for whatever copy the cache holds, so ``st["direct"]`` keeps the
+    digest of the last body that came direct, and a cached body is direct only when it
+    is that very body: a redirected one cached by a run that stopped before saying so
+    never matches), has a version, a ``count`` equal to its number
+    of entries (a catalog that disagrees with its own count is cut short), and no
+    fewer entries than ``SHRINK`` of the peak: the largest complete copy this state
+    has read. The peak never falls, so no run of small copies, however long, becomes
+    the measure. If CISA ever prunes more than 2% the poster stops lowering on KEV
+    absences and says so each run; it still raises."""
+    if status not in ("ok", "304") or not inputs._catalog_ok(catalog):
+        return None
+    version, items = catalog.get("catalogVersion"), catalog["vulnerabilities"]
+    if not all(isinstance(it, dict) and isinstance(it.get("cveID"), str) for it in items):
+        return None
+    index = {it["cveID"].strip().upper(): it for it in items}  # as bare_ids writes a CVE
+    version = version.strip() if isinstance(version, str) and 0 < len(version.strip()) <= MAX_VERSION else None
+    try:
+        digest = hashlib.sha256(json.dumps(catalog, sort_keys=True).encode("utf-8")).hexdigest()
+    except (TypeError, ValueError):
+        return None
+    if status == "ok":
+        st["direct"] = digest if redirected is False else None
+    whole = st["direct"] == digest and version is not None and bool(items) and type(catalog.get("count")) is int \
+        and catalog["count"] == len(items) == len(index)
+    peak = st["kev"]["peak"] if st["kev"] else 0
+    if not whole or len(items) < SHRINK * peak:
+        return Copy(version, index, False)
+    st["kev"] = {"version": version, "peak": max(peak, len(items)), "at": now}
+    return Copy(version, index, True)
+
+
+def bare_ids(entry) -> set[str] | None:
+    """The thread's ids as sources are looked up by them (CVE upper case, GHSA as the
+    API writes it), from its published advisory and the ledger's identity set; None
+    when any id has another shape, which no reader here can look up."""
+    adv = entry.advisory
+    out = set()
+    for i in [adv.get("id"), *(adv.get("aliases") or ()), *entry.aliases]:
+        m = BOT_ID.fullmatch(i) if isinstance(i, str) else None
+        if m is None:
+            return None
+        base = m.group(1)
+        out.add(base.upper() if base[:3].upper() == "CVE" else "GHSA" + base[4:].lower())
+    return out
+
+
+def floor(entry, rs) -> str:
+    """The level the recompute never goes below: what readings of prose alone gave
+    the thread, as the ledger recorded it when the thread was planned (``Entry.floor``).
+    A reading never justifies a lowering. An entry written before the ledger kept it
+    cannot say what its level rested on, so it is taken to rest on a reading as far as
+    a reading can reach: its own level, or ``reading_cap`` when that is lower."""
+    if entry.floor in _LEVELS:
+        return entry.floor
+    return min(entry.level, rs.reading_cap, key=rs.rank)
+
+
+def support(entry, scope, copy: Copy | None, rs) -> tuple[str, bool, set, set]:
+    """(found, known, listed, gone): the level the thread's sources state for its
+    product by their fields (``ruleset.NONE`` when none does); whether every source
+    was read whole; the thread's CVEs the copy lists as this product, and those it
+    does not list. Not known: no complete KEV copy; an id with no reader (GHSA, OSV,
+    any other shape); a CVE the catalog lists under a name that is not this product
+    (a rename is not a removal) or that is not a reading."""
+    ids = bare_ids(entry)
+    known = copy is not None and copy.complete and ids is not None
+    found, listed, gone = ruleset.NONE, set(), set()
+    for i in sorted(ids or ()):
+        if ruleset.source_of(i) != "kev":
+            known = False
+            continue
+        item = copy.index.get(i) if copy is not None else None
+        if item is None:
+            gone.add(i)  # a contradiction when the copy is complete, nothing otherwise
+            continue
+        try:
+            vendor, product = item.get("vendorProject"), item.get("product")
+            got = rs.read("kev", {"cve_id": i, "name": f"{vendor.strip()} {product.strip()}"}).get(scope.name)
+        except (ruleset.RulesetError, AttributeError):
+            got = None
+        if got is None or got.level == ruleset.NONE:
+            known = False
+        else:
+            found = rs.highest(found, got.level)
+            listed.add(i)
+    return found, known, listed, gone
+
+
+def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int):
+    """("raise", level), ("due", level) or None for one thread; keeps its wait in
+    ``st["dwell"]``. A raise rests on a source's fields alone and needs no complete
+    read: an unread source can only add."""
+    found, known, listed, gone = support(entry, scope, copy, rs)
+    root, dwell = entry.root_event_id, st["dwell"]
+    if rs.rank(found) > rs.rank(entry.level):
+        dwell.pop(root, None)
+        return "raise", found
+    seen = set(st["listed"].get(root, ()))
+    if known and listed - seen:
+        st["listed"][root] = sorted(seen | listed)
+    if not known or gone - seen:
+        # Unknown, or gone from the catalog without this state ever having seen it there
+        # (absence proves nothing yet): nothing moves. A wait already running keeps its
+        # time and takes none for the stretch up to the next complete read.
+        pause(st, root)
+        return None
+    level = rs.highest(found, floor(entry, rs), "notice")
+    if rs.rank(level) >= rs.rank(entry.level):
+        dwell.pop(root, None)
+        return None
+    rec = dwell.get(root)
+    if rec is None or rec["level"] != level:
+        dwell[root] = {"level": level, "version": copy.version, "last": now, "held": 0}
+        return None
+    if rec["last"] is not None and 0 <= now - rec["last"] <= MAX_GAP:
+        rec["held"] += now - rec["last"]  # from one complete read to the next, nothing unknown between
+    rec["last"] = now
+    if rec["held"] >= DWELL and rec["version"] != copy.version:
+        return "due", level
+    return None
+
+
+def fresh(entry, now_entry) -> bool:
+    """The thread is as it was judged: still in the ledger, at the same level."""
+    return now_entry is not None and now_entry.level == entry.level
+
+
+def pause(st: dict, root: str) -> None:
+    """The thread was not judged this run: its wait keeps what it holds and takes
+    nothing for the stretch up to the next complete read."""
+    if root in st["dwell"]:
+        st["dwell"][root]["last"] = None
+
+
+def quiet(entry, now: int) -> bool:
+    """No level change on the thread in the last seven days: it may be lowered."""
+    return not any(now - t < QUIET for t in entry.changed or ())
+
+
+def select(due: list, open_count: int, st: dict, now: int) -> list:
+    """The circuit breaker over ``due``, [(entry, level)]; what it returns is lowered
+    now, and noted in ``st["recent"]``. The count is of the threads due plus those
+    lowered in the last ``TRIP_WINDOW``, so a source that sheds its entries a few an hour
+    trips it as one that sheds them at once does. More than ``TRIP_MIN`` and more than
+    ``TRIP_SHARE`` of the ``open_count`` threads judged: none is lowered and
+    ``st["tripped"]`` says since when, for the digest; once that has lasted
+    ``RELEASE_AFTER``, ``RELEASE`` a run go through, oldest thread first. Otherwise all
+    of them."""
+    st["recent"] = [t for t in st["recent"] if 0 <= now - t < TRIP_WINDOW][-1000:]
+    count = len(due) + len(st["recent"])
+    if not due or count <= TRIP_MIN or count <= TRIP_SHARE * open_count:
+        st["tripped"] = None
+        out = due
+    else:
+        since = st["tripped"]["since"] if st["tripped"] else now
+        st["tripped"] = {"since": since, "due": len(due)}
+        out = [] if now - since < RELEASE_AFTER else \
+            sorted(due, key=lambda d: (d[0].posted_at, d[0].root_event_id))[:RELEASE]
+    st["recent"] += [now] * len(out)
+    return out

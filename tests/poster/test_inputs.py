@@ -399,3 +399,60 @@ def test_a_state_written_before_waiting_loads(tmp_path):  # 0dvh
     path = tmp_path / "s.json"
     path.write_text(json.dumps(st))
     assert inputs.load_state(path, 0, 0)["waiting"] == {}
+
+
+def test_the_recompute_state_is_a_file_of_its_own(tmp_path):  # ny5g
+    led = tmp_path / "ledger.json"
+    cfg = inputs.Config(ledger=led, kev_cache=tmp_path / "kev.json")
+    assert cfg.recompute_state == tmp_path / "ledger.json.recompute.json"
+    cfg.check_paths()
+    with pytest.raises(inputs.ConfigError, match="must differ"):
+        inputs.Config(ledger=led, kev_cache=cfg.recompute_state).check_paths()
+
+
+def test_a_root_item_may_carry_its_prose_floor(tmp_path):  # ny5g
+    path = tmp_path / "s.json"
+    st = inputs.new_state(1_800_000_000, 2)
+    st["outbox"].append(item(floor="high"))
+    inputs.save_state(path, st)
+    assert inputs.load_state(path, 0, 0)["outbox"][0]["floor"] == "high"
+    st["outbox"][0]["floor"] = "severe"
+    inputs.save_state(path, st)
+    with pytest.raises(LedgerError, match="malformed"):
+        inputs.load_state(path, 0, 0)
+
+
+def test_a_catalog_reached_through_a_redirect_is_marked(tmp_path):  # ny5g: a 3xx is not the catalog's own answer
+    import email.message
+    import io
+    import urllib.request
+    import urllib.response
+
+    body = json.dumps(CATALOG).encode()
+
+    class Fake(urllib.request.HTTPSHandler):
+        def __init__(self, hops):
+            super().__init__()
+            self.hops, self.urls = hops, []
+
+        def https_open(self, req):
+            self.urls.append(req.full_url)
+            msg = email.message.Message()
+            if len(self.urls) <= self.hops:
+                msg["Location"] = "https://www.cisa.gov/elsewhere.json"
+                resp = urllib.response.addinfourl(io.BytesIO(b""), msg, req.full_url, 302)
+            else:
+                resp = urllib.response.addinfourl(io.BytesIO(body), msg, req.full_url, 200)
+            resp.msg = "x"
+            return resp
+
+    direct, moved = Fake(0), Fake(1)
+    status, hdrs, got = inputs.urllib_fetch(inputs.KEV_URL, {}, handlers=(direct,))
+    assert (status, got) == (200, body) and inputs.REDIRECTED not in hdrs
+    status, hdrs, got = inputs.urllib_fetch(inputs.KEV_URL, {}, handlers=(moved,))
+    assert (status, got) == (200, body) and hdrs[inputs.REDIRECTED] == "1" and len(moved.urls) == 2
+    info = {}
+    fetch = lambda url, headers: inputs.urllib_fetch(url, headers, handlers=(Fake(1),))  # noqa: E731
+    assert inputs.fetch_kev(tmp_path / "kev.json", fetch, info=info) == (CATALOG, "ok") and info == {"redirected": True}
+    fetch = lambda url, headers: inputs.urllib_fetch(url, headers, handlers=(Fake(0),))  # noqa: E731
+    assert inputs.fetch_kev(tmp_path / "kev2.json", fetch, info=info)[1] == "ok" and info == {"redirected": False}
