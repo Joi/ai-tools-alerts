@@ -321,6 +321,17 @@ def root_post(c, level, scope, *, posted_at: int | None = None) -> tuple[str, sc
     return _guard(schema.render_post(adv, _inline("\n".join(body)))), adv
 
 
+def catalog_post(adv) -> str:
+    """A catalog root (q03f): the level and title, the primary source, then the whole
+    block. Machines read the block; the two lines are for a person who opens the
+    channel. A synthetic advisory never reaches the catalog (ValueError)."""
+    a = schema.validate(adv if isinstance(adv, dict) else asdict(adv))
+    if is_synthetic(a.id) or not a.sources:
+        raise ValueError("a synthetic advisory, or one with no source, is not catalogued")
+    body = [f"{a.level.upper()}: {a.title}", f"Source: {_primary(a.sources)}"]
+    return _guard(schema.render_post(a, _inline("\n".join(body))))
+
+
 def fix_unexpressed(c) -> bool:
     """A fix the schema cannot express is still a fix: say so, and name no version."""
     return schema_fixed(c.fixed) is None and isinstance(c.fixed, str) and c.fixed.strip() != ""

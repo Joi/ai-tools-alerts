@@ -57,6 +57,7 @@ def ev(sec, content, created_at=1793865600, tags=(), kind=9, ch="feed"):
 def env(tmp_path, monkeypatch):
     """Channels file, a manifest signed by a throwaway root, an output dir."""
     monkeypatch.setattr(em, "TRUST_ROOT_PUBKEY", ROOT_PUB)
+    monkeypatch.setattr(em, "CATALOG_SPEC", tmp_path / "no-catalog-channel.json")  # q03f: off unless a test says
     root_pub = tmp_path / "root.pub"
     root_pub.write_text(ROOT_PUB + "\n")
     monkeypatch.setattr(em, "ROOT_PUB", root_pub)
@@ -1307,3 +1308,123 @@ def test_index_lists_a_critical_and_its_channel_copy_once(env):  # 6e20
     run_export(env, rows_reader(admin_rows() + [feed, gone], [crit, lower]))
     items = re.findall(r"<li><span class=\"level level-([a-z]+)\">[a-z]+</span> ([^<]*)<br>", page(env))
     assert len(items) == 1 and items[0][1].startswith("Retracted: ")
+
+
+# ---------------------------------------------------------------- catalog.json (q03f)
+
+CAT_ID = "0c5d7a9e-3b1f-4c2a-9d8e-6f4a2b1c0e9d"
+
+
+def catalog_env(env, doc=None):
+    channels, manifest, out = env
+    path = out.parent / "catalog-channel.json"
+    path.write_text(json.dumps(doc if doc is not None else {"catalog": CAT_ID}))
+    return path
+
+
+def catalog_reader(feed=(), critical=(), catalog=(), fail=False):
+    data = {"feed": list(feed), "critical": list(critical), "catalog": list(catalog)}
+
+    def read(name, cid, limit=None):
+        if name == "catalog" and fail:
+            raise fail if isinstance(fail, Exception) else em.ExportError("channel catalog: psql timed out after 45s")
+        rows = data[name]
+        return rows if limit is None else rows[-limit:]
+    return read
+
+
+def cat_ev(content="catalog root", created_at=1793865600):
+    return ev(BOT_SEC, content, created_at=created_at, tags=[["h", CAT_ID]])
+
+
+def test_catalog_json_is_written_last_and_bound_to_the_catalog_alone(env):
+    path = catalog_env(env)
+    alert = ev(BOT_SEC, "an alert")
+    cat = cat_ev()
+    stray = ev(BOT_SEC, "an alert served as catalog")  # h names feed
+    result = run_export(env, catalog_reader(feed=[alert, cat_ev("catalog served as feed")],
+                                            critical=[cat_ev("catalog served as critical")], catalog=[cat, stray]),
+                        catalog=path)
+    out = env[2]
+    feed = json.loads((out / "feed.json").read_text())
+    assert json.loads((out / "critical.json").read_text())["events"] == []
+    doc = json.loads((out / "catalog.json").read_text())
+    assert [e["id"] for e in feed["events"]] == [alert["id"]]  # the catalog event in the feed rows is dropped
+    assert doc["channel"] == "catalog" and [e["id"] for e in doc["events"]] == [cat["id"]]
+    assert result["catalog"].startswith("kept=1 ") and "unbound=1" in result["catalog"]
+    assert "catalog=kept=1" in em.summary_line(result)
+    assert "catalog" not in result["channels"] and "catalog.json" not in (out / "index.html").read_text()
+
+
+def test_no_catalog_file_writes_no_catalog_json(env):
+    result = run_export(env, catalog_reader(feed=[ev(BOT_SEC, "x")]))
+    assert result["catalog"] == "off" and not (env[2] / "catalog.json").exists()
+    assert "catalog" not in em.summary_line(result)
+
+
+@pytest.mark.parametrize("doc, fail, why", [
+    ({"catalog": FEED_ID}, False, "names an alert channel"),
+    ({"catalog": CAT_ID.upper()}, False, "canonical lowercase UUID"),
+    ({"catalog": CAT_ID, "x": 1}, False, "canonical lowercase UUID"),
+    (None, True, "psql timed out"),
+    (None, RuntimeError("boom"), "RuntimeError"),
+    (None, RecursionError(), "RecursionError"),
+])
+def test_a_catalog_failure_costs_the_alert_files_nothing(env, doc, fail, why):
+    path = catalog_env(env, doc)
+    alert = ev(BOT_SEC, "an alert")
+    result = run_export(env, catalog_reader(feed=[alert], catalog=[cat_ev()], fail=fail), catalog=path)
+    out = env[2]
+    assert result["catalog"].startswith("skipped:") and why in result["catalog"]
+    assert [e["id"] for e in json.loads((out / "feed.json").read_text())["events"]] == [alert["id"]]
+    assert (out / "critical.json").exists() and not (out / "catalog.json").exists()
+
+
+def test_a_reader_without_a_limit_skips_the_catalog_only(env):
+    path = catalog_env(env)
+    result = run_export(env, rows_reader([ev(BOT_SEC, "x")]), catalog=path)
+    assert result["catalog"].startswith("skipped:") and (env[2] / "feed.json").exists()
+
+
+def test_catalog_keeps_the_newest_under_the_caps(env, monkeypatch):
+    monkeypatch.setattr(em, "MAX_CHANNEL_EVENTS", 2)
+    path = catalog_env(env)
+    evs = [cat_ev(f"root {i}", created_at=1793865600 + i) for i in range(4)]
+    run_export(env, catalog_reader(catalog=evs), catalog=path)
+    doc = json.loads((env[2] / "catalog.json").read_text())
+    assert [e["id"] for e in doc["events"]] == [evs[2]["id"], evs[3]["id"]]
+
+
+def test_psql_catalog_query_takes_the_newest_rows(monkeypatch):
+    seen = []
+
+    class Proc:
+        returncode, stdout = 0, '{"a": 2}\n{"a": 1}\n'
+
+    def fake_run(argv, **kw):
+        seen.append(argv[-1])
+        return Proc()
+    monkeypatch.setattr(em.subprocess, "run", fake_run)
+    read = em.psql_reader(["psql"])
+    assert read("catalog", CAT_ID, limit=5) == [{"a": 1}, {"a": 2}]
+    assert seen[0].endswith("ORDER BY created_at DESC LIMIT 5") and CAT_ID in seen[0]
+    assert read("feed", FEED_ID) == [{"a": 2}, {"a": 1}] and seen[1].endswith("ORDER BY created_at")
+
+
+def test_a_slow_export_leaves_the_catalog_for_the_next_run(env, monkeypatch):
+    path = catalog_env(env)
+    clock = iter([0.0, float(em.CATALOG_START_BUDGET)])
+    monkeypatch.setattr(em.time, "monotonic", lambda: next(clock))
+    result = run_export(env, catalog_reader(feed=[ev(BOT_SEC, "x")], catalog=[cat_ev()]), catalog=path)
+    assert result["catalog"].startswith("skipped:the export took") and not (env[2] / "catalog.json").exists()
+    assert (env[2] / "feed.json").exists()
+
+
+def test_main_exits_zero_when_only_the_catalog_fails(env, tmp_path):
+    channels, manifest, out = env
+    path = catalog_env(env, {"catalog": FEED_ID})
+    rows = tmp_path / "rows.json"
+    rows.write_text(json.dumps({"feed": [ev(BOT_SEC, "x")], "critical": []}))
+    assert em.main(["--channels", str(channels), "--manifest", str(manifest), "--out", str(out),
+                    "--rows-from", str(rows), "--catalog", str(path)]) == 0
+    assert (out / "feed.json").exists() and not (out / "catalog.json").exists()

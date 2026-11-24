@@ -45,6 +45,14 @@ and seven days without a level change on the thread, and is a level-only reply
 lowers nothing, and neither does what a cut one lacks. The next digest lists what
 was lowered in one line.
 
+With spec/catalog-channel.json present, every in-scope advisory (each ledger thread
+whose product starts at its level, and each held notice) is also posted, whole, as a
+root to the catalog channel when it differs from what was last posted there
+(``catalog``, ai-tools-alerts#q03f). What is in scope is read in memory under the
+ledger lock, before the digest; the catalog's files and sends come after the lock is
+released and the checkpoint is signed, at most 20 sends a run, and never reach the
+exit code or the checkpoint.
+
 With ``translate_curator`` on, a curator's post or amendment read from the mirror gets
 a machine translation (``translate``), journaled as ``curator:<event id>:<channel>:ja``
 after the English work of the run is saved. A 401/403 holds it until
@@ -65,7 +73,8 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from aitools_alerts import TRUST_ROOT_PUBKEY, check, manifest, pull, ruleset, schema
-from aitools_alerts.poster import candidates, compose, inputs, ledger, recompute, rules, signer, translate, transport
+from aitools_alerts.poster import (candidates, catalog, compose, inputs, ledger, recompute, rules, signer, translate,
+                                   transport)
 from aitools_alerts.poster.inputs import Config, ConfigError
 from aitools_alerts.poster.ledger import Ledger, LedgerError
 from aitools_alerts.state import State
@@ -1316,10 +1325,12 @@ def relay_sender(config: Config):
 def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
         page=rules.http_page, channels: dict | None = None,
         digest_now: bool = False, kev_catalog: dict | None = None,
-        mirror_fetch=None, translate_call=None, **translate_kw) -> tuple[int, str]:
+        mirror_fetch=None, translate_call=None, catalog_channel=None, **translate_kw) -> tuple[int, str]:
     """One poster run. Returns (exit code, one-line summary). ``digest_now`` sends
     today's digest whatever the hour (once per date); ``kev_catalog`` replaces the
-    KEV fetch with a synthetic catalog (``inputs.read_kev_file``)."""
+    KEV fetch with a synthetic catalog (``inputs.read_kev_file``). ``catalog_channel``:
+    None reads spec/catalog-channel.json, False turns the catalog lane off, a string is
+    the channel id (q03f)."""
     if not isinstance(config, Config):
         config = inputs.load_config(config)
     try:
@@ -1334,6 +1345,21 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
         print("aitools-alerts-poster: warning: strip_hosts is empty", file=sys.stderr)
     channels = channels or inputs.load_channels()
     n, code, err, status, skipped, tr_status, cp_status = Counter(), 0, None, None, Counter(), "-", "off"
+    cat_id, cat_status, english_ok = catalog_channel or None, None, False
+    if catalog_channel is None:  # q03f: no file, no lane, and the summary line is unchanged
+        try:
+            cat_id = inputs.load_catalog_channel(channels)
+        except ConfigError as e:
+            cat_status = "off-bad-spec"
+            _say(f"catalog lane off: {e}")
+    if cat_id:
+        cat_status = "0/0"
+        try:
+            config.check_catalog_paths()
+        except ConfigError as e:
+            cat_id, cat_status = None, "off-bad-paths"
+            _say(f"catalog lane off: {e}")
+    cat_snap = None
     try:
         with Ledger(config.ledger) as led:
             state = inputs.load_state(config.state, now, config.backfill_days)
@@ -1380,6 +1406,12 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                     r.one(c, scope)
                     merged[i] = None  # planned (or deferred by one() itself)
                 r.recompute()
+                if cat_id:  # q03f: before the digest, which drops the notices it lists from held.
+                    try:  # In memory only: no catalog file is touched under the ledger lock.
+                        cat_snap = catalog.snapshot(led, state["held"])
+                    except Exception as e:  # noqa: BLE001 - the catalog never touches alert work
+                        cat_status = "error"
+                        _say(f"catalog snapshot failed: {type(e).__name__}: {e}")
                 r.digest(root=translate_kw.get("root", TRUST_ROOT_PUBKEY), fetch=mirror_fetch)
                 state.update(marks)  # every send of this run succeeded; busy work is deferred
                 english_ok = True
@@ -1416,6 +1448,14 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                 _say(f"checkpoint stopped: {type(e).__name__}")
             if state["withheld"]:  # every run says so until a human settles them
                 _say(f"withheld={len(state['withheld'])} refused by the relay; see pending, resolve --requeue|--drop")
+        # q03f: catalog sends, with the ledger lock released and the checkpoint signed, so
+        # they cannot delay an alert post, the checkpoint or the next run.
+        if cat_id and english_ok and cat_status != "error":
+            try:
+                cat_status = catalog.send_pass(config, cat_id, send, cat_snap)
+            except Exception as e:  # noqa: BLE001 - nothing here may reach the run's exit code
+                cat_status = "error"
+                _say(f"catalog pass stopped: {type(e).__name__}: {e}")
     except LedgerError as e:
         code, err = 1, str(e)
     except Exception as e:  # never die without the summary line
@@ -1426,6 +1466,8 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
         + " translate=" + tr_status + " inputs=" + _inputs_field(status)
     if cp_status != "off":  # unset, the line is byte for byte what it was (others parse it)
         summary += " checkpoint=" + cp_status
+    if cat_status is not None:  # likewise: only once spec/catalog-channel.json exists
+        summary += " catalog=" + cat_status
     if err:
         print(f"aitools-alerts-poster: {err}", file=sys.stderr)
         summary += " error=" + ("internal" if err.startswith("internal error") else "ledger")

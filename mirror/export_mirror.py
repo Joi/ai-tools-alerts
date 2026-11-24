@@ -23,6 +23,14 @@ temp file in that directory and then os.replace. Nothing is written unless
 every channel read and the manifest check succeed, so a failed run leaves the
 previous files served.
 
+When spec/catalog-channel.json exists in the checkout (or --catalog names one),
+the catalog channel's newest events go to catalog.json (ai-tools-alerts#q03f),
+written after every other file: bound to the catalog channel id alone, so no
+catalog event is ever in feed.json or critical.json, and never in the
+checkpoint, which released readers require to list only events of those two
+files. Any catalog failure, a bad catalog file included, leaves the previous
+catalog.json and changes nothing else: the summary says catalog=skipped.
+
 Exit codes: 0 written, 1 refused or a read failed (nothing written), 2 usage.
 Standard library plus this repo's aitools_alerts package only.
 """
@@ -36,6 +44,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 import xml.etree.ElementTree as ET
 from collections import Counter
@@ -57,8 +66,15 @@ QUERY = (
     "'content',content,'sig',encode(sig,'hex')) FROM events "
     "WHERE channel_id = '{channel_id}' AND deleted_at IS NULL ORDER BY created_at"
 )
+CATALOG_QUERY = QUERY.replace("ORDER BY created_at", "ORDER BY created_at DESC LIMIT {limit}")
+CATALOG_SPEC = REPO / "spec" / "catalog-channel.json"
 DEFAULT_PSQL = ["docker", "exec", "buzz-prod-postgres-1", "psql", "-U", "buzz", "-d", "buzz", "-At", "-c"]
 PSQL_TIMEOUT = 120
+# The unit's TimeoutStartSec is 5 minutes and the timer fires every 5: the catalog
+# starts only while the export is this young, and its query has a shorter timeout,
+# so it never holds the alert export into the next run (q03f).
+CATALOG_START_BUDGET = 150
+CATALOG_PSQL_TIMEOUT = 45
 DEFAULT_MIRROR_URL = "https://buzz.ai-tools.md/alerts/"
 ROOT_PUB = REPO / "trust" / "root.pub"  # published beside manifest.json: a second origin for the root
 NIP01_KEYS = ("id", "pubkey", "created_at", "kind", "tags", "content", "sig")
@@ -121,12 +137,16 @@ def load_channels(path) -> dict[str, str]:
 
 def psql_reader(prefix: list[str]):
     """A reader that runs prefix + [query] per channel (argv, no shell)."""
-    def read(name: str, channel_id: str) -> list:
-        argv = list(prefix) + [QUERY.format(channel_id=channel_id)]
+    def read(name: str, channel_id: str, limit: int | None = None) -> list:
+        """With ``limit``: the newest ``limit`` rows, returned oldest first."""
+        query = QUERY.format(channel_id=channel_id) if limit is None \
+            else CATALOG_QUERY.format(channel_id=channel_id, limit=int(limit))
+        argv = list(prefix) + [query]
+        limit_s = PSQL_TIMEOUT if limit is None else CATALOG_PSQL_TIMEOUT
         try:
-            proc = subprocess.run(argv, capture_output=True, text=True, timeout=PSQL_TIMEOUT)
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=limit_s)
         except subprocess.TimeoutExpired:
-            raise ExportError(f"channel {name}: psql timed out after {PSQL_TIMEOUT}s") from None
+            raise ExportError(f"channel {name}: psql timed out after {limit_s}s") from None
         except OSError as e:
             raise ExportError(f"channel {name}: psql could not run ({e.__class__.__name__})") from None
         if proc.returncode != 0:
@@ -141,7 +161,7 @@ def psql_reader(prefix: list[str]):
                 rows.append(json.loads(line))
             except (ValueError, RecursionError):
                 rows.append(MALFORMED)
-        return rows
+        return rows if limit is None else rows[::-1]
     return read
 
 
@@ -155,11 +175,11 @@ def file_reader(path):
     if not isinstance(obj, dict):
         raise ExportError("rows file must be a JSON object")
 
-    def read(name: str, channel_id: str) -> list:
+    def read(name: str, channel_id: str, limit: int | None = None) -> list:
         rows = obj.get(name)
         if not isinstance(rows, list):
             raise ExportError(f"channel {name}: no rows list in the rows file")
-        return rows
+        return rows if limit is None else rows[-limit:] if limit > 0 else []
     return read
 
 
@@ -306,6 +326,68 @@ def cap(events: dict[str, list[dict]], m, generated_at: str, pinned=frozenset(),
             keep[n].update(parts[n])
     out = {name: [ev for i, ev in enumerate(evs) if i in keep[name]] for name, evs in events.items()}
     return out, {name: len(events[name]) - len(out[name]) for name in events}
+
+
+def load_catalog(path, channels: dict) -> str | None:
+    """The catalog channel id from spec/catalog-channel.json, or None when the file
+    does not exist. ExportError when it is not exactly {"catalog": <lowercase uuid>}
+    naming neither alert channel (the caller skips the catalog; nothing else changes)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            obj = json.load(f)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, RecursionError) as e:
+        raise ExportError(f"catalog file unreadable: {e.__class__.__name__}") from None
+    cid = obj.get("catalog") if isinstance(obj, dict) and set(obj) == {"catalog"} else None
+    try:
+        ok = isinstance(cid, str) and str(uuid.UUID(cid)) == cid
+    except ValueError:
+        ok = False
+    if not ok:
+        raise ExportError("catalog file must be {\"catalog\": <canonical lowercase UUID>}")
+    if cid in channels.values():
+        raise ExportError("catalog file names an alert channel")
+    return cid
+
+
+def newest(events: list[dict]) -> list[dict]:
+    """The newest events within MAX_CHANNEL_EVENTS and MAX_CHANNEL_BYTES, oldest first.
+    Catalog roots stand alone (each carries its whole block), so no thread is kept
+    whole: an older root is superseded by a newer one for the same advisory."""
+    kept, size = [], 0
+    for ev in sorted(events, key=lambda e: (e["created_at"], e["id"]), reverse=True):
+        n = _event_size(ev)
+        if len(kept) >= MAX_CHANNEL_EVENTS or size + n > MAX_CHANNEL_BYTES:
+            break
+        kept.append(ev)
+        size += n
+    return kept[::-1]
+
+
+def export_catalog(path, channels: dict, m, out: Path, reader, now: int, generated_at: str,
+                   elapsed: float = 0.0) -> str:
+    """Write catalog.json, after everything else; never raises. Returns "off", a
+    summary of what was kept, or "skipped:<reason>" (the previous file stays).
+    ``elapsed``: seconds the export has run; past CATALOG_START_BUDGET the catalog
+    waits for the next run."""
+    try:
+        cid = load_catalog(path, channels)
+        if cid is None:
+            return "off"
+        if elapsed >= CATALOG_START_BUDGET:
+            return f"skipped:the export took {int(elapsed)}s; the catalog waits for the next run"
+        admitted, _ = published_ids(out, ["catalog"])
+        rows = reader("catalog", cid, limit=MAX_CHANNEL_EVENTS)
+        kept, counts = clean(rows, m, frozenset({cid}), now, admitted)
+        kept = newest(kept)
+        write_atomic(out, "catalog.json", channel_doc("catalog", kept, generated_at))
+    except ExportError as e:
+        return f"skipped:{e}"
+    except Exception as e:  # noqa: BLE001 - the catalog never costs the alert files anything
+        return f"skipped:{e.__class__.__name__}"
+    return (f"kept={len(kept)} capped={counts['kept'] - len(kept)} unbound={counts['unbound']}"
+            f" not_poster={counts['not_poster']} bad_sig={counts['bad_sig']}")
 
 
 def check_manifest(path):
@@ -713,7 +795,8 @@ def write_atomic(out: Path, name: str, data: bytes) -> None:
 
 
 def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_URL, now=None,
-           root_pub=None, checkpoint_key=None, inbox=None) -> dict:
+           root_pub=None, checkpoint_key=None, inbox=None, catalog=None) -> dict:
+    started = time.monotonic()
     out = Path(out)
     if not out.is_dir():
         raise ExportError(f"output directory {out} does not exist")
@@ -770,7 +853,11 @@ def export(channels_path, manifest_path, out, reader, mirror_url=DEFAULT_MIRROR_
     files.append((ATOM_JA["file"], atom_ja))
     for fname, data in files:
         write_atomic(out, fname, data)
-    return {"channels": counts, "atom_entries": entries, "index_advisories": listed, "checkpoint": cp_note}
+    # Last, and on its own: nothing above waits for it or depends on it (q03f).
+    cat = export_catalog(catalog if catalog is not None else CATALOG_SPEC, channels, m, out, reader, now,
+                         generated_at, time.monotonic() - started)
+    return {"channels": counts, "atom_entries": entries, "index_advisories": listed, "checkpoint": cp_note,
+            "catalog": cat}
 
 
 def summary_line(result: dict) -> str:
@@ -780,7 +867,8 @@ def summary_line(result: dict) -> str:
              for name, c in result["channels"].items()]
     return ("export_mirror: " + "; ".join(parts) + f"; atom entries={result['atom_entries']}"
             f"; index advisories={result['index_advisories']}"
-            + (f"; checkpoint={result['checkpoint']}" if result.get("checkpoint", "none") != "none" else ""))
+            + (f"; checkpoint={result['checkpoint']}" if result.get("checkpoint", "none") != "none" else "")
+            + (f"; catalog={result['catalog']}" if result.get("catalog", "off") != "off" else ""))
 
 
 def main(argv=None) -> int:
@@ -797,6 +885,8 @@ def main(argv=None) -> int:
                     "key; published when valid (absent file: nothing is published, as before)")
     ap.add_argument("--inbox", help="directory where mirror-put stores the poster's checkpoint.json; it is "
                     "published only after it verifies under --checkpoint-key")
+    ap.add_argument("--catalog", help="the catalog channel file (default: spec/catalog-channel.json in this "
+                    "checkout; absent: no catalog.json is written)")
     args = ap.parse_args(argv)
 
     try:
@@ -808,7 +898,7 @@ def main(argv=None) -> int:
                 raise ExportError("--psql-cmd is empty")
             reader = psql_reader(prefix)
         result = export(args.channels, args.manifest, args.out, reader, args.mirror_url,
-                        checkpoint_key=args.checkpoint_key, inbox=args.inbox)
+                        checkpoint_key=args.checkpoint_key, inbox=args.inbox, catalog=args.catalog)
     except ExportError as e:
         print(f"export_mirror: {e}; nothing written", file=sys.stderr)
         return 1
