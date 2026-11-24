@@ -227,7 +227,7 @@ def _matches(a, st: State) -> tuple[list, list]:
     if st.manifest is not None and st.manifest_root != a.root:
         _err("the stored state was pulled under another trust root; run: aitools-alerts pull")
         return [], []
-    threads = _entries(pull.active(pull.advisories(st)), a.__dict__.setdefault("warned", set()))
+    threads = _entries(pull.active(pull.advisories(st), *pull.head_clock(st)), a.__dict__.setdefault("warned", set()))
     ms = check.match([t.adv for t in threads], inventory.collect())
     by_adv = {id(t.adv): t for t in threads}
     return threads, [(by_adv[id(m.adv)], m) for m in ms]

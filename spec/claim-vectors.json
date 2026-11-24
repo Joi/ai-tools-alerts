@@ -1,6 +1,6 @@
 {
  "description": "Test vectors for the claim a poster signs and a member's CLI checks offline (s6mt). A claim is {id, source, fields, ruleset, level, confirmed_at, checked_at}: id is the advisory id the source is looked up by and equals the fields' own id (a CVE id reads kev, a GHSA id ghsa, any other OSV id osv); fields is the reading, as spec/ruleset.json defines it; ruleset is the integer version of the ruleset that gave the level; level is critical, high, notice or none; confirmed_at and checked_at are integer Unix seconds, confirmed_at not after checked_at. The product is not in the claim: it is the product of the alert the claim is signed with. Canonical form: the JSON object with keys sorted by code point at every depth and no whitespace between tokens. Values are objects, lists, strings, integers of magnitude at most 2^53 - 1, true, false and null; there is no float. Every string, keys included, is printable ASCII (U+0020 to U+007E), so the bytes are ASCII and the only escapes are those of the quote and the backslash. A source value with any other character cannot be carried: that reading is malformed and makes no claim. Unicode is left out whole because which characters exist, and what they normalise to, differs between the Unicode versions two readers run. Lists whose order the source does not fix have one order: packages ascending by (ecosystem, name, range, first_patched) compared by code point with null as the empty string, each entry once; cwes ascending, each once, [] when none. 'claims': each vector's 'canonical' is the exact text of the canonical form of 'claim', 'sha256' its SHA-256, and the ruleset gives 'claim.level' for 'product'. 'levels': the level the ruleset gives 'product' for 'readings', each [source, fields]. Both test suites load this file: tests/test_ruleset.py and tests/poster/test_rules.py, which builds poster-kev and poster-ghsa-page through the poster's own code.",
- "ruleset": 1,
+ "ruleset": 2,
  "claims": [
   {
    "name": "poster-kev",
@@ -12,13 +12,13 @@
      "cve_id": "CVE-2026-0001",
      "name": "Anthropic Claude Code"
     },
-    "ruleset": 1,
+    "ruleset": 2,
     "level": "critical",
     "confirmed_at": 1795000000,
     "checked_at": 1795000000
    },
-   "canonical": "{\"checked_at\":1795000000,\"confirmed_at\":1795000000,\"fields\":{\"cve_id\":\"CVE-2026-0001\",\"name\":\"Anthropic Claude Code\"},\"id\":\"CVE-2026-0001\",\"level\":\"critical\",\"ruleset\":1,\"source\":\"kev\"}",
-   "sha256": "00ae4e98dcb35f0418bc74c65f45766bd71f888dd1eabcee02a9c6e92360eb9e"
+   "canonical": "{\"checked_at\":1795000000,\"confirmed_at\":1795000000,\"fields\":{\"cve_id\":\"CVE-2026-0001\",\"name\":\"Anthropic Claude Code\"},\"id\":\"CVE-2026-0001\",\"level\":\"critical\",\"ruleset\":2,\"source\":\"kev\"}",
+   "sha256": "9edac1b7881adea470122eef2797be8d89c2dda64ed6016e1437473e5f43476b"
   },
   {
    "name": "poster-ghsa-page",
@@ -49,13 +49,13 @@
       }
      ]
     },
-    "ruleset": 1,
+    "ruleset": 2,
     "level": "high",
     "confirmed_at": 1795000000,
     "checked_at": 1795000000
    },
-   "canonical": "{\"checked_at\":1795000000,\"confirmed_at\":1795000000,\"fields\":{\"cvss_vector\":null,\"cwes\":[],\"ghsa_id\":\"GHSA-aaaa-bbbb-cccc\",\"packages\":[{\"ecosystem\":\"npm\",\"first_patched\":\"1.9.5\",\"name\":\"@anthropic-ai/claude-code\",\"range\":\"< 1.9.5\"},{\"ecosystem\":\"npm\",\"first_patched\":\"2.1.0\",\"name\":\"@anthropic-ai/claude-code\",\"range\":\">= 2.0.0, < 2.1.0\"}],\"repository\":\"anthropics/claude-code\",\"severity\":\"high\",\"type\":null,\"withdrawn_at\":null},\"id\":\"GHSA-aaaa-bbbb-cccc\",\"level\":\"high\",\"ruleset\":1,\"source\":\"ghsa\"}",
-   "sha256": "b422a72cc58989ccfbb13a586f018c92a4f81c794cdd691f130cc960e263eee9"
+   "canonical": "{\"checked_at\":1795000000,\"confirmed_at\":1795000000,\"fields\":{\"cvss_vector\":null,\"cwes\":[],\"ghsa_id\":\"GHSA-aaaa-bbbb-cccc\",\"packages\":[{\"ecosystem\":\"npm\",\"first_patched\":\"1.9.5\",\"name\":\"@anthropic-ai/claude-code\",\"range\":\"< 1.9.5\"},{\"ecosystem\":\"npm\",\"first_patched\":\"2.1.0\",\"name\":\"@anthropic-ai/claude-code\",\"range\":\">= 2.0.0, < 2.1.0\"}],\"repository\":\"anthropics/claude-code\",\"severity\":\"high\",\"type\":null,\"withdrawn_at\":null},\"id\":\"GHSA-aaaa-bbbb-cccc\",\"level\":\"high\",\"ruleset\":2,\"source\":\"ghsa\"}",
+   "sha256": "b805d56985db483c8d0d91a7deeadeab126591d8cc7b520f5801cc2dbd003334"
   },
   {
    "name": "ghsa-malware",
@@ -80,13 +80,13 @@
       }
      ]
     },
-    "ruleset": 1,
+    "ruleset": 2,
     "level": "critical",
     "confirmed_at": 1795000000,
     "checked_at": 1795003600
    },
-   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cvss_vector\":null,\"cwes\":[],\"ghsa_id\":\"GHSA-mmmm-2222-wwww\",\"packages\":[{\"ecosystem\":\"npm\",\"first_patched\":null,\"name\":\"@anthropic-ai/claude-code\",\"range\":\">= 0\"}],\"repository\":null,\"severity\":null,\"type\":\"malware\",\"withdrawn_at\":null},\"id\":\"GHSA-mmmm-2222-wwww\",\"level\":\"critical\",\"ruleset\":1,\"source\":\"ghsa\"}",
-   "sha256": "4e3447995d21d0441657c1edacad15446d2bd4f8f9d2265233b0bc243dcd18f5"
+   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cvss_vector\":null,\"cwes\":[],\"ghsa_id\":\"GHSA-mmmm-2222-wwww\",\"packages\":[{\"ecosystem\":\"npm\",\"first_patched\":null,\"name\":\"@anthropic-ai/claude-code\",\"range\":\">= 0\"}],\"repository\":null,\"severity\":null,\"type\":\"malware\",\"withdrawn_at\":null},\"id\":\"GHSA-mmmm-2222-wwww\",\"level\":\"critical\",\"ruleset\":2,\"source\":\"ghsa\"}",
+   "sha256": "31af0c4cb595e4674ca5c15ceebbb58609af49c7a345d010e1d1da41c5ab468e"
   },
   {
    "name": "osv-mal",
@@ -106,16 +106,16 @@
       }
      ]
     },
-    "ruleset": 1,
+    "ruleset": 2,
     "level": "high",
     "confirmed_at": 1795000000,
     "checked_at": 1795003600
    },
-   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"osv_id\":\"MAL-2026-1234\",\"packages\":[{\"ecosystem\":\"npm\",\"first_patched\":null,\"name\":\"@anthropic-ai/claude-code\",\"range\":null}],\"withdrawn\":null},\"id\":\"MAL-2026-1234\",\"level\":\"high\",\"ruleset\":1,\"source\":\"osv\"}",
-   "sha256": "094c133c4186db05b36992962b03b36ed89f4cd9d44ddbcd57d410f95d63ded9"
+   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"osv_id\":\"MAL-2026-1234\",\"packages\":[{\"ecosystem\":\"npm\",\"first_patched\":null,\"name\":\"@anthropic-ai/claude-code\",\"range\":null}],\"withdrawn\":null},\"id\":\"MAL-2026-1234\",\"level\":\"high\",\"ruleset\":2,\"source\":\"osv\"}",
+   "sha256": "fb20507f1b27057cd224608e02c458fbe5b276ff69619c524140a07103385b09"
   },
   {
-   "name": "kev-tier-2",
+   "name": "kev-out-of-scope-is-a-notice",
    "product": "Linux kernel",
    "claim": {
     "id": "CVE-2026-0002",
@@ -124,13 +124,13 @@
      "cve_id": "CVE-2026-0002",
      "name": "Linux Kernel"
     },
-    "ruleset": 1,
-    "level": "high",
+    "ruleset": 2,
+    "level": "notice",
     "confirmed_at": 1795000000,
     "checked_at": 1795003600
    },
-   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cve_id\":\"CVE-2026-0002\",\"name\":\"Linux Kernel\"},\"id\":\"CVE-2026-0002\",\"level\":\"high\",\"ruleset\":1,\"source\":\"kev\"}",
-   "sha256": "15355075e69506d669ffe85536364f9d74ba57b96903c4f0ab00f34c3bbec9b3"
+   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cve_id\":\"CVE-2026-0002\",\"name\":\"Linux Kernel\"},\"id\":\"CVE-2026-0002\",\"level\":\"notice\",\"ruleset\":2,\"source\":\"kev\"}",
+   "sha256": "8ea20db1f14c299f92c813a5bbb8cc80269884be6de57858dd2620401ef6e974"
   },
   {
    "name": "ghsa-escapes-unbound",
@@ -155,13 +155,13 @@
       }
      ]
     },
-    "ruleset": 1,
+    "ruleset": 2,
     "level": "none",
     "confirmed_at": 1795000000,
     "checked_at": 1795003600
    },
-   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cvss_vector\":null,\"cwes\":[],\"ghsa_id\":\"GHSA-xxxx-3333-yyyy\",\"packages\":[{\"ecosystem\":\"\",\"first_patched\":\"3\",\"name\":\"A \\\"quoted\\\" tool \\\\ path/name\",\"range\":\"< 3\"}],\"repository\":null,\"severity\":\"critical\",\"type\":\"reviewed\",\"withdrawn_at\":null},\"id\":\"GHSA-xxxx-3333-yyyy\",\"level\":\"none\",\"ruleset\":1,\"source\":\"ghsa\"}",
-   "sha256": "e60816e62b72d5cfa89ffd2255fedf2beb37fc2f3f37ca2a4f8a83143e8dced6"
+   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cvss_vector\":null,\"cwes\":[],\"ghsa_id\":\"GHSA-xxxx-3333-yyyy\",\"packages\":[{\"ecosystem\":\"\",\"first_patched\":\"3\",\"name\":\"A \\\"quoted\\\" tool \\\\ path/name\",\"range\":\"< 3\"}],\"repository\":null,\"severity\":\"critical\",\"type\":\"reviewed\",\"withdrawn_at\":null},\"id\":\"GHSA-xxxx-3333-yyyy\",\"level\":\"none\",\"ruleset\":2,\"source\":\"ghsa\"}",
+   "sha256": "4f016f6e97431b7ef900cdd98437c5c3739b86a2213cdc30d82ff1c10dcbc3f0"
   },
   {
    "name": "ghsa-withdrawn",
@@ -186,13 +186,13 @@
       }
      ]
     },
-    "ruleset": 1,
+    "ruleset": 2,
     "level": "none",
     "confirmed_at": 1795000000,
     "checked_at": 1795003600
    },
-   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cvss_vector\":null,\"cwes\":[],\"ghsa_id\":\"GHSA-aaaa-bbbb-cccc\",\"packages\":[{\"ecosystem\":\"npm\",\"first_patched\":\"2.1.0\",\"name\":\"@anthropic-ai/claude-code\",\"range\":\"< 2.1.0\"}],\"repository\":null,\"severity\":null,\"type\":\"malware\",\"withdrawn_at\":\"2026-11-20T00:00:00Z\"},\"id\":\"GHSA-aaaa-bbbb-cccc\",\"level\":\"none\",\"ruleset\":1,\"source\":\"ghsa\"}",
-   "sha256": "ea79cfd371b8c03cefda8157a16b5eef4429296e108248cae674c8dd91b4b654"
+   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cvss_vector\":null,\"cwes\":[],\"ghsa_id\":\"GHSA-aaaa-bbbb-cccc\",\"packages\":[{\"ecosystem\":\"npm\",\"first_patched\":\"2.1.0\",\"name\":\"@anthropic-ai/claude-code\",\"range\":\"< 2.1.0\"}],\"repository\":null,\"severity\":null,\"type\":\"malware\",\"withdrawn_at\":\"2026-11-20T00:00:00Z\"},\"id\":\"GHSA-aaaa-bbbb-cccc\",\"level\":\"none\",\"ruleset\":2,\"source\":\"ghsa\"}",
+   "sha256": "ee90cbeb9d18246ae4e139a6f5a65d3f34430e14e9e91cc6ada9eb976464ff6a"
   },
   {
    "name": "kev-not-listed",
@@ -204,18 +204,18 @@
      "cve_id": "CVE-2026-0001",
      "name": null
     },
-    "ruleset": 1,
+    "ruleset": 2,
     "level": "none",
     "confirmed_at": 1795000000,
     "checked_at": 1795003600
    },
-   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cve_id\":\"CVE-2026-0001\",\"name\":null},\"id\":\"CVE-2026-0001\",\"level\":\"none\",\"ruleset\":1,\"source\":\"kev\"}",
-   "sha256": "bb29b214b5f7f4dc7751aeddb1566071cd1fdf79616b9a1ee7dc2779d642eaf0"
+   "canonical": "{\"checked_at\":1795003600,\"confirmed_at\":1795000000,\"fields\":{\"cve_id\":\"CVE-2026-0001\",\"name\":null},\"id\":\"CVE-2026-0001\",\"level\":\"none\",\"ruleset\":2,\"source\":\"kev\"}",
+   "sha256": "c7fd388b9be722fbbf5b11b02b00dc2217545ab4ba67e177a4e1a48136af2098"
   }
  ],
  "levels": [
   {
-   "name": "kev tier 1",
+   "name": "kev of a channel product",
    "product": "Claude Code",
    "readings": [
     [
@@ -229,7 +229,7 @@
    "level": "critical"
   },
   {
-   "name": "kev tier 2 is capped at high",
+   "name": "kev of an out product is a notice",
    "product": "Linux kernel",
    "readings": [
     [
@@ -240,10 +240,10 @@
      }
     ]
    ],
-   "level": "high"
+   "level": "notice"
   },
   {
-   "name": "kev for another vendor's product binds to no tier-1 product",
+   "name": "kev for another vendor's product binds to no channel product",
    "product": "Claude Code",
    "readings": [
     [
@@ -684,7 +684,7 @@
    "level": "none"
   },
   {
-   "name": "tier 2 advisory is a notice",
+   "name": "out advisory is a notice",
    "product": "Ubuntu",
    "readings": [
     [

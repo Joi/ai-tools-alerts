@@ -765,8 +765,11 @@ def test_index_marks_expired(env):
     adv = json.loads(post.split("```" + schema.INFO_STRING + "\n")[1].split("\n```")[0])
     adv["expires_at"] = 1793865700  # before the export's now (1793865900)
     content = f"Old news\n\n```{schema.INFO_STRING}\n{json.dumps(adv)}\n```\n"
-    run_export(env, rows_reader([ev(BOT_SEC, content, 1793865600)]))
+    run_export(env, rows_reader([ev(CUR_SEC, content, 1793865600)]))
     assert "Expired: Old news" in page(env)
+    # a relay-bot block's expiry is not read (ai-tools-alerts#r0ra): readers compute it from the claim
+    run_export(env, rows_reader([ev(BOT_SEC, content, 1793865600)]))
+    assert "Old news" in page(env) and "Expired: " not in page(env)
 
 
 def test_index_and_cli_agree_on_a_far_future_retraction(env, tmp_path, monkeypatch):

@@ -48,15 +48,16 @@ def test_kev_tier1_is_critical():
     assert level(c, False) == ("critical", "kev-tier1")
 
 
-def test_kev_tier2_is_high():
+def test_kev_of_an_out_product_is_a_notice():
     c = cand(product_text="Linux Kernel", exploited=True)
-    assert rules.scope_of(c.product_text).tier == 2
-    assert level(c, True) == ("high", "kev-tier2")
-    # Tier 2 never reaches critical, whatever the flags.
+    assert rules.scope_of(c.product_text).scope_class == "out"
+    assert level(c, True) == ("notice", "notice")  # wa6n: out of the community service
     every = cand(product_text="Apple macOS", exploited=True, trojanized=True,
                  injection_exec=True, fixed="15.1", advisory_severity="remote code execution",
                  local_level_hint="critical")
-    assert level(every, True)[0] == "high"
+    assert level(every, True)[0] == "notice"  # macOS carries no channel_if
+    sdk = cand(product_text="@modelcontextprotocol/sdk", exploited=True, trojanized=True, fixed="1.2")
+    assert level(sdk, True) == ("notice", "notice")  # catalog: never the channel
     for flags in ({"trojanized": True}, {"injection_exec": True, "fixed": "1.0"},
                   {"fixed": "1.0", "advisory_severity": "remote code execution"}):
         for ok in (True, False):
@@ -84,18 +85,38 @@ def test_out_of_scope_is_none():
 
 
 def test_fix_rce_tier1_is_high():
-    c = cand(product_text="Node.js", fixed="22.11.1", advisory_severity="High: remote code execution")
+    c = cand(product_text="OpenAI Codex", fixed="22.11.1", advisory_severity="High: remote code execution")
     assert level(c) == ("high", "fix-rce-tier1")
-    cred = cand(product_text="Tailscale", fixed="1.76.0", advisory_severity="credential exposure")
+    cred = cand(product_text="OpenAI Codex", fixed="1.76.0", advisory_severity="credential exposure")
     assert level(cred) == ("high", "fix-rce-tier1")
-    plain = cand(product_text="Node.js", fixed="22.11.1", advisory_severity="CRITICAL")
+    plain = cand(product_text="OpenAI Codex", fixed="22.11.1", advisory_severity="CRITICAL")
     assert level(plain) == ("high", "severity-tier1")  # the level word alone: severity-tier1
     for text in ("High; remote code-execution", "lets an attacker execute arbitrary commands",
                  "\uff32\uff23\uff25 in the inspector"):
-        assert level(cand(product_text="Node.js", fixed="22.11.1", advisory_severity=text)) == \
+        assert level(cand(product_text="OpenAI Codex", fixed="22.11.1", advisory_severity=text)) == \
             ("high", "fix-rce-tier1"), text
-    nofix = cand(product_text="Node.js", advisory_severity="remote code execution")
+    nofix = cand(product_text="OpenAI Codex", advisory_severity="remote code execution")
     assert level(nofix) == ("notice", "notice")
+
+
+def test_channel_if_takes_remote_code_execution_only():
+    """wa6n: git is out, but a fixed flaw stated as remote code execution posts at high;
+    credential theft, a bare level word or an injection flag does not, and nor does
+    an out product without channel_if."""
+    for text in ("Remote code execution via a crafted submodule", "RCE on clone"):
+        assert level(cand(product_text="Git Git", fixed="2.47.1", advisory_severity=text)) == \
+            ("high", "fix-rce-tier1"), text
+    for kw in ({"advisory_severity": "credential exposure"}, {"advisory_severity": "CRITICAL"},
+               {"advisory_severity": "arbitrary code execution"}, {"injection_exec": True}):
+        assert level(cand(product_text="Git Git", fixed="2.47.1", **kw)) == ("notice", "notice"), kw
+    assert level(cand(product_text="Git Git", advisory_severity="RCE")) == ("notice", "notice")  # no fix
+    assert level(cand(product_text="Git Git", trojanized=True), True) == ("notice", "notice")  # says no RCE
+    kev_rce = cand(product_text="Git Git", exploited=True, fixed="2.47.1", advisory_severity="RCE on clone")
+    assert level(kev_rce) == ("high", "fix-rce-tier1")  # KEV alone is a notice here, and masks nothing
+    assert level(cand(product_text="Git Git", exploited=True), True) == ("notice", "notice")
+    assert level(cand(product_text="Node.js", fixed="22.11.1", advisory_severity="RCE")) == ("notice", "notice")
+    assert level(cand(product_text="mcp inspector", fixed="1.0.3", advisory_severity="RCE")) == \
+        ("high", "fix-rce-tier1")
 
 
 def test_severity_tier1_is_high():
@@ -141,7 +162,7 @@ def test_collector_claude_code_advisory_is_tier1_high():
     c = out[0]
     assert (c.advisory_severity, c.fixed) == ("high", None)  # what from_collector sets today
     scope = rules.scope_of(c.product_text)
-    assert scope.tier == 1
+    assert scope.scope_class == "channel"
     assert rules.level_for(c, scope, False) == ("high", "severity-tier1")
 
 
@@ -157,7 +178,7 @@ def test_source_ok_must_be_true_bool():
 
 
 def test_bad_tier_raises():
-    entry = schema.ScopeEntry(name="x", ecosystem="x", tier=3, match=["x"])
+    entry = schema.ScopeEntry(name="x", ecosystem="x", scope_class="tier1", match=["x"])
     with pytest.raises(ValueError):
         rules.level_for(cand(exploited=True), entry, True)
 
@@ -168,9 +189,10 @@ def test_unmatched_log_is_caller_owned():
 
 def test_vendor_words_from_tier1_names():
     words = rules.vendor_words(schema.load_scope())
-    assert {"claude", "codex", "cursor", "docker", "git", "go", "anthropic", "openai",
-            "containerd", "runc", "rustup"} <= words
-    assert "ubuntu" not in words and "macos" not in words
+    assert {"claude", "codex", "cursor", "git", "anthropic", "openai", "mcp", "@modelcontextprotocol/inspector"} <= words
+    log: list[str] = []
+    assert rules.scope_of("mcp server for jira", log) is None and log == ["mcp server for jira"]  # any publisher's
+    assert not {"ubuntu", "macos", "docker", "go", "runc"} & words  # out, no channel_if (wa6n)
 
 
 def test_source_is_schema_source():
@@ -181,7 +203,7 @@ def test_source_is_schema_source():
 
 def test_scope_is_exact_identity():
     assert rules.scope_of("ANTHROPIC CLAUDE CODE").name == "Claude Code"
-    assert rules.scope_of("Anthropic Claude Code").tier == 1
+    assert rules.scope_of("Anthropic Claude Code").scope_class == "channel"
     # Compatibility characters, case, Unicode dashes and whitespace runs normalise first.
     for text in ("Ｄｏｃｋｅｒ Engine", "Claude  Code", "claude‑code", "claude–code", "Claude\tCode",
                  "  claude code  "):
@@ -208,7 +230,7 @@ def test_a_third_party_name_is_never_a_product():
     for text in THIRD_PARTY:
         assert rules.scope_of(text, log) is None, text
     # Each holds a tier-1 vendor word, so each is logged for review; the log decides nothing.
-    assert set(log) >= {"claude-code-router", "my-docker-helper", "musistudio claude-code-router"}
+    assert set(log) >= {"claude-code-router", "musistudio claude-code-router"}
     assert rules.scope_of("acme widget", log) is None and "acme widget" not in log
     rules.scope_of("Claude Code", log)
     assert "Claude Code" not in log  # matched text is never logged
@@ -240,12 +262,12 @@ SOURCE_FORMS = {"anthropics/claude-code": "Claude Code", "@anthropic-ai/claude-c
                 "openai/codex-cli": "Codex", "OpenAI Codex CLI": "Codex", "cursor/cursor": "Cursor",
                 "Cursor CLI": "Cursor", "google-gemini/gemini-cli": "Gemini CLI", "@google/gemini-cli": "Gemini CLI",
                 "NousResearch/hermes-agent": "Hermes", "openclaw/openclaw": "OpenClaw",
-                "modelcontextprotocol/servers": "MCP servers and clients", "@modelcontextprotocol/sdk": "MCP TypeScript SDK",
+                "pypi:mcp-server-git": "mcp-server-git", "@modelcontextprotocol/sdk": "@modelcontextprotocol/sdk",
                 "nodejs/node": "Node.js", "python/cpython": "Python", "golang/go": "Go", "rust-lang/rust": "Rust",
                 "moby/moby": "Docker", "github.com/docker/cli": "Docker", "docker-ce": "Docker",
                 "opencontainers/runc": "runc", "getcursor/cursor": "Cursor", "cursor-agent": "Cursor",
                 "dockerd": "Docker", "tailscale/tailscale": "Tailscale", "tailscaled": "Tailscale",
-                "openssh/openssh-portable": "OpenSSH", "git/git": "git", "MCP servers": "MCP servers and clients",
+                "openssh/openssh-portable": "OpenSSH", "git/git": "git", "MCP Inspector": "@modelcontextprotocol/inspector",
                 "Agent Skills": "ClawHub and skills.sh", "skills.sh": "skills.sh"}
 
 
@@ -261,7 +283,7 @@ def test_kev_and_source_forms_resolve():
     other, runtime = candidates.from_kev(kev, "2099-01-01")
     assert rules.scope_of(other.product_text) is None  # a KEV entry for another vendor's product binds to none
     scope = rules.scope_of(runtime.product_text)
-    assert rules.level_for(runtime, scope, False) == ("critical", "kev-tier1")
+    assert rules.level_for(runtime, scope, False) == ("notice", "notice")  # Node.js is out (wa6n)
     assert runtime.source_title == "Node.js Path Traversal Vulnerability"  # CISA's own name for it
 
 
@@ -269,11 +291,11 @@ def test_vendor_only_text_is_logged_not_matched():
     log: list[str] = []
     for text in ("Python", "Go", "Git", "Rust", "Cursor", "Anthropic"):
         assert rules.scope_of(text, log) is None, text
-    assert log == ["Python", "Go", "Git", "Rust", "Cursor", "Anthropic"]
+    assert log == ["Git", "Cursor", "Anthropic"]  # Python, Go and Rust are out: nobody adds them
 
 
 def test_custom_entries_resolve_by_identity_only():
-    entries = [schema.ScopeEntry("Widget", "widget", 1, ["acme widget"], authority=("anthropic.com/",),
+    entries = [schema.ScopeEntry("Widget", "widget", "channel", ["acme widget"], authority=("anthropic.com/",),
                                  components=(schema.ScopeComponent("Gadget", ("acme gadget",)),
                                              schema.ScopeComponent("Gizmo", ("acme gizmo",), ())))]
     assert rules.scope_of("Acme Widget", entries=entries).name == "Widget"
@@ -892,11 +914,11 @@ def test_rule_of_fields_is_the_level_of_every_claim_the_poster_builds():
         best = rs.highest("none", *(x["level"] for x in claims))
         assert rs.rank(lvl) >= rs.rank(best)
         if lvl == "critical":
-            assert best == "critical" or (c.exploited is True and scope.tier == 1)
+            assert best == "critical" or (c.exploited is True and scope.scope_class == "channel")
             assert rules.basis(c, scope, lvl) == "fields"
         if not claims and c.exploited is not True:
             assert rs.rank(lvl) <= rs.rank(rs.reading_cap)
-        if scope.tier == 2:
+        if scope.scope_class != "channel":
             assert lvl != "critical"
         seen[lvl] += 1
         seen["claims"] += len(claims)
