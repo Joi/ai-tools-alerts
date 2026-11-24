@@ -212,7 +212,9 @@ def evidence_rank(c, scope) -> int:
     level = _fields_level(c, scope)
     if c.exploited is True:
         level = rs.highest(level, rs.class_level("kev", scope))
-    return rs.rank(level)
+    # No evidence and a notice's worth are one rank: every post is at least a notice, and
+    # only evidence that sets a level above it should move a member ahead of a newer one.
+    return rs.rank(rs.highest(level, "notice"))
 
 
 def basis(c: Candidate, scope: schema.ScopeEntry, level: str) -> str:
