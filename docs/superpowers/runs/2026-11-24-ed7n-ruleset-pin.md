@@ -1,6 +1,6 @@
 # Run: ed7n-ruleset-pin
 Instruction: Read TASK-ai-tools-alerts#ed7n.md in this worktree root, then run `kata show ai-tools-alerts#ed7n` and follow the brief and the dispatch rules. (Issue: self-correct: the root-signed manifest carries the ruleset pin; the CLI says when its ruleset is out of date, finding D10, second half of s6mt. Its first comment moves the pin from the manifest to the checkpoint key certificate.)
-Stage: verifying
+Stage: committing
 Rung: heavy (start-floor heavy: hard-trigger, BR2 REV1 NOV1 INT2 FC2 = 8). Evaluator: "secrets, auth or credential handling — the diff changes `scripts/sign-checkpoint-key.py` (the script that signs with the trust root key) and changes what `checkpoint._parse_cert` / `verify_cert` check on the checkpoint key certificate". The dispatch floor was medium.
 Lens (every review pass carries it): "a certificate without the key behaves as today"; "No rollout" (no signing step is run; it is filed as an issue); nothing built may wait for a person to act; released readers v0.1.6 and v0.1.7 "show what they showed before".
 Last reviewed: spec 473b94f45de878e706b81d503c423ab5c15d6eb5 (the delta; first pass 8d460f1246dba3e2b9e57bc2ae54c7e0e1ec8d40)
@@ -40,3 +40,7 @@ Pass 2 [code:whole-branch]: 0B/0S/4C/0R · fixed 3/3 prior · velocity ↓ (8→
 - Departure from the issue's acceptance, with a `notice:` comment on the issue: a malformed pin is refused when built, and when read it makes the reader out of date and does not refuse the certificate (the BLOCKER of the code review).
 - Follow-up filed: ai-tools-alerts#46yr (rollout: sign a certificate that carries the pin). Notes posted on ai-tools-alerts#tavj, #0xq6, #c1g2, #faxq.
 - `RELEASED` in `tests/test_wire_compat.py` does not list v0.1.8 yet; that list is the release's to extend (`spec/wire.md`, "Adding to the format"). The pin's own case runs v0.1.8.
+- Gate: `scripts/test-gate.sh` in a clone holding only this branch and the tags (the shared clone's public scan reads other sessions' refs). At 83151d54999c9a677927d3d816f7c9429fa011e5: exit 0, 2370 passed, 1 skipped. At 5359fd71b0769b86161cc1d95ab6c566133c5718 (the cosmetic fixes and the second merge of main): exit 0, 2372 passed, 1 skipped.
+- After the last reviewed sha (83151d5): 55c92d7 (the cosmetic findings: tests, one sentence of `spec/wire.md`, "ruleset unknown" in the line, one dead `except` clause removed), 5359fd7 (merge of main: the v0.1.8 pin in the README and the mirror page), and this record. `git diff 83151d5..55c92d7` shows the first.
+- Changed lines: about 230 outside tests and documents, about 400 in tests, about 280 in the spec, plan and this record. Over the 600-line guide counting tests and records; one deliverable, so not split.
+- Skip-temptation, resolved by doing it: the plan's delta pass after a one-line path fix looked like more than the fix deserved; the rule is mechanical at heavy, so it ran.
