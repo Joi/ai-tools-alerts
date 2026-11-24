@@ -20,7 +20,7 @@ CHANNELS = {"feed": "599adb9f-4f9f-4b19-aee3-66667c3293e8",
 NAME = {v: k for k, v in CHANNELS.items()}
 GHSA = "https://github.com/anthropics/claude-code/security/advisories/GHSA-abcd-efgh-ijkl"
 GHSA2 = "https://github.com/anthropics/claude-code/security/advisories/GHSA-mnop-qrst-uvwx"
-APPLE = "https://support.apple.com/en-us/120001"
+APPLE = "https://cursor.com/security/advisory-120001"  # a channel vendor's own page (wa6n: macOS is out)
 TOKYO = dt.timezone(dt.timedelta(hours=9))
 _EVENT_IDS = (f"{i:064x}" for i in itertools.count(1))  # unique across every FakeRelay in a test
 
@@ -92,7 +92,7 @@ def finding(fid="GHSA-abcd-efgh-ijkl", product="Claude Code", severity="remote c
             "sources": [{"url": u, "published_at": None} for u in sources]}
 
 
-MAC = finding(fid="CVE-2026-5000", product="macOS", severity=None, fixed=None, sources=(APPLE,))
+MAC = finding(fid="CVE-2026-5000", product="Cursor IDE", severity=None, fixed=None, sources=(APPLE,))
 
 
 RELAY = {"relay_key_secret": "RELAY_TEST_NSEC", "secrets_helper": Path("/opt/secrets/secrets.sh")}
@@ -495,8 +495,9 @@ def test_compose_value_error_sends_nothing(env, monkeypatch):
 
 
 def test_notice_dedup_is_per_scope(env):
-    env.collector([finding(fid="CVE-2026-6000", product="macOS", severity=None, fixed=None, sources=(APPLE,)),
-                   finding(fid="CVE-2026-6000", product="Safari", severity=None, fixed=None, sources=(APPLE,))])
+    env.collector([finding(fid="CVE-2026-6000", product="Cursor IDE", severity=None, fixed=None, sources=(APPLE,)),
+                   finding(fid="CVE-2026-6000", product="OpenAI Codex", severity=None, fixed=None,
+                           sources=("https://openai.com/security/advisory-6000",))])
     code, summary, _ = env.run()
     assert code == 0 and "held=2" in summary
     assert len({h["scope"] for h in env.state()["held"]}) == 2
@@ -568,7 +569,7 @@ def test_unknown_digest_is_journaled_once_and_acknowledges_its_snapshot(env):
     env.run()
     code, _, relay = env.run(now=at(5, 9), relay=FakeRelay("unknown"))
     assert code == 1 and len(relay.calls) == 1
-    env.collector([finding(fid="CVE-2026-5001", product="macOS", severity=None, fixed=None, sources=(APPLE,))])
+    env.collector([finding(fid="CVE-2026-5001", product="Cursor IDE", severity=None, fixed=None, sources=(APPLE,))])
     for h in (10, 11):
         _, _, relay = env.run(now=at(5, h))
         assert relay.calls == []
@@ -726,7 +727,7 @@ def test_unsendable_channel_never_marks_pending(env):
 
 
 def test_oversized_digest_posts_what_fits_and_keeps_the_rest(env, monkeypatch):
-    env.collector([finding(fid=f"CVE-2026-50{i:02d}", product="macOS", severity=None, fixed=None,
+    env.collector([finding(fid=f"CVE-2026-50{i:02d}", product="Cursor IDE", severity=None, fixed=None,
                            sources=(f"{APPLE}{i}",)) for i in range(6)])
     env.run()
     assert len(env.state()["held"]) == 6
@@ -863,7 +864,7 @@ def test_rejected_heartbeat_holds_watermark(env):
     assert env.state()["heartbeat"] == "2026-11-05T000000Z"
     env.heartbeat("2026-11-05T010000Z", [])
     (env.hb / "2026-11-05T010000Z" / "run.json").write_text("{not json")
-    env.heartbeat("2026-11-05T020000Z", [{"id": "CVE-2026-5000", "product": "macOS", "source": APPLE}])
+    env.heartbeat("2026-11-05T020000Z", [{"id": "CVE-2026-5000", "product": "Cursor IDE", "source": APPLE}])
     code, summary, relay = env.run(now=T0 + 3600)
     assert code == 0 and "heartbeat:1/2" in summary and "held=1" in summary  # the good dir is still read
     assert env.state()["heartbeat"] == "2026-11-05T000000Z"  # held before the rejected dir
@@ -963,9 +964,9 @@ def test_kev_file_notice_is_withheld(env, tmp_path):
     catalog = {"vulnerabilities": [{"cveID": "CVE-2099-0002", "vendorProject": "Apple", "product": "macOS",
                                     "vulnerabilityName": "SYNTHETIC TEST", "dateAdded": "2026-11-05"}]}
     code, summary, relay = env.run(kev_catalog=catalog)
-    # macOS is tier 2: an exploited tier-2 entry is high, so it posts marked; never held
-    assert code == 0 and env.state()["held"] == []
-    assert all(c[2].startswith("HIGH (SYNTHETIC TEST)") for c in relay.calls)
+    # macOS is out (wa6n): an exploited out entry starts nothing, and is never held
+    assert code == 0 and env.state()["held"] == [] and "out=1" in summary
+    assert not [c for c in relay.calls if not c[2].startswith("Daily digest")]
 
 
 @pytest.mark.parametrize("body", [
@@ -1087,14 +1088,14 @@ def test_deferred_candidate_dropped_by_scope_reaches_the_review_list(env, monkey
     monkeypatch.undo()
     st = env.state()
     assert [d["id"] for d in st["deferred"]] == ["GHSA-abcd-efgh-ijkl"]
-    st["deferred"][0]["product_text"] = "Npm package System Information Library for Node.JS"
+    st["deferred"][0]["product_text"] = "Npm package System Information Library for Cursor"
     env.config.state.write_text(json.dumps(st))
     env.collector([], name="2026-11-05T020000Z")
     code, _, relay = env.run(now=T0 + 3600)
     assert code == 0 and relay.calls == [] and env.state()["deferred"] == []
     with Ledger(env.config.ledger) as led:
         texts = [r["text"] for r in led._state()["review"]]
-    assert "Npm package System Information Library for Node.JS" in texts
+    assert "Npm package System Information Library for Cursor" in texts
 
 
 # ---------------------------------------------------------------- Japanese lang: ja replies (rd8t)
@@ -1330,13 +1331,13 @@ def test_digest_leaves_out_withdrawn_ledger_posts(env, monkeypatch):
                               CHANNELS, FakeRelay(), None)._withdrawn(m.root, m.fetch)
     assert ids == {"ghsa-abcd-efgh-ijkl"} and roots == {r["id"], old["id"]}  # a thread: by root only
     env.collector([finding(fid="GHSA-mnop-qrst-uvwx", sources=(GHSA2,)),  # one id, two products, each
-                   finding(fid="GHSA-mnop-qrst-uvwx", product="OpenSSH", severity="high",  # on its own vendor's page
-                           sources=("https://www.openssh.com/security.html",))])
+                   finding(fid="GHSA-mnop-qrst-uvwx", product="Cursor IDE", severity="high",  # on its own vendor's page
+                           sources=("https://cursor.com/security/ghsa-mnop",))])
     env.run(now=at(6, 6))
     e = next(e for e in env.ledger()[0] if e["aliases"][0] == "GHSA-mnop-qrst-uvwx" and e["scope"] == "Claude Code")
     monkeypatch.setattr(main.Run, "_withdrawn", lambda self, root, fetch: (set(), {e["channel_ids"]["feed"]}))
     _, _, relay = env.run(now=at(6, 9))  # the poster's own root, by its thread; the other product's stays
-    assert relay.calls[0][2].startswith("Daily digest for 2026-11-06: 1 advisory.") and "OpenSSH" in relay.calls[0][2]
+    assert relay.calls[0][2].startswith("Daily digest for 2026-11-06: 1 advisory.") and "Cursor" in relay.calls[0][2]
 
 
 def test_failed_mirror_pull_holds_the_digest(env, capsys):
@@ -1566,11 +1567,11 @@ def test_an_unconfirmed_notice_is_never_held_and_the_vendors_own_is_listed_once(
     assert "CVE-2026-5000" not in relay.calls[0][2]
     st = env.state()
     assert st["held"] == [] and st["deferred"] == [] and not [k for k in st["digested"] if "cve-2026-5000" in k]
-    env.collector([{**MAC, "fixed": "27.2"}])  # Apple's own advisory
+    env.collector([{**MAC, "fixed": "27.2"}])  # Cursor's own advisory
     assert "held=1" in env.run(now=at(5, 12))[1]
     _, _, relay = env.run(now=at(6, 9))
     assert "CVE-2026-5000" in relay.calls[0][2] and APPLE in relay.calls[0][2]
-    assert "27.2" not in relay.calls[0][2]  # the record's version is not Apple's page's
+    assert "27.2" not in relay.calls[0][2]  # the record's version is not the vendor page's
 
 
 def test_a_primary_source_learned_while_held_reaches_the_digest(env):  # 8ke5
@@ -2213,3 +2214,50 @@ def test_a_later_run_without_the_flag_lowers_nothing(env):
     assert code == 0 and "roots=0" in summary and "replies=0" in summary and relay.calls == []
     (e,), _ = env.ledger()
     assert e["level"] == "high" and e["advisory"]["level"] == "high"
+
+
+# ---------------------------------------------------------------- scope classes (wa6n)
+
+INSPECTOR = "https://github.com/modelcontextprotocol/inspector/security/advisories/GHSA-4fc4-wcmh-4g86"
+
+
+def test_a_code_execution_flaw_in_git_posts_at_high_though_git_is_out(env):
+    url = "https://github.com/git/git/security/advisories/GHSA-wxyz-wxyz-wxyz"
+    rce = finding(fid="GHSA-wxyz-wxyz-wxyz", product="git/git", fixed="2.47.1", sources=(url,), severity="high")
+    rce["sources"][0]["title"] = "Remote code execution on recursive clone"  # the vendor page's own words
+    env.collector([rce,
+                   finding(fid="GHSA-aaaa-zzzz-aaaa", product="git/git", fixed="2.47.1", severity="high",
+                           sources=("https://github.com/git/git/security/advisories/GHSA-aaaa-zzzz-aaaa",))])
+    code, summary, relay = env.run()
+    assert code == 0 and "roots=1" in summary and "out=1" in summary and env.state()["held"] == []
+    assert chans(relay) == [("feed", None)] and relay.calls[0][2].startswith("HIGH: git")
+
+
+def test_a_thread_under_a_former_name_stays_the_advisorys_thread(env):
+    """The Inspector was "MCP Inspector" before scope classes: a later sighting under its
+    package name reaches that thread, and no second root repeats it to every member."""
+    old = schema.ScopeEntry("MCP Inspector", "mcp", "channel", ["mcp inspector"],
+                            authority=("github.com/modelcontextprotocol/inspector/",))
+    f = finding(fid="GHSA-4fc4-wcmh-4g86", product="npm:@modelcontextprotocol/inspector", severity="high",
+                fixed=None, sources=(INSPECTOR,))
+    thread = main.compose.root_post(main.inputs.candidate_from({**main.candidates.from_collector(
+        {"schema_version": 1, "findings": [f]})[0].to_dict()}), ("high", None), old, posted_at=T0 - 600)[1]
+    with Ledger(env.config.ledger) as led:
+        led.record_root(thread, "ef" * 32, {"feed": "ef" * 32}, scope="MCP Inspector", exploited=False, now=T0 - 600)
+    env.collector([dict(f, fixed="1.0.3")])
+    code, summary, relay = env.run()
+    entries, _ = env.ledger()
+    assert code == 0 and "roots=0" in summary and len(entries) == 1 and entries[0]["scope"] == "MCP Inspector"
+    assert all(reply == "ef" * 32 for _, reply, _ in relay.calls), relay.calls
+    assert "replies=1" in summary and "Fixed in 1.0.3" in relay.calls[0][2], summary
+
+
+def test_a_saved_notice_of_an_out_product_is_never_digested(env):
+    old = inputs.new_state(T0, 3)
+    adv = advisory(id="CVE-2026-7000", level="notice", posted_by="relay-bot", products=[
+        schema.Product("OpenSSH", "openssh", None, None)], actions=[])
+    old["held"] = [{"scope": "OpenSSH", "adv": main.asdict(adv)}, {"scope": "Claude Code", "adv": main.asdict(adv)}]
+    env.config.state.parent.mkdir(parents=True, exist_ok=True)
+    inputs.save_state(env.config.state, old)
+    env.run()
+    assert [h["scope"] for h in env.state()["held"]] == ["Claude Code"]

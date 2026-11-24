@@ -49,9 +49,15 @@ def _threads():
     return out
 
 
+# wa6n: the live posts named products the scope file no longer has; the collector now
+# names each by its package, as here.
+V6_TEXT = {"MCP servers and clients": "pypi:mcp-server-git", "MCP Inspector": "mcp inspector",
+           "MCP TypeScript SDK": "@modelcontextprotocol/sdk", "MCP Python SDK": "pip:mcp"}
+
+
 def _candidate(adv, exploited):
     p = adv.products[0]
-    return Candidate(id=adv.id, aliases=tuple(adv.aliases), product_text=p.name,
+    return Candidate(id=adv.id, aliases=tuple(adv.aliases), product_text=V6_TEXT.get(p.name, p.name),
                      advisory_severity="high", local_level_hint=None, exploited=exploited,
                      trojanized=False, injection_exec=False, fixed=p.fixed, affected=p.affected,
                      sources=tuple(adv.sources), observed_at=None)
@@ -73,7 +79,7 @@ def _leads(digest_text):
             slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
             out += [(name, f"LEAD-replay{i:02d}:{slug}", f"https://mastodon.social/@EUVD_Bot/{9000 + i}")
                     for i in range(n)]
-    return [Candidate(id=lid, aliases=(), product_text=name, advisory_severity=None,
+    return [Candidate(id=lid, aliases=(), product_text=V6_TEXT.get(name, name), advisory_severity=None,
                       local_level_hint=None, exploited=False, trojanized=False, injection_exec=False,
                       fixed=None, affected=None, sources=(schema.Source(url, None),), observed_at=None)
             for name, lid, url in out]
@@ -111,7 +117,8 @@ def test_live_feed_replay(env, monkeypatch):  # noqa: F811
     roots = {text.splitlines()[0]: (t, ch) for t, ch, reply, text in sent if reply is None
              and not text.startswith("Daily digest")}
     # 0dvh: CVE-2026-88968's primary source is from 10-26, 12 days before first sight: no root.
-    assert any(OPENSSH in head for head in roots) and not any(CLAUDE_ID in head for head in roots)
+    # wa6n: OpenSSH is out of the community service, so its KEV entry starts no thread either.
+    assert roots == {}
     replies = [(t, text) for t, ch, reply, text in sent if reply is not None]
     assert replies == []  # zero source-only replies, and no thread for the fix to reply to
 
@@ -169,10 +176,10 @@ def _batch_steps(day):
 # The package each product's repository advisory page names (dmmf): (name, ecosystem),
 # ecosystem None for GitHub's "Software" label.
 PACKAGES = {"Claude Code": ("@anthropic-ai/claude-code", "npm"),
-            "MCP Inspector": ("@modelcontextprotocol/inspector", "npm"),
-            "MCP TypeScript SDK": ("@modelcontextprotocol/sdk", "npm"),
-            "MCP Python SDK": ("mcp", "pip"),
-            "MCP servers and clients": ("modelcontextprotocol/servers", None)}
+            "mcp inspector": ("@modelcontextprotocol/inspector", "npm"),
+            "@modelcontextprotocol/sdk": ("@modelcontextprotocol/sdk", "npm"),
+            "pip:mcp": ("mcp", "pip"),
+            "pypi:mcp-server-git": ("mcp-server-git", "pip")}
 _REPO_PAGE = re.compile(r"https://github\.com/([^/]+/[^/]+)/security/advisories/(GHSA(?:-[0-9a-z]{4}){3})")
 
 
@@ -219,7 +226,9 @@ def test_replay_11_07_posts_no_old_root(env, monkeypatch, capsys):  # noqa: F811
     # product: it is dropped before any level, so it is neither aged nor posted.
     vendor = [[c for c in cs if c.product_text != "OpenClaw"] for _, cs in steps]
     assert [sum(c.product_text == "OpenClaw" for c in cs) for _, cs in steps] == [0, 1]
-    assert [int(re.search(r" aged=(\d+)", s).group(1)) for s in summaries] == [len(c) for c in vendor]
+    # wa6n: the SDK and Inspector items are catalog notices, held without aging; the channel ones age.
+    channel = [[c for c in cs if main.rules.scope_of(c.product_text).scope_class == "channel"] for cs in vendor]
+    assert [int(re.search(r" aged=(\d+)", s).group(1)) for s in summaries] == [len(c) for c in channel] == [3, 3]
     assert "skipped: no authoritative source=1" in capsys.readouterr().err
     st = env.state()  # each is a notice for the digest: listed by 11-07's (sent 11:30 Tokyo) or still held
     noticed = {k.split("|", 1)[1] for k in st["digested"]} | {h["adv"]["id"].casefold() for h in st["held"]}

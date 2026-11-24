@@ -98,22 +98,28 @@ class Advisory:
 @dataclass(frozen=True)
 class ScopeComponent:  # a public product identity inside a scope entry
     name: str
-    match: tuple[str, ...]
+    match: tuple[str, ...]  # its package, when it has one, is the last identity
     # Its own authority prefixes; None means the entry's.
     authority: tuple[str, ...] | None = None
+    package: str | None = None  # ecosystem:name, the registry package (wa6n)
 
 
 @dataclass(frozen=True)
 class ScopeEntry:
     name: str
     ecosystem: str
-    tier: int
+    scope_class: str  # "class" in the file: channel, catalog or out (wa6n)
     # Exact identities: a product text resolves here only when it equals one (h340).
+    # Its package, when it has one, is the last identity.
     match: list[str]
     # URL prefixes (host/ or host/path/) where this product's own vendor publishes advisories.
     authority: tuple[str, ...] = ()
     # rules.scope_of returns the entry resolved to the component whose identity matched.
     components: tuple[ScopeComponent, ...] = ()
+    channel_if: str | None = None  # catalog or out: what posts it to the channel anyway
+    package: str | None = None  # ecosystem:name, the registry package
+    # Names this product had in an earlier scope file: a thread under one stays its thread.
+    formerly: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------- validation
@@ -358,9 +364,12 @@ def _load_json(path: Path):
         return json.load(f, object_pairs_hook=_no_duplicates)
 
 
-SCOPE_VERSION = 5  # the only version load_scope reads
+SCOPE_VERSION = 6  # the only version load_scope reads
+SCOPE_CLASSES = ("channel", "catalog", "out")
+CHANNEL_IF = frozenset({"code-execution"})
 _SCOPE_KEYS = frozenset({"version", "description", "entries"})
-_SCOPE_OPTIONAL = frozenset({"match", "authority", "components"})
+_SCOPE_OPTIONAL = frozenset({"match", "authority", "components", "channel_if", "package", "formerly"})
+_PACKAGE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}:" + _NAME.pattern)
 _UNICODE_DASH = re.compile("[\u2010-\u2015\u2212]")  # the lookup reads these as "-"
 _AUTHORITY = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?/(?:[a-z0-9][a-z0-9._-]*/)*")
 
@@ -406,6 +415,23 @@ def _scope_authority(v, at: str, domains: dict) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _scope_package(v, at: str, seen: set) -> str:
+    """ecosystem:name in lowercase, one more identity of its product, listed once in the file."""
+    if not isinstance(v, str) or not _PACKAGE.fullmatch(v) or v != v.lower():
+        _fail(at, "not ecosystem:name in lowercase")
+    if v in seen:
+        _fail(at, "listed twice: an identity belongs to one product")
+    seen.add(v)
+    return v
+
+
+def _scope_ids(v: dict, at: str, seen: set) -> tuple[list[str], str | None]:
+    """(identities, package): match, then the package as one more identity."""
+    match = _scope_identities(v["match"], at + ".match", seen) if "match" in v else []
+    package = _scope_package(v["package"], at + ".package", seen) if "package" in v else None
+    return match + ([package] if package else []), package
+
+
 def _scope_keys(v, at: str, required: set, optional: frozenset) -> dict:
     return _obj(v, at, ScopeEntry, required | (set(v) & optional if isinstance(v, dict) else set()))
 
@@ -426,30 +452,43 @@ def load_scope(path: Path | None = None, domains: dict | None = None) -> list[Sc
     entries, names, seen = [], set(), set()
     for i, e in enumerate(_list(data.get("entries"), "scope.entries", 1, 1000)):
         at = f"scope.entries[{i}]"
-        e = _scope_keys(e, at, {"name", "ecosystem", "tier"}, _SCOPE_OPTIONAL)
-        if "match" not in e and "components" not in e:
-            _fail(at, "needs match or components")
+        e = _scope_keys(e, at, {"name", "ecosystem", "class"}, _SCOPE_OPTIONAL)
+        if not {"match", "package", "components"} & set(e):
+            _fail(at, "needs match, package or components")
         name = _scope_name(e["name"], at + ".name", names)
-        if type(e["tier"]) is not int or e["tier"] not in (1, 2):
-            _fail(at + ".tier", "not 1 or 2")
+        if e["class"] not in SCOPE_CLASSES:
+            _fail(at + ".class", f"not one of {', '.join(SCOPE_CLASSES)}")
+        if "channel_if" in e and (e["channel_if"] not in CHANNEL_IF or e["class"] == "channel"):
+            _fail(at + ".channel_if", "code-execution, on a catalog or out entry only")
         components, own = [], set()
         for j, c in enumerate(_list(e["components"], at + ".components", 1, 50)
                               if "components" in e else []):
             cat = f"{at}.components[{j}]"
-            c = _scope_keys(c, cat, {"name", "match"}, frozenset({"authority"}))
+            c = _scope_keys(c, cat, {"name"}, frozenset({"match", "package", "authority"}))
+            if not {"match", "package"} & set(c):
+                _fail(cat, "needs match or package")
             cname = _scope_name(c["name"], cat + ".name", names, own=None if name in own else name)
             own.add(cname)
+            ids, package = _scope_ids(c, cat, seen)
             components.append(ScopeComponent(
-                name=cname, match=tuple(_scope_identities(c["match"], cat + ".match", seen)),
+                name=cname, match=tuple(ids), package=package,
                 authority=_scope_authority(c["authority"], cat + ".authority", domains) if "authority" in c else None))
+        ids, package = _scope_ids(e, at, seen)
         entries.append(ScopeEntry(
             name=name,
             ecosystem=_pattern(e["ecosystem"], at + ".ecosystem", _ECOSYSTEM),
-            tier=e["tier"],
-            match=_scope_identities(e["match"], at + ".match", seen) if "match" in e else [],
+            scope_class=e["class"],
+            match=ids,
             authority=_scope_authority(e["authority"], at + ".authority", domains) if "authority" in e else (),
             components=tuple(components),
+            channel_if=e.get("channel_if"),
+            package=package,
+            formerly=tuple(_text(f, f"{at}.formerly[{j}]", 1, 200)
+                           for j, f in enumerate(_list(e["formerly"], at + ".formerly", 1, 20))) if "formerly" in e else (),
         ))
+    for i, e in enumerate(entries):
+        if set(e.formerly) & names:
+            _fail(f"scope.entries[{i}].formerly", "names a product of this file")
     return entries
 
 

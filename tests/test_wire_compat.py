@@ -20,8 +20,8 @@ import pytest
 
 from aitools_alerts import check, nostr, pull, schema, wire
 from aitools_alerts.inventory import Installed, Inventory
-from aitools_alerts.poster import compose
-from aitools_alerts.schema import Product
+from aitools_alerts.poster import compose, rules
+from aitools_alerts.schema import Action, Product
 from aitools_alerts.state import State
 from mirror_helpers import advisory, mirror_now, released_reader
 
@@ -35,7 +35,8 @@ import json
 from aitools_alerts import check, pull
 from aitools_alerts.inventory import Installed, Inventory
 from aitools_alerts.state import State
-INV = Inventory(products={"claude-code": [Installed("Claude Code", "2.0.0", "/invented/claude")]})
+INV = Inventory(products={"claude-code": [Installed("Claude Code", "2.0.0", "/invented/claude")],
+                          "mcp": [Installed("mcp-server-git", None, "/invented/.claude.json")]})
 out = {}
 for at in (int(sys.argv[2]), int(sys.argv[2]) + %d):
     ts = pull.active(pull.advisories(State.load()), at)
@@ -44,7 +45,8 @@ for at in (int(sys.argv[2]), int(sys.argv[2]) + %d):
                     for t in ts}
 print(json.dumps(out))
 """ % MONTH
-INV = Inventory(products={"claude-code": [Installed("Claude Code", "2.0.0", "/invented/claude")]})
+INV = Inventory(products={"claude-code": [Installed("Claude Code", "2.0.0", "/invented/claude")],
+                          "mcp": [Installed("mcp-server-git", None, "/invented/.claude.json")]})
 FIX = [Product("Claude Code", "claude-code", "<99.1.0", "99.1.0")]
 
 
@@ -66,7 +68,9 @@ def feed():
     lowering to notice in a reply of its own, then a raise to high in a reply of its
     own (a lowering, to a reader that kept critical), then a fix in another; 0004 a
     curator critical; 0005 a bot critical whose block carries a new key, which is what
-    the format must never do. Every relay-bot root has ``expires_at`` null; no reply
+    the format must never do; 0006 a bot high for an MCP server, named by its package
+    as the scope file's entry names it (wa6n), which a member with that server
+    configured is told about. Every relay-bot root has ``expires_at`` null; no reply
     names it."""
     m, now = mirror_now(min_cli="99.0.0")
     t = now - 3600
@@ -84,6 +88,10 @@ def feed():
     reply(r3, m.patch_text(products=[asdict(p) for p in FIX]), t + 300, claim("AITA-TEST-0003", "high"))
     m.root_post(m.cur_sec, advisory(id="AITA-TEST-0004"), created_at=t)
     m.post(m.bot_sec, with_block_key(schema.render_post(bot(5), "Body line."), rule_version=1), created_at=t)
+    mcp = rules.scope_of("pypi:mcp-server-git")  # the product compose.root_post names: the entry's name and ecosystem
+    m.root_post(m.bot_sec, bot(6, level="high", products=[Product(mcp.name, mcp.ecosystem, "<2026.11.18", "2026.11.18")],
+                               actions=[Action("upgrade", mcp.name, "2026.11.18")]),
+                created_at=t, tags=[claim("AITA-TEST-0006", "high")])
     return m, now
 
 
@@ -120,7 +128,7 @@ def test_every_alert_still_appears_on_a_released_reader_at_the_same_or_a_higher_
     m, now = feed()
     mine, theirs = this_reader(m, now, tmp_path), released(tmp_path, tag, m, now)
     for at in (str(now), str(now + MONTH)):
-        assert sorted(mine[at]) == [f"AITA-TEST-000{n}" for n in (1, 2, 3, 4)]
+        assert sorted(mine[at]) == [f"AITA-TEST-000{n}" for n in (1, 2, 3, 4, 6)]
         assert sorted(theirs[at]) == sorted(mine[at])  # every alert; the one with a new block key on neither
         for adv_id, (level, fixed, matched) in mine[at].items():
             assert pull._RANK[theirs[at][adv_id][0]] >= pull._RANK[level], (adv_id, theirs[at][adv_id])

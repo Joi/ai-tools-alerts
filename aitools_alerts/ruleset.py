@@ -29,9 +29,9 @@ from . import schema
 
 __all__ = ["VERSION", "NONE", "RulesetError", "Support", "Ruleset", "Pin", "load", "canonical",
            "parse_claim", "parse_pin", "check_claim", "source_of", "ordered",
-           "cvss_metrics", "norm", "tier_of", "index"]
+           "cvss_metrics", "norm", "class_of", "index"]
 
-VERSION = 1  # the only ruleset version this reader evaluates
+VERSION = 2  # the only ruleset version this reader evaluates (wa6n: scope classes)
 NONE = "none"  # no reading supports the product: unlisted, withdrawn or not bound
 SOURCES = ("kev", "ghsa", "osv")
 MAX_INT = 2**53 - 1
@@ -62,8 +62,8 @@ _GHSA_TYPES = frozenset({"reviewed", "unreviewed", "malware"})
 _SEVERITIES = frozenset({"low", "medium", "high", "critical"})
 _PACKAGE_KEYS = frozenset({"ecosystem", "name", "range", "first_patched"})
 _SOURCE_WHEN = frozenset({"type", "vendor_own", "id_prefix"})
-_RULE_WHEN = frozenset({"tier", "cwe_any", "severity_in", "cvss_av", "patched"})
-_TOP_KEYS = frozenset({"version", "description", "levels", "ttl_days", "tier_cap", "reading_cap",
+_RULE_WHEN = frozenset({"scope", "channel_if", "cwe_any", "severity_in", "cvss_av", "patched"})
+_TOP_KEYS = frozenset({"version", "description", "levels", "ttl_days", "class_cap", "channel_if_cap", "reading_cap",
                        "fields", "sources", "rules"})
 _FIELDS = {"kev": ("cve_id", "name"),
            "ghsa": ("ghsa_id", "type", "withdrawn_at", "repository", "severity", "cvss_vector", "cwes", "packages"),
@@ -89,9 +89,10 @@ def norm(text: str) -> str:
     return _SPACES.sub(" ", _DASHES.sub("-", unicodedata.normalize("NFKC", text).lower()))
 
 
-def tier_of(entry) -> int | None:
-    t = getattr(entry, "tier", None)
-    return t if type(t) is int and t in (1, 2) else None
+def class_of(entry) -> str | None:
+    """The entry's scope class (channel, catalog, out), or None when it has none."""
+    c = getattr(entry, "scope_class", None)
+    return c if type(c) is str and c in schema.SCOPE_CLASSES else None
 
 
 def index(entries) -> dict[str, schema.ScopeEntry]:
@@ -100,7 +101,7 @@ def index(entries) -> dict[str, schema.ScopeEntry]:
     entry's, and no components: the product a post names and the ledger keys."""
     out: dict[str, schema.ScopeEntry] = {}
     for e in entries:
-        if tier_of(e) is None:
+        if class_of(e) is None:
             continue
         for c in getattr(e, "components", ()):
             own = c.authority if getattr(c, "authority", None) is not None else e.authority
@@ -293,7 +294,7 @@ class Support:
     ``lowers``: a change or withdrawal of this source may justify a lowering."""
     level: str
     cls: str
-    tier: int
+    scope_class: str
     lowers: bool
 
 
@@ -318,10 +319,12 @@ class Ruleset:
                 or any(type(d) is not int or not 1 <= d <= 3650 for d in ttl.values()):
             _fail("ttl_days must give each level 1..3650 days")
         self.ttl_days: dict[str, int] = dict(ttl)
-        cap = data["tier_cap"]
-        if type(cap) is not dict or set(cap) != {"1", "2"} or any(v not in levels for v in cap.values()):
-            _fail("tier_cap must give tiers 1 and 2 a level")
-        self._tier_cap = {int(k): v for k, v in cap.items()}
+        cap = data["class_cap"]
+        if type(cap) is not dict or set(cap) != set(schema.SCOPE_CLASSES) or any(v not in levels for v in cap.values()):
+            _fail("class_cap must give each scope class a level")
+        if data["channel_if_cap"] not in levels:
+            _fail("channel_if_cap must be a level")
+        self._class_cap, self._channel_if_cap = dict(cap), data["channel_if_cap"]
         if data["reading_cap"] not in ("notice", "high"):
             _fail("reading_cap must be notice or high: a reading never makes a critical")
         self.reading_cap: str = data["reading_cap"]
@@ -365,15 +368,15 @@ class Ruleset:
                 or r["class"] not in classes \
                 or r["level"] not in self.levels or type(when) is not dict or not set(when) <= _RULE_WHEN:
             _fail(f"rules row {r.get('class')!r} is malformed or has an unknown condition")
-        known = {"tier": lambda x: type(x) is int and x in (1, 2),
+        known = {"scope": lambda x: type(x) is str and x in schema.SCOPE_CLASSES,
                  "cwe_any": lambda x: type(x) is str and _CWE.fullmatch(x) is not None,
                  "severity_in": lambda x: type(x) is str and x in _SEVERITIES,
                  "cvss_av": lambda x: type(x) is str and x in _NAL}
         for key, ok in known.items():
             if key in when and not (type(when[key]) is list and when[key] and all(ok(x) for x in when[key])):
                 _fail(f"rules row {r['class']!r}: {key} must be a non-empty list of values this reader knows")
-        if when.get("patched", True) is not True:
-            _fail(f"rules row {r['class']!r}: patched must be true")
+        if when.get("patched", True) is not True or when.get("channel_if", True) is not True:
+            _fail(f"rules row {r['class']!r}: patched and channel_if must be true")
         return dict(r, when=dict(when))
 
     # -------------------------------------------------------------- evaluation
@@ -384,18 +387,20 @@ class Ruleset:
     def highest(self, *levels: str) -> str:
         return max(levels, key=self.rank)
 
-    def capped(self, level: str, tier: int) -> str:
-        """level, held to what the product's scope tier may reach."""
-        return min(level, self._tier_cap[tier], key=self.rank)
+    def capped(self, level: str, entry) -> str:
+        """level, held to what the product's scope class may reach: a catalog or out
+        entry with channel_if reaches channel_if_cap, which only its own rows give."""
+        cap = self._channel_if_cap if getattr(entry, "channel_if", None) else self._class_cap[class_of(entry)]
+        return min(level, cap, key=self.rank)
 
-    def class_level(self, cls: str, tier: int) -> str:
-        """The level a live reading of ``cls`` gives a product of ``tier`` when no
+    def class_level(self, cls: str, entry) -> str:
+        """The level a live reading of ``cls`` gives the product of ``entry`` when no
         field condition applies (the KEV row: listed is all it states)."""
         row = next(r for r in self._sources if r["class"] == cls)
-        rule = next((r for r in self._rules if r["class"] == cls and set(r["when"]) <= {"tier"}
-                     and tier in r["when"].get("tier", [tier])), None)
+        rule = next((r for r in self._rules if r["class"] == cls and set(r["when"]) <= {"scope"}
+                     and class_of(entry) in r["when"].get("scope", [class_of(entry)])), None)
         level = rule["level"] if rule else "notice"
-        return self.capped(min(level, row["alone"], key=self.rank), tier)
+        return self.capped(min(level, row["alone"], key=self.rank), entry)
 
     def _bound(self, source: str, f: dict) -> dict:
         """{product name: (scope entry, its packages in this reading)}."""
@@ -421,8 +426,10 @@ class Ruleset:
             return False
         return "id_prefix" not in when or _id_of(source, f).startswith(when["id_prefix"])
 
-    def _rule_matches(self, when: dict, f: dict, tier: int, packages: list) -> bool:
-        if "tier" in when and tier not in when["tier"]:
+    def _rule_matches(self, when: dict, f: dict, entry, packages: list) -> bool:
+        if "scope" in when and class_of(entry) not in when["scope"]:
+            return False
+        if "channel_if" in when and not getattr(entry, "channel_if", None):
             return False
         if "cwe_any" in when and not set(when["cwe_any"]) & set(f.get("cwes") or ()):
             return False
@@ -439,12 +446,11 @@ class Ruleset:
         withdrawn = source != "kev" and f["withdrawn_at" if source == "ghsa" else "withdrawn"] is not None
         out = {}
         for name, (entry, packages) in self._bound(source, f).items():
-            tier = tier_of(entry)
             row = next(r for r in self._sources if self._source_matches(r, source, f, entry))
             level = next((r["level"] for r in self._rules if r["class"] == row["class"]
-                          and self._rule_matches(r["when"], f, tier, packages)), "notice")
-            level = self.capped(min(level, row["alone"], key=self.rank), tier)
-            out[name] = Support(level=NONE if withdrawn else level, cls=row["class"], tier=tier,
+                          and self._rule_matches(r["when"], f, entry, packages)), "notice")
+            level = self.capped(min(level, row["alone"], key=self.rank), entry)
+            out[name] = Support(level=NONE if withdrawn else level, cls=row["class"], scope_class=class_of(entry),
                                 lowers=row["lowers"])
         return out
 

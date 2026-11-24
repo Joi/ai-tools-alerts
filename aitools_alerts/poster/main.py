@@ -71,7 +71,7 @@ AGE_LIMIT = 7 * 86400  # 0dvh: a primary source older than this at first sight p
 MAX_JA = 200  # Japanese replies waiting in the journal; past it the oldest unsent one is dropped
 MAX_JA_BYTES = 4 * 1024 * 1024  # and their text as JSON-escaped: well inside load_state's 16 MiB
 SUMMARY = ("candidates", "in_scope", "old", "roots", "copies", "replies", "held", "withheld",
-           "busy", "digest", "digest_held", "failed", "unknown", "ja", "ja_failed", "untranslated", "translate_failed", "waiting", "aged")
+           "busy", "digest", "digest_held", "failed", "unknown", "ja", "ja_failed", "untranslated", "translate_failed", "waiting", "aged", "out")
 MAX_TRIES = 3  # failed calls (network, 5xx) before an event counts as untranslated
 PASS_DEADLINE = 300  # seconds of curator translation per run (the ledger lock is held)
 MAX_RUN_PAGES = 40  # authoritative pages fetched per run; a candidate past it waits for the next
@@ -91,6 +91,8 @@ class Run:
     def __init__(self, now, config: Config, led: Ledger, state: dict, channels, send, page,
                  *, digest_now=False, skipped: Counter | None = None):
         self.now, self.config, self.led, self.state = now, config, led, state
+        if isinstance(state.get("held"), list):  # wa6n: an out product's saved notice is never digested
+            state["held"] = [h for h in state["held"] if h.get("scope") not in rules.out_names()]
         # send(channel_id, text, reply_to) -> transport.SendResult (transport.Relay.send)
         self.channels, self.send, self.fetch_page = channels, send, page
         self.skipped = Counter() if skipped is None else skipped
@@ -585,6 +587,15 @@ class Run:
             return
         level, reason = self.level(c, scope)
         entry = self.led.lookup(ids, scope=scope.name)
+        for old in getattr(scope, "formerly", ()) if entry is None else ():
+            # wa6n: a thread posted under the product's earlier name is its thread; the
+            # update keeps that name, as the reply check requires, and no second root starts.
+            if (entry := self.led.lookup(ids, scope=old)) is not None:
+                scope = replace(scope, name=old, formerly=())
+                break
+        if entry is None and not rules.starts(scope, level):  # wa6n: out of the community service
+            self.n["out"] += 1
+            return
         if entry is not None and (self.is_synthetic(c) or compose.is_synthetic(entry.advisory.get("id"))):
             # A synthetic entry only ever starts a thread, and a synthetic thread takes no
             # update (copy or reply) from any input: plan_known would compose it unmarked.

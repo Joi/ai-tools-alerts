@@ -64,7 +64,7 @@ V40 = "CVSS:4.0/AV:A/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
 # ------------------------------------------------------------------ the file
 
 def test_the_shipped_ruleset_loads():
-    assert RS.version == ruleset.VERSION == 1
+    assert RS.version == ruleset.VERSION == 2
     assert RS.ttl_days == {"critical": 14, "high": 30, "notice": 90}
     assert RS.reading_cap == "high"
     assert len(RS.digest) == 64 and int(RS.digest, 16) >= 0
@@ -72,11 +72,14 @@ def test_the_shipped_ruleset_loads():
 
 @pytest.mark.parametrize("data", [
     changed(["extra"], 1),
-    changed(["version"], 2),
+    changed(["version"], 1),
+    changed(["version"], 3),
     changed(["levels"], ["notice", "high", "critical", "extreme"]),
     changed(["reading_cap"], "critical"),
     changed(["ttl_days", "high"], 0),
-    changed(["tier_cap", "2"], "extreme"),
+    changed(["class_cap", "out"], "extreme"),
+    changed(["class_cap"], {"channel": "critical", "catalog": "notice"}),
+    changed(["channel_if_cap"], "extreme"),
     changed(["fields", "kev"], ["cve_id"]),
     changed(["sources", 1, "when"], {"smells": "bad"}),
     changed(["sources", 4, "alone"], "high"),          # ghsa-other cannot lower, so it sets notice at most
@@ -90,12 +93,15 @@ def test_the_shipped_ruleset_loads():
     changed(["rules", 3, "when", "severity_in"], ["High"]),
     changed(["rules", 2, "when", "cwe_any"], ["506"]),
     changed(["rules", 4, "when", "cvss_av"], ["network"]),
-    changed(["rules", 1, "when", "tier"], [3]),
+    changed(["rules", 1, "when", "scope"], [1]),
+    changed(["rules", 1, "when", "scope"], ["tier1"]),
     changed(["sources", 1, "class"], "kev"),
     changed(["rules", 0, "level"], "extreme"),
     changed(["rules", 0, "class"], "nobody"),
     changed(["rules", 1, "when"], {"vibes": True}),
-    changed(["rules", 1, "when"], {"tier": []}),
+    changed(["rules", 1, "when"], {"scope": []}),
+    changed(["rules", 6, "when", "channel_if"], False),
+    changed(["rules", 1, "when"], {"tier": [1]}),  # version 1's condition
     changed(["rules", 4, "when", "patched"], False),
 ], ids=lambda d: "")
 def test_a_ruleset_this_reader_does_not_fully_know_is_refused(data):
@@ -117,7 +123,7 @@ def test_level_vectors(case):
 
 def test_kev_binds_by_cisas_vendor_and_product_only():
     assert RS.level([kev()], CC) == "critical"
-    assert RS.level([kev("Linux Kernel")], "Linux kernel") == "high"  # tier 2 never reaches critical
+    assert RS.level([kev("Linux Kernel")], "Linux kernel") == "notice"  # out of the community service (wa6n)
     other = kev("Cisco IOS XE")
     assert RS.read(*other) == {} and RS.level([other], CC) == NONE
     assert RS.level([kev(None)], CC) == NONE  # the catalog does not list it
@@ -193,15 +199,31 @@ def test_one_vector_is_spelled_out_here_so_the_file_cannot_certify_itself():
     v = next(v for v in VECTORS["claims"] if v["name"] == "poster-kev")
     assert v["canonical"] == ('{"checked_at":1795000000,"confirmed_at":1795000000,'
                               '"fields":{"cve_id":"CVE-2026-0001","name":"Anthropic Claude Code"},'
-                              '"id":"CVE-2026-0001","level":"critical","ruleset":1,"source":"kev"}')
+                              '"id":"CVE-2026-0001","level":"critical","ruleset":2,"source":"kev"}')
     assert VECTORS["ruleset"] == RS.version
 
 
 def test_a_package_with_no_ecosystem_binds_by_name():
     soft = ghsa(repository="openssh/openssh-portable", severity="high",
                 packages=[pkg("OpenSSH", ecosystem="")])
-    assert RS.level([soft], "OpenSSH") == "high"
-    assert RS.class_level("kev", 1) == "critical" and RS.class_level("kev", 2) == "high"
+    assert RS.level([soft], "OpenSSH") == "notice"  # OpenSSH is out (wa6n)
+    mcp = ghsa(repository="modelcontextprotocol/servers", severity="high", packages=[pkg("mcp-server-git", ecosystem="pypi")])
+    assert RS.level([mcp], "mcp-server-git") == "high"  # an MCP server is named by its package (wa6n)
+    sdk = ghsa(repository="modelcontextprotocol/typescript-sdk", severity="critical", type="reviewed", cvss_vector=V31,
+               cwes=["CWE-94"], packages=[pkg("@modelcontextprotocol/sdk", ecosystem="npm")])
+    assert RS.level([sdk], "@modelcontextprotocol/sdk") == "notice"  # catalog: never the channel
+    rce = ghsa(repository="modelcontextprotocol/inspector", severity="critical", type="reviewed", cvss_vector=V31,
+               cwes=["CWE-94"], packages=[pkg("@modelcontextprotocol/inspector", ecosystem="npm")])
+    assert RS.level([rce], "@modelcontextprotocol/inspector") == "high"  # channel_if: remote code execution
+    dos = ("ghsa", dict(rce[1], cwes=["CWE-400"]))
+    assert RS.level([dos], "@modelcontextprotocol/inspector") == "notice"  # not code execution
+    git = ghsa(repository="git/git", severity="critical", type="reviewed", cvss_vector=V31, cwes=["CWE-78"],
+               packages=[pkg("git-scm", ecosystem="")])
+    assert RS.level([git], "git") == "high"  # out, but a code-execution flaw agents reach posts, at high at most
+    assert RS.level([ghsa(repository="git/git", severity="critical", packages=[pkg("git-scm", ecosystem="")])], "git") == "notice"
+    by = {e.name: e for e in schema.load_scope()}
+    assert [RS.class_level("kev", by[n]) for n in ("Claude Code", "mcp", "OpenSSH", "git")] \
+        == ["critical", "notice", "notice", "notice"]  # KEV alone never meets channel_if
 
 
 @pytest.mark.parametrize("reading", [
@@ -406,21 +428,22 @@ def test_check_claim_computes_with_the_readers_own_ruleset():
     assert ruleset.check_claim(claim(level="notice"), CC) == "mismatch"  # a forged lowering
     assert ruleset.check_claim(good, "Codex") == "mismatch"  # another product's alert
     assert ruleset.check_claim(claim(kev("Cisco IOS XE"), level="critical"), CC) == "mismatch"
-    assert ruleset.check_claim(claim(ruleset=2), CC) == "unknown"
-    assert ruleset.check_claim(claim(ruleset=2, level="critical"), CC) == "unknown"
+    assert ruleset.check_claim(claim(ruleset=3), CC) == "unknown"
+    assert ruleset.check_claim(claim(ruleset=3, level="critical"), CC) == "unknown"
+    assert ruleset.check_claim(claim(ruleset=1), CC) == "ok"  # a version-1 claim is judged by this reader's rules
 
 
-def pin(version=1, min_version=1, sha256=None):
+def pin(version=2, min_version=1, sha256=None):
     return ruleset.parse_pin({"version": version, "min_version": min_version, "sha256": sha256 or RS.digest})
 
 
 def test_the_pin():
     good = claim()
     assert ruleset.check_claim(good, CC, pin()) == "ok"
-    assert ruleset.check_claim(good, CC, pin(version=3, min_version=2)) == "outdated"
+    assert ruleset.check_claim(good, CC, pin(version=4, min_version=3)) == "outdated"
     assert ruleset.check_claim(good, CC, pin(sha256="0" * 64)) == "outdated"
-    assert ruleset.check_claim(good, CC, pin(version=2, sha256="0" * 64)) == "ok"  # a newer pin, still allowed
-    assert ruleset.check_claim(claim(ruleset=2), CC, pin(version=2, sha256="0" * 64)) == "unknown"
+    assert ruleset.check_claim(good, CC, pin(version=3, sha256="0" * 64)) == "ok"  # a newer pin, still allowed
+    assert ruleset.check_claim(claim(ruleset=3), CC, pin(version=3, sha256="0" * 64)) == "unknown"
     for bad in ({"version": 1, "min_version": 2, "sha256": "0" * 64}, {"version": 1, "min_version": 0, "sha256": "0" * 64},
                 {"version": 1, "min_version": 1, "sha256": "ABC"}, {"version": True, "min_version": 1, "sha256": "0" * 64},
                 {"version": 1, "min_version": 1}, {"version": 1, "min_version": 1, "sha256": "0" * 64, "x": 1}, None):
@@ -429,24 +452,24 @@ def test_the_pin():
 
 
 def test_a_claim_citing_an_older_ruleset_under_which_the_level_was_lower_is_refused(monkeypatch):
-    """Version 1 rates a MAL- entry high. A later ruleset that rates it critical: the
-    thief's claim "ruleset 1, high" is a mismatch for a reader on 2 (it computes with
-    its own rules), and refused outright once the root sets min_version to 2."""
+    """Version 2 rates a MAL- entry high. A later ruleset that rates it critical: the
+    thief's claim "ruleset 2, high" is a mismatch for a reader on 3 (it computes with
+    its own rules), and refused outright once the root sets min_version to 3."""
     old = claim()
-    assert (old["ruleset"], old["level"]) == (1, "high")
-    data = changed(["version"], 2)
+    assert (old["ruleset"], old["level"]) == (2, "high")
+    data = changed(["version"], 3)
     data["sources"][5]["alone"] = "critical"
-    data["rules"][6]["level"] = "critical"
-    monkeypatch.setattr(ruleset, "VERSION", 2)
+    data["rules"][8]["level"] = "critical"
+    monkeypatch.setattr(ruleset, "VERSION", 3)
     rs2 = build(data)
     assert rs2.digest != RS.digest
     assert rs2.level([osv()], CC) == "critical"
     assert ruleset.check_claim(old, CC, rs=rs2) == "mismatch"
-    two = ruleset.parse_pin({"version": 2, "min_version": 2, "sha256": rs2.digest})
+    two = ruleset.parse_pin({"version": 3, "min_version": 3, "sha256": rs2.digest})
     assert ruleset.check_claim(old, CC, two, rs=rs2) == "refused"
-    assert ruleset.check_claim(dict(old, ruleset=2, level="critical"), CC, two, rs=rs2) == "ok"
+    assert ruleset.check_claim(dict(old, ruleset=3, level="critical"), CC, two, rs=rs2) == "ok"
     monkeypatch.undo()
-    assert ruleset.check_claim(old, CC, two) == "outdated"  # a reader still on 1 judges nothing
+    assert ruleset.check_claim(old, CC, two) == "outdated"  # a reader still on 2 judges nothing
 
 
 def test_the_digest_covers_the_tables_and_the_scope_file():
