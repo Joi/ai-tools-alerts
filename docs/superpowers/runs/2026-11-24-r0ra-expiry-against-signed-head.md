@@ -1,12 +1,13 @@
 # Run: r0ra-expiry-against-signed-head
 Instruction: ai-tools-alerts#r0ra (starting rung floored at medium): expiry is computed and applies only against a fresh signed head; bound future-dated events (finding D5 of the design review on ai-tools-alerts#h29n)
-Stage: code-review:reader
+Stage: committing
 Rung: medium (start-floor medium: constraint-lens, BR1 REV1 NOV1 INT1 FC1 = 5, hard trigger none; the dispatch brief floors it at medium too)
 Lens: "Released readers (v0.1.4 to v0.1.7) must keep working"; "Nothing you build may wait for a person to act; a curator is an optional override only"; "No rollout"
 Follow-up filed: ai-tools-alerts#gtw9 (the poster half: claims, renewals, the 45-day step down; blocked by ny5g)
 Last reviewed: spec fc1097db9b8a66ad609ecec1ae4144e1c56a2d72
 Last reviewed: plan 24a5e9cad1b4208c46864ffea52696efad01d057
-Last reviewed: code a4133f77eb70484b357556c4ea7a9d91b342d726 (the whole branch)
+Last reviewed: code a4133f77eb70484b357556c4ea7a9d91b342d726 (the whole branch), then the delta `--since a4133f77eb70484b357556c4ea7a9d91b342d726` at ea88676ca4397d05c5e3d84c0137e33fd627c5c4
+Unreviewed after the delta: the fix of what the delta raised (the commit after ea88676)
 Review tier: gpt-6-astra at high (h29n calls the work security-shaped)
 Spec: docs/superpowers/specs/2026-11-24-r0ra-expiry-against-signed-head-design.md   Plan: docs/superpowers/plans/2026-11-24-r0ra-expiry-against-signed-head.md
 Agency project: —
@@ -50,6 +51,12 @@ Code findings, pass 1, and what was done (the commit after a4133f7):
 8. SUBSTANTIVE (Stage 1), no test for `head_clock` with no state or after a writer's pull. Fixed. Its note that the compat helper passes a time and not `head_clock` is rebutted: the test must look a month ahead, which only a time can do; it now asserts a head is held.
 9. COSMETIC, fixed: the `advisories` docstring on which threads carry renewals. Left: a damaged ruleset is loaded once per enrolled thread; the "shown" half of the clock test cannot fail by itself (its stored-events assertion is the one that fails on the old code).
 
+Pass 2 [code:reader]: 1B/0S/0C/0R · fixed 7/8 prior · velocity ↓ (11→1, escalation no)
+code passes: 2 (the whole branch, then the one delta `--since a4133f77eb70484b357556c4ea7a9d91b342d726` at ea88676ca4397d05c5e3d84c0137e33fd627c5c4, fresheyes run 20261124-155816-7c95ca, with the standing rebuttals) · no rebuttal overturned
+
+Code findings, pass 2 (the delta), and what was done (the commit after ea88676, no further pass):
+1. BLOCKER, the raise's renewal depended on the order of replay: a second raise dated before the first made the first no raise, its renewal vanished and the alert could end. Fixed: any relay-bot reply whose block names a level gives a renewal of its own date, judged by the event alone; a regression test adds the backdated raise.
+
 ## Chunks
 - [x] reader: computed expiry, the head as the clock, retention by the head, tests, spec/wire.md, changelog: committed a4133f7, review fixes in the commit after it
 
@@ -62,4 +69,6 @@ Code findings, pass 1, and what was done (the commit after a4133f7):
 - The plan was drafted and the tests written while the spec review ran; the code was written while the plan review ran. Both were revised to the reviewed text before the commit.
 - One existing test outside the plan's list changed: `tests/mirror/test_export.py::test_index_marks_expired` used a relay-bot block's `expires_at`, which is no longer read; it now uses a curator's and asserts the relay-bot one is not marked expired. `tests/test_pull.py::test_future_dated_event_is_refused` did not need to change once the pull-level rule was dropped.
 - Gate: `scripts/test-gate.sh` exit 0 at a4133f7 in a clone of this branch alone (1966 passed); in the shared clone the public scan stops on other sessions' refs, none of whose objects this branch reaches (`--hit-ids` against `git rev-list --objects HEAD`: none in common).
+- The rung did not climb: no hard trigger, and no BLOCKER or SUBSTANTIVE finding survived its pass unfixed or unrebutted. The delta is the Review Cycle rule's, not heavy's.
+- Size: 245 lines of code and text, 370 of tests, outside docs/superpowers. Over the 600-line mark by the regression tests the reviews asked for; the poster half was split off before the build.
 - Split decided before the spec: the poster half of the issue (renew on `unknown`, step down after 45 days) goes to a follow-up issue. The poster sends no claim tag today and has no three-result source read (ai-tools-alerts#ny5g); every acceptance case of r0ra is a reader case.

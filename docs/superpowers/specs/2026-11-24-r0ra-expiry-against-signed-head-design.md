@@ -33,7 +33,7 @@ A renewal is any event of a thread (the root or a reply, whatever its text) that
 - whose claim id is one of the ids the thread has held (the root's id and aliases, and every alias a patch gave it, kept after a later patch drops it), compared case-folded;
 - whose `checked_at` is not after the event's own `created_at`.
 
-A raise by the relay bot (a patch that is applied and sets a higher level) also counts as a renewal dated at its event, with or without a claim: the level it sets stands from then, never from an older confirmation of a lower level.
+A relay-bot reply whose block names a level also counts as a renewal dated at its event, with or without a claim: a raise stands from then, never from an older confirmation of a lower level. It is judged by the event alone, not by whether it raised the level when the thread was replayed, so an event dated earlier cannot take it away.
 
 `Thread` gains `renewals`, a tuple of `(confirmed_at, checked_at, created_at)`, `enrolled_at` (the root's date when the root event itself is a renewal, else None) and `curated` (a curator posted or amended the thread; the reader already tracks this). A reply's claim counts even when the reply is otherwise discussion or a refused lowering.
 

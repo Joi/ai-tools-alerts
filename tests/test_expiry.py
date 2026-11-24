@@ -167,6 +167,19 @@ def test_a_raise_counts_from_its_own_date_with_or_without_a_claim(mirror):
     assert level(T0 + 19 * DAY - 30) == ["critical"]  # posted in the run whose head is dated before it
 
 
+def test_a_backdated_raise_does_not_take_a_later_raises_renewal_away(mirror):
+    """Threads are replayed in date order. A second raise dated before the first makes
+    the first one no raise at all; its date must still count."""
+    root = bot_root(mirror, tags=[claim(T0 + 100, level="high")], level="high")
+    level = lambda: [t.adv.level for t in pull.active([thread(mirror)], T0 + 100 * DAY)]  # noqa: E731
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(level="critical"), created_at=T0 + 89 * DAY)
+    assert level() == ["critical"]
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(level="critical"), created_at=T0 + DAY)
+    assert level() == ["critical"]
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(level=["critical"]), created_at=T0 + 2 * DAY)  # not a level
+    assert level() == ["critical"]
+
+
 def test_no_state_or_a_writers_pull_gives_no_clock(mirror):
     assert pull.head_clock(State.load()) == (None, None)
     bot_root(mirror)

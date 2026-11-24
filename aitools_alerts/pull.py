@@ -116,7 +116,7 @@ class Thread:
     translations: dict = field(default_factory=dict)  # lang -> text of the current advisory
     translated_at: dict = field(default_factory=dict)  # lang -> created_at of that reply
     # What ``active`` computes expiry from (see _renewal): each (confirmed_at, checked_at,
-    # the event's created_at), and one for each raise the relay bot made. ``enrolled_at``:
+    # the event's created_at), and one for each relay-bot reply that names a level. ``enrolled_at``:
     # the root's created_at when the root itself carries a claim, else None; only then
     # can the thread decay. ``curated``: a curator posted or amended it; it never decays.
     renewals: tuple = ()
@@ -910,7 +910,8 @@ def advisories(state: State, dropped: Counter | None = None, checkpointed: bool 
     ``bot-expiry``): expiry is computed from claims, see ``active``. A thread
     whose root carries a claim has its ``renewals`` (_renewal): from the root,
     from every reply while it is not retracted, discussion included, and one
-    for each raise the relay bot made. Any other thread has none.
+    for each relay-bot reply whose block names a level. Any other thread has
+    none. Which events give a renewal never depends on the order of replay.
     """
     m = effective_manifest(state)
     if m is None:
@@ -951,6 +952,14 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
             continue
         if (rn := _renewal(ev, role)) is not None:
             t[8].append(rn)
+        if role != "curator":
+            # A reply that names a level is news of its own date, with or without a
+            # claim: a raise stands from then, never from an older confirmation of a
+            # lower level. Judged by the event alone, not by whether it raised when the
+            # thread was replayed, so no event dated earlier can take this away.
+            named = (_patch(ev["content"]) or {}).get("level")
+            if isinstance(named, str) and named in _RANK:
+                t[8].append((t[0].id.casefold(), ev["created_at"], ev["created_at"], ev["created_at"]))
         first = _first_line(ev["content"])
         if role != "curator" and t[3] and not first.startswith("lang:"):
             continue  # discussion: a curator posted or amended this thread (a translation is not)
@@ -992,10 +1001,6 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
                 if new == t[0]:
                     new = None
         if new is not None:
-            if role != "curator" and _RANK[new.level] > _RANK[t[0].level]:
-                # A raise is news of its own date, with or without a claim: the level it
-                # sets stands from then, never from an older confirmation of a lower one.
-                t[8].append((t[0].id.casefold(), ev["created_at"], ev["created_at"], ev["created_at"]))
             t[0], t[2], t[3] = new, ev["created_at"], t[3] or role == "curator"
             t[10].update(i.casefold() for i in new.aliases)  # for renewals: an alias once held stays
             if t[6][-1] != ev["id"]:
