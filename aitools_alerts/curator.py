@@ -361,7 +361,7 @@ def renew_event(sec: str, m, root: str, st: State, thread, root_ev: dict, *, now
         # A list relay-bot replies joined past what one event may carry cannot be said
         # again; left out, the readers keep it as held. Some block must remain for the
         # reply to count as an action: the title, unchanged, when nothing else does.
-        patch = {k: v for k, v in patch.items() if len(v) <= pull.LIST_LIMITS.get(k, len(v))}
+        patch = {k: v for k, v in patch.items() if k not in pull.LIST_LIMITS or len(v) <= pull.LIST_LIMITS[k]}
         if lower is None and not patch:
             patch = {"title": t.adv.title}
         content = f"level: {lower}" if lower else f"Renewed: {t.adv.title}"
