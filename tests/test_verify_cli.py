@@ -38,11 +38,11 @@ def bot(id=G1, level="high", products=("Claude Code",), **kw):
 
 @pytest.fixture
 def feed(tmp_path, monkeypatch):
-    """feed(advisories, config text, min_cli=None): a signed mirror on disk and a config that reads it."""
-    def make(advs, extra="", min_cli=None):
+    """feed(advisories, config text, min_cli=None, ruleset_pin=None): a signed mirror on disk and a config that reads it."""
+    def make(advs, extra="", min_cli=None, ruleset_pin=None):
         m = Mirror()
-        if min_cli:
-            m.publish_cert(min_cli=min_cli)
+        if min_cli or ruleset_pin:
+            m.publish_cert(min_cli=min_cli, ruleset_pin=ruleset_pin)
         for i, a in enumerate(advs):
             m.root_post(m.bot_sec, a, created_at=4070908800 + 100 + i)
         d = tmp_path / "mirror"
@@ -175,6 +175,41 @@ def test_a_cli_the_root_calls_too_old_does_not_say_the_source_supports_more(feed
     use(monkeypatch, Net().set(gurl(G1), ghsa(type="malware")))
     status, out, err = out_of(capsys, ["run"])
     assert "source check:" not in out and "upgrade:" in err
+
+
+def _pin(**over):
+    from aitools_alerts import ruleset
+    rs = ruleset.load()
+    return ruleset.Pin(**{"version": rs.version, "sha256": rs.digest, "min_version": 1, **over})
+
+
+def test_a_cli_whose_ruleset_is_out_of_date_reads_no_source_and_judges_nothing(feed, monkeypatch, capsys):
+    """The source would contradict the post. An out-of-date CLI does not ask and does not say."""
+    feed([bot(id=CVE, level="critical")], 'verify = "all"\n', ruleset_pin=_pin(sha256="0" * 64))
+    n = use(monkeypatch, Net().set(verify.KEV_URL, kev((CVE, "Cisco", "IOS XE"))))
+    status, out, err = out_of(capsys, ["run"])
+    assert status == 2 and "source check" not in out and err.count("out of date:") == 1  # the critical still notifies
+    for argv in (["check"], ["plan", CVE]):
+        assert "source check" not in out_of(capsys, argv)[1], argv
+    assert out_of(capsys, ["verify"])[1] == "source check: not run (this aitools-alerts is out of date)\n"
+    assert n.calls == [] and not (config.state_dir() / "verify.json").exists()
+    assert json.loads(out_of(capsys, ["check", "--json"])[1])[0]["source_check"] is None
+    data = json.loads(out_of(capsys, ["run", "--json"])[1])
+    assert data["matches"][0]["source_check"] is None and data["matches"][0]["level"] == "critical"
+    assert data["ruleset_outdated"]["pinned"] == _pin().version
+
+
+def test_a_pin_the_cli_meets_changes_nothing_in_the_source_check(feed, monkeypatch, capsys):
+    feed([bot(id=CVE, level="critical")], 'verify = "off"\n', ruleset_pin=_pin())
+    n = use(monkeypatch, Net())
+    data = json.loads(out_of(capsys, ["run", "--json"])[1])
+    assert data["matches"][0]["source_check"] == {"result": "unknown", "why": "off", "source_level": None}
+    assert data["ruleset_outdated"] is None and n.calls == []
+    path = config.config_path()
+    path.write_text(path.read_text().replace('verify = "off"\n', ""))
+    use(monkeypatch, Net().set(verify.KEV_URL, kev((CVE, "Cisco", "IOS XE"))))
+    _, out, err = out_of(capsys, ["run"])
+    assert f"source check: the source does not support {CVE} for Claude Code" in out and "out of date" not in err
 
 
 def test_an_alert_the_source_does_not_support_is_flagged_per_product(feed, monkeypatch, capsys):
