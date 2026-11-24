@@ -46,6 +46,7 @@ MAX_TEXT = 500
 MAX_ALIASES = 32
 MAX_SOURCES = 8
 MAX_TITLE = 160
+MAX_SOURCE_TEXT = 4000  # characters of a source's prose kept for the wording call (c6ak)
 
 _CVE = re.compile(r"CVE-\d{4}-\d{4,}")
 # An advisory id, and the only shapes a signed post names (h340): a CVE or GHSA id,
@@ -111,10 +112,14 @@ class Candidate:
     # (s6mt): a kev reading from from_kev, a ghsa reading from main's admit. Never kept
     # in the state file: a reading is of this run, and a deferred candidate has none.
     readings: tuple = ()
+    # The authoritative source's prose (the vendor page's description, or the KEV
+    # entry's shortDescription), read for the model's wording only (c6ak). Never kept
+    # in the state file: a deferred candidate is admitted again, which reads it again.
+    source_text: str | None = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
-        del d["severity_word"], d["readings"]
+        del d["severity_word"], d["readings"], d["source_text"]
         d["aliases"] = list(self.aliases)
         d["sources"] = [asdict(s) for s in self.sources]
         return d
@@ -154,16 +159,16 @@ def _safe(s: str) -> bool:
 _TITLE_URL = re.compile(r"\b(?:[a-z][a-z0-9+.-]*://|www\.)\S*", re.I)
 
 
-def _title(v, hosts) -> str | None:
+def _title(v, hosts, limit: int = MAX_TITLE) -> str | None:
     """An upstream title made safe for a post line: NFKC, URLs and control characters
     gone, whitespace collapsed, no code fence, capped; None when nothing is left or it
     names a host or private detail (the title is dropped, never the finding)."""
     if not isinstance(v, str):
         return None
-    t = "".join(ch for ch in unicodedata.normalize("NFKC", v[:4 * MAX_TEXT]) if ch.isspace()
+    t = "".join(ch for ch in unicodedata.normalize("NFKC", v[:4 * max(MAX_TEXT, limit)]) if ch.isspace()
                 or unicodedata.category(ch) not in ("Cc", "Cf", "Cs", "Co", "Cn"))
     t = " ".join(_TITLE_URL.sub(" ", t).split())  # controls first: a removed one cannot join a URL
-    t = re.sub(r"([`~]){2,}", r"\1", t)[:MAX_TITLE].rstrip()  # no code fence of either kind
+    t = re.sub(r"([`~]){2,}", r"\1", t)[:limit].rstrip()  # no code fence of either kind
     return _clean(t, hosts) if t else None
 
 
@@ -338,7 +343,7 @@ def _sources(raw: list, hosts: _Hosts) -> tuple[Source, ...]:
 
 def _build(cid, aliases, product, sources, f: dict, hosts: _Hosts, out: CandidateList, *,
            exploited: bool = False, fixed: str | None = None, affected: str | None = None,
-           title: str | None = None) -> None:
+           title: str | None = None, text: str | None = None) -> None:
     """Shared tail: validate and append one candidate, or count a skip."""
     if cid is None or len(cid) > MAX_ID:
         out.skipped["no id"] += 1
@@ -366,6 +371,7 @@ def _build(cid, aliases, product, sources, f: dict, hosts: _Hosts, out: Candidat
         sources=sources,
         observed_at=_timestamp(f.get("observed_at")),
         source_title=title,
+        source_text=text,
     )
     # Backstop: no field, present or future, may carry a host or private detail.
     d = c.to_dict()
@@ -498,7 +504,8 @@ def from_kev(kev_json: dict, since_date: str) -> CandidateList:
         # CISA's own name for the entry is its title: the catalog is the authority (h340).
         n = len(out)
         _build(cve, (), f"{vendor} {product}", _sources(raw, hosts), {"observed_at": added},
-               hosts, out, exploited=True, title=_title(it.get("vulnerabilityName"), hosts))
+               hosts, out, exploited=True, title=_title(it.get("vulnerabilityName"), hosts),
+               text=_title(it.get("shortDescription"), hosts, MAX_SOURCE_TEXT))  # c6ak: wording only
         if len(out) > n:  # s6mt: the catalog's own fields, read now; the one place a kev reading is made
             fields = {"cve_id": cve, "name": f"{vendor} {product}"}
             try:

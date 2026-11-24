@@ -74,6 +74,7 @@ from zoneinfo import ZoneInfo
 
 from aitools_alerts import TRUST_ROOT_PUBKEY, check, manifest, pull, ruleset, schema, versions
 from aitools_alerts.poster import (candidates, catalog, compose, inputs, ledger, recompute, rules, signer, translate,
+                                   wording,
                                    transport)
 from aitools_alerts.poster.inputs import Config, ConfigError
 from aitools_alerts.poster.ledger import Ledger, LedgerError
@@ -91,6 +92,8 @@ SUMMARY = ("candidates", "in_scope", "old", "roots", "copies", "replies", "held"
            "busy", "digest", "digest_held", "failed", "unknown", "ja", "ja_failed", "untranslated", "translate_failed", "waiting", "aged", "out")
 MAX_TRIES = 3  # failed calls (network, 5xx) before an event counts as untranslated
 PASS_DEADLINE = 300  # seconds of curator translation per run (the ledger lock is held)
+WORDING_CALLS = 4  # model calls for headlines a run (c6ak): roots are high or critical, about one a day
+WORDING_SECONDS = 60  # no wording call starts after this many seconds of them in a run
 MAX_RUN_PAGES = 40  # authoritative pages fetched per run; a candidate past it waits for the next
 RETRY_DAYS = 7  # a candidate whose source could not be fetched is tried again this long
 _LEVEL_LINE = ("level: high", "level: notice")
@@ -124,8 +127,13 @@ def _fold(ids) -> set[str]:
 
 class Run:
     def __init__(self, now, config: Config, led: Ledger, state: dict, channels, send, page,
-                 *, digest_now=False, skipped: Counter | None = None):
+                 *, digest_now=False, skipped: Counter | None = None, wording_call=None):
         self.now, self.config, self.led, self.state = now, config, led, state
+        # c6ak: the wording call (None: read the key at the first root to word), its use
+        # this run, and the summary's wording= status ("off" unless model_wording is on).
+        self._wcall, self._wasked, self._wspent = wording_call, 0, 0.0
+        self.key_refused = False  # the API refused the key this run: no call of either kind follows
+        self.w_status = "ok" if config.model_wording else "off"
         if isinstance(state.get("held"), list):  # wa6n: an out product's saved notice is never digested
             state["held"] = [h for h in state["held"] if h.get("scope") not in rules.out_names()]
         # send(channel_id, text, reply_to) -> transport.SendResult (transport.Relay.send)
@@ -404,18 +412,11 @@ class Run:
             return "off"
         path = self.config.translate_state
         try:
-            tr = inputs.read_json(path, inputs.MAX_RECORD) if path.exists() \
-                else {"hold": None, "day": None, "calls": 0, "done": {}}
-            if not (isinstance(tr, dict) and set(tr) == {"hold", "day", "calls", "done"}
-                    and type(tr["calls"]) is int and tr["calls"] >= 0
-                    and (tr["day"] is None or inputs._date_ok(tr["day"]))
-                    and isinstance(tr["done"], dict) and (tr["hold"] is None or isinstance(tr["hold"], dict))
-                    and all(v in ("ok", "untranslated") or type(v) is int for v in tr["done"].values())):
-                raise ValueError("not a translate state")
+            tr = _translate_state(path)
         except (OSError, ValueError, RecursionError):
             _say(f"translate state {path} unreadable; translating nothing")
             return "state-error"
-        if tr["hold"] is not None:
+        if tr["hold"] is not None or self.key_refused:  # c6ak: a wording 401/403 this run holds it too
             return "held"
         start = time.monotonic()  # the pass deadline covers the mirror and the replay too
         evs = self.curator_events(fetch, root, {k for k, v in tr["done"].items() if v in ("ok", "untranslated")}, start)
@@ -489,6 +490,58 @@ class Run:
             self.save()  # the journal first: a crash before the next write is reconciled above
             inputs.write_json(path, tr)
         return "ok"
+
+    def wording(self, c, scope, level, reason):
+        """The model's headline and Who line for a root post (c6ak), or None: the post
+        then keeps the source title. Nothing here reaches planning: any failure turns
+        wording off for the run and the post goes out as it would have. The key read and
+        the calls share one budget of WORDING_SECONDS a run, so wording delays a run's
+        posts by at most that."""
+        if self.w_status != "ok" or level == "notice" or self.is_synthetic(c) or not wording.usable(c) \
+                or self._wasked >= WORDING_CALLS or self._wspent >= WORDING_SECONDS:
+            return None
+        start = time.monotonic()
+        try:
+            path = self.config.translate_state
+            # The translate hold: the same key, refused once, is not tried again. A state the
+            # translation pass would refuse is refused here too, and never rewritten.
+            if _translate_state(path)["hold"] is not None:
+                self.w_status = "held"
+                return None
+            if self._wcall is None:
+                try:
+                    self._wcall = translate.api_call(translate.read_key(self.config.secrets_helper))
+                except translate.CallError as e:  # never retried this run; its message carries no key
+                    self.w_status = "key-error"
+                    _say(f"wording off for this run: {e}")
+                    return None
+            # A call starts only when the API's own deadline fits in what is left: never cut
+            # short by a tighter one here, which could lose a 401 that answers late.
+            if WORDING_SECONDS - self._wspent - (time.monotonic() - start) < translate.TIMEOUT:
+                return None
+            self._wasked += 1
+            self.n["word_asked"] += 1
+            try:
+                w, outcome = wording.draft(c, scope, call=self._wcall)
+            except translate.AuthError as e:
+                self.w_status, self.key_refused = "held", True  # first, in memory: nothing calls again this run
+                _say(f"wording held: the API refused the key ({e}); posts keep the source title; "
+                     "a human clears it with: aitools-alerts-poster translate-clear-hold")
+                tr = _translate_state(path)
+                tr["hold"] = {"at": self.now, "why": f"wording: {e}"}
+                inputs.write_json(path, tr)
+                return None
+            if w is not None and not compose.worded(compose.head_of(level, c.id, reason), scope.name, w):
+                w, outcome = None, "refused"  # a model line is never cut
+            self.n["worded" if w else "word_" + outcome] += 1
+            return w
+        except Exception as e:  # noqa: BLE001 - the post never waits on, or fails by, its wording
+            if self.w_status == "ok":
+                self.w_status = "error"
+            _say(f"wording off for this run: {type(e).__name__}")
+            return None
+        finally:
+            self._wspent += time.monotonic() - start
 
     def _entry(self, it):
         e = self.led.thread(it["root"]) if it["root"] else self.led.lookup(it["ids"], scope=it["scope"])
@@ -621,8 +674,11 @@ class Run:
         title = candidates._title(ev.title, candidates._Hosts(candidates.FLEET_HOSTS)) if ev.title \
             else c.source_title if ev.kev else None
         severity = "; ".join(x for x in (ev.severity, title if ev.url else None) if x) or None
+        text = candidates._title(ev.text, candidates._Hosts(candidates.FLEET_HOSTS), candidates.MAX_SOURCE_TEXT) \
+            if ev.url and ev.text else c.source_text if ev.kev else None  # c6ak: wording only
         return replace(c, aliases=tuple(aliases), fixed=ev.fixed, affected=ev.affected, sources=tuple(kept),
-                       source_title=title, severity_word=ev.severity,  # dmmf: the page's word, alone
+                       source_title=title, source_text=text,
+                       severity_word=ev.severity,  # dmmf: the page's word, alone
                        readings=rules.readings_for(c, ev),  # s6mt: what the level can rest on, as fields
                        advisory_severity=severity or (c.advisory_severity if trusted else None),
                        trojanized=c.trojanized is True and trusted, injection_exec=c.injection_exec is True and trusted)
@@ -779,7 +835,8 @@ class Run:
             return []
         if level == "notice" and not test and key not in w and len(w) < inputs.MAX_WAITING // 2:
             w[key] = seen  # first sight outlives the digest that lists it, for AGE_LIMIT (0dvh)
-        text, adv = compose.root_post(c, (level, reason), scope, posted_at=self.now)
+        w = self.wording(c, scope, level, reason)  # c6ak: None for a notice, which posts no root
+        text, adv = compose.root_post(c, (level, reason), scope, posted_at=self.now, wording=w)
         title = compose.source_title(c)
         if level == "notice":
             if test:  # the digest would list it without its marker
@@ -789,7 +846,7 @@ class Run:
         chans = CHANNELS_FOR[level]
         ja = self._ja(compose.root_post_ja, adv, reason, compose.fix_unexpressed(c), title,
                       exploited=c.exploited is True, range_unexpressed=compose.range_unexpressed(c),
-                      package=compose.package_of(scope))
+                      package=compose.package_of(scope), wording=w)
         return [self._item("root" if i == 0 else "copy", scope.name, ids, ch, text, key_id=c.id,
                            adv=asdict(adv), exploited=c.exploited, ja=ja,
                            source_title=title if i == 0 else None, floor=floor if i == 0 else None)
@@ -929,9 +986,12 @@ class Run:
         if changes and new.advisory_severity not in (None, prev.advisory_severity):
             changes["advisory_severity"] = new.advisory_severity  # 0dvh: never a reply on its own
         copies = [ch for ch in CHANNELS_FOR[level] if ch not in entry.channel_ids]
+        w = self.wording(k, scope, level, reason) if copies else None  # c6ak: a copy is a post
+        if w is not None:
+            text = compose.root_post(k, (level, reason), scope, posted_at=prev.posted_at, wording=w)[0]
         ja = self._ja(compose.root_post_ja, new, reason, compose.fix_unexpressed(k), title or entry.source_title,
                       exploited=k.exploited is True, range_unexpressed=compose.range_unexpressed(k),
-                      package=compose.package_of(scope)) if copies else None
+                      package=compose.package_of(scope), wording=w) if copies else None
         items = [self._item("copy", scope.name, ids, ch, text, key_id=prev.id, exploited=c.exploited,
                             root=entry.root_event_id, ja=ja)
                  for ch in copies]
@@ -1232,6 +1292,21 @@ def _stated(v) -> bool:
     return isinstance(v, str) and v.strip() != ""
 
 
+def _translate_state(path) -> dict:
+    """The translate state (hold, daily calls, translated ids), the default when there is
+    none; ValueError (or OSError) when it is not one. Curator translation and wording
+    (c6ak) read it alike."""
+    tr = inputs.read_json(path, inputs.MAX_RECORD) if path.exists() \
+        else {"hold": None, "day": None, "calls": 0, "done": {}}
+    if not (isinstance(tr, dict) and set(tr) == {"hold", "day", "calls", "done"}
+            and type(tr["calls"]) is int and tr["calls"] >= 0
+            and (tr["day"] is None or inputs._date_ok(tr["day"]))
+            and isinstance(tr["done"], dict) and (tr["hold"] is None or isinstance(tr["hold"], dict))
+            and all(v in ("ok", "untranslated") or type(v) is int for v in tr["done"].values())):
+        raise ValueError("not a translate state")
+    return tr
+
+
 def _utc_date(t: int) -> str:
     return _dt.datetime.fromtimestamp(t, _dt.timezone.utc).date().isoformat()
 
@@ -1377,7 +1452,8 @@ def relay_sender(config: Config):
 def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
         page=rules.http_page, channels: dict | None = None,
         digest_now: bool = False, kev_catalog: dict | None = None,
-        mirror_fetch=None, translate_call=None, catalog_channel=None, **translate_kw) -> tuple[int, str]:
+        mirror_fetch=None, translate_call=None, catalog_channel=None, wording_call=None,
+        **translate_kw) -> tuple[int, str]:
     """One poster run. Returns (exit code, one-line summary). ``digest_now`` sends
     today's digest whatever the hour (once per date); ``kev_catalog`` replaces the
     KEV fetch with a synthetic catalog (``inputs.read_kev_file``). ``catalog_channel``:
@@ -1412,11 +1488,13 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
             cat_id, cat_status = None, "off-bad-paths"
             _say(f"catalog lane off: {e}")
     cat_snap, cat_at = None, 0
+    w_run = None  # c6ak: the run whose wording status the summary reports
     try:
         with Ledger(config.ledger) as led:
             state = inputs.load_state(config.state, now, config.backfill_days)
-            r = Run(now, config, led, state, channels, send, page, digest_now=digest_now, skipped=skipped)
-            n = r.n
+            r = Run(now, config, led, state, channels, send, page, digest_now=digest_now, skipped=skipped,
+                    wording_call=wording_call)
+            n, w_run = r.n, r
             _gate(state, led)
             recompute.begin(r.rc, now)  # ny5g: before anything is read, so a run that stops is known to have
             r.save_rc()
@@ -1523,6 +1601,9 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
         summary += " checkpoint=" + cp_status
     if cat_status is not None:  # likewise: only once spec/catalog-channel.json exists
         summary += " catalog=" + cat_status
+    if config.model_wording:  # c6ak: likewise, only with model_wording on
+        st = w_run.w_status if w_run is not None else "error"
+        summary += " wording=" + (f"{n['worded']}/{n['word_asked']}" if st == "ok" else st)
     if err:
         print(f"aitools-alerts-poster: {err}", file=sys.stderr)
         summary += " error=" + ("internal" if err.startswith("internal error") else "ledger")
