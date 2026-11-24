@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.8 — 2026-11-24
 
 A level is now set by its consequence to the member, and a critical needs an action the member can take (ai-tools-alerts#9kgk, design section 4 of ai-tools-alerts#9mx8). Ruleset version 3: a critical stands only when the post carries a complete action, an upgrade while the post states the fixed version, or `stop_using` for a malicious release a reading confirms (GitHub malware, a vendor's CWE-506); otherwise it is `high`. A KEV listing with no fix known therefore posts at `high`. The upstream severity word is printed and never sets a level. A channel product's `high` needs code execution, credential or token theft, or a sandbox or approval bypass, with a fix; everything else is a notice, denial of service included. The poster, the curator command and the member's source check (`verify`) apply the same rule (`Ruleset.action_level`). A known thread is raised to critical only when its root stated the fix, because every reader holds a fix that a later reply adds (ai-tools-alerts#tyje); such a thread stays `high` with its fix until a source check can confirm the held fix. The synthetic check (`run --kev-file`) now posts at `high` (ai-tools-alerts#a3xh).
 
@@ -45,7 +45,7 @@ Expiry is computed by the reader and judged by the signed checkpoint, not by the
 
 Not done: the issue asked that an event dated after the checkpoint that lists it be refused. The poster's own checkpoint lists the posts of its run, which are dated after it, so the CLI does not judge an alert's expiry while one of its claims is dated after the checkpoint; the next checkpoint judges it.
 
-Nothing on the wire changes with this release: the poster sends no claim and no lowering yet.
+The poster sends no claim yet (ai-tools-alerts#3qyq). The one new event it sends is the level-only lowering described above. The relay was checked before this release: it stores and returns a 2048-byte claim tag, and the mirror exporter copies it, byte for byte (ai-tools-alerts#yw7r).
 
 ## 0.1.7 — 2026-11-24
 
