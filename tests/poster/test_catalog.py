@@ -97,10 +97,11 @@ def test_a_held_notice_posts_to_the_catalog_and_not_to_feed(env):
 
 
 def test_a_notice_first_seen_in_the_digest_run_still_reaches_the_catalog(env):
+    run(env)  # qwpw: the state starts in ISO week 2026-W45; Monday's digest carries the weekly summary
     env.collector([MAC])
-    code, _, relay = run(env, now=at(5, 9))  # held, then listed by the digest in the same run
+    code, _, relay = run(env, now=at(9, 9))  # held, then listed by the weekly summary in the same run
     assert code == 0 and [c[0] for c in relay.calls] == ["feed", "catalog"]
-    assert "Daily digest" in relay.calls[0][2] and env.state()["held"] == []
+    assert "Weekly summary: 1 notice added" in relay.calls[0][2] and env.state()["held"] == []
     assert blocks(relay)[0].id == "CVE-2026-5000"
 
 

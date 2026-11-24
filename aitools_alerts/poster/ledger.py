@@ -234,6 +234,12 @@ class Ledger:
         hits = [x for x in (Entry(**e) for e in self._state()["entries"]) if x.listed > t]
         return sorted(hits, key=lambda x: x.listed)
 
+    def roots_since(self, t: int) -> list[Entry]:
+        """Every entry whose root was posted after ``t``, oldest first: the daily digest
+        lists a thread once, by its root (qwpw); a later change is a reply in it."""
+        hits = [x for x in (Entry(**e) for e in self._state()["entries"]) if x.posted_at > t]
+        return sorted(hits, key=lambda x: x.posted_at)
+
     def entries(self) -> list[Entry]:
         """Every entry, oldest first (the recompute, ny5g)."""
         return [Entry(**e) for e in sorted(self._state()["entries"], key=lambda e: e["posted_at"])]
