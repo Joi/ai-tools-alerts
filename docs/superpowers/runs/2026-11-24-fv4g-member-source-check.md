@@ -1,6 +1,6 @@
 # Run: fv4g-member-source-check
 Instruction: Read TASK-ai-tools-alerts#fv4g.md in this worktree root, then run `kata show ai-tools-alerts#fv4g` and follow the brief and the dispatch rules (ai-tools-alerts#fv4g, /do-it with the starting rung floored at medium): the member source check from three fixed endpoints, three results, and what cannot-verify means (findings D7 and D8 of the design review on ai-tools-alerts#h29n)
-Stage: verifying
+Stage: done
 Rung: medium (start-floor medium: constraint-lens, BR1 REV0 NOV1 INT1 FC1 = 4; the dispatch brief floors it at medium too)
 Lens: "No URL taken from an event is ever fetched"; "https only, no redirects"; "At most 10 fetches and 30 s per run"; "Runs in the hourly job, never in the session-start hook"; "no string from a source is printed or stored"; "a 404, a 429 and a truncated body are each `unknown` and change nothing"
 Last reviewed: spec 6c065d9d7c14b70e4715cf4fc4684a960685caba
@@ -83,3 +83,6 @@ Code findings, pass 2 (the delta), and what was done (the commit after 702d056; 
 - Size: `aitools_alerts/verify.py` about 540 lines, 120 more in `cli.py`, `config.py` and `ruleset.py`, about 960 of tests. Larger than the 600 the split aimed for; the half kept is one deliverable and was not split again.
 - The rung did not climb: no hard trigger in the diff (no secret, credential or deploy path), and no BLOCKER or SUBSTANTIVE finding was left unfixed or unanswered after its pass. The delta is the Review Cycle rule's for a behaviour-changing BLOCKER fix, not heavy's.
 - Found in review and worth knowing elsewhere: the poster's thread ids are ledger keys (`CVE-...:slug`); `ruleset.source_of` reads those as nothing and reads internal keys (`LEAD-...`, `AITA-...`) as OSV ids. `verify.norm_id` handles both; ai-tools-alerts#ny5g and ai-tools-alerts#tavj are told.
+- Main moved twice during the run: r0ra (expiry against the signed checkpoint) and wa6n (scope version 6) landed. Merged at 7904f99; two tests that used git as a product KEV confirms at critical failed, because scope version 6 rates git at notice; they name Codex now (a16a2b6). No code changed for the merge.
+- Gate: `scripts/test-gate.sh` in a clone holding only this branch, at a16a2b6a414b2ab603250ec6f320be7b86374e22: exit 0, 2203 passed, 1 skipped. In the shared clone the history scan exits 1 on 66 objects of other sessions' refs; none is reachable from this branch (`--hit-ids` against `git rev-list --objects HEAD`: 0 in common). Before the merge of main: 2158 passed at 702d056.
+- Notes left on ai-tools-alerts#ny5g and ai-tools-alerts#tavj.
