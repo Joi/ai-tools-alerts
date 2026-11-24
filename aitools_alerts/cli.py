@@ -7,6 +7,7 @@
     aitools-alerts notify
     aitools-alerts plan <advisory-id>
     aitools-alerts run
+    aitools-alerts verify
     aitools-alerts curator post|amend|retract ...   (needs the curator extra)
 
 Nothing here executes a string from a post. ``plan`` prints commands built
@@ -26,7 +27,7 @@ import time
 from dataclasses import asdict, dataclass, replace
 from urllib.parse import quote
 
-from . import TRUST_ROOT_PUBKEY, __version__, check, config, curator, inventory, nostr, notify, pull, relay, schema, versions
+from . import TRUST_ROOT_PUBKEY, __version__, check, config, curator, inventory, nostr, notify, pull, relay, ruleset, schema, verify, versions
 from .state import State, StateError
 
 TRUST_ROOT_ENV = "AITOOLS_ALERTS_TRUST_ROOT"
@@ -247,14 +248,77 @@ def _source_line(adv) -> str:
     return f"  source: {url}" if primary else f"  source: {url} (not a primary source)"
 
 
-def _match_json(t, m) -> dict:
+# -------------------------------------------------------------- source check
+
+SOURCE_CHECK_FAILED = "source check failed"  # fixed: an exception's text may quote a response
+
+
+def _cache(st: State, s: config.Settings) -> dict | None:
+    """The source-check results on disk; None with ``verify = "off"`` (no file is read)."""
+    return None if s.verify == "off" else verify.load(st.dir)
+
+
+def _source_check(st: State, s: config.Settings, threads: list, pairs: list) -> None:
+    """Read the primary sources (aitools_alerts.verify) for the threads the
+    ``verify`` setting names. Never in ``run --json``, which the session-start
+    hook runs. Nothing it does changes a level or an exit status."""
+    if s.verify == "off":
+        return
+    wanted = [t.adv for t in threads] if s.verify == "all" else [t.adv for t, _ in pairs]
+    try:
+        verify.run([t.adv for t in threads], wanted, st.dir)
+    except Exception:
+        _err(SOURCE_CHECK_FAILED)
+
+
+def _source_lines(a, st: State, s: config.Settings, threads: list) -> list[str]:
+    """One line per product whose source contradicts the post, from the cache.
+    Printed: the id as verify.norm_id returned it, a scope product name, and
+    level words. A CLI the trust root calls too old prints none: its ruleset
+    and scope file may be the ones that are wrong."""
+    cache = _cache(st, s)
+    if cache is None or _min_cli(a, st) is not None:
+        return []
+    scope, out = ruleset.load().products(), []
+    for t in threads:
+        for name, r in sorted((verify.result_for(t.adv, cache) or {}).items()):
+            ident = verify.norm_id(t.adv.id)
+            if r["result"] != verify.CONTRADICTED or ident is None or name not in scope:
+                continue
+            if r["why"] == "unsupported":
+                out.append(f"source check: the source does not support {ident} for {name}")
+            else:
+                out.append(f"source check: {ident} is published at {t.adv.level} for {name}; "
+                           f"the source supports {r['source']}")
+    return list(dict.fromkeys(out))
+
+
+def _check_json(t, m, cache) -> dict | None:
+    r = (verify.result_for(t.adv, cache) or {}).get(m.product.name) if m.product is not None else None
+    return None if r is None else {"result": r["result"], "why": r["why"], "source_level": r["source"]}
+
+
+def cmd_verify(a, st: State, s: config.Settings) -> int:
+    """The source check on the stored state, then what it found."""
+    threads, pairs = _matches(a, st)
+    _source_check(st, s, threads, pairs)
+    cache = _cache(st, s)
+    found = [verify.summary(r)[0] for t in threads if (r := verify.result_for(t.adv, cache)) is not None]
+    print(f"source check: {found.count(verify.CONFIRMED)} confirmed, {found.count(verify.CONTRADICTED)} "
+          f"contradicted, {found.count(verify.UNKNOWN)} not verified")
+    for line in _source_lines(a, st, s, threads):
+        print(line)
+    return 0
+
+
+def _match_json(t, m, cache=None) -> dict:
     source, primary = _source(t.adv)
     return {"thread": t.root_id, "threads": list(t.root_ids), "id": t.adv.id, "level": t.adv.level, "title": t.adv.title,
             "posted_by": t.adv.posted_by, "reason": m.reason, "source": source,
             "source_primary": primary, "sources": [asdict(x) for x in t.adv.sources],
             "installed": asdict(m.installed), "product": asdict(m.product) if m.product else None,
             "actions": [asdict(x) for x in m.actions_allowed],
-            "translations": dict(t.translations)}
+            "translations": dict(t.translations), "source_check": _check_json(t, m, cache)}
 
 
 def _unverified(a, st: State) -> str | None:
@@ -289,10 +353,11 @@ def _stale_since(a, st: State) -> str | None:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(min(since, schema.MAX_TIMESTAMP)))
 
 
-def cmd_check(a, st: State, s: config.Settings) -> int:
+def cmd_check(a, st: State, s: config.Settings, source_lines: bool = True) -> int:
     threads, pairs = _matches(a, st)
     if a.json:
-        print(json.dumps([_match_json(t, m) for t, m in pairs], indent=2))
+        cache = _cache(st, s)
+        print(json.dumps([_match_json(t, m, cache) for t, m in pairs], indent=2))
         return 0
     if not st.last_pull.get("last_ok_at"):
         print("no successful pull yet; run: aitools-alerts pull")
@@ -310,6 +375,8 @@ def cmd_check(a, st: State, s: config.Settings) -> int:
         print("Critical advisories not installed here:")
         for t in other:
             print(f"  CRITICAL: {_title(t, s)} (id {t.adv.id}, {_thread_ref(t)})")
+    for line in _source_lines(a, st, s, threads) if source_lines else ():
+        print(line)
     print(f"{len(threads)} advisories, {len(pairs)} matches on this machine")
     return 0
 
@@ -391,6 +458,8 @@ def cmd_plan(a, st: State, s: config.Settings) -> int:
                         print("      no fixed version given: notify only, no command")
                     else:
                         print("      no command template; upgrade with your package manager")
+    for line in _source_lines(a, st, s, wanted):
+        print(line)
     print("nothing was executed")
     return 0
 
@@ -401,22 +470,28 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
     res = _pull(a, st, s.mirror_url, s)
     if res.error:
         _err(f"{res.error} (using the last good state)")
-    _, pairs = _matches(a, st)  # one inventory collection per run (the hook's time budget)
+    threads, pairs = _matches(a, st)  # one inventory collection per run (the hook's time budget)
     pending = _unseen_critical(a, st, pairs)
     if a.json:
+        cache = _cache(st, s)
         out = {"pull_error": res.error, "ignored_env": a.ignored_env,
                "stale_since": _stale_since(a, st), "unverified": _unverified(a, st),
                "min_cli": _min_cli(a, st),
-               "matches": [_match_json(t, m) for t, m in pairs],
+               "matches": [_match_json(t, m, cache) for t, m in pairs],
                "unseen_critical": sorted({r for t, _ in pending for r in t.root_ids})}
     elif not a.quiet:
         a.json = False
-        cmd_check(a, st, s)
+        cmd_check(a, st, s, source_lines=False)  # printed below, once the sources are read
     if a.quiet or a.json:
         with contextlib.redirect_stdout(io.StringIO()):
             status = _notify(st, s, pending)
     else:
         status = _notify(st, s, pending)
+    if not a.json:  # the hourly job's form; the hook runs --json and must read no source.
+        # After the notification: a critical never waits for a source.
+        _source_check(st, s, threads, pairs)
+        for line in () if a.quiet else _source_lines(a, st, s, threads):
+            print(line)
     if a.json:
         print(json.dumps(out, indent=2))
     return EXIT_UNSEEN_CRITICAL if pending else status
@@ -443,6 +518,7 @@ def _parser() -> argparse.ArgumentParser:
     g = p.add_mutually_exclusive_group()
     g.add_argument("--json", action="store_true", help="print one JSON object")
     g.add_argument("--quiet", action="store_true", help="print nothing on stdout")
+    sub.add_parser("verify", help="check alerts against their primary source (CISA KEV, GitHub, OSV)")
     curator.add_parser(sub)
     return ap
 
@@ -462,7 +538,7 @@ def main(argv: list[str] | None = None) -> int:
         st = State.load()
         try:
             return {"pull": cmd_pull, "check": cmd_check, "notify": cmd_notify,
-                    "plan": cmd_plan, "run": cmd_run}[a.cmd](a, st, s)
+                    "plan": cmd_plan, "run": cmd_run, "verify": cmd_verify}[a.cmd](a, st, s)
         finally:  # every command that reads the feed, whatever it returned: an old CLI never goes quiet
             if need := _min_cli(a, st):
                 try:

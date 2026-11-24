@@ -14,7 +14,7 @@ Prior work read: the design review and revised design (comments on h29n), the v2
 
 The poster has one structured source today, the KEV catalog. This slice builds the rules for when a level may fall and applies them through that one reader. The readers for `api.github.com/advisories/<id>` and `api.osv.dev/v1/vulns/<id>`, the reversible `withdrawn` state (which needs the reader, `pull.py`, to know it) and the claim tag on sent events are ai-tools-alerts#3qyq.
 
-Assumes: the member's reader does not apply a relay-bot lowering yet (`pull._apply_patch` refuses it; ai-tools-alerts#fv4g lifts that after its own source check). So a lowering sent by this slice changes the poster's ledger and digest and is on the wire for fv4g; a member's CLI keeps the higher level until then. That is the safe side and is what spec/wire.md states for released readers.
+Assumes: the member's reader does not apply a relay-bot lowering yet (`pull._apply_patch` refuses it; the CLI's source check, ai-tools-alerts#fv4g, reports and changes nothing, and applying its result is ai-tools-alerts#tavj). So a lowering sent by this slice changes the poster's ledger and digest and is on the wire for tavj; a member's CLI keeps the higher level until then. That is the safe side and is what spec/wire.md states for released readers.
 
 ## Success criteria
 
