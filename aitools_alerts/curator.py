@@ -7,11 +7,16 @@
         [--title T] [--source URL]... [--action ...]... [--expires-at TS | --no-expiry]
         [--note TEXT] [--no-pull]
     aitools-alerts curator retract <event-id|advisory-id> [--reason TEXT] [--no-pull]
+    aitools-alerts curator renew <event-id|advisory-id> [--no-pull]
 
 Every command takes --dry-run (print the signed events, send nothing) and
 --relay-url. A critical post goes to the critical channel and the feed.
-amend and retract pull the mirror first, and reply to every open thread of
-an advisory id. A retraction is idempotent: retract also replies to a thread
+amend, retract and renew pull the mirror first, and reply to every open thread
+of an advisory id. On a relay-bot thread a curator's word holds for 14 days
+(pull.CURATOR_HOLD_S, ai-tools-alerts#c1g2): readers then go back to the
+thread's widest state unless their own source check confirms the lowering, and
+one whose source contradicts it never applies it. ``renew`` signs what is held
+again; amend and retract work on the thread as it stands now. A retraction is idempotent: retract also replies to a thread
 the stored state already holds as retracted, and says so on stderr. The key
 is read from config.key_path() (mode 600, never argv).
 Events follow the reader rules in pull.advisories: a root has no e tag; a
@@ -175,13 +180,18 @@ def post_events(sec: str, m, root: str, *, level, title, product, ecosystem, sou
 
 # ------------------------------------------------------------------ replies
 
-def find_threads(st: State, root: str, ref: str, retracted_ok: bool = False) -> list:
+def find_threads(st: State, root: str, ref: str, retracted_ok: bool = False, now: int | None = None,
+                 held: bool = False) -> list:
     """[(Thread, root event)] for a root event id, or every open thread of an
     advisory id (a critical has a root in each channel); with ``retracted_ok``,
-    the retracted threads too. Only state pulled under ``root`` is used."""
+    the retracted threads too. Only state pulled under ``root`` is used. Each
+    thread is as it stands at ``now`` (pull.standing: a hold that lapsed is
+    gone); with ``held``, as replay left it, the hold still on it (for renew)."""
     if st.manifest_root != root or st.manifest is None:
         raise CuratorError("the stored state was not pulled under this trust root; run: aitools-alerts pull")
-    hits = [t for t in pull.advisories(st, checkpointed=False) if ref in (t.root_id, t.adv.id)]
+    now = int(time.time() if now is None else now)
+    hits = [t if held else pull.standing(t, now) for t in pull.advisories(st, checkpointed=False)
+            if ref in (t.root_id, t.adv.id)]
     if not hits:
         raise CuratorError(f"no thread {ref!r} in the pulled state; run: aitools-alerts pull")
     open_ = hits if retracted_ok else [t for t in hits if not t.retracted]
@@ -251,7 +261,7 @@ def amend_event(sec: str, m, root: str, st: State, thread, root_ev: dict, *, lev
     replaying the stored thread with it, reach exactly the merged advisory."""
     _curator_pub(sec, m, root)
     wall = int(time.time() if now is None else now)
-    thread = _present(st, thread.root_id, wall, thread)
+    thread = pull.standing(_present(st, thread.root_id, wall, thread), wall)
     prev = thread.adv
     old = asdict(prev)
     new = json.loads(json.dumps(old))
@@ -328,6 +338,51 @@ def retract_event(sec: str, m, root: str, st: State, thread, root_ev: dict, *, r
     return ev
 
 
+def renew_event(sec: str, m, root: str, st: State, thread, root_ev: dict, *, now: int | None = None) -> dict:
+    """A signed reply that says again what the curator's hold on a relay-bot thread
+    holds (ai-tools-alerts#c1g2): ``retract`` for a retraction; otherwise a ``level:``
+    line when the held level is below the thread's widest, and a block of every field
+    in which the held advisory differs from the widest. ``thread`` is the thread as
+    replay left it (``find_threads(held=True)``). Refused when no hold is in force at
+    ``now`` or nothing it holds would lapse."""
+    _curator_pub(sec, m, root)
+    wall = int(time.time() if now is None else now)
+    t = thread
+    if t.wide is None or t.held_until is None or wall > t.held_until:
+        raise CuratorError("nothing to renew: no hold of a curator's is in force on this thread")
+    if t.retracted:
+        content = "retract"
+    else:
+        held, wide = asdict(t.adv), asdict(t.wide)
+        lower = t.adv.level if _RANK[t.adv.level] < _RANK[t.wide.level] else None
+        patch = {k: v for k, v in held.items() if k not in ("id", "posted_by", "level") and v != wide[k]}
+        if lower is None and not patch:
+            raise CuratorError("nothing to renew: the hold lowers, narrows and retracts nothing")
+        # A list relay-bot replies joined past what one event may carry cannot be said
+        # again; left out, the readers keep it as held. Some block must remain for the
+        # reply to count as an action: the title, unchanged, when nothing else does.
+        patch = {k: v for k, v in patch.items() if k not in pull.LIST_LIMITS or len(v) <= pull.LIST_LIMITS[k]}
+        if lower is None and not patch:
+            patch = {"title": t.adv.title}
+        content = f"level: {lower}" if lower else f"Renewed: {t.adv.title}"
+        if patch:
+            content += f"\n\n```{schema.INFO_STRING}\n{json.dumps(patch, indent=2, ensure_ascii=False)}\n```\n"
+    ev = _sign(sec, _reply_tags(root_ev), content, _after(st, t.root_id, wall))
+    r = _replayed(st, ev, t.root_id)
+    if (r.adv, r.retracted, r.held_until) != (t.adv, t.retracted, ev["created_at"] + pull.CURATOR_HOLD_S):
+        raise CuratorError("the readers would not apply this renewal as written")
+    return ev
+
+
+def _hold_note(t, ev: dict) -> str | None:
+    """What to tell the curator after a reply to a relay-bot thread, or None."""
+    if t.adv.posted_by == "curator":
+        return None
+    until = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ev["created_at"] + pull.CURATOR_HOLD_S))
+    return (f"{t.root_id}: this holds until {until}; a reader whose own source check contradicts a lowering "
+            f"or retraction does not apply it. To hold it longer: aitools-alerts curator renew {t.root_id}")
+
+
 # ------------------------------------------------------------------ CLI
 
 def add_parser(sub) -> None:
@@ -374,6 +429,8 @@ def add_parser(sub) -> None:
     p = csub.add_parser("retract", help="retract a thread")
     reply(p)
     p.add_argument("--reason")
+    p = csub.add_parser("renew", help="sign again what you hold on a relay-bot thread (it lapses after 14 days)")
+    reply(p)
 
 
 def cmd_curator(a, st: State) -> int:
@@ -392,25 +449,29 @@ def cmd_curator(a, st: State) -> int:
         m = role_manifest(st, a.root)
         _curator_pub(sec, m, a.root)  # a revocation the pull just fetched refuses here
         evs = []
-        pairs = find_threads(st, a.root, a.ref, retracted_ok=a.curator_cmd == "retract")
+        renew = a.curator_cmd == "renew"
+        pairs = find_threads(st, a.root, a.ref, retracted_ok=a.curator_cmd != "amend", held=renew)
         for t, root_ev in pairs:
             if a.curator_cmd == "retract":
                 if t.retracted:
                     print(f"{t.root_id}: already retracted locally; posting the retraction anyway",
                           file=sys.stderr)
                 evs.append(retract_event(sec, m, a.root, st, t, root_ev, reason=a.reason))
-                continue
-            try:
-                evs.append(amend_event(sec, m, a.root, st, t, root_ev, level=a.level,
-                                       fixed=a.fixed, title=a.title, sources=a.source,
-                                       actions=a.action, expires_at=a.expires_at,
-                                       no_expiry=a.no_expiry, note=a.note))
-            except CuratorError as e:
-                if str(e) != "nothing to change" or len(pairs) == 1:
-                    raise
-                print(f"{t.root_id}: already up to date, skipped")  # e.g. a retry after a partial send
+            else:
+                try:
+                    evs.append(renew_event(sec, m, a.root, st, t, root_ev) if renew else amend_event(
+                        sec, m, a.root, st, t, root_ev, level=a.level, fixed=a.fixed, title=a.title,
+                        sources=a.source, actions=a.action, expires_at=a.expires_at,
+                        no_expiry=a.no_expiry, note=a.note))
+                except CuratorError as e:
+                    if not str(e).startswith("nothing to") or len(pairs) == 1:
+                        raise
+                    print(f"{t.root_id}: already up to date, skipped")  # e.g. a retry after a partial send
+                    continue
+            if note := _hold_note(t, evs[-1]):
+                print(note, file=sys.stderr)
         if not evs:
-            raise CuratorError("nothing to change")
+            raise CuratorError("nothing to renew" if renew else "nothing to change")
     if a.dry_run:
         print(json.dumps(evs, indent=2, ensure_ascii=False))
         return 0

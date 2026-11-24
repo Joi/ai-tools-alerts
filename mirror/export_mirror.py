@@ -735,7 +735,8 @@ def _threads(events: dict[str, dict], m, now: int) -> list:
     st = State(dir=Path("/nonexistent"), roots={TRUST_ROOT_PUBKEY: [m, kept]},
                manifest_root=TRUST_ROOT_PUBKEY)
     # clean() bound every event to its channel in --channels already
-    return pull.threads_from(kept.values(), pull.effective_manifest(st))
+    # c1g2: each thread as it stands now; a curator's hold that lapsed is not shown
+    return [pull.standing(t, now) for t in pull.threads_from(kept.values(), pull.effective_manifest(st))]
 
 
 def _source(adv) -> tuple[str, bool]:
