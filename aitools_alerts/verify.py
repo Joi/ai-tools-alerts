@@ -301,7 +301,7 @@ def _record(rs, source: str, readings: list, named, etag, now: int) -> dict:
     for fields in readings:
         for name, s in rs.read(source, fields).items():
             if name not in support or _RANK[s.level] > _RANK[support[name][0]]:
-                support[name] = [s.level, s.lowers]
+                support[name] = [s.level, s.lowers, s.stop_using]  # 9kgk: stop_using completes this level
         lowers = lowers and rs.lowers(source, fields) and not (source == "kev" and fields["name"] is None)
     if not isinstance(named, list) or len(named) > MAX_NAMES:
         raise _Bad("names")  # cut short, a tied id could silently become untied
@@ -312,20 +312,27 @@ def _record(rs, source: str, readings: list, named, etag, now: int) -> dict:
 
 # ------------------------------------------------------------------ results
 
-def judge(level: str, product: str, records, complete: bool, rs) -> dict:
+def judge(level: str, product: str, records, complete: bool, rs, actions=(), fixed=None) -> dict:
     """One product's result. ``records``: what was kept of each counted id.
     Support from a source its subject's attacker can write (``lowers`` false)
-    confirms nothing and contradicts nothing: it only makes the result unknown."""
+    confirms nothing and contradicts nothing: it only makes the result unknown.
+    The source's level is what a post with the thread's ``actions`` and ``fixed``
+    version may carry (9kgk, ``Ruleset.action_level``): a KEV listing with no fix
+    known supports high, not critical."""
     def out(result, why, source):
         return {"result": result, "why": why, "source": source}
     if product not in rs.products():
         return out(UNKNOWN, "no-source", None)  # not in this reader's scope file: it cannot judge
     s, may_lower = ruleset.NONE, True  # s: the highest level a source that may set one gives
+    stop = False  # a source gives s through a stop_using row
     for r in records:
         own = r["support"].get(product)
         if own is not None and own[1] and _RANK[own[0]] > _RANK[s]:
-            s = own[0]
+            s, stop = own[0], False
+        if own is not None and own[1] and own[0] == s:
+            stop = stop or own[2]
         may_lower = may_lower and (own[1] if own is not None else r["lowers"])
+    s = rs.action_level(s, actions, product, fixed, stop_using=stop)
     if _RANK[s] > _RANK[level]:
         return out(CONTRADICTED, "below-source", s)  # rests on bodies that were read: a missing one could only add
     if not complete:
@@ -361,12 +368,19 @@ class _Target:
                         and not (a in seen or seen.add(a))]
         self.level = adv.level
         self.products = sorted({p.name for p in adv.products})
+        # 9kgk: what the post can be acted on with; the source's level is held to it
+        self.fixed = {p.name: p.fixed for p in adv.products}
+        self.actions = [(a.verb, a.target, a.value) for a in adv.actions]
         self.key = hashlib.sha256(json.dumps(
-            {"id": self.first, "aliases": sorted(self.aliases), "level": self.level, "products": self.products},
+            {"id": self.first, "aliases": sorted(self.aliases), "level": self.level, "products": self.products,
+             "fixed": self.fixed, "actions": sorted(self.actions, key=repr)},
             sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
     def ids(self) -> list:
         return [self.first, *self.aliases]
+
+    def judge(self, product, records, complete, rs) -> dict:
+        return judge(self.level, product, records, complete, rs, self.actions, self.fixed.get(product))
 
 
 def state_key(adv) -> str:
@@ -408,8 +422,8 @@ def _shape_ok(c, digest: str) -> bool:
                 or not tag(r["etag"]) or not when(r["at"]) or type(r["lowers"]) is not bool \
                 or not isinstance(r["support"], dict) or not isinstance(r["names"], list) \
                 or len(r["names"]) > MAX_NAMES or not all(isinstance(n, str) and norm_id(n) == n for n in r["names"]) \
-                or not all(isinstance(n, str) and isinstance(s, list) and len(s) == 2 and type(s[0]) is str and s[0] in _LEVELS
-                           and type(s[1]) is bool for n, s in r["support"].items()):
+                or not all(isinstance(n, str) and isinstance(s, list) and len(s) == 3 and type(s[0]) is str and s[0] in _LEVELS
+                           and type(s[1]) is bool and type(s[2]) is bool for n, s in r["support"].items()):
             return False
     for key, r in c["results"].items():
         if not (isinstance(key, str) and _HEX.fullmatch(key)) or not isinstance(r, dict) \
@@ -565,7 +579,7 @@ class _Run:
         is an authority and names that CVE. Anything else adds nothing."""
         first = self.read(t.first, known_cves)
         if first is None:
-            return {p: judge(t.level, p, [], False, self.rs) for p in t.products}
+            return {p: t.judge(p, [], False, self.rs) for p in t.products}
         records, from_kev = [first], ruleset.source_of(t.first) == "kev"
         if from_kev:
             related = [a for a in t.aliases if ruleset.source_of(a) != "kev"]
@@ -578,7 +592,7 @@ class _Run:
                 complete = False
             elif not from_kev or (rec["lowers"] and t.first in rec["names"]):
                 records.append(rec)
-        return {p: judge(t.level, p, records, complete, self.rs) for p in t.products}
+        return {p: t.judge(p, records, complete, self.rs) for p in t.products}
 
 
 def _waits(t: _Target, results: dict, now: int) -> bool:

@@ -501,19 +501,20 @@ class Ruleset:
             return NONE
         return self.highest(*(s.level for s in live))
 
-    def action_level(self, level: str, actions, product: str, fixed, readings=()) -> str:
+    def action_level(self, level: str, actions, product: str, fixed, readings=(), *, stop_using=None) -> str:
         """``level`` as a post may carry it (9kgk): a level above ``action_cap`` stands
         only when ``actions`` (``(verb, target, value)`` tuples or objects with those
         attributes) hold a complete action for ``product``: an upgrade of it while
         ``fixed``, the version the post states for the product (``products[].fixed``,
         which a member's planner upgrades to whatever the action's value says), is
         stated; or stop_using it when one of ``readings`` gives ``level`` for it through a
-        stop_using row. Otherwise ``action_cap``. A level at or below the cap, and NONE,
-        pass unchanged."""
+        stop_using row (or, when the caller already knows that, ``stop_using`` True: a
+        member's kept support). Otherwise ``action_cap``. A level at or below the cap,
+        and NONE, pass unchanged."""
         if level == NONE or self.rank(level) <= self.rank(self.action_cap):
             return level
         names = self._former.get(product, {product})
-        stop = None  # computed once, only when a stop_using action is offered
+        stop = stop_using  # computed once, only when a stop_using action is offered
         for a in actions:
             verb, target, value = a if type(a) is tuple else (getattr(a, "verb", None), getattr(a, "target", None),
                                                               getattr(a, "value", None))

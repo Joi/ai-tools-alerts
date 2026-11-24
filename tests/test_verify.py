@@ -29,6 +29,7 @@ def ourl(i):
 
 
 def adv(id=G1, aliases=(), level="high", products=("Claude Code",), **kw):
+    kw.setdefault("actions", [schema.Action("upgrade", n, "99.0.0") for n in products])  # as the poster writes it
     return advisory(posted_by="relay-bot", id=id, aliases=list(aliases), level=level,
                     products=[Product(n, "claude-code", "<99.0.0", "99.0.0") for n in products], **kw)
 
@@ -251,7 +252,8 @@ def test_a_response_that_names_too_many_ids_is_a_failed_read(tmp_path):
 # ------------------------------------------------------------------ one product's result
 
 def rec(support=None, lowers=True):
-    return {"etag": None, "at": 0, "lowers": lowers, "support": support or {}, "names": []}
+    support = {k: v if len(v) == 3 else [*v, False] for k, v in (support or {}).items()}  # [level, lowers, stop_using]
+    return {"etag": None, "at": 0, "lowers": lowers, "support": support, "names": []}
 
 
 @pytest.mark.parametrize("level, records, complete, want", [
@@ -275,7 +277,23 @@ def rec(support=None, lowers=True):
     ("high", [rec({"Claude Code": ["high", False]})], True, ("unknown", "unauthoritative", "none")),
 ])
 def test_judge(level, records, complete, want):
-    r = verify.judge(level, "Claude Code", records, complete, ruleset.load())
+    up = [("upgrade", "Claude Code", "99.0.0")]  # a complete action, so the source's level is not held (9kgk)
+    r = verify.judge(level, "Claude Code", records, complete, ruleset.load(), up, "99.0.0")
+    assert (r["result"], r["why"], r["source"]) == want
+
+
+@pytest.mark.parametrize("actions, fixed, stop, want", [
+    ([], None, False, ("confirmed", "match", "high")),  # KEV with no fix known: a published high is right
+    ([("upgrade", "Claude Code", "99.0.0")], None, False, ("confirmed", "match", "high")),  # the version decides
+    ([("upgrade", "Claude Code", "99.0.0")], "99.0.0", False, ("contradicted", "below-source", "critical")),
+    ([("stop_using", "Claude Code", None)], None, False, ("confirmed", "match", "high")),
+    ([("stop_using", "Claude Code", None)], None, True, ("contradicted", "below-source", "critical")),
+])
+def test_the_source_s_level_is_what_the_post_s_action_allows(actions, fixed, stop, want):
+    """9kgk: a critical needs a complete action. The member holds the source's level to
+    what the published actions and fixed version allow, as the poster does."""
+    records = [rec({"Claude Code": ["critical", True, stop]})]
+    r = verify.judge("high", "Claude Code", records, True, ruleset.load(), actions, fixed)
     assert (r["result"], r["why"], r["source"]) == want
 
 

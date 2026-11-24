@@ -11,7 +11,7 @@ import pytest
 from aitools_alerts import cli, config, inventory, notify, verify
 from aitools_alerts.inventory import Installed, Inventory
 from aitools_alerts.notify import SendResult
-from aitools_alerts.schema import Product
+from aitools_alerts.schema import Action, Product
 from mirror_helpers import Mirror, advisory
 from test_verify import CVE, G1, G2, KEV_CC, SENTINEL, TRUNCATED, Net, ghsa, gurl, kev
 
@@ -31,6 +31,7 @@ def env(home, monkeypatch):
 
 
 def bot(id=G1, level="high", products=("Claude Code",), **kw):
+    kw.setdefault("actions", [Action("upgrade", n, "99.0.0") for n in products])  # as the poster writes it
     return advisory(posted_by="relay-bot", id=id, level=level,
                     products=[Product(n, "claude-code", "<99.0.0", "99.0.0") for n in products], **kw)
 
