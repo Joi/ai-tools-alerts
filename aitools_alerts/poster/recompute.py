@@ -248,6 +248,14 @@ def held(entry, scope, found: str, rs) -> str:
     return capped
 
 
+def raised(entry, scope, copy: Copy | None, rs) -> str | None:
+    """The level ``judge`` would raise the thread to on this read, or None. It reads
+    only: the thread's wait is ``judge``'s to keep (jsje: asked of a thread with work
+    in flight, which is not judged)."""
+    found = held(entry, scope, support(entry, scope, copy, rs)[0], rs)
+    return found if rs.rank(found) > rs.rank(entry.level) else None
+
+
 def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int):
     """("raise", level), ("due", level) or None for one thread; keeps its wait in
     ``st["dwell"]``. A raise rests on a source's fields alone and needs no complete
