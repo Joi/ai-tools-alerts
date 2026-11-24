@@ -1,6 +1,6 @@
 # Run: qwpw-digest-daily-weekly
 Instruction: Read TASK-ai-tools-alerts#qwpw.md in this worktree root, then run `kata show ai-tools-alerts#qwpw` and follow the brief and the dispatch rules (do-it, start rung floored at medium; PR landing; one independent review).
-Stage: committing
+Stage: done (merge pending the gate on the main merge)
 Rung: medium (start-floor medium: dispatch floor; no hard trigger in scope: no secrets, auth or deploy path)
 Spec: docs/superpowers/specs/2026-11-24-qwpw-digest-daily-weekly-design.md   Plan: docs/superpowers/plans/2026-11-24-qwpw-digest-daily-weekly.md
 Agency project: — (no agency MCP tools in this session; executed directly)
@@ -29,4 +29,6 @@ Pass 2 [code:delta]: 1B/0S/1C/0R · fixed 3/3 prior · velocity ↓ (4→2, esca
 - Whole-branch dispositions. Fixed: a held fix group retired by one member's root (fresheyes; `_posted` needs every id); a notice held under a former name not retired (fresheyes; `_posted` reads current and former names); the plan's mutation line (fresheyes); nonexistent ISO weeks accepted (fresheyes; `week_ok`); tests for a posted notice, a retracted notice, the refused-summary fallback (Stage 1); the Japanese quiet line's double colon, a mirror link the guard refuses (falls back to the default), the oversized test's union, a test name, a long line (Stage 1 cosmetics). Not done: `entries_since`/`listed_at` are now unused by the digest (Stage 1 cosmetic); left, since the ledger tests and the stored entries still carry them; removal is not this slice.
 - Mutations for the review fixes: any-id retirement fails the held-group test; held-scope-only fails the former-name test; Monday-only weekly fails the missed-Monday test.
 - Delta (at 45e6540): the mirror-link fallback had no test (fixed: test_the_digest_links_a_public_mirror_and_falls_back_to_the_default); the week_ok docstring named 2026-W53 as nonexistent (fixed: 2025-W53). No further pass (Review Cycle).
+- The clean-clone gate at 45e6540 failed one test: the strengthened oversized-digest test ended its loop on day 9, while six roots sharing one posted_at at a 400-byte limit list one a day, the sixth on day 10 (traced; no thread lost). Fixed in 0c0e06e (loop to day 10); clean-clone gate at 0c0e06e: 2588 passed, exit 0.
+- origin/main merged at 4acde61 (c6ak, the headline; no conflict; c6ak does not touch the digest).
 - xrx2 (no-reply merge author) is closed: the PR may be merged with --author-email.
