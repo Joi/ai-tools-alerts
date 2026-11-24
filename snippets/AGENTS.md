@@ -37,7 +37,9 @@ what to do. It never runs anything itself. Follow these rules exactly.
      `thread` (the advisory id to pass to `plan`), `threads` (every root
      of the advisory: a critical is posted once per channel, which is
      one advisory, not a duplicate post), `id`, `level`, `title`,
-     `posted_by` (`curator` or `relay-bot`), `reason`, `installed` (name,
+     `posted_by` (`curator` or `relay-bot`), `reason` (`affected`,
+     `unparsable-version`, or `may apply`: matched by a name alone or
+     with no version to compare), `installed` (name,
      version), `product` (name, affected, fixed), `actions`, `sources`
      (each `url`, `published_at`), `source` (the link to give the
      person: the first primary source, else the first source) and
@@ -50,11 +52,14 @@ what to do. It never runs anything itself. Follow these rules exactly.
    it wrote on stderr and stop.
 2. If it exits 2, or `matches` holds any entry with `level` `critical`
    (the hook or the hourly job may have marked it seen already), tell the
-   person first, before anything else, for each critical match: the level,
+   person first, before anything else, for each critical match whose
+   `reason` is not `may apply`: the level,
    the title, the affected product and the installed version, the action,
    and the source link (`source`); when `source_primary` is false, say
    that it is not a primary source.
    Report `high` and `notice` matches too when the person asked.
+   A `may apply` match never exits 2 and is never in `unseen_critical`:
+   say it may apply to this machine, with the product and the source link.
 3. Run `aitools-alerts plan <thread>` for each match you reported. It
    prints the advisory, a `source: <url>` line (it ends in
    `(not a primary source)` when it is not one), then up to two sections:

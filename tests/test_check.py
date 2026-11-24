@@ -1,3 +1,4 @@
+import pytest
 import dataclasses
 from pathlib import Path
 
@@ -105,7 +106,7 @@ def test_skill_match_by_name():
     a = adv([Product(name="EXAMPLE-NOTES", ecosystem="skill", affected="*", fixed=None)],
             [disable, elsewhere])
     [m] = check.match([a], skills)
-    assert m.installed.name == "example-notes" and m.reason == "name"
+    assert m.installed.name == "example-notes" and m.reason == check.MAY_APPLY
     assert m.actions_allowed == [disable]
 
 
@@ -215,7 +216,7 @@ def test_name_matches_never_auto_apply():
     a = adv([Product(name="demo", ecosystem="skill", affected="*", fixed=None),
              Product(name="demo", ecosystem="mcp", affected=None, fixed=None)], acts)
     ms = check.match([a], both)
-    assert [m.reason for m in ms] == ["name", "name"]
+    assert [m.reason for m in ms] == [check.MAY_APPLY, check.MAY_APPLY]
     for m in ms:
         p = check.plan(m, every)
         assert p.notify and p.auto_apply == [] and len(p.prepare) == 1
@@ -318,3 +319,92 @@ def test_aggregate_components_match_by_name():
     remote = adv([Product(name="mcp-remote", ecosystem="mcp", affected=None, fixed="0.1.16")], [])
     assert len(check.match([remote], inv(mcp=[Installed("mcp-remote", None, "/m")]))) == 1
     assert check.match([remote], inv(mcp=[Installed("filesystem", None, "/m")])) == []
+
+
+# ---------------------------------------------- package and source identity (0xq6)
+
+def _mcp(name, version=None, package=None, server=None, path="/c"):
+    return Installed(name, version, path, package=package, server=server)
+
+
+GIT = Product(name="mcp-server-git", ecosystem="mcp", affected="<0.6.3", fixed="0.6.3")
+
+
+def test_mcp_package_match_compares_the_pinned_version():
+    a = adv([GIT], [Action("remove_mcp_server", "mcp-server-git", None)])
+    pinned = _mcp("mcp-server-git", "0.6.2", "pypi:mcp-server-git", "git")
+    [m] = check.match([a], inv(mcp=[pinned]))
+    assert m.reason == check.AFFECTED and m.actions_allowed == a.actions
+    assert check.match([a], inv(mcp=[_mcp("mcp-server-git", "0.6.3", "pypi:mcp-server-git")])) == []
+    [m] = check.match([a], inv(mcp=[_mcp("mcp-server-git", None, "pypi:mcp-server-git")]))
+    assert m.reason == check.MAY_APPLY
+
+
+def test_an_npm_package_with_a_pypi_servers_name_does_not_match():
+    a = adv([GIT], [])
+    assert check.match([a], inv(mcp=[_mcp("mcp-server-git", "0.1.0", "npm:mcp-server-git")])) == []
+    [m] = check.match([a], inv(mcp=[_mcp("mcp-server-git")]))  # a key alone: by name
+    assert m.reason == check.MAY_APPLY
+
+
+def test_the_configured_key_still_matches_and_names_the_server():
+    a = adv([Product("my-git", "mcp", None, None)], [Action("remove_mcp_server", "my-git", None)])
+    [m] = check.match([a], inv(mcp=[_mcp("mcp-server-git", "0.6.2", "pypi:mcp-server-git", "my-git")]))
+    assert m.reason == check.MAY_APPLY and m.actions_allowed == a.actions
+
+
+def test_every_version_with_package_identity_is_affected():
+    every = Product("mcp-server-git", "mcp", "*", None)
+    a = adv([every], [Action("remove_mcp_server", "mcp-server-git", None)])
+    [m] = check.match([a], inv(mcp=[_mcp("mcp-server-git", None, "pypi:mcp-server-git")]))
+    assert m.reason == check.AFFECTED
+    opted = Config(auto_apply=frozenset({"remove_mcp_server"}))
+    assert check.plan(m, opted).auto_apply == []  # no readable version: never auto-applied
+    [m] = check.match([a], inv(mcp=[_mcp("mcp-server-git")]))  # name only
+    assert m.reason == check.MAY_APPLY
+
+
+@pytest.mark.parametrize("order", [0, 1])
+def test_an_uncertain_installation_does_not_hide_an_affected_one(order):
+    a = adv([GIT], [])
+    both = [_mcp("mcp-server-git", None, "pypi:mcp-server-git", "a", "/one"),
+            _mcp("mcp-server-git", "0.6.2", "pypi:mcp-server-git", "b", "/two")]
+    ms = check.match([a], inv(mcp=both[::-1] if order else both))
+    assert sorted(m.reason for m in ms) == sorted([check.AFFECTED, check.MAY_APPLY])
+
+
+def test_a_marketplace_qualified_product_matches_only_that_plugin():
+    plugin = Installed("demo", None, "/p", source="market")
+    other_market = Installed("demo", None, "/q", source="elsewhere")
+    named_dir = Installed("demo@market", None, "/s")  # a skill directory with that literal name
+    a = adv([Product("demo@market", "skill", "*", None)], [Action("disable_skill", "demo@market", None)])
+    [m] = check.match([a], inv(skill=[plugin, other_market, named_dir]))
+    assert m.installed == plugin and m.reason == check.AFFECTED and m.actions_allowed == a.actions
+    b = adv([Product("demo", "skill", "*", None)], [])
+    assert {m.installed for m in check.match([b], inv(skill=[plugin, other_market]))} == {plugin, other_market}
+    assert all(m.reason == check.MAY_APPLY for m in check.match([b], inv(skill=[plugin, other_market])))
+
+
+def test_hermes_and_openclaw_match_their_scope_products():
+    for name, eco in (("Hermes", "hermes"), ("OpenClaw", "openclaw")):
+        a = adv([Product(name, eco, "<2.0", "2.0")], [])
+        [m] = check.match([a], inv(**{eco: [Installed(name, "1.0", "/x")]}))
+        assert m.reason == check.AFFECTED
+
+
+@pytest.mark.parametrize("order", [0, 1])
+def test_a_may_apply_product_cannot_hide_an_affected_one(order):
+    plugin = Installed("demo", None, "/p", source="market")
+    prods = [Product("demo", "skill", "*", None), Product("demo@market", "skill", "*", None)]
+    a = adv(prods[::-1] if order else prods, [])
+    assert sorted(m.reason for m in check.match([a], inv(skill=[plugin]))) == sorted([check.AFFECTED, check.MAY_APPLY])
+
+
+def test_a_scoped_plugin_name_matches_unqualified():
+    plugin = Installed("@scope/x", None, "/p", source="market")
+    a = adv([Product("@scope/x", "skill", "*", None)], [])
+    [m] = check.match([a], inv(skill=[plugin]))
+    assert m.reason == check.MAY_APPLY
+    b = adv([Product("@scope/x@market", "skill", "*", None)], [])
+    [m] = check.match([b], inv(skill=[plugin]))
+    assert m.reason == check.AFFECTED

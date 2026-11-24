@@ -155,14 +155,16 @@ def covers(affected: str | None, fixed: str | None,
     ``check.match`` decides both. Sufficient, not necessary: it may answer
     False for a range that does cover, never True for one that does not.
 
-    A range with neither part matches by name alone, with actions. An
+    A range with neither part matches as "may apply", with actions, and
+    never interrupts: it covers only itself, so a reply that drops a range
+    cannot take the interrupt from a match that had one (0xq6). An
     unreadable range matches every installed version as unparsable-version,
     with no actions: it is covered only by another unreadable one or by one
     with no bound, and it covers nothing readable."""
     if (affected, fixed) == (by_affected, by_fixed):
         return True
     if by_affected is None and by_fixed is None:
-        return True
+        return False
     if affected is None and fixed is None:
         return False
     inner, outer = _bounds(affected, fixed), _bounds(by_affected, by_fixed)

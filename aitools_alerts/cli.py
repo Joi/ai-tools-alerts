@@ -435,7 +435,8 @@ def cmd_check(a, st: State, s: config.Settings, source_lines: bool = True) -> in
 def _unseen_critical(a, st: State, pairs: list | None = None) -> list:
     if pairs is None:
         _, pairs = _matches(a, st)
-    return [(t, m) for t, m in pairs if t.adv.level == "critical" and not _seen(t, st)]
+    return [(t, m) for t, m in pairs if t.adv.level == "critical" and m.reason != check.MAY_APPLY
+            and not _seen(t, st)]
 
 
 def _notify(st: State, s: config.Settings, pending) -> int:

@@ -966,3 +966,40 @@ def test_a_ruleset_that_cannot_be_loaded_does_not_break_the_line(tmp_path, monke
     assert cli.main(["notify"]) == 0 and _outdated_lines(capsys) == []
     assert cli._outdated_line({"have": None, "pinned": None, "min_version": None}).startswith(
         "out of date: the trust root pins a ruleset in a form this aitools-alerts (ruleset unknown) cannot read.")
+
+
+# ------------------------------------------------ may apply never interrupts (0xq6)
+
+def _one_thread_mirror(monkeypatch, adv, patch=None):
+    from mirror_helpers import Mirror
+    m = Mirror()
+    root = m.root_post(m.bot_sec, adv)
+    if patch is not None:
+        m.reply(m.bot_sec, root, m.patch_text(**patch))
+    monkeypatch.setenv(cli.TRUST_ROOT_ENV, m.root)
+    monkeypatch.setattr(pull, "default_fetch", m.fetch)
+    write_config('mirror_url = "https://mirror.invalid/"\n')
+    return root["id"]
+
+
+def test_a_critical_that_only_may_apply_does_not_interrupt(monkeypatch, capsys, sent):
+    from aitools_alerts.schema import Product
+    adv = advisory(posted_by="relay-bot", products=[Product("Claude Code", "claude-code", None, None)])
+    root = _one_thread_mirror(monkeypatch, adv)
+    assert cli.main(["run", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert [m["reason"] for m in out["matches"]] == ["may apply"] and out["matches"][0]["thread"] == root
+    assert out["unseen_critical"] == [] and sent["calls"] == [] and State.load().seen == set()
+    assert cli.main(["check"]) == 0
+    text = capsys.readouterr().out
+    assert "[Claude Code 2.0.0: may apply]" in text and "not installed here" not in text
+    assert cli.main(["notify"]) == 0 and sent["calls"] == []
+
+
+def test_a_reply_that_drops_the_range_still_exits_2(monkeypatch, capsys, sent):
+    cc = {"name": "Claude Code", "ecosystem": "claude-code", "affected": None, "fixed": None}
+    root = _one_thread_mirror(monkeypatch, advisory(posted_by="relay-bot"), patch={"products": [cc]})
+    assert cli.main(["run", "--json"]) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert sorted(m["reason"] for m in out["matches"]) == ["affected", "may apply"]
+    assert out["unseen_critical"] == [root] and len(sent["calls"]) == 1
