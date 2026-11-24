@@ -1,6 +1,6 @@
 # Run: c1g2-curator-override-time-boxed
 Instruction: Read TASK-ai-tools-alerts#c1g2.md in this worktree root, then run `kata show ai-tools-alerts#c1g2` and follow the brief and the dispatch rules (run as /do-it, starting rung floored at medium).
-Stage: code-review:all
+Stage: committing
 Rung: medium (start-floor medium: constraint-lens, BR2 REV1 NOV1 INT2 FC1 = 7; no hard trigger; the dispatch brief floors it at medium too)
 Lens: "Nothing you build may wait for a person to act." / "No rollout." / no host, home-path or personal-email text in any commit, PR text or run record.
 Spec: docs/superpowers/specs/2026-11-24-c1g2-curator-override-time-boxed-design.md   Plan: docs/superpowers/plans/2026-11-24-c1g2-curator-override-time-boxed.md
@@ -50,6 +50,15 @@ Code pass 1, Stage 1 (same model; it also ran origin/main's replay against this 
 - SUBSTANTIVE: a failed or cut-short re-read erased a contradiction. Fixed (`verify._settled`); asserted in the two re-read tests.
 - COSMETIC, fixed: `plan` printed refusal lines of other advisories; the second pass of `run` ran with `verify = "off"`.
 - COSMETIC, left: the hold note also prints under `--dry-run` (it says when the hold would end); a hold the checkpoint has already lapsed is still asked about (one request, no effect on what is shown).
+
+Pass 2 [code:all]: 0B/2S/0C/0R · fixed 9/9 prior · velocity ↓ (12→2, escalation no)
+passes: 2 · elapsed: 30 min (the one delta, fresheyes `--since 6e7f36a`, over the fixes at 27936555a355504895f8ccf1ea12b53c735b5d8f)
+
+Delta findings, both fixed in the commit after 2793655, which no review saw (the gate ran on it):
+- SUBSTANTIVE: `curator renew` raised TypeError on a hold that sets an expiry (a length taken of a number). Fixed; `test_renew_of_a_hold_that_sets_an_expiry`.
+- SUBSTANTIVE: the title-only renewal had no real test. Added `test_renew_when_only_a_list_too_long_to_say_again_is_held`.
+
+Gate: `scripts/test-gate.sh` in a clone holding only this branch: passed at 6e7f36a (2372 passed, 1 skipped), at 2793655 (2381 passed, 1 skipped) and at the head that carries the delta fixes (result in the kata comment).
 
 ## Chunks
 - [x] reader: hold, lapse, widest state, published lowering (aitools_alerts/pull.py)
