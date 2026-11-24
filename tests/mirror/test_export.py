@@ -1406,9 +1406,11 @@ def test_psql_catalog_query_takes_the_newest_rows(monkeypatch):
         return Proc()
     monkeypatch.setattr(em.subprocess, "run", fake_run)
     read = em.psql_reader(["psql"])
-    assert read("catalog", CAT_ID, limit=5) == [{"a": 1}, {"a": 2}]
-    assert seen[0].endswith("ORDER BY created_at DESC LIMIT 5") and CAT_ID in seen[0]
-    assert read("feed", FEED_ID) == [{"a": 2}, {"a": 1}] and seen[1].endswith("ORDER BY created_at")
+    assert read("feed", FEED_ID) == [{"a": 2}, {"a": 1}] and seen[0].endswith("ORDER BY created_at")
+    echo = "import sys; print(sys.argv[1], file=sys.stderr); sys.stdout.write('{\"a\": 2}\\n{\"a\": 1}\\n')"
+    cat = em.psql_reader([sys.executable, "-c", echo])
+    assert cat("catalog", CAT_ID, limit=5) == [{"a": 1}, {"a": 2}]
+    assert em.CATALOG_QUERY.format(channel_id=CAT_ID, limit=5).endswith("ORDER BY created_at DESC LIMIT 5")
 
 
 def test_a_slow_export_leaves_the_catalog_for_the_next_run(env, monkeypatch):
@@ -1451,3 +1453,24 @@ def test_the_catalog_step_is_cut_off_at_its_run_budget(env, monkeypatch):
     assert _time.monotonic() - t0 < 3
     assert result["catalog"] == "skipped:the catalog took more than 0.2s"
     assert (env[2] / "feed.json").exists() and not (env[2] / "catalog.json").exists()
+
+
+@pytest.mark.parametrize("script", [
+    "import sys; sys.stdout.write('\\u3042' * 400)",  # 400 characters, 1,200 bytes
+    "import sys\nwhile True: sys.stdout.write('x' * 4096)",  # never ends: cut off by the bound
+])
+def test_catalog_psql_output_is_bounded_in_bytes_as_it_arrives(monkeypatch, script):
+    import time as _time
+    monkeypatch.setattr(em, "CATALOG_MAX_READ", 1000)
+    read = em.psql_reader([sys.executable, "-c", script])
+    t0 = _time.monotonic()
+    with pytest.raises(em.ExportError, match="more than 1000 bytes"):
+        read("catalog", CAT_ID, limit=5)
+    assert _time.monotonic() - t0 < 10
+
+
+def test_catalog_psql_timeout_kills_the_process(monkeypatch):
+    monkeypatch.setattr(em, "CATALOG_PSQL_TIMEOUT", 0.3)
+    read = em.psql_reader([sys.executable, "-c", "import time; time.sleep(30)"])
+    with pytest.raises(em.ExportError, match="timed out"):
+        read("catalog", CAT_ID, limit=5)

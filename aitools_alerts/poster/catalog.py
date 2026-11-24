@@ -125,21 +125,34 @@ def _read(path, field: str) -> dict:
     return doc.get(field, {})
 
 
+_last = 0
+
+
+def stamp() -> int:
+    """The snapshot's order: wall-clock nanoseconds, read under the ledger lock, which
+    no two runs hold at once (releasing and taking it again takes far longer than the
+    clock's resolution); strictly increasing within one process."""
+    global _last
+    _last = max(time.time_ns(), _last + 1)
+    return _last
+
+
 def _encoded(doc) -> int:
     """The bytes ``inputs.write_json`` writes for ``doc`` (same encoder settings)."""
     return len(json.dumps(doc, indent=1, sort_keys=True).encode("utf-8"))
 
 
 def remember(path, snap: dict, at: int = 0) -> int:
-    """Merge a snapshot taken at ``at`` (the run's clock) into the inventory; returns
-    the number of keys kept. A key the inventory holds from a later snapshot keeps that
-    one: two runs' passes can merge in either order. Called under the catalog lock only.
+    """Merge a snapshot stamped ``at`` into the inventory; returns the number of keys
+    kept. ``at`` is ``stamp()``, taken under the ledger lock, so two runs' snapshots
+    never share one and the later run's is larger. A key the inventory holds from a
+    later snapshot keeps that one: two runs' passes can merge in either order. Called under the catalog lock only.
     Bounded by MAX_KEYS and KEEP_BYTES, measured as written, the oldest first sight
     dropped first, so what is written is always readable (MAX_FILE)."""
     known = {k: a for k, a in _read(path, "known").items() if _valid(a) is not None}
     stamp = {k: t for k, t in _read(path, "at").items() if k in known and type(t) is int}
     for k, a in snap.items():
-        if stamp.get(k, 0) <= at:
+        if stamp.get(k, 0) <= at:  # equal: the same snapshot merged again
             known[k], stamp[k] = a, at
     known = {k: a for k, a in known.items() if _in_scope(a["products"][0]["name"])}
     order = sorted(known, key=lambda k: (known[k]["posted_at"], k), reverse=True)[:MAX_KEYS]  # newest first

@@ -45,6 +45,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -168,17 +169,17 @@ def psql_reader(prefix: list[str]):
         query = QUERY.format(channel_id=channel_id) if limit is None \
             else CATALOG_QUERY.format(channel_id=channel_id, limit=int(limit))
         argv = list(prefix) + [query]
-        limit_s = PSQL_TIMEOUT if limit is None else CATALOG_PSQL_TIMEOUT
-        try:
-            proc = subprocess.run(argv, capture_output=True, text=True, timeout=limit_s)
-        except subprocess.TimeoutExpired:
-            raise ExportError(f"channel {name}: psql timed out after {limit_s}s") from None
-        except OSError as e:
-            raise ExportError(f"channel {name}: psql could not run ({e.__class__.__name__})") from None
+        if limit is not None:  # the catalog: its bytes are counted as they arrive (q03f)
+            proc = _bounded_run(name, argv, CATALOG_PSQL_TIMEOUT, CATALOG_MAX_READ)
+        else:
+            try:
+                proc = subprocess.run(argv, capture_output=True, text=True, timeout=PSQL_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                raise ExportError(f"channel {name}: psql timed out after {PSQL_TIMEOUT}s") from None
+            except OSError as e:
+                raise ExportError(f"channel {name}: psql could not run ({e.__class__.__name__})") from None
         if proc.returncode != 0:
             raise ExportError(f"channel {name}: psql exited {proc.returncode}")
-        if limit is not None and len(proc.stdout) > CATALOG_MAX_READ:
-            raise ExportError(f"channel {name}: more than {CATALOG_MAX_READ} bytes")
         rows = []
         # psql -At ends each row with "\n"; JSON escapes "\n" inside strings
         # but not U+0085/U+2028/U+2029, which str.splitlines() would split on.
@@ -191,6 +192,38 @@ def psql_reader(prefix: list[str]):
                 rows.append(MALFORMED)
         return rows if limit is None else rows[::-1]
     return read
+
+
+def _bounded_run(name, argv, timeout, max_bytes):
+    """Run argv and read at most max_bytes of its stdout as they arrive; past that, or
+    past ``timeout`` seconds, the process is killed and ExportError raised. Stdout is
+    decoded as UTF-8 only once it is whole. Returns a CompletedProcess."""
+    try:
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        raise ExportError(f"channel {name}: psql could not run ({e.__class__.__name__})") from None
+    timer = threading.Timer(timeout, proc.kill)
+    timer.start()
+    chunks, total = [], 0
+    try:
+        while True:
+            b = proc.stdout.read1(1 << 16)
+            if not b:
+                break
+            total += len(b)
+            if total > max_bytes:
+                raise ExportError(f"channel {name}: more than {max_bytes} bytes")
+            chunks.append(b)
+        rc = proc.wait()
+        if not timer.is_alive() and rc < 0:
+            raise ExportError(f"channel {name}: psql timed out after {timeout}s")
+    finally:
+        timer.cancel()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        proc.stdout.close()
+    return subprocess.CompletedProcess(argv, rc, b"".join(chunks).decode("utf-8"), "")
 
 
 def file_reader(path):

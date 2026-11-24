@@ -1359,7 +1359,7 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
         except ConfigError as e:
             cat_id, cat_status = None, "off-bad-paths"
             _say(f"catalog lane off: {e}")
-    cat_snap = None
+    cat_snap, cat_at = None, 0
     try:
         with Ledger(config.ledger) as led:
             state = inputs.load_state(config.state, now, config.backfill_days)
@@ -1408,7 +1408,7 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                 r.recompute()
                 if cat_id:  # q03f: before the digest, which drops the notices it lists from held.
                     try:  # In memory only: no catalog file is touched under the ledger lock.
-                        cat_snap = catalog.snapshot(led, state["held"])
+                        cat_snap, cat_at = catalog.snapshot(led, state["held"]), catalog.stamp()
                     except Exception as e:  # noqa: BLE001 - the catalog never touches alert work
                         cat_status = "error"
                         _say(f"catalog snapshot failed: {type(e).__name__}: {e}")
@@ -1452,7 +1452,7 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
         # they cannot delay an alert post, the checkpoint or the next run.
         if cat_id and english_ok and cat_status != "error":
             try:
-                cat_status = catalog.send_pass(config, cat_id, send, cat_snap, now)
+                cat_status = catalog.send_pass(config, cat_id, send, cat_snap, cat_at)
             except Exception as e:  # noqa: BLE001 - nothing here may reach the run's exit code
                 cat_status = "error"
                 _say(f"catalog pass stopped: {type(e).__name__}: {e}")

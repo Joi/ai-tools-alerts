@@ -350,3 +350,13 @@ def test_a_fifo_at_the_catalog_spec_turns_the_lane_off_without_blocking(env, mon
     env.collector([finding()])
     code, summary, relay = env.run(catalog_channel=None)
     assert code == 0 and summary.endswith(" catalog=off-bad-spec") and chans(relay) == [("feed", None)]
+
+
+def test_snapshot_stamps_order_runs_within_one_second(tmp_path):
+    k = "Cursor|cve-2026-6000"
+    first, second = catalog.stamp(), catalog.stamp()
+    assert second > first  # nanoseconds: two runs in the same second still order
+    path = tmp_path / "known.json"
+    catalog.remember(path, {k: _adv("Cursor", fixed="2.0.0", eco="cursor")}, second)
+    catalog.remember(path, {k: _adv("Cursor", eco="cursor")}, first)  # the earlier run's pass, merged late
+    assert catalog._read(path, "known")[k]["products"][0]["fixed"] == "2.0.0"
