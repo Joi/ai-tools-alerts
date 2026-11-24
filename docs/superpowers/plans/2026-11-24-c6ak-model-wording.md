@@ -71,7 +71,7 @@ Acceptance: `python3 -m pytest -q tests/poster` passes.
     `root_post_ja(..., wording=w)`. Restructure so the notice path composes
     exactly as today (no call).
   - `plan_known`: when `copies` is non-empty, compose the copy text with
-    `wording=self.wording(k, scope)`; the reply path unchanged.
+    `wording=self.wording(k, scope, level, reason)`; the reply path unchanged.
   - summary: ` wording=<worded>/<asked>` (or `held` / `key-error`) only when
     `model_wording` is on.
 - [ ] Tests in `tests/poster/test_wording.py` (run-level, with the existing

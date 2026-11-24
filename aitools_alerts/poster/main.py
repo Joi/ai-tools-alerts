@@ -132,6 +132,7 @@ class Run:
         # c6ak: the wording call (None: read the key at the first root to word), its use
         # this run, and the summary's wording= status ("off" unless model_wording is on).
         self._wcall, self._wasked, self._wspent = wording_call, 0, 0.0
+        self.key_refused = False  # the API refused the key this run: no call of either kind follows
         self.w_status = "ok" if config.model_wording else "off"
         if isinstance(state.get("held"), list):  # wa6n: an out product's saved notice is never digested
             state["held"] = [h for h in state["held"] if h.get("scope") not in rules.out_names()]
@@ -411,18 +412,11 @@ class Run:
             return "off"
         path = self.config.translate_state
         try:
-            tr = inputs.read_json(path, inputs.MAX_RECORD) if path.exists() \
-                else {"hold": None, "day": None, "calls": 0, "done": {}}
-            if not (isinstance(tr, dict) and set(tr) == {"hold", "day", "calls", "done"}
-                    and type(tr["calls"]) is int and tr["calls"] >= 0
-                    and (tr["day"] is None or inputs._date_ok(tr["day"]))
-                    and isinstance(tr["done"], dict) and (tr["hold"] is None or isinstance(tr["hold"], dict))
-                    and all(v in ("ok", "untranslated") or type(v) is int for v in tr["done"].values())):
-                raise ValueError("not a translate state")
+            tr = _translate_state(path)
         except (OSError, ValueError, RecursionError):
             _say(f"translate state {path} unreadable; translating nothing")
             return "state-error"
-        if tr["hold"] is not None:
+        if tr["hold"] is not None or self.key_refused:  # c6ak: a wording 401/403 this run holds it too
             return "held"
         start = time.monotonic()  # the pass deadline covers the mirror and the replay too
         evs = self.curator_events(fetch, root, {k for k, v in tr["done"].items() if v in ("ok", "untranslated")}, start)
@@ -500,17 +494,20 @@ class Run:
     def wording(self, c, scope, level, reason):
         """The model's headline and Who line for a root post (c6ak), or None: the post
         then keeps the source title. Nothing here reaches planning: any failure turns
-        wording off for the run and the post goes out as it would have."""
+        wording off for the run and the post goes out as it would have. The key read and
+        the calls share one budget of WORDING_SECONDS a run, so wording delays a run's
+        posts by at most that."""
         if self.w_status != "ok" or level == "notice" or self.is_synthetic(c) or not wording.usable(c) \
                 or self._wasked >= WORDING_CALLS or self._wspent >= WORDING_SECONDS:
             return None
+        start = time.monotonic()
         try:
             path = self.config.translate_state
-            if path.exists():  # the translate hold: the same key, refused once, is not tried again
-                tr = inputs.read_json(path, inputs.MAX_RECORD)
-                if not isinstance(tr, dict) or tr.get("hold") is not None:
-                    self.w_status = "held"
-                    return None
+            # The translate hold: the same key, refused once, is not tried again. A state the
+            # translation pass would refuse is refused here too, and never rewritten.
+            if _translate_state(path)["hold"] is not None:
+                self.w_status = "held"
+                return None
             if self._wcall is None:
                 try:
                     self._wcall = translate.api_call(translate.read_key(self.config.secrets_helper))
@@ -518,22 +515,22 @@ class Run:
                     self.w_status = "key-error"
                     _say(f"wording off for this run: {e}")
                     return None
+            left = WORDING_SECONDS - self._wspent - (time.monotonic() - start)
+            if left <= 1:
+                return None
             self._wasked += 1
             self.n["word_asked"] += 1
-            start = time.monotonic()
+            call = self._wcall
             try:
-                w, outcome = wording.draft(c, scope, call=self._wcall)
+                w, outcome = wording.draft(c, scope, call=lambda s, t: translate.bounded(lambda: call(s, t), left))
             except translate.AuthError as e:
-                self.w_status = "held"  # first, in memory: a failed write below calls nothing more
+                self.w_status, self.key_refused = "held", True  # first, in memory: nothing calls again this run
                 _say(f"wording held: the API refused the key ({e}); posts keep the source title; "
                      "a human clears it with: aitools-alerts-poster translate-clear-hold")
-                tr = inputs.read_json(path, inputs.MAX_RECORD) if path.exists() \
-                    else {"hold": None, "day": None, "calls": 0, "done": {}}
+                tr = _translate_state(path)
                 tr["hold"] = {"at": self.now, "why": f"wording: {e}"}
                 inputs.write_json(path, tr)
                 return None
-            finally:
-                self._wspent += time.monotonic() - start
             if w is not None and not compose.worded(compose.head_of(level, c.id, reason), scope.name, w):
                 w, outcome = None, "refused"  # a model line is never cut
             self.n["worded" if w else "word_" + outcome] += 1
@@ -543,6 +540,8 @@ class Run:
                 self.w_status = "error"
             _say(f"wording off for this run: {type(e).__name__}")
             return None
+        finally:
+            self._wspent += time.monotonic() - start
 
     def _entry(self, it):
         e = self.led.thread(it["root"]) if it["root"] else self.led.lookup(it["ids"], scope=it["scope"])
@@ -1291,6 +1290,21 @@ def _published(sources) -> int | None:
 
 def _stated(v) -> bool:
     return isinstance(v, str) and v.strip() != ""
+
+
+def _translate_state(path) -> dict:
+    """The translate state (hold, daily calls, translated ids), the default when there is
+    none; ValueError (or OSError) when it is not one. Curator translation and wording
+    (c6ak) read it alike."""
+    tr = inputs.read_json(path, inputs.MAX_RECORD) if path.exists() \
+        else {"hold": None, "day": None, "calls": 0, "done": {}}
+    if not (isinstance(tr, dict) and set(tr) == {"hold", "day", "calls", "done"}
+            and type(tr["calls"]) is int and tr["calls"] >= 0
+            and (tr["day"] is None or inputs._date_ok(tr["day"]))
+            and isinstance(tr["done"], dict) and (tr["hold"] is None or isinstance(tr["hold"], dict))
+            and all(v in ("ok", "untranslated") or type(v) is int for v in tr["done"].values())):
+        raise ValueError("not a translate state")
+    return tr
 
 
 def _utc_date(t: int) -> str:

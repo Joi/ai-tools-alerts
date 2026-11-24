@@ -84,6 +84,22 @@ The issue text predates faxq; its note (comment ebfjm4) matches the code above.
     "Firefox users") or a program ("printf") is refused, capitalised or not;
   - names a fleet host or holds a local path or kata ref (`compose._guard`), which
     would otherwise withhold the whole post.
+  - (code review pass 1) holds a domain anywhere in the line, inside a token or
+    after a comma, once the product's and package's names are taken out, or `//`;
+    an advisory id in any case; a capitalised word the advisory does not write
+    with that capital (the vocabulary never vouches for a name: "Pages users");
+  - does not start with a fixed subject: the Who line with a word of
+    `wording.SUBJECTS` (Anyone, Users, Developers, …), the headline with the
+    product or package name. Neither line can then be an instruction to the
+    reader. Negations and modal verbs (not, no, need, should, must, …) are not in
+    the vocabulary, so a Who line cannot say "users need not upgrade" unless the
+    advisory itself says it.
+
+  What this does not claim: that no sequence of advisory or vocabulary words can
+  name a program ("Claude Code runs install"). It claims there is no shell
+  character, option, known tool invocation, URL, id, mention, or ungrounded name,
+  and no imperative sentence; the text is never executed, and readers act on the
+  block alone.
 - On a refusal, `CallError`, any other exception, or an empty answer, `draft`
   returns None. `AuthError` propagates so the run can stop calling.
 
@@ -117,6 +133,8 @@ The issue text predates faxq; its note (comment ebfjm4) matches the code above.
   with source prose to word, and makes at most `WORDING_CALLS` = 4 calls a run, none
   after 60 seconds of calls in that run. The same key, the same call path, the same
   model. A drafted headline that would be cut beside the level head is refused.
+  The key read and the calls share one budget of 60 seconds a run (each call is
+  bounded by what is left), so wording delays a run's posts by at most that.
 - **One exception boundary.** Everything `Run.wording` does (reading the translate
   state, reading the key, the call, the check, writing the hold) is inside one
   `try`; any exception other than the ones it handles by name turns wording off for
@@ -125,10 +143,13 @@ The issue text predates faxq; its note (comment ebfjm4) matches the code above.
   title whatever happens.
 - The hold is the translate hold: when the translate state file holds a hold, no
   wording call is made; an unreadable or malformed translate state also means no
-  call (and is not rewritten). An `AuthError` from a wording call first turns
+  call (and is not rewritten); the check is translation's own (`_translate_state`). An `AuthError` from a wording call first turns
   wording off in memory, then writes that hold (the same shape, `why` naming
   wording; a state file that does not exist is created in the default shape); a
-  failed write is said on stderr and changes nothing else. Posts go on with the
+  failed write is said on stderr; the in-memory latch (`Run.key_refused`) still
+  stops the curator translation pass in the same run. A run whose state directory
+  cannot be written stops anyway (the journal and ledger live there), so the next
+  run that calls is one whose disk works again, and its own 401 writes the hold. Posts go on with the
   source title while the hold stands: nothing waits for a person. Retrying the
   refused key every run is what the hold prevents (fleet rule: no credential retry
   after an auth failure). `translate-clear-hold`, which exists, clears it.

@@ -46,7 +46,18 @@ def test_a_grounded_draft_passes():
     ("Claude Code writes files, run npm install claude", GOOD.who, "command"),
     ("Claude Code writes files with --dangerously-skip", GOOD.who, "command"),
     ("Claude Code writes files; curl the project", GOOD.who, "command"),
-    (GOOD.headline, "Anyone who runs printf compromised to the project.", "name"),
+    (GOOD.headline, "Anyone who runs printf compromised to the project.", "command"),
+    (GOOD.headline, "Users of Pages are exposed.", "name"),  # a vocabulary word is no name
+    (GOOD.headline, "Run install file directory.", "name"),  # a capital the source does not write
+    (GOOD.headline, "run install file directory.", "subject"),  # an instruction, not who is exposed
+    (GOOD.headline, "Anyone; users need not upgrade.", "name"),  # no negation or modal from the vocabulary
+    ("the Claude Code project writes files", GOOD.who, "subject"),
+    ("Claude Code writes files to/evil-c2.com", GOOD.who, "url"),
+    ("Claude Code writes files to //evil-c2", GOOD.who, "url"),
+    ("Claude Code writes files, see example.com,example.org", GOOD.who, "url"),
+    ("Claude Code writes files, see ghsa-abcd-efgh-ijkl", GOOD.who, "id"),
+    ("Claude Code writes files after cargo install claude", GOOD.who, "command"),
+    ("Claude Code writes files '--yes'", GOOD.who, "command"),
     (GOOD.headline, "Users running firefox are exposed.", "name"),
     (GOOD.headline, "Firefox users are exposed.", "name"),
     ("Claude Code writes files outside Kubernetes", GOOD.who, "name"),
@@ -57,7 +68,9 @@ def test_a_grounded_draft_passes():
     (GOOD.headline, "Anyone who writes to attacker@project.", "mention"),
 ])
 def test_each_refusal(headline, who, why):
-    advisory = ADVISORY + " CVE-2026-1234 GHSA-abcd-efgh-ijkl"  # an id the source states is still refused
+    # what the source states is still refused when it is an id, a URL or a command
+    advisory = ADVISORY + (" CVE-2026-1234 GHSA-abcd-efgh-ijkl ghsa-abcd-efgh-ijkl evil-c2.com example.com,example.org"
+                           " printf cargo need")
     assert wording.check(wording.Wording(headline, who), advisory, NAMES) == why
 
 
@@ -139,7 +152,7 @@ def test_a_headline_that_would_be_cut_is_not_used():
     assert wording.check(long, ADVISORY + " directory", NAMES) is None
     assert not compose.worded(compose.head_of("critical", "GHSA-abcd-efgh-ijkl"), "Claude Code", long)
     text, _ = compose.root_post(cand(), ("high", None), Scope, posted_at=T0, wording=long)
-    assert "Who:" not in text and "…" not in text.split("\n")[0][:-1]
+    assert "Who:" not in text and text.split("\n")[0] == f"HIGH: {TITLE}"
 
 
 def test_the_vendor_page_description_and_kev_text_reach_the_candidate():
@@ -178,10 +191,13 @@ def word(env):  # noqa: F811
     return env
 
 
-def test_off_calls_nothing_and_the_summary_is_unchanged(env):  # noqa: F811
+def test_off_calls_nothing_and_the_summary_is_unchanged(env, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(translate, "read_key", lambda *a, **k: pytest.fail("key read"))
+    monkeypatch.setattr(translate, "api_call", lambda *a, **k: pytest.fail("call made"))
     env.collector([finding()])
-    code, summary, relay = env.run(wording_call=lambda s, t: pytest.fail("called"))
-    assert code == 0 and "roots=1" in summary and " wording=" not in summary and "\nWho: " not in relay.calls[0][2]
+    code, summary, relay = env.run()
+    assert code == 0 and "roots=1" in summary and "\nWho: " not in relay.calls[0][2]
+    assert summary.endswith(" translate=off inputs=kev:ok,collector:ok,heartbeat:0/0")  # nothing after it
 
 
 def test_on_a_high_posts_the_model_headline_and_who_line(word):
@@ -277,3 +293,34 @@ def test_a_copy_to_a_new_channel_is_worded_too(word):
     assert code == 0 and "copies=1" in summary and relay.calls[0][0] == "critical", summary
     assert relay.calls[0][2].startswith(f"CRITICAL: {GOOD.headline}\nWho: {GOOD.who}\n")
     assert len(call.texts) == 2
+
+
+@pytest.mark.parametrize("state", [{}, {"hold": None, "day": None, "calls": -1, "done": {}}])
+def test_a_translate_state_translation_would_refuse_means_no_call_and_is_not_rewritten(word, state):
+    word.config.translate_state.parent.mkdir(parents=True, exist_ok=True)
+    word.config.translate_state.write_text(json.dumps(state))
+    word.collector([finding()])
+    code, summary, relay = word.run(wording_call=lambda s, t: pytest.fail("called"))
+    assert code == 0 and "roots=1" in summary and summary.endswith(" wording=error")
+    assert json.loads(word.config.translate_state.read_text()) == state
+
+
+def test_a_refused_key_stops_every_call_this_run_even_when_the_hold_cannot_be_written(word, monkeypatch):
+    real = inputs.write_json
+
+    def write_json(path, data):
+        if path == word.config.translate_state:
+            raise OSError("read-only file system")
+        return real(path, data)
+    monkeypatch.setattr(inputs, "write_json", write_json)
+    word.config = replace(word.config, translate_curator=True)
+    calls = []
+
+    def refused(s, t):
+        calls.append(t)
+        raise translate.AuthError("http 401")
+    word.collector([finding(fid=i, fixed=f"2.1.{k}") for k, i in enumerate(["GHSA-mmmm-efgh-ijkl",
+                                                                         "GHSA-nnnn-efgh-ijkl"])])
+    code, summary, relay = word.run(wording_call=Call(refused), translate_call=lambda s, t: pytest.fail("translated"))
+    assert code == 0 and "roots=2" in summary and " translate=held " in summary and summary.endswith(" wording=held")
+    assert len(calls) == 1

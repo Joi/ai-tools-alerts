@@ -28,8 +28,8 @@ WHO_CHARS = 200
 SYSTEM = """You write two lines for a security alert read by software developers who use AI coding tools.
 
 Answer with exactly two lines and nothing else:
-Headline: <the package or tool as a developer would type it, then what goes wrong, in at most 70 characters>
-Who: <one sentence naming who is exposed: the precondition under which the problem applies, at most 180 characters>
+Headline: <the Product or Package exactly as given, then what goes wrong, in at most 70 characters>
+Who: <one sentence that starts with Anyone, Users or Developers and names who is exposed: the precondition under which the problem applies, at most 180 characters>
 
 Rules:
 - Use only facts stated in the advisory text you are given, in the advisory's own words where you can. Never guess a version, a product or a name.
@@ -41,15 +41,22 @@ Rules:
 # fence), no shell metacharacter or redirect, no Markdown, nothing non-ASCII.
 _ALLOWED = re.compile(r"[A-Za-z0-9 .,;:'()/_@-]*")
 _URL = re.compile(r"://|\bwww\.", re.I)
-_DOMAIN = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?:/.*)?")
-_OPTION = re.compile(r"(?:^|[\s(/])--?[A-Za-z0-9]")
+# A domain anywhere in a line, inside a token or not (searched after the product's and
+# package's own names are taken out): labels joined by dots, the last of letters.
+_DOMAIN = re.compile(r"(?<![A-Za-z0-9-])[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?![A-Za-z0-9])")
+_OPTION = re.compile(r"(?:^|[\s('/,;:])--?[A-Za-z0-9]")
 # A second line behind the vocabulary rule, which is the guarantee: known invocations.
 _COMMAND = re.compile(
     r"\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add|exec|run|x|dlx|update|upgrade)\b|\bnpx\s+\S|\bbunx\s+\S"
-    r"|\bpipx?3?\s+install\b|\buv\s+(?:pip|tool|run|add|sync)\b|\buvx\s+\S|\bcurl\b|\bwget\b|\bsudo\b"
+    r"|\b(?:cargo|go|gem|pipx?3?|dotnet|composer)\s+(?:install|get|add|run)\b|\buv\s+(?:pip|tool|run|add|sync)\b|\buvx\s+\S|\bcurl\b|\bwget\b|\bsudo\b"
     r"|\bbrew\s+(?:install|upgrade)\b|\bapt(?:-get)?\s+(?:install|upgrade)\b|\bdocker\s+(?:run|pull|exec)\b"
-    r"|\bgit\s+(?:clone|pull|checkout|reset|fetch)\b|\bchmod\b|\brm\b|\bbash\b|\bsh\b|\bpython3?\s+-",
+    r"|\bgit\s+(?:clone|pull|checkout|reset|fetch)\b|\bchmod\b|\brm\b|\bbash\b|\bsh\b|\bpython3?\s+-|\bprintf\b|\becho\b|\beval\b",
     re.I)
+# The Who line names a population: it starts with one of these, so it is never an
+# instruction. The headline starts with the product or package name. Neither line can
+# be an imperative sentence (a command to the reader), whatever words follow.
+SUBJECTS = frozenset({"anyone", "everyone", "users", "developers", "teams", "organizations", "people", "those",
+                      "projects", "installations", "members", "administrators", "operators", "maintainers"})
 _EDGE = "'(),.;:"
 # Words any draft may use whether or not the advisory does: function words and the
 # plain vocabulary of a security notice. A word outside it must come from the
@@ -57,11 +64,11 @@ _EDGE = "'(),.;:"
 VOCABULARY = frozenset("""
 a an the this that these those it its they them their there he she we you your our who whom whose which what
 when where while whether if unless until before after during since than then so such as at by for from in into
-of off on onto out over under up upon via with within without to too also only even just still yet not no nor
-or and but both either neither each every any all some most more less many much few other another same own
-is are was were be been being am do does did done doing has have had having can could may might must shall
-should will would need needs needed
-anyone everyone someone anybody nobody users user developers developer people person member members team
+of off on onto out over under up upon via with within without to too also only even just still yet
+or and but both either each every any all some most more less many much few other another same own
+is are was were be been being am do does did done doing has have had having can could may might
+will would
+anyone everyone someone anybody users user developers developer people person member members team
 teams account accounts organization admin admins administrator administrators operator operators maintainer
 attacker attackers adversary victim victims third party parties
 use uses used using run runs ran running install installs installed installing open opens opened opening
@@ -97,10 +104,10 @@ own other new old earlier later latest current previous older newer first last s
 public private shared internal external hidden full partial direct directly indirect automatically
 manually silently without user approval confirmation consent interaction
 outside inside across through beyond against around between about because instead
-one two three don't doesn't didn't isn't aren't wasn't can't cannot won't
+one two three
 """.split())
 # An advisory id in any form a feed uses (CVE-, GHSA-, MAL-, PYSEC-, GO-2026-1, ...).
-_ID = re.compile(r"\b(?:CVE|GHSA|MAL|OSV|PYSEC|RUSTSEC)-|\b[A-Za-z][A-Za-z0-9]+-\d+-\d|\b[A-Z][A-Z0-9]+-\d")
+_ID = re.compile(r"\b(?:CVE|GHSA|MAL|OSV|PYSEC|RUSTSEC)-|\b[A-Za-z][A-Za-z0-9]+-\d+-\d|\b[A-Z][A-Z0-9]+-\d", re.I)
 
 
 @dataclass(frozen=True)
@@ -126,26 +133,36 @@ def advisory_text(c) -> str:
                      if isinstance(t, str) and t.strip())
 
 
-def _refused(line: str, limit: int, known: set[str], names: set[str]) -> str | None:
-    """Why the line is refused, or None."""
+def _refused(line: str, limit: int, known: set[str], cased: set[str], names: set[str]) -> str | None:
+    """Why the line is refused, or None. ``known``: casefolded words it may use;
+    ``cased``: the advisory's and the names' words as written, which a capitalised word
+    must be one of (the vocabulary never vouches for a name)."""
     if not line or len(line) > limit:
         return "length"
     if not _ALLOWED.fullmatch(line):
         return "character"
-    if _URL.search(line):
-        return "url"
     if _ID.search(line):
         return "id"
+    bare = line
+    for n in sorted(names, key=len, reverse=True):
+        bare = bare.replace(n, " ")
+    if _URL.search(line) or "//" in bare or _DOMAIN.search(bare):
+        return "url"
     if _OPTION.search(line) or _COMMAND.search(line):
         return "command"
     toks = [t for t in _tokens(line) if t not in names]
-    for tok in toks:  # the shapes first, so a URL is refused as one whatever its neighbours
+    for tok in toks:
         if "@" in tok:
             return "mention"
-        if ":" in tok or _DOMAIN.fullmatch(tok):
+        if ":" in tok:
             return "url"
-    if any(part.casefold() not in known for tok in toks for part in tok.split("/") if part):
-        return "name"
+    for i, tok in enumerate(toks):
+        for part in (x for x in tok.split("/") if x):
+            if part.casefold() not in known:
+                return "name"
+            if any(ch.isupper() for ch in part) and part not in cased and not (i == 0 and part[1:].islower()
+                                                                            and part.casefold() in SUBJECTS):
+                return "name"
     try:
         compose._guard(line)
     except ValueError:
@@ -157,9 +174,18 @@ def check(w: Wording, advisory: str, names) -> str | None:
     """Why the draft is refused, or None when both lines may be posted. ``advisory`` is
     the source title and text; ``names`` the product's and package's exact names."""
     names = {n for n in names if isinstance(n, str) and n}
-    known = {p.casefold() for t in _tokens(advisory) for p in (t, *t.split("/")) if p} \
-        | {p.casefold() for n in names for t in (n, *_tokens(n)) for p in (t, *t.split("/")) if p} | VOCABULARY
-    return _refused(w.headline, HEADLINE_CHARS, known, names) or _refused(w.who, WHO_CHARS, known, names)
+    cased = {p for t in [*_tokens(advisory), *(x for n in names for x in (n, *_tokens(n)))]
+             for p in (t, *t.split("/")) if p}
+    known = {p.casefold() for p in cased} | VOCABULARY
+    why = _refused(w.headline, HEADLINE_CHARS, known, cased, names) or _refused(w.who, WHO_CHARS, known, cased, names)
+    if why:
+        return why
+    first = _tokens(w.who)[:1]
+    if not first or first[0].casefold() not in SUBJECTS:
+        return "subject"  # the Who line names who is exposed; it never tells anyone to do anything
+    if not any(w.headline.startswith(n + " ") for n in names):
+        return "subject"  # the headline starts with the product or package, as design section 6 says
+    return None
 
 
 def parse(answer) -> Wording | None:
