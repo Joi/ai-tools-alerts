@@ -840,6 +840,134 @@ def test_versions_are_compared_as_numbers(tmp_path, monkeypatch, capsys, have, n
     assert len(_upgrade_lines(capsys)) == (1 if older else 0)
 
 
+# ---------------------------------------------------------------- the ruleset pin (ai-tools-alerts#ed7n)
+
+def _pin(**over):
+    """A pin of this reader's own ruleset, changed by ``over``."""
+    from aitools_alerts import ruleset
+    rs = ruleset.load()
+    return ruleset.Pin(**{"version": rs.version, "sha256": rs.digest, "min_version": 1, **over})
+
+
+def _mirror_with_pin(tmp_path, monkeypatch, pin, min_cli=None):
+    """A mirror on disk whose certificate carries ``pin``, and the config and root for it."""
+    from mirror_helpers import Mirror
+    m = Mirror()
+    m.publish_cert(min_cli=min_cli, ruleset_pin=pin)
+    m.root_post(m.bot_sec, advisory(posted_by="relay-bot"))
+    (tmp_path / "mirror").mkdir()
+    write_config(f'mirror_url = "{m.write(tmp_path / "mirror")}"\n')
+    monkeypatch.setenv(cli.TRUST_ROOT_ENV, m.root)
+    return m
+
+
+def _outdated_lines(capsys) -> list:
+    return [x for x in capsys.readouterr().err.split("\n") if x.startswith("aitools-alerts: out of date:")]
+
+
+def test_a_cli_below_the_pins_min_version_says_out_of_date_on_every_command_and_hides_nothing(tmp_path, monkeypatch, sent, capsys):
+    have = _pin().version
+    _mirror_with_pin(tmp_path, monkeypatch, _pin(version=99, min_version=99, sha256="0" * 64))
+    want = [f"aitools-alerts: out of date: this aitools-alerts has ruleset {have}; the trust root pins ruleset 99 "
+            "and accepts none below 99. It judges no level until it is upgraded: no source check, no computed expiry; "
+            "alerts are shown as posted. See the README to upgrade."]
+    assert cli.main(["check"]) == 0 and _outdated_lines(capsys) == []  # no pull yet: no certificate, no line
+    for argv, status in ((["pull"], 0), (["check"], 0), (["check", "--json"], 0), (["plan", "AITA-TEST-0001"], 0),
+                         (["run"], 2), (["notify"], 0), (["run", "--quiet"], 0), (["verify"], 0),
+                         (["plan", "no-such-id"], 1)):
+        assert cli.main(argv) == status, argv  # the status is the command's own
+        assert _outdated_lines(capsys) == want, argv
+    assert len(sent["calls"]) == 1  # the critical was notified, once
+    assert cli.main(["run", "--json"]) == 0
+    io = capsys.readouterr()
+    out = json.loads(io.out)
+    assert out["ruleset_outdated"] == {"have": have, "pinned": 99, "min_version": 99}
+    assert io.err.count("out of date:") == 1 and "upgrade:" not in io.err and out["min_cli"] is None
+    assert [m["level"] for m in out["matches"]] == ["critical"]  # the alert is still shown, at its level
+
+
+def test_a_cli_at_the_pinned_version_with_another_digest_says_out_of_date(tmp_path, monkeypatch, sent, capsys):
+    have = _pin().version
+    _mirror_with_pin(tmp_path, monkeypatch, _pin(sha256="0" * 64))
+    assert cli.main(["run", "--json"]) == 2
+    io = capsys.readouterr()
+    assert json.loads(io.out)["ruleset_outdated"] == {"have": have, "pinned": have, "min_version": 1}
+    assert [x for x in io.err.split("\n") if "out of date:" in x] == [
+        f"aitools-alerts: out of date: this aitools-alerts has a ruleset {have} that differs from the "
+        f"ruleset {have} the trust root pins. It judges no level until it is upgraded: no source check, "
+        "no computed expiry; alerts are shown as posted. See the README to upgrade."]
+
+
+@pytest.mark.parametrize("over", [None, {}, {"min_version": "own"}, {"version": 99, "sha256": "0" * 64},
+                                  {"version": 99, "min_version": "own", "sha256": "0" * 64},
+                                  {"version": 1, "min_version": 1, "sha256": "0" * 64}])
+def test_a_cli_the_pin_allows_says_nothing(tmp_path, monkeypatch, sent, capsys, over):
+    """No pin; the reader's own ruleset; a later pin whose min_version the reader meets; a pin the reader is ahead of."""
+    if over is not None and over.get("min_version") == "own":
+        over = {**over, "min_version": _pin().version}
+    if over is not None and over.get("version") == 1 and _pin().version == 1:
+        pytest.skip("this reader is on ruleset 1: no pin is behind it")
+    _mirror_with_pin(tmp_path, monkeypatch, None if over is None else _pin(**over))
+    assert cli.main(["run", "--json"]) == 2
+    io = capsys.readouterr()
+    assert json.loads(io.out)["ruleset_outdated"] is None and "out of date" not in io.err
+    for argv in (["check"], ["pull"], ["plan", "AITA-TEST-0001"]):
+        assert cli.main(argv) == 0 and _outdated_lines(capsys) == [], argv
+
+
+def test_the_pin_is_read_under_the_current_root_only(tmp_path, monkeypatch, sent, capsys):
+    _mirror_with_pin(tmp_path, monkeypatch, _pin(version=99, min_version=99, sha256="0" * 64))
+    assert cli.main(["pull"]) == 0 and len(_outdated_lines(capsys)) == 1
+    monkeypatch.delenv(cli.TRUST_ROOT_ENV)
+    assert cli.main(["check"]) == 0 and _outdated_lines(capsys) == []
+
+
+def test_an_old_release_with_an_old_ruleset_prints_both_lines_once_each(tmp_path, monkeypatch, sent, capsys):
+    _mirror_with_pin(tmp_path, monkeypatch, _pin(version=99, min_version=99, sha256="0" * 64), min_cli="99.0.0")
+    assert cli.main(["pull"]) == 0
+    err = capsys.readouterr().err
+    assert err.count("aitools-alerts: upgrade:") == 1 and err.count("aitools-alerts: out of date:") == 1
+
+
+@pytest.mark.parametrize("first", [None, "own"])
+def test_a_later_certificate_with_a_pin_this_cli_cannot_read_makes_it_out_of_date(tmp_path, monkeypatch, sent, capsys, first):
+    """The reader holds a good certificate (no pin, or a pin it meets). The root then
+    signs a later one whose pin is in a form this release does not know. The pull must
+    not go on with the older certificate as if nothing were pinned."""
+    m = _mirror_with_pin(tmp_path, monkeypatch, None if first is None else _pin())
+    assert cli.main(["pull"]) == 0 and _outdated_lines(capsys) == []
+    m.publish_unreadable_pin(later=500)
+    m.write(tmp_path / "mirror")
+    assert cli.main(["pull"]) == 0
+    assert _outdated_lines(capsys) == [
+        f"aitools-alerts: out of date: the trust root pins a ruleset in a form this aitools-alerts (ruleset {_pin().version}) "
+        "cannot read. It judges no level until it is upgraded: no source check, no computed expiry; "
+        "alerts are shown as posted. See the README to upgrade."]
+    st = State.load()
+    cert = st.cert_for(m.root)
+    assert cert.ruleset is None and cert.ruleset_unreadable and cert.event["id"] == m.cert["id"]
+    assert pull.unverified(st) is None  # the feed is still verified: only judging stops
+    assert cli.main(["run", "--json"]) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["ruleset_outdated"] == {"have": _pin().version, "pinned": None, "min_version": None}
+    assert out["unverified"] is None and [x["level"] for x in out["matches"]] == ["critical"]
+    assert out["matches"][0]["source_check"] is None
+
+
+def test_a_ruleset_that_cannot_be_loaded_does_not_break_the_line(tmp_path, monkeypatch, sent, capsys):
+    """The pin is there and the reader's own ruleset is damaged: the command's result stands."""
+    from aitools_alerts import ruleset
+    _mirror_with_pin(tmp_path, monkeypatch, _pin(version=99, min_version=99, sha256="0" * 64))
+    assert cli.main(["pull"]) == 0 and len(_outdated_lines(capsys)) == 1
+
+    def boom():
+        raise ruleset.RulesetError("damaged")
+    monkeypatch.setattr(ruleset, "load", boom)
+    assert cli.main(["notify"]) == 0 and _outdated_lines(capsys) == []
+    assert cli._outdated_line({"have": None, "pinned": None, "min_version": None}).startswith(
+        "out of date: the trust root pins a ruleset in a form this aitools-alerts (ruleset unknown) cannot read.")
+
+
 # ------------------------------------------------ may apply never interrupts (0xq6)
 
 def _one_thread_mirror(monkeypatch, adv, patch=None):
