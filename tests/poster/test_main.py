@@ -767,7 +767,7 @@ def test_oversized_digest_posts_what_fits_and_keeps_the_rest(env, monkeypatch):
     _, _, relay = env.run(now=at(6, 9))
     rest = {i for i in ids if i in relay.calls[0][2]}
     assert rest and rest.isdisjoint(listed)
-    for day in (7, 8, 9):  # the backlog moves forward a day at a time and loses nothing
+    for day in (7, 8, 9, 10):  # the backlog moves forward a day at a time and loses nothing
         _, _, relay = env.run(now=at(day, 9))
         later = {i for i in ids if i in relay.calls[0][2]}
         assert later.isdisjoint(listed | rest)
