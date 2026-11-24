@@ -181,6 +181,7 @@ def test_reply_is_held_to_root_publication_rules():
 
 
 def test_digest_lists_every_item_once():
+    """qwpw: one line per post, loudest first, a level word on each line, no sections."""
     _, crit = root(cand())
     _, high = root(cand(id="CVE-2026-0002", aliases=()), ("high", "fix-rce-tier1"))
     c3 = cand(id="CVE-2026-0003", aliases=(), product_text="linux kernel")
@@ -188,12 +189,13 @@ def test_digest_lists_every_item_once():
     later = dataclasses.replace(high, posted_at=NOW + 5, level="critical")
     out = compose.digest([note, high, crit, later], "2026-11-05")
     lines = out.split("\n")
-    assert lines[0] == "Daily digest for 2026-11-05: 3 advisories."
+    assert lines[0] == "Daily digest for 2026-11-05: 3 new alerts." and len(lines) == 4
     assert out.count("CVE-2026-0001") == 1 and out.count("CVE-2026-0002") == 1
     assert out.count("CVE-2026-0003") == 1
-    assert out.index("Critical") < out.index("CVE-2026-0002") < out.index("Notice")
-    assert "High" not in out  # 0002's later version is critical; empty sections are omitted
-    assert compose.digest([], "2026-11-05") == "Daily digest for 2026-11-05: no advisories."
+    assert [ln.split(":")[0] for ln in lines[1:]] == ["- CRITICAL", "- CRITICAL", "- NOTICE"]
+    assert out.index("CVE-2026-0001") < out.index("CVE-2026-0002")  # same level: oldest first
+    assert "High" not in out and "Critical (" not in out  # no sections
+    assert compose.digest([], "2026-11-05") == "Daily digest for 2026-11-05: no new alerts. 0 notices added to the catalog this week: https://buzz.ai-tools.md/alerts/"
 
 
 def test_review_fixes_publication():
@@ -249,7 +251,7 @@ def test_synthetic_digest_and_reply_keep_one_mark():
     _, adv = root(c)
     legacy = dataclasses.replace(adv, title="Claude Code: injection to code execution (CVE-2099-0010)")
     for a in (adv, legacy):  # a synthetic test never reaches a digest, marked or not
-        assert compose.digest([a], "2026-11-05") == "Daily digest for 2026-11-05: no advisories."
+        assert compose.digest([a], "2026-11-05") == "Daily digest for 2026-11-05: no new alerts. 0 notices added to the catalog this week: https://buzz.ai-tools.md/alerts/"
     assert adv.title in compose._titles("Claude Code", adv.id)
     assert legacy.title not in compose._titles("Claude Code", adv.id)
     assert compose.reply_post(dataclasses.replace(adv, level="high"), c,
@@ -273,23 +275,21 @@ def _plain(i, product, url, level="notice", fixed=None, prefix="CVE-2098-", **kw
     return dataclasses.replace(adv, id=f"{prefix}{i:04d}", title=adv.title.replace(c.id, f"{prefix}{i:04d}")) if lead else adv
 
 
-def test_digest_groups_releases_and_leaves_out_leads():
-    advs = [_plain(i, "macOS", REL) for i in range(1, 45)]
-    advs += [_plain(100 + i, "linux kernel", USN) for i in range(9)]
+def test_digest_one_line_per_post_and_leaves_out_leads():
+    """qwpw: no release grouping (a v1 rule; faxq makes one post per fix): one line per post."""
+    advs = [_plain(i, "macOS", REL) for i in range(1, 4)]
     leads = [_plain(200 + i, "Chrome", f"{SOCIAL}{i}", prefix="LEAD-2099-") for i in range(12)]
     leads += [_plain(220, "Chrome", REL, prefix="LEAD-2099-")]  # a lead with a primary source too
     leads += [dataclasses.replace(_plain(221, "Chrome", REL, prefix="LEAD-2099-"), level="high")]
     crit = dataclasses.replace(_plain(300, "macOS", REL), level="critical")
     out = compose.digest(advs + leads + [crit], "2026-11-06")
     lines = out.split("\n")
-    assert lines[0] == "Daily digest for 2026-11-06: 3 advisories."  # leads are not counted
-    assert "Critical (1)" in lines and "Notice (2)" in lines and "High" not in out
-    assert f"- macOS: release 149521, 44 CVEs; update available. {REL}" in lines
-    assert f"- Linux kernel: release USN-8928-1, 9 CVEs; update available. {USN}" in lines
+    assert lines[0] == "Daily digest for 2026-11-06: 4 new alerts." and len(lines) == 5  # leads are not counted
+    assert lines[1].startswith("- CRITICAL: ") and "CVE-2098-0300" in lines[1]
+    assert lines[2] == ("- NOTICE: macOS: security advisory (CVE-2098-0001); "
+                        f"fixed version not stated, check the vendor. {REL}")
     assert "LEAD-" not in out and "leads" not in out and "Chrome" not in out  # 8ke5
-    assert out.count("CVE-2098-0300") == 1 and "CVE-2098-0001" not in out
-    same = [_plain(i, "macOS", REL, fixed="27.2") for i in range(1, 4)]
-    assert "3 CVEs; fixed in 27.2." in compose.digest(same, "2026-11-06")
+    assert "CVEs" not in out and "release 149521" not in out
     # Only leads, or only items with no primary source: nothing to list, in either language.
     social = [_plain(400 + i, "macOS", f"{SOCIAL}{i}") for i in range(3)]
     for lang in ("en", "ja"):
@@ -297,37 +297,24 @@ def test_digest_groups_releases_and_leaves_out_leads():
             == compose.digest([], "2026-11-06", lang=lang)
 
 
-def test_digest_groups_keep_marks_and_kinds_apart():
+def test_digest_keeps_marks_and_withholds_one_line():
     real = [_plain(i, "macOS", REL, prefix="CVE-2026-") for i in (1, 2)]
     syn = [_plain(i, "macOS", REL, prefix="CVE-2099-") for i in (3, 4)]
     out = compose.digest(real + syn, "2026-11-06")
-    assert f"- macOS: release 149521, 2 CVEs; update available. {REL}" in out.split("\n")
-    assert "SYNTHETIC" not in out and "1 advisory." in out
-    # A shared catalog URL is not a release, and unverified titles keep their mark.
-    kev = [_plain(i, "macOS", KEV, level="high", exploited=True, prefix="CVE-2026-") for i in (5, 6)]
+    assert "SYNTHETIC" not in out and "2 new alerts." in out and "2099" not in out
     c = cand(id="CVE-2026-0007", aliases=(), product_text="macOS", injection_exec=False,
              sources=(Source(REL, None),))
     unv = [compose.root_post(dataclasses.replace(c, id=f"CVE-2026-000{i}"), ("high", "unverified"),
                              scope(c), posted_at=NOW)[1] for i in (7, 8)]
-    out = compose.digest(kev + unv, "2026-11-06")
-    assert "4 advisories" in out and "CVEs" not in out and out.count("unverified") == 2
-    # An unverified trojanized release keeps its own line and its mark, at any level.
-    tc = cand(id="CVE-2026-0011", aliases=(), product_text="macOS", injection_exec=False,
-              trojanized=True, fixed=None, sources=(Source(REL, None),))
-    troj = [compose.root_post(dataclasses.replace(tc, id=f"CVE-2026-001{i}"), ("high", "unverified"),
-                              scope(tc), posted_at=NOW)[1] for i in (1, 2)]
-    out = compose.digest(troj, "2026-11-06")
-    assert "2 advisories" in out and "CVEs" not in out and out.count("unverified trojanized release") == 2
-    notice = [dataclasses.replace(a, level="notice") for a in troj]  # the title alone keeps them apart
-    out = compose.digest(notice, "2026-11-06")
-    assert "2 advisories" in out and "CVEs" not in out and out.count("unverified trojanized release") == 2
-    # A group the guard refuses is one withheld item; the next group still prints.
+    out = compose.digest(unv, "2026-11-06")
+    assert "2 new alerts" in out and out.count("unverified") == 2
+    # A line the guard refuses is one withheld item; the next line still prints.
     bad = [dataclasses.replace(a, products=[dataclasses.replace(a.products[0], name="host-alpha")],
-                               title=f"host-alpha: security advisory ({a.id})") for a in real]
+                               title=f"host-alpha: security advisory ({a.id})") for a in real[:1]]
     with pytest.MonkeyPatch.context() as m:
         m.setattr(socket, "gethostname", lambda: "host-alpha")
         out = compose.digest(bad + [_plain(i, "linux kernel", USN) for i in (3, 4)], "2026-11-06")
-    assert "1 item withheld" in out and "host-alpha" not in out and "2 CVEs" in out
+    assert "1 item withheld" in out and "host-alpha" not in out and out.count("Linux kernel") == 2
 
 
 # ------------------------------------------------ components (ai-tools-alerts#qme5)
@@ -494,17 +481,18 @@ def test_reply_post_ja_names_the_changed_fields():
                               f"出典: {GHSA}"]
 
 
-def test_digest_ja_scaffold_and_groups():
-    assert compose.digest([], "2026-11-06", lang="ja") == "2026-11-06 のデイリーダイジェスト: アドバイザリはありません。"
+def test_digest_ja_scaffold():
+    assert compose.digest([], "2026-11-06", lang="ja") == (
+        "2026-11-06 のデイリーダイジェスト: 新しいアラートはありません。"
+        "今週カタログに追加された注意は 0 件です: https://buzz.ai-tools.md/alerts/")
     advs = [_plain(i, "macOS", REL) for i in range(1, 4)] + [_plain(9, "Chrome", KEV)]
     advs += [_plain(10, "Chrome", BLOG), _plain(11, "Chrome", f"{SOCIAL}1", prefix="LEAD-2099-")]  # left out
     en, ja = compose.digest(advs, "2026-11-06"), compose.digest(advs, "2026-11-06", lang="ja")
-    assert len(en.split("\n")) == len(ja.split("\n"))
+    assert len(en.split("\n")) == len(ja.split("\n")) == 5
     lines = ja.split("\n")
-    assert lines[0] == "2026-11-06 のデイリーダイジェスト: 2 件。" and "注意 (2)" in lines
-    assert f"- macOS: リリース 149521, CVE 3 件; 更新あり。 {REL}" in lines
-    assert f"- Chrome: セキュリティアドバイザリ (CVE-2098-0009); 修正版の記載なし、ベンダーの情報を確認してください。 {KEV}" in lines
-    assert (f"- Chrome: security advisory (CVE-2098-0009); fixed version not stated, check the vendor. {KEV}"
+    assert lines[0] == "2026-11-06 のデイリーダイジェスト: 新しいアラート 4 件。"
+    assert f"- 注意: Chrome: セキュリティアドバイザリ (CVE-2098-0009); 修正版の記載なし、ベンダーの情報を確認してください。 {KEV}" in lines
+    assert (f"- NOTICE: Chrome: security advisory (CVE-2098-0009); fixed version not stated, check the vendor. {KEV}"
             in en.split("\n"))
     assert "CVE-2098-0010" not in en + ja and "LEAD-" not in en + ja and "未評価" not in ja
 
@@ -519,10 +507,10 @@ def test_digest_leaves_out_retracted_expired_and_synthetic():
     _, syn = root(cand(id="CVE-2099-0010", aliases=()))
     cleared = dataclasses.replace(gone, posted_at=NOW + 1, expires_at=None)  # the latest version wins
     advs, kw = [crit, retr, gone, edge, syn], dict(retracted=["ghsa-AAAA-bbbb-cccc"], now=NOW + 10)
-    for lang, head, empty in (("en", "Daily digest for 2026-11-05: 2 advisories.", "no advisories"),
-                              ("ja", "2026-11-05 のデイリーダイジェスト: 2 件。", "アドバイザリはありません")):
+    for lang, head, empty in (("en", "Daily digest for 2026-11-05: 2 new alerts.", "no new alerts"),
+                              ("ja", "2026-11-05 のデイリーダイジェスト: 新しいアラート 2 件。", "新しいアラートはありません")):
         out = compose.digest(advs, "2026-11-05", lang=lang, **kw)
-        assert out.split("\n")[0] == head and "(2)" in out
+        assert out.split("\n")[0] == head and len(out.split("\n")) == 3
         assert "0001" in out and "0004" in out and not any(i in out for i in ("0002", "0003", "2099"))
         assert "0003" in compose.digest(advs + [cleared], "2026-11-05", lang=lang, **kw)
         assert "0003" in compose.digest(advs, "2026-11-05", lang=lang)  # no now: expiry not judged
@@ -790,9 +778,6 @@ def test_a_thread_titled_with_its_ledger_key_still_matches_the_templates():
     _, adv = root(cand(id=key, aliases=()), ("high", "severity-tier1"))
     old = dataclasses.replace(adv, title=legacy)
     assert compose._exploited(old) and compose._ja_title(old).endswith(f"悪用が確認された脆弱性 ({key})")
-    plain = dataclasses.replace(adv, level="notice", title=f"Claude Code: security advisory ({key})")
-    assert compose._group_key(plain) is not None and compose._group_key(dataclasses.replace(
-        plain, title="Claude Code: security advisory (CVE-2026-88968)")) is not None
 
 
 @pytest.mark.parametrize("affected,words", [

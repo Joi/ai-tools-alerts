@@ -73,6 +73,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from aitools_alerts import TRUST_ROOT_PUBKEY, check, manifest, pull, ruleset, schema, versions
+from aitools_alerts import config as _member_config
 from aitools_alerts.poster import (candidates, catalog, compose, inputs, ledger, recompute, rules, signer, translate,
                                    wording,
                                    transport)
@@ -587,7 +588,8 @@ class Run:
             ids = self.state["digest_ids"]
             if eid not in ids:  # a replay after a crash records it once
                 ids = (ids + [eid])[-inputs.MAX_DIGEST_IDS:]
-            self.state.update(digest_date=it["date"], digest_at=it["adv"]["cutoff"],
+            self.state.update(weekly=it["adv"].get("week", self.state["weekly"]),
+                              digest_date=it["date"], digest_at=it["adv"]["cutoff"],
                               digest_roots=it["adv"]["roots"], digest_ids=ids,
                               held=keep, digested=(self.state["digested"] + sorted(snap))[-MAX_DIGESTED:])
             _say(f"digest {it['date']} sent: {eid}")
@@ -851,6 +853,17 @@ class Run:
                            adv=asdict(adv), exploited=c.exploited, ja=ja,
                            source_title=title if i == 0 else None, floor=floor if i == 0 else None)
                 for i, ch in enumerate(chans)]
+
+    def _posted(self, h) -> bool:
+        """A held notice has posted when every id it holds has a thread under its product's
+        name, current or former (wa6n). Every id, not any: a held fix group (faxq) keeps
+        its members as aliases, and one member's root leaves the others unposted."""
+        names = {h["scope"]}
+        for s in rules._default_index().values():
+            if h["scope"] == s.name or h["scope"] in getattr(s, "formerly", ()):
+                names.update({s.name, *getattr(s, "formerly", ())})
+        return all(any(self.led.lookup([i], scope=n) is not None for n in names)
+                   for i in [h["adv"]["id"], *h["adv"]["aliases"]])
 
     @staticmethod
     def _notice_keys(scope, adv: dict) -> list[str]:
@@ -1168,14 +1181,13 @@ class Run:
             _say(f"digest held: {e}")
             self.n["digest_held"] += 1
             return
-        # Ledger posts oldest change first (so a backlog larger than one post moves forward
-        # day by day), then held notices loudest first: (advisory, held entry, (listed, root)).
-        posted = [h for h in self.state["held"]  # a notice that has since posted is listed once, as posted
-                  if self.led.lookup([h["adv"]["id"], *h["adv"]["aliases"]], scope=h["scope"]) is not None]
-        led_items, held_items, titles = [], [], {}
+        # The threads whose root was posted since the last digest, oldest first (so a
+        # backlog larger than one post moves forward day by day): (advisory, (posted, root)).
+        # A thread is listed once, by its root; a later change is a reply in it (qwpw).
+        led_items, titles = [], {}
         at, done = self.state["digest_at"], set(self.state["digest_roots"])
-        for e in self.led.entries_since(at - 1):
-            if e.listed == at and e.root_event_id in done:
+        for e in self.led.roots_since(at - 1):
+            if e.posted_at == at and e.root_event_id in done:
                 continue  # listed by the last digest
             try:
                 adv = schema.validate(e.advisory)
@@ -1183,57 +1195,75 @@ class Run:
                 self.n["withheld"] += 1
                 continue
             if gone_roots.isdisjoint({e.root_event_id, *e.channel_ids.values()}):  # else its thread is withdrawn
-                led_items.append((adv, None, (e.listed, e.root_event_id)))
+                led_items.append((adv, (e.posted_at, e.root_event_id)))
                 if adv.products:
                     titles[(adv.id, adv.products[0].name)] = e.source_title
-        unlisted = []
+        # The held notices: the week's catalog additions, which only the weekly summary lists.
+        # A notice that has since posted is listed once, as posted, and one withdrawn since
+        # (retracted, expired) never; both leave the held list with this digest (retire).
+        notices, unlisted, retire = [], [], []
         for h in self.state["held"]:
-            if h not in posted:
-                try:
-                    a = schema.validate(h["adv"])
-                    if not compose.listable(a):
-                        # 8ke5: a lead, or no primary source. It leaves the held list but is
-                        # never marked digested, so a sighting with a primary source is held
-                        # again and listed.
-                        unlisted.append(h)
-                        continue
-                    held_items.append((a, h, None))
-                    if a.products:
-                        titles.setdefault((a.id, a.products[0].name), h.get("source_title"))
-                except ValueError:
-                    self.n["withheld"] += 1
+            if self._posted(h):
+                retire.append(h)
+                continue
+            try:
+                a = schema.validate(h["adv"])
+            except ValueError:
+                self.n["withheld"] += 1
+                continue
+            if compose.withdrawn(a, gone, self.now):
+                retire.append(h)
+                continue
+            if not compose.listable(a) or not a.products:
+                # 8ke5: a lead, or no primary source. It leaves the held list but is
+                # never marked digested, so a sighting with a primary source is held
+                # again and listed.
+                unlisted.append(h)
+                continue
+            notices.append((a, h))
         if unlisted:
             self.state["held"] = [h for h in self.state["held"] if h not in unlisted]
             self.save()
-        led_items.sort(key=lambda x: x[2])
-        held_items.sort(key=lambda x: (-RANK[x[0].level], -x[0].posted_at))
-        items = led_items + held_items
-        keep = len(items)
+        # qwpw: the first digest of an ISO week after the one the last summary was sent in
+        # (a fresh state names its own week): Monday's, or the next one when Monday's was missed.
+        week = inputs.iso_week(local.date())
+        weekly = self.state["weekly"] < week
+        link = _mirror_link(self.config)
+        summaries, names = {}, [a.products[0].name for a, _ in notices]
+        if weekly:
+            try:
+                summaries["en"] = compose.weekly(names, link)
+            except ValueError:  # refused by the publication check: the notices wait, the daily posts
+                self.n["withheld"] += 1
+                weekly = False
+        keep = len(led_items)
         while True:  # the largest prefix that fits one post; the rest waits for tomorrow
             try:
-                text = compose.digest([x[0] for x in items[:keep]], local.date(), retracted=gone, now=self.now,
-                                      titles=titles) + compose.level_report(self.rc["lowered"], self.rc["tripped"])
+                text = compose.digest([x[0] for x in led_items[:keep]], local.date(), retracted=gone, now=self.now,
+                                      titles=titles, held=len(notices), link=link, summary=summaries.get("en")) \
+                    + compose.level_report(self.rc["lowered"], self.rc["tripped"])
             except ValueError:
                 self.n["withheld"] += 1
                 return
             if len(text) <= transport.MAX_CONTENT or keep == 0:
                 break
             keep //= 2
-        taken = items[:keep]
-        led_taken = [x[2] for x in taken if x[2] is not None]
+        taken = led_items[:keep]
+        led_taken = [x[1] for x in taken]
         if len(led_taken) == len(led_items):  # the roots at the cutoff are listed: never again (8ke5)
             cutoff = self.now
             roots = [r for t, r in led_taken if t == cutoff]
-        elif led_taken:  # acknowledged: every change up to the last one listed, by root at that time
+        elif led_taken:  # acknowledged: every root up to the last one listed, by root at that time
             cutoff = led_taken[-1][0]
             roots = [r for t, r in led_taken if t == cutoff] + (sorted(done) if cutoff == at else [])
         else:
             cutoff, roots = at, sorted(done)
-        snap = {"held": sorted({k for _, h, _ in taken if h is not None
-                                for k in self._notice_keys(h["scope"], h["adv"])}),
-                "cutoff": cutoff, "roots": roots}
+        acked = retire + ([h for _, h in notices] if weekly else [])
+        snap = {"held": sorted({k for h in acked for k in self._notice_keys(h["scope"], h["adv"])}),
+                "cutoff": cutoff, "roots": roots, **({"week": week} if weekly else {})}
         ja = self._ja(lambda: compose.digest([x[0] for x in taken], local.date(), lang="ja", retracted=gone,
-                                             now=self.now, titles=titles)
+                                             now=self.now, titles=titles, held=len(notices), link=link,
+                                             summary=compose.weekly(names, link, "ja") if weekly else None)
                       + compose.level_report(self.rc["lowered"], self.rc["tripped"], "ja"))
         item = self._item("digest", None, [f"digest:{today}"], "feed", text, key_id=today, adv=snap, date=today, ja=ja)
         if self.rc["lowered"]:
@@ -1248,6 +1278,19 @@ class Run:
             self.rc.update(lowered=[], reported=None)
             self.save_rc()
         self.deliver(item)
+
+
+def _mirror_link(config) -> str:
+    """The mirror a digest links to: the poster's own when public, else the default
+    (a file:// URL names a local path, and one naming a host the publication check refuses
+    would refuse every digest: neither reaches a post)."""
+    url = config.translate_mirror_url
+    if isinstance(url, str) and url.startswith("https://"):
+        try:
+            return compose._guard(url)
+        except ValueError:
+            pass
+    return _member_config.DEFAULT_MIRROR_URL
 
 
 def _observed(c) -> int | None:

@@ -104,6 +104,7 @@ def test_live_feed_replay(env, monkeypatch):  # noqa: F811
     monkeypatch.setattr(main, "gather", lambda *a, **k: (
         feeding.pop(0) if feeding else [], {}, {"kev": "ok", "collector": "ok", "heartbeat": "off"}))
     sent = []  # (time, channel, reply-to, text)
+    held = {}  # day: the held notices after that day's 09:20 digest run
     for t, cands in steps:
         feeding[:] = [cands]
         for c in cands:  # h340: the vendor's page states what the live thread then said
@@ -114,6 +115,9 @@ def test_live_feed_replay(env, monkeypatch):  # noqa: F811
         code, summary, relay = env.run(now=t)
         assert code == 0, summary
         sent += [(t, *c) for c in relay.calls]
+        local = dt.datetime.fromtimestamp(t, TOKYO)
+        if (local.hour, local.minute) == (9, 20):
+            held[local.date().isoformat()] = env.state()["held"]
 
     roots = {text.splitlines()[0]: (t, ch) for t, ch, reply, text in sent if reply is None
              and not text.startswith("Daily digest")}
@@ -129,11 +133,21 @@ def test_live_feed_replay(env, monkeypatch):  # noqa: F811
     for day in ("2026-11-10", "2026-11-11"):
         assert "LEAD-" not in out[day] and "unrated leads" not in out[day], out[day]
     # First seen at 11:20 Tokyo on 11-07, after that day's 09:20 digest, its fix read at
-    # 13:20: the 11-08 digest lists it once, as a notice with its fix, and no later digest
-    # lists it again (live: 11-10 and 11-11 did, for a source-only reply).
-    assert [d for d, text in sorted(out.items()) if CLAUDE_ID in text] == ["2026-11-08"]
-    notice = out["2026-11-08"].split("\nNotice (")[1]
-    assert f"({CLAUDE_ID})" in notice and "fixed in 2.1.251" in notice
+    # 13:20: a notice with its fix, held. qwpw: no daily digest names it; the 11-08 daily
+    # counts it, Monday 11-09's weekly summary lists it once as a count, and no later digest
+    # lists or counts it again (live: 11-10 and 11-11 listed it, for a source-only reply).
+    assert [d for d, text in sorted(out.items()) if CLAUDE_ID in text] == []
+    (h,) = held["2026-11-08"]
+    assert h["adv"]["id"].startswith(CLAUDE_ID) and h["adv"]["products"][0]["fixed"] == "2.1.251"
+    link = "https://buzz.ai-tools.md/alerts/"
+    assert out["2026-11-08"] == ("Daily digest for 2026-11-08: no new alerts. 1 notice added to the catalog"
+                                 f" this week: {link}")
+    assert out["2026-11-09"] == ("Daily digest for 2026-11-09: no new alerts.\n\nWeekly summary: 1 notice added to the"
+                                 f" catalog this week.\n- Claude Code: 1\nCatalog: {link}")
+    for day in ("2026-11-10", "2026-11-11"):
+        assert out[day] == f"Daily digest for {day}: no new alerts. 0 notices added to the catalog this week: {link}"
+    st = env.state()
+    assert st["held"] == [] and f"Claude Code|{CLAUDE_ID.casefold()}" in st["digested"] and st["weekly"] == "2026-W46"
 
 
 def test_live_digests_leads_are_never_composed():
@@ -239,7 +253,7 @@ def test_replay_11_07_posts_no_old_root(env, monkeypatch, capsys):  # noqa: F811
     assert [len(c) for c in channel] == [3, 3]
     assert [int(re.search(r" aged=(\d+)", s).group(1)) for s in summaries] == [0, 0]
     assert "skipped: no authoritative source=1" in capsys.readouterr().err
-    st = env.state()  # each is a notice for the digest: listed by 11-07's (sent 11:30 Tokyo) or still held
+    st = env.state()  # each is a notice, held for the weekly summary (qwpw), or digested
     noticed = {k.split("|", 1)[1] for k in st["digested"]} | {h["adv"]["id"].casefold() for h in st["held"]}
     held_ids = {c.id.casefold() for cs in vendor for c in _pages(env, cs)}
     assert len(held_ids) == 16 and held_ids <= noticed and not any("32846" in i for i in noticed)

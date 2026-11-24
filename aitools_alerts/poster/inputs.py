@@ -42,10 +42,32 @@ RUN_DIR = re.compile(r"\d{4}-\d{2}-\d{2}T\d{6}Z")
 
 _STATE_KEYS = {"schema_version", "since", "heartbeat", "collector", "kev_since",
                "digest_date", "digest_at", "digest_roots", "digest_ids", "held", "digested",
-               "outbox", "deferred", "withheld", "waiting", "gate"}
+               "outbox", "deferred", "withheld", "waiting", "gate", "weekly"}
 MAX_WAITING = 2000  # 0dvh: first sight of a held high, per scope and id
 GATE = 1  # h340: everything unpublished in the state was admitted by an authoritative source
 MAX_DIGEST_IDS = 10  # the event ids of the last digests sent, oldest first
+WEEK = re.compile(r"\d{4}-W\d{2}")  # qwpw: the ISO week of the last weekly summary sent
+_TOKYO = _dt.timezone(_dt.timedelta(hours=9))
+
+
+def week_ok(v) -> bool:
+    """A week string ``iso_week`` writes: a week that exists (2025-W53 does not)."""
+    if not (isinstance(v, str) and WEEK.fullmatch(v)):
+        return False
+    try:
+        _dt.date.fromisocalendar(int(v[:4]), int(v[6:]), 1)
+    except ValueError:
+        return False
+    return True
+
+
+def iso_week(day) -> str:
+    """The ISO week of a date, or of an epoch second in Tokyo: ``2026-W48``. Such strings
+    sort by week."""
+    if isinstance(day, int):
+        day = _dt.datetime.fromtimestamp(day, _TOKYO).date()
+    y, w, _ = day.isocalendar()
+    return f"{y:04d}-W{w:02d}"
 _ITEM_KEYS = {"key", "kind", "scope", "ids", "channel", "text", "adv", "exploited", "date", "sent", "root"}
 _CANDIDATE_FIELDS = frozenset(Candidate.__dataclass_fields__)
 _KINDS = {"root", "copy", "reply", "digest", "ja"}
@@ -393,7 +415,7 @@ def new_state(now: int, backfill_days: int) -> dict:
     return {"schema_version": 1, "since": since, "heartbeat": None, "collector": None,
             "kev_since": None, "digest_date": None, "digest_at": since, "digest_roots": [], "digest_ids": [],
             "held": [], "digested": [], "outbox": [], "deferred": [], "withheld": [], "waiting": {},
-            "gate": GATE}
+            "gate": GATE, "weekly": iso_week(now)}  # qwpw: the first summary is next Monday
 
 
 def _strs(v) -> bool:
@@ -439,7 +461,8 @@ def _item_ok(it) -> bool:
         return False  # a reply names its thread's root; a root or digest names none
     if kind == "digest":
         return (it["scope"] is None and _date_ok(it["date"]) and isinstance(adv, dict)
-                and set(adv) == {"held", "cutoff", "roots"} and type(adv["cutoff"]) is int
+                and set(adv) - {"week"} == {"held", "cutoff", "roots"} and type(adv["cutoff"]) is int
+                and ("week" not in adv or week_ok(adv["week"]))
                 and isinstance(adv["held"], list) and all(isinstance(k, str) for k in adv["held"])
                 and isinstance(adv["roots"], list) and all(isinstance(k, str) for k in adv["roots"]))
     if not (isinstance(it["scope"], str) and it["scope"] and it["date"] is None):
@@ -499,6 +522,8 @@ def load_state(path: Path, now: int, backfill_days: int) -> dict:
         st["withheld"] = []  # a state file written before withheld existed (8acj)
     if isinstance(st, dict) and "waiting" not in st:
         st["waiting"] = {}  # a state file written before waiting existed (0dvh)
+    if isinstance(st, dict) and "weekly" not in st:
+        st["weekly"] = iso_week(now)  # written before the weekly summary (qwpw): the first is next Monday
     if isinstance(st, dict) and "gate" not in st:
         st["gate"] = 0  # written before the h340 gate: main.run migrates it once
     if isinstance(st, dict) and set(st) == _STATE_KEYS - {"digest_ids"}:
@@ -508,6 +533,7 @@ def load_state(path: Path, now: int, backfill_days: int) -> dict:
               and type(st["schema_version"]) is int and st["schema_version"] == 1
               and type(st["since"]) is int and type(st["digest_at"]) is int
               and type(st["gate"]) is int and st["gate"] in (0, GATE)
+              and week_ok(st["weekly"])
               and isinstance(st["digest_roots"], list) and all(isinstance(i, str) for i in st["digest_roots"])
               and isinstance(st["digest_ids"], list) and len(st["digest_ids"]) <= MAX_DIGEST_IDS
               and all(isinstance(i, str) and _HEX64.fullmatch(i) for i in st["digest_ids"])

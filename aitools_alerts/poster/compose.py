@@ -25,10 +25,11 @@ import json
 import re
 import socket
 import time
+from collections import Counter
 from dataclasses import asdict
-from urllib.parse import urlsplit
 
 from aitools_alerts import schema, wire
+from aitools_alerts.config import DEFAULT_MIRROR_URL
 from aitools_alerts.poster import candidates
 
 POSTED_BY = "relay-bot"
@@ -675,27 +676,35 @@ def level_report(lowered, tripped, lang: str = "en") -> str:
     return _guard("\n\n" + "\n".join(lines)) if lines else ""
 
 
-_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
-
-
 _DIGEST = {
-    "en": dict(empty=lambda d: f"Daily digest for {d}: no advisories.",
-               head=lambda d, n: f"Daily digest for {d}: {n} advisor{'y' if n == 1 else 'ies'}.",
-               section=lambda lv, n: f"{lv.capitalize()} ({n})",
+    "en": dict(head=lambda d, n: f"Daily digest for {d}: {n} new alert{'' if n == 1 else 's'}.",
+               quiet=lambda d, n, url: f"Daily digest for {d}: no new alerts. "
+                                       f"{n} notice{'' if n == 1 else 's'} added to the catalog this week: {url}",
+               bare=lambda d: f"Daily digest for {d}: no new alerts.",
+               level=lambda lv: lv.upper(),
                withheld=lambda n: f"{n} item{'s' if n > 1 else ''} withheld by the publication check.",
                fixed=lambda v: f"fixed in {v}", nofix="fixed version not stated, check the vendor", end=".",
-               release=lambda seg: f"release {seg}",
-               one="one release", cves=lambda n: f"{n} CVEs", update="update available",
-               title=lambda a: a.title, upstream=lambda t: f": {t}"),
-    "ja": dict(empty=lambda d: f"{d} のデイリーダイジェスト: アドバイザリはありません。",
-               head=lambda d, n: f"{d} のデイリーダイジェスト: {n} 件。",
-               section=lambda lv, n: f"{_JA_LEVEL[lv]} ({n})",
+               title=lambda a: a.title, upstream=lambda t: f": {t}",
+               w_head=lambda n: f"Weekly summary: {n} notice{'' if n == 1 else 's'} added to the catalog this week.",
+               w_line=lambda name, n: f"- {name}: {n}",
+               w_more=lambda k, n: f"- {k} more product{'' if k == 1 else 's'}: {n}",
+               w_link=lambda url: f"Catalog: {url}"),
+    "ja": dict(head=lambda d, n: f"{d} のデイリーダイジェスト: 新しいアラート {n} 件。",
+               quiet=lambda d, n, url: f"{d} のデイリーダイジェスト: 新しいアラートはありません。"
+                                       f"今週カタログに追加された注意は {n} 件です: {url}",
+               bare=lambda d: f"{d} のデイリーダイジェスト: 新しいアラートはありません。",
+               level=lambda lv: _JA_LEVEL[lv],
                withheld=lambda n: f"{n} 件を公開前チェックで保留しました。",
                fixed=lambda v: f"修正版 {v}", nofix="修正版の記載なし、ベンダーの情報を確認してください", end="。",
-               release=lambda seg: f"リリース {seg}",
-               one="1 件のリリース", cves=lambda n: f"CVE {n} 件", update="更新あり",
-               title=_ja_title, upstream=lambda t: f" 原題: {t}"),
+               title=_ja_title, upstream=lambda t: f" 原題: {t}",
+               w_head=lambda n: f"週間まとめ: 今週カタログに追加された注意は {n} 件です。",
+               w_line=lambda name, n: f"- {name}: {n} 件",
+               w_more=lambda k, n: f"- ほか {k} 製品: {n} 件",
+               w_link=lambda url: f"カタログ: {url}"),
 }
+
+_RANK = {"critical": 2, "high": 1, "notice": 0}
+WEEKLY_LINES = 30  # products named in a weekly summary; the rest are one line
 
 
 def listable(a: schema.Advisory) -> bool:
@@ -703,45 +712,49 @@ def listable(a: schema.Advisory) -> bool:
     return not a.id.startswith("LEAD-") and any(schema.is_primary(s.url) for s in a.sources)
 
 
+def withdrawn(a: schema.Advisory, gone, now: int | None = None) -> bool:
+    """A digest never lists it: a synthetic id, an id or alias in ``gone`` (case-folded
+    retracted ids) or, given ``now``, a version that expired before it (``pull.active``)."""
+    return (is_synthetic(a.id) or not {i.casefold() for i in (a.id, *a.aliases)}.isdisjoint(gone)
+            or (now is not None and a.expires_at is not None and a.expires_at < now))
+
+
 def _single(a: schema.Advisory, t=_DIGEST["en"], title: str | None = None) -> str:
     fixed = t["fixed"](a.products[0].fixed) if a.products[0].fixed else t["nofix"]
     up = t["upstream"](title) if title else ""
-    return f"- {t['title'](a)}{up}; {fixed}{t['end']} {_primary(a.sources)}"
+    return f"- {t['level'](a.level)}: {t['title'](a)}{up}; {fixed}{t['end']} {_primary(a.sources)}"
 
 
-def _group_key(a: schema.Advisory):
-    """Advisories that share one digest line, or None for a line of its own. A
-    critical is always its own line; so is any title but the plain kind, so a shared
-    catalog URL (every KEV entry) never reads as one release and "unverified" stays."""
-    name = a.products[0].name
-    if a.level == "critical" or a.title not in {f"{name}: security advisory ({i})" for i in {a.id, public_form(a.id)}}:
-        return None
-    if a.id.startswith("CVE-"):
-        return ("release", name, _primary(a.sources))
-    return None
-
-
-def _group_line(key, members, t=_DIGEST["en"]) -> str:
-    url = key[2]  # primary: digest() lists only advisories with a primary source
-    seg = next((p for p in reversed(urlsplit(url).path.split("/")) if p), "")
-    label = t["release"](seg) if _LABEL.fullmatch(seg) else t["one"]
-    fixes = {a.products[0].fixed for a in members}
-    fix = t["fixed"](fixes.pop()) if len(fixes) == 1 and None not in fixes else t["update"]
-    return f"- {key[1]}: {label}, {t['cves'](len(members))}; {fix}{t['end']} {url}"
+def weekly(products, link: str, lang: str = "en") -> str:
+    """The weekly summary (qwpw, v2 design section 7): the notices of the week counted by
+    product, one product name per notice in ``products``, most first then by name, at
+    most WEEKLY_LINES lines and one for the rest; counts only, then the catalog link."""
+    t = _DIGEST[lang]
+    counts = sorted(Counter(products).items(), key=lambda kv: (-kv[1], kv[0]))
+    lines = [t["w_head"](sum(n for _, n in counts))]
+    lines += [t["w_line"](name, n) for name, n in counts[:WEEKLY_LINES]]
+    rest = counts[WEEKLY_LINES:]
+    if rest:
+        lines.append(t["w_more"](len(rest), sum(n for _, n in rest)))
+    lines.append(t["w_link"](link))
+    return _guard(_inline("\n".join(lines)))
 
 
 def digest(advs_today, date, lang: str = "en", *, retracted=(), now: int | None = None,
-           titles=None) -> str:
-    """The daily digest: every advisory once per id and product (latest posted_at
-    wins), critical first. Within high and notice, plain CVE advisories sharing a
-    primary source URL and product are one line (a vendor release); N counts lines. An item that fails the publication guard is
-    withheld and counted, never the whole digest. The ledger and --json keep every
-    advisory: this grouping is presentation only. ``lang="ja"``: the same digest from
-    the Japanese templates. Left out, and not counted: a lead (a ``LEAD-`` id) and any
-    advisory with no primary source (8ke5: nothing a member can act on), a synthetic
-    id, an advisory whose id or alias is in ``retracted`` (case-folded) and, given ``now``, one whose
-    latest version expired before it (``pull.active``'s rule). ``titles`` maps (id,
-    product name) to a source title, which a line of its own carries after the id."""
+           titles=None, held: int = 0, link: str = DEFAULT_MIRROR_URL, summary: str | None = None) -> str:
+    """The daily digest (qwpw, v2 design section 7): the day's new relay-bot posts, one
+    line each, loudest first then oldest first, and nothing else. ``advs_today`` is
+    the advisory of each thread whose root was posted since the last digest; one
+    line per id and product (latest posted_at wins). An item that fails the
+    publication guard is withheld and counted, never the whole digest. Left out, and
+    not counted: a lead (a ``LEAD-`` id) and any advisory with no primary source (8ke5),
+    a synthetic id, an advisory whose id or alias is in ``retracted`` (case-folded) and,
+    given ``now``, one whose latest version expired before it (``pull.active``'s rule).
+    ``titles`` maps (id, product name) to a source title, which the line carries.
+
+    With nothing to list, one line: no new alerts, ``held`` notices added to the
+    catalog this week and ``link``; without the count when ``summary`` (the weekly
+    summary, ``weekly``) follows, which carries it. ``lang="ja"``: the Japanese templates."""
     t = _DIGEST[lang]
     latest: dict[tuple, schema.Advisory] = {}
     for adv in advs_today:
@@ -751,32 +764,18 @@ def digest(advs_today, date, lang: str = "en", *, retracted=(), now: int | None 
         if key not in latest or adv.posted_at >= latest[key].posted_at:
             latest[key] = adv
     gone = {i.casefold() for i in retracted}
-    latest = {k: a for k, a in latest.items() if not (
-        is_synthetic(a.id) or not listable(a)
-        or not gone.isdisjoint(i.casefold() for i in (a.id, *a.aliases))
-        or (now is not None and a.expires_at is not None and a.expires_at < now))}
+    shown = sorted((a for a in latest.values() if listable(a) and not withdrawn(a, gone, now)),
+        key=lambda a: (-_RANK[a.level], a.posted_at, a.id))
     day = date.isoformat() if hasattr(date, "isoformat") else str(date)
-    if not latest:
-        return t["empty"](day)
-    sections = {}
-    for level in ("critical", "high", "notice"):
-        groups: dict = {}
-        for a in sorted((a for a in latest.values() if a.level == level), key=lambda a: (a.posted_at, a.id)):
-            k = _group_key(a)
-            groups.setdefault(k if k is not None else ("single", a.id, a.products[0].name), []).append(a)
-        sections[level] = [_single(m[0], t, _upstream((titles or {}).get((m[0].id, m[0].products[0].name))))
-                           if k[0] == "single" or len(m) == 1 else _group_line(k, m, t)
-                           for k, m in groups.items()]
-    n = sum(len(v) for v in sections.values())
-    lines, withheld = [t["head"](day, n)], 0
-    for level, items in sections.items():
-        if items:
-            lines += ["", t["section"](level, len(items))]
-            for line in items:
-                try:
-                    lines.append(_guard(_inline(line)))
-                except ValueError:
-                    withheld += 1
+    tail = [] if summary is None else ["", summary]
+    if not shown:
+        return _guard("\n".join([t["quiet"](day, held, link) if summary is None else t["bare"](day)] + tail))
+    lines, withheld = [t["head"](day, len(shown))], 0
+    for a in shown:
+        try:
+            lines.append(_guard(_inline(_single(a, t, _upstream((titles or {}).get((a.id, a.products[0].name)))))))
+        except ValueError:
+            withheld += 1
     if withheld:
         lines += ["", t["withheld"](withheld)]
-    return _guard("\n".join(lines))
+    return _guard("\n".join(lines + tail))

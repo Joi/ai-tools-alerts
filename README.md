@@ -8,7 +8,7 @@ Two channels on the henkaku ai-tools Buzz relay (`#security-feed` to browse, `#s
 
 Two audiences get the same alerts.
 
-- **Members of the henkaku ai-tools community** read and discuss them on the Buzz relay at `buzz.ai-tools.md`: `#security-feed` carries every advisory and the daily digest, with discussion under each thread, and `#security-critical` carries critical advisories only, for interruption. The relay is members-only: reading it needs a member's auth token, and membership is handled in the community, not in this repository.
+- **Members of the henkaku ai-tools community** read and discuss them on the Buzz relay at `buzz.ai-tools.md`: `#security-feed` carries the high and critical advisories, a short daily digest and a weekly count of the notices, with discussion under each thread, and `#security-critical` carries critical advisories only, for interruption. The relay is members-only: reading it needs a member's auth token, and membership is handled in the community, not in this repository.
 - **Everyone else** gets the same posts from the public mirror at `https://buzz.ai-tools.md/alerts/`, with no account: `feed.atom` (Japanese: `feed.ja.atom`) for a feed reader, `feed.json` for anything that reads signed events, and the CLI below, which verifies every post and checks it against what is installed on your machine. The mirror carries only the posts signed by keys in the trust manifest; members' discussion stays on the relay.
 
 The CLI is the product for your agent and needs nothing else. The Buzz channels are where people talk about an alert, and where a member hears about a critical one at once instead of at the next hourly run.
@@ -26,7 +26,7 @@ If you do not trust him, do not install this. What bounds the trust you extend: 
 
 ## Status
 
-Live. The poster runs every hour on the fleet: it posts a critical advisory to `#security-critical` and `#security-feed` within the hour it appears, and a digest of the day's advisories to `#security-feed` daily at 09:00 Tokyo time. The signed mirror at `https://buzz.ai-tools.md/alerts/` is rewritten every 5 minutes: a page listing the latest advisories, `feed.atom` for feed readers, and the `feed.json`, `critical.json` and `manifest.json` files the CLI reads. The mirror carries only posts signed by a key in the trust manifest. The CLI, the skills, the session-start hook and the schedule templates below work against it today.
+Live. The poster runs every hour on the fleet: it posts a critical advisory to `#security-critical` and `#security-feed` within the hour it appears, and a digest to `#security-feed` daily at 09:00 Tokyo time: one line for each alert posted since the last digest, or one line saying there were none with the number of notices added to the catalog this week. The first digest of each week (Monday's) adds the week's notices counted by product. The signed mirror at `https://buzz.ai-tools.md/alerts/` is rewritten every 5 minutes: a page listing the latest advisories, `feed.atom` for feed readers, and the `feed.json`, `critical.json` and `manifest.json` files the CLI reads. The mirror carries only posts signed by a key in the trust manifest. The CLI, the skills, the session-start hook and the schedule templates below work against it today.
 
 The design is `docs/design.md` and the implementation plan `docs/plan.md`. Work is tracked in the kata project `ai-tools-alerts` under the epic jibot-code#gr5b.
 

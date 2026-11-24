@@ -205,12 +205,20 @@ def test_notice_waits_for_digest(env):
     assert code == 0 and relay.calls == [] and "held=1" in summary
     code, summary, relay = env.run(now=at(5, 9))
     assert code == 0 and chans(relay) == [("feed", None)]
-    assert "Daily digest for 2026-11-05" in relay.calls[0][2] and "CVE-2026-5000" in relay.calls[0][2]
+    assert relay.calls[0][2] == ("Daily digest for 2026-11-05: no new alerts. 1 notice added to the catalog"
+                                 " this week: https://buzz.ai-tools.md/alerts/")  # qwpw: the daily lists no notice
+    assert len(env.state()["held"]) == 1  # held until the weekly summary
     _, _, relay = env.run(now=at(5, 10))
     assert relay.calls == []  # one digest a day
+    _, _, relay = env.run(now=at(9, 9))  # Monday: the weekly summary counts it
+    assert len(relay.calls) == 1 and "Weekly summary: 1 notice added" in relay.calls[0][2]
+    assert "- Cursor: 1" in relay.calls[0][2] and "CVE-2026-5000" not in relay.calls[0][2]
+    st = env.state()
+    assert st["held"] == [] and "Cursor|cve-2026-5000" in st["digested"]
     env.collector([MAC])  # seen again: never held again
-    _, _, relay = env.run(now=at(6, 9))
-    assert len(relay.calls) == 1 and "CVE-2026-5000" not in relay.calls[0][2]
+    _, _, relay = env.run(now=at(10, 9))
+    assert len(relay.calls) == 1 and "no new alerts. 0 notices" in relay.calls[0][2]
+    assert env.state()["held"] == []
 
 
 def replace_fixed(f, fixed):
@@ -376,13 +384,13 @@ def test_resolve_delivered_refuses_what_would_not_record(env):
 def test_resolve_delivered_acknowledges_a_digest(env):
     env.collector([MAC])
     env.run()
-    env.run(now=at(5, 9), relay=FakeRelay("unknown"))
+    env.run(now=at(9, 9), relay=FakeRelay("unknown"))  # Monday's digest carries the weekly summary (qwpw)
     (it,) = env.state()["outbox"]
-    assert main.resolve(at(5, 10), env.config, it["key"], delivered="ab" * 32)[0] == 0
+    assert main.resolve(at(9, 10), env.config, it["key"], delivered="ab" * 32)[0] == 0
     st = env.state()
     assert [o["root"] for o in st["outbox"]] == ["ab" * 32]  # its Japanese reply, sent next run
-    assert st["held"] == [] and st["digest_ids"] == ["ab" * 32]
-    assert st["digest_date"] == "2026-11-05" and env.ledger()[1] == []
+    assert st["held"] == [] and st["digest_ids"] == ["ab" * 32] and "Cursor|cve-2026-5000" in st["digested"]
+    assert st["digest_date"] == "2026-11-09" and st["weekly"] == "2026-W46" and env.ledger()[1] == []
 
 
 def test_pending_and_resolve_from_the_command_line(env, tmp_path, capsys, monkeypatch):
@@ -582,21 +590,24 @@ def test_main_prints_one_summary_line(tmp_path, monkeypatch, capsys):
 def test_unknown_digest_is_journaled_once_and_acknowledges_its_snapshot(env):
     env.collector([MAC])
     env.run()
-    code, _, relay = env.run(now=at(5, 9), relay=FakeRelay("unknown"))
+    code, _, relay = env.run(now=at(9, 9), relay=FakeRelay("unknown"))  # Monday: the weekly summary (qwpw)
     assert code == 1 and len(relay.calls) == 1
     env.collector([finding(fid="CVE-2026-5001", product="Cursor IDE", severity=None, fixed=None, sources=(APPLE,))])
     for h in (10, 11):
-        _, _, relay = env.run(now=at(5, h))
+        _, _, relay = env.run(now=at(9, h))
         assert relay.calls == []
     st = env.state()
     assert [it["kind"] for it in st["outbox"]] == ["digest"] and len(st["held"]) == 2
     with Ledger(env.config.ledger) as led:
         (p,) = led._state()["pending"]
-        led.expire_pending(p["key"], "checked the channel: not delivered", now=at(6, 12))
-    code, _, relay = env.run(now=at(6, 12))
-    assert code == 0 and len(relay.calls) == 2  # the journaled 11-05 digest, then today's
-    assert "CVE-2026-5001" not in relay.calls[0][2] and "CVE-2026-5001" in relay.calls[1][2]
-    assert env.state()["held"] == []
+        led.expire_pending(p["key"], "checked the channel: not delivered", now=at(10, 12))
+    code, _, relay = env.run(now=at(10, 12))
+    assert code == 0 and len(relay.calls) == 2  # the journaled 11-09 digest, then today's
+    assert "Weekly summary: 1 notice added" in relay.calls[0][2]  # its snapshot: the one held then
+    assert relay.calls[1][2] == ("Daily digest for 2026-11-10: no new alerts. 1 notice added to the catalog"
+                                 " this week: https://buzz.ai-tools.md/alerts/")
+    st = env.state()  # the snapshot is acknowledged; the notice held after it waits for next week
+    assert [h["adv"]["id"] for h in st["held"]] == ["CVE-2026-5001"] and "Cursor|cve-2026-5000" in st["digested"]
 
 
 def test_affected_range_correction_posts_a_reply(env):
@@ -742,18 +753,26 @@ def test_unsendable_channel_never_marks_pending(env):
 
 
 def test_oversized_digest_posts_what_fits_and_keeps_the_rest(env, monkeypatch):
-    env.collector([finding(fid=f"CVE-2026-50{i:02d}", product="Cursor IDE", severity=None, fixed=None,
-                           sources=(f"{APPLE}{i}",)) for i in range(6)])
+    """qwpw: the daily lists the day's new roots only (held notices are counted, not listed),
+    so the roots are what an oversized digest cuts short."""
+    ids = [f"GHSA-aaaa-aaaa-aa{i:02d}" for i in range(6)]
+    env.collector([finding(fid=i, fixed=f"2.1.{n}") for n, i in enumerate(ids)])  # faxq: six threads
     env.run()
-    assert len(env.state()["held"]) == 6
+    assert len(env.ledger()[0]) == 6
     monkeypatch.setattr(main.transport, "MAX_CONTENT", 400)  # room for a few items only
     code, _, relay = env.run(now=at(5, 9))
     assert code == 0 and len(relay.calls) == 1 and len(relay.calls[0][2]) <= 400
-    listed = {f"CVE-2026-50{i:02d}" for i in range(6) if f"CVE-2026-50{i:02d}" in relay.calls[0][2]}
-    st = env.state()
-    assert 0 < len(listed) < 6 and len(st["held"]) == 6 - len(listed)  # only what was posted is acknowledged
-    left = {h["adv"]["id"] for h in st["held"]}
-    assert left.isdisjoint(listed)
+    listed = {i for i in ids if i in relay.calls[0][2]}
+    assert 0 < len(listed) < 6  # only what was posted is acknowledged
+    _, _, relay = env.run(now=at(6, 9))
+    rest = {i for i in ids if i in relay.calls[0][2]}
+    assert rest and rest.isdisjoint(listed)
+    for day in (7, 8, 9, 10):  # the backlog moves forward a day at a time and loses nothing
+        _, _, relay = env.run(now=at(day, 9))
+        later = {i for i in ids if i in relay.calls[0][2]}
+        assert later.isdisjoint(listed | rest)
+        rest |= later
+    assert listed | rest == set(ids)
 
 
 def test_fresh_correction_wins_over_a_deferred_fix(env):
@@ -1012,7 +1031,8 @@ def test_synthetic_advisory_is_left_out_of_the_digest(env):
     code, summary, relay = env.run(kev_catalog=catalog, digest_now=True)  # the same run digests it
     assert code == 0 and "digest=1" in summary
     (body,) = [c[2] for c in relay.calls if c[2].startswith("Daily digest")]
-    assert body == "Daily digest for 2026-11-05: no advisories."  # ai-tools-alerts#d3f6
+    assert body == ("Daily digest for 2026-11-05: no new alerts. 0 notices added to the catalog this week:"
+                    " https://buzz.ai-tools.md/alerts/")  # ai-tools-alerts#d3f6; qwpw: the quiet line
     env.kev.catalog = {"vulnerabilities": [kev_item(cve="CVE-2099-0003")]}  # any input: the id decides
     _, _, relay = env.run(now=at(6, 6))
     assert relay.calls and all(c[2].startswith("HIGH (SYNTHETIC TEST)") for c in relay.calls)  # no fix: high
@@ -1149,13 +1169,14 @@ def test_change_reply_japanese_names_it_in_of(env):
 
 
 def test_digest_gets_a_japanese_reply(env):
-    env.collector([MAC])
+    env.collector([finding()])  # qwpw: the daily lists the day's new roots; a held notice is only counted
     env.run()
     code, _, relay = env.run(now=at(5, 9))
     assert code == 0 and len(relay.calls) == 1
     ((ch, reply_to, text),) = relay.ja
     assert (ch, reply_to) == ("feed", relay.ids[0])
-    assert text.startswith("lang: ja\n\n2026-11-05 のデイリーダイジェスト: 1 件。") and "CVE-2026-5000" in text
+    assert text.startswith("lang: ja\n\n2026-11-05 のデイリーダイジェスト: 新しいアラート 1 件。")
+    assert "GHSA-abcd-efgh-ijkl" in text
 
 
 def test_failed_japanese_send_retries_next_hour_without_the_english(env):
@@ -1337,7 +1358,8 @@ def test_digest_leaves_out_withdrawn_ledger_posts(env, monkeypatch):
     env.run()  # a high root, digested at 09:00
     env.mirror.publish_manifest(retracted=["ghsa-ABCD-efgh-ijkl"])
     _, _, relay = env.run(now=at(5, 9))
-    assert [c[2] for c in relay.calls] == ["Daily digest for 2026-11-05: no advisories."]
+    assert [c[2] for c in relay.calls] == ["Daily digest for 2026-11-05: no new alerts. 0 notices added to the"
+                                           " catalog this week: https://buzz.ai-tools.md/alerts/"]  # qwpw
     m = env.mirror  # a curator thread, retracted by a reply or expired by its amendment
     r = m.root_post(m.cur_sec, advisory(aliases=["CVE-2026-7777"]), created_at=T0 - 300)  # not ahead of the run
     m.reply(m.cur_sec, r, "retract\nwrong", created_at=T0 - 200)
@@ -1361,7 +1383,10 @@ def test_digest_leaves_out_withdrawn_ledger_posts(env, monkeypatch):
     e = next(e for e in env.ledger()[0] if e["aliases"][0] == "GHSA-mnop-qrst-uvwx" and e["scope"] == "Claude Code")
     monkeypatch.setattr(main.Run, "_withdrawn", lambda self, root, fetch: (set(), {e["channel_ids"]["feed"]}))
     _, _, relay = env.run(now=at(6, 9))  # the poster's own root, by its thread; the other product's stays
-    assert relay.calls[0][2].startswith("Daily digest for 2026-11-06: 1 advisory.") and "Cursor" in relay.calls[0][2]
+    # qwpw: the other product's is a held notice, counted in the quiet line and kept for the weekly summary
+    assert relay.calls[0][2] == ("Daily digest for 2026-11-06: no new alerts. 1 notice added to the catalog"
+                                 " this week: https://buzz.ai-tools.md/alerts/")
+    assert [h["scope"] for h in env.state()["held"]] == ["Cursor"]
 
 
 def test_failed_mirror_pull_holds_the_digest(env, capsys):
@@ -1423,7 +1448,7 @@ def test_a_fence_in_the_title_never_withholds_the_advisory(env):
         "HIGH: Claude Code: Race ~aitools-alert in Edit writes outside the workspace"  # k5tr: no backtick
 
 
-def test_a_held_notice_learns_its_title_for_the_digest(env):
+def test_a_held_notice_keeps_its_title_and_the_weekly_counts_it(env):
     low = finding(severity=None, fixed=None)  # a notice: the vendor's page rates it low
     env.collector([low])
     assert "held=1" in env.run()[1] and "source_title" not in env.state()["held"][0]
@@ -1431,8 +1456,11 @@ def test_a_held_notice_learns_its_title_for_the_digest(env):
     env.collector([low])
     env.run(now=T0 + 600)
     assert env.state()["held"][0]["source_title"] == "Kernel memory corruption"
-    _, _, relay = env.run(now=at(5, 9))
-    assert "(GHSA-abcd-efgh-ijkl): Kernel memory corruption;" in relay.calls[0][2]
+    # qwpw: a notice is not listed in the daily; Monday's weekly summary counts it, no title or id
+    _, _, relay = env.run(now=at(9, 9))
+    assert "Weekly summary: 1 notice added" in relay.calls[0][2] and "- Claude Code: 1" in relay.calls[0][2]
+    assert "Kernel memory corruption" not in relay.calls[0][2]
+    assert env.state()["held"] == [] and "Claude Code|ghsa-abcd-efgh-ijkl" in env.state()["digested"]
 
 
 # ---------------------------------------------------------------- withheld (ai-tools-alerts#8acj)
@@ -1599,9 +1627,13 @@ def test_an_unconfirmed_notice_is_never_held_and_the_vendors_own_is_listed_once(
     assert st["held"] == [] and st["deferred"] == [] and not [k for k in st["digested"] if "cve-2026-5000" in k]
     env.collector([{**MAC, "fixed": "27.2"}])  # Cursor's own advisory
     assert "held=1" in env.run(now=at(5, 12))[1]
-    _, _, relay = env.run(now=at(6, 9))
-    assert "CVE-2026-5000" in relay.calls[0][2] and APPLE in relay.calls[0][2]
-    assert "27.2" not in relay.calls[0][2]  # the record's version is not the vendor page's
+    (h,) = env.state()["held"]
+    assert h["adv"]["sources"][0]["url"] == APPLE
+    assert "27.2" not in json.dumps(h["adv"])  # the record's version is not the vendor page's
+    _, _, relay = env.run(now=at(9, 9))  # qwpw: listed once, as a count in Monday's weekly summary
+    assert "Weekly summary: 1 notice added" in relay.calls[0][2] and "- Cursor: 1" in relay.calls[0][2]
+    st = env.state()
+    assert st["held"] == [] and "Cursor|cve-2026-5000" in st["digested"]
 
 
 def test_a_primary_source_learned_while_held_reaches_the_digest(env):  # 8ke5
@@ -1611,8 +1643,11 @@ def test_a_primary_source_learned_while_held_reaches_the_digest(env):  # 8ke5
     env.run(now=T0 + 3600)
     (h,) = env.state()["held"]
     assert [s["url"] for s in h["adv"]["sources"]] == [APPLE]
-    _, _, relay = env.run(now=at(5, 9))
-    assert "CVE-2026-5000" in relay.calls[0][2] and APPLE in relay.calls[0][2]
+    _, _, relay = env.run(now=at(5, 9))  # qwpw: listable, so it stays held and is counted
+    assert "no new alerts. 1 notice added" in relay.calls[0][2] and len(env.state()["held"]) == 1
+    _, _, relay = env.run(now=at(9, 9))  # and Monday's weekly summary acknowledges it
+    assert "Weekly summary: 1 notice added" in relay.calls[0][2]
+    assert env.state()["held"] == [] and "Cursor|cve-2026-5000" in env.state()["digested"]
 
 
 def test_a_held_notice_keeps_the_ids_the_vendor_page_assigns(env):  # 8ke5 delta, h340
@@ -1623,10 +1658,11 @@ def test_a_held_notice_keeps_the_ids_the_vendor_page_assigns(env):  # 8ke5 delta
     (h,) = env.state()["held"]  # the page's GHSA is learned; the record's unassigned alias is not
     assert h["adv"]["id"] == "CVE-2026-5001" and h["adv"]["aliases"] == ["GHSA-abcd-efgh-ijkl"]
     assert [s["url"] for s in h["adv"]["sources"]] == [GHSA]
-    env.run(now=at(5, 9))
+    env.run(now=at(9, 9))  # qwpw: Monday's weekly summary acknowledges it under every id
     assert {"Claude Code|cve-2026-5001", "Claude Code|ghsa-abcd-efgh-ijkl"} <= set(env.state()["digested"])
     env.collector([finding(severity=None, fixed=None)])  # the GHSA alone, later: listed once only
-    env.run(now=at(5, 12))
+    summary = env.run(now=at(9, 12))[1]
+    assert "candidates=1 " in summary and " old=0 " in summary and " held=0 " in summary
     assert env.state()["held"] == []
 
 
@@ -1692,9 +1728,11 @@ def test_an_old_source_posts_no_root_and_reaches_the_digest_notices(env):  # 0dv
     env.run(now=T0 + 7200)
     p = env.state()["held"][0]["adv"]["products"][0]
     assert (p["fixed"], p["affected"]) == ("2.1.0", "<2.1.0")
-    _, _, ssh = env.run(now=at(6, 9))
-    text = ssh.calls[0][2]
-    assert "\nNotice (1)\n" in text and "(GHSA-abcd-efgh-ijkl); fixed in 2.1.0." in text
+    _, _, ssh = env.run(now=at(6, 9))  # qwpw: the daily counts the notice; it stays held
+    assert "no new alerts. 1 notice added" in ssh.calls[0][2] and len(env.state()["held"]) == 1
+    _, _, ssh = env.run(now=at(9, 9))  # Monday's weekly summary lists it, as a count
+    assert "Weekly summary: 1 notice added" in ssh.calls[0][2] and "- Claude Code: 1" in ssh.calls[0][2]
+    assert env.state()["held"] == [] and "Claude Code|ghsa-abcd-efgh-ijkl" in env.state()["digested"]
 
 
 def test_first_sight_as_a_notice_dates_the_age_limit(env):  # 0dvh
@@ -1776,10 +1814,10 @@ def test_first_sight_outlives_the_digest_that_lists_the_notice(env):  # 0dvh
     note["sources"][0]["published_at"] = "2026-10-30T00:00:00Z"  # six days before T0
     env.collector([note])
     env.run()
-    _, _, ssh = env.run(now=at(6, 9))  # the digest lists it; the held entry goes
-    assert env.state()["held"] == [] and "GHSA-abcd-efgh-ijkl" in ssh.calls[0][2]
+    _, _, ssh = env.run(now=at(9, 9))  # qwpw: Monday's weekly summary lists it; the held entry goes
+    assert env.state()["held"] == [] and "Weekly summary: 1 notice added" in ssh.calls[0][2]
     env.collector([{**note, "fixed": "2.1.0", "advisory_severity": "remote code execution"}])
-    _, summary, ssh = env.run(now=at(7, 6))  # eight days after the source, two after first sight
+    _, summary, ssh = env.run(now=at(10, 6))  # eleven days after the source, five after first sight
     assert "aged=0" in summary and "roots=1" in summary
 
 
@@ -1913,7 +1951,8 @@ def _nothing_was_signed(env, relay):
     assert relay.calls == [] and relay.ja == [] and env.ledger()[0] == []
     assert st["held"] == [] and st["deferred"] == [] and st["outbox"] == [] and st["digested"] == []
     _, _, relay = env.run(now=at(5, 9))
-    assert [c[2] for c in relay.calls] == ["Daily digest for 2026-11-05: no advisories."]
+    assert [c[2] for c in relay.calls] == ["Daily digest for 2026-11-05: no new alerts. 0 notices added to the"
+                                           " catalog this week: https://buzz.ai-tools.md/alerts/"]  # qwpw
 
 
 def _router(**kw):
@@ -2544,10 +2583,11 @@ def test_a_group_meeting_a_listed_notice_holds_the_rest(env):
     """Review: notice A is listed by a digest; a later run groups A with new notice Z.
     Z is held under its own id and listed once; A is not listed again."""
     env.collector([finding(severity=None)])
-    code, summary, _ = env.run(digest_now=True)
+    env.run()
+    code, summary, _ = env.run(now=at(9, 9))  # qwpw: Monday's weekly summary lists A
     assert "digest=1" in summary and env.state()["held"] == []
     env.collector([finding(severity=None), finding(fid=GHSA_Z, severity=None)])
-    code, summary, _ = env.run(now=T0 + 3600)
+    code, summary, _ = env.run(now=at(9, 10))
     assert code == 0 and "held=1" in summary
     (held,) = env.state()["held"]
     assert held["adv"]["id"] == GHSA_Z and "GHSA-abcd-efgh-ijkl" not in held["adv"]["aliases"]
@@ -2593,8 +2633,9 @@ def test_a_groups_range_widens_for_a_members_later_fix(env):
 def test_a_cve_assigned_after_the_digest_is_not_listed_again(env):
     """Delta review: an id new to a listed advisory is not a new member."""
     env.collector([finding(severity=None)])
-    code, summary, _ = env.run(digest_now=True)
-    assert "digest=1" in summary
+    env.run()
+    code, summary, _ = env.run(now=at(9, 9))  # qwpw: Monday's weekly summary lists it
+    assert "digest=1" in summary and env.state()["held"] == []
     env.collector([finding(severity=None, aliases=("CVE-2026-7777",))])
-    code, summary, _ = env.run(now=T0 + 3600)
-    assert code == 0 and env.state()["held"] == []
+    code, summary, _ = env.run(now=at(9, 10))
+    assert code == 0 and "candidates=1 " in summary and " old=0 " in summary and env.state()["held"] == []
