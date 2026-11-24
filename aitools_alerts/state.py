@@ -1,12 +1,16 @@
 """Local state: ~/.local/state/aitools-alerts/.
 
-Four files, each written whole to a temp file and moved into place:
+Five files, each written whole to a temp file and moved into place:
 ``events.json`` (per trust root a pull used: the last accepted manifest and
 the verified events filtered under it, plus which root is current),
 ``checkpoint.json`` (per trust root: the accepted checkpoint key certificate,
 the accepted checkpoint, and the ids of the events the reader applies; see
-``pull``), ``seen.json`` (thread ids already notified) and ``last_pull.json``
-(the last pull attempt's outcome). The certificate and checkpoint are not in
+``pull``), ``seen.json`` (thread ids already notified), ``last_pull.json``
+(the last pull attempt's outcome) and ``unverified.json`` (ai-tools-alerts#tavj:
+since which checkpoint each relay-bot lowering this machine could not check has
+been listed, and when it was last interrupted by an alert it could not verify,
+per poster key; neither may be lost with the source check's cache, which is
+dropped whole when damaged). The certificate and checkpoint are not in
 ``events.json`` because the released v0.1.4 reader refuses a record there
 with a key it does not know; it ignores a file it does not know. A manifest and the events it authorises are one
 file, so no reader and no crash ever pairs events with another manifest; and
@@ -76,6 +80,51 @@ def _read(path: Path, default):
 EVENT_KEYS = ("id", "pubkey", "created_at", "kind", "tags", "content", "sig")
 
 
+# Of each record. Every entry is keyed by a stored event's id (a lowering reply, a root)
+# or stands for one stored root (a bucket), so none can pass what the store holds
+# (pull.MAX_STORED_EVENTS; tests/test_unchecked_lowering.py checks the two are equal):
+# no record the CLI writes is one this loader refuses.
+MAX_UNVERIFIED_ENTRIES = 20000
+_UNVERIFIED_KEYS = {"lowerings", "refused", "interrupts", "held", "reset_at"}
+
+
+def _load_unverified(where: Path) -> dict | None:
+    """unverified.json, or None when it is present and unreadable or of another shape.
+    Missing: empty, so every wait starts again and no interrupt is counted.
+
+    ``lowerings``: {relay-bot lowering reply id: the checkpoint time it was first seen
+    listed}. ``refused``: the root ids of the threads whose lowering this machine's source
+    check has refused.
+    ``interrupts``: {bucket: {root event id: local time}}, a bucket being a poster key or
+    a hash of an advisory id and product. ``held``: {root event id: the local time the
+    alert was first held for want of a slot}. ``reset_at``: None, or the local time the record was
+    rebuilt after damage.
+
+    Damage is not a StateError: nobody is there to mend the file, and the commands must
+    go on. The caller rebuilds it on the safe side (``State.unverified_damaged``)."""
+    def when(v):
+        return type(v) is int and 0 <= v <= 2**53
+
+    def ident(v):
+        return nostr._is_hex(v, 32)
+    try:
+        rec = _read(where, {"lowerings": {}, "refused": [], "interrupts": {}, "held": {}, "reset_at": None})
+        ok = (isinstance(rec, dict) and set(rec) == _UNVERIFIED_KEYS
+              and isinstance(rec["lowerings"], dict) and isinstance(rec["refused"], list)
+              and isinstance(rec["interrupts"], dict) and (rec["reset_at"] is None or when(rec["reset_at"]))
+              and isinstance(rec["held"], dict)
+              and all(len(rec[k]) <= MAX_UNVERIFIED_ENTRIES for k in ("lowerings", "refused", "interrupts", "held"))
+              and all(ident(i) and when(t) for i, t in rec["lowerings"].items())
+              and all(ident(i) and when(t) for i, t in rec["held"].items())
+              and all(ident(i) for i in rec["refused"])
+              and all(ident(k) and isinstance(slots, dict) and len(slots) <= MAX_UNVERIFIED_ENTRIES
+                      and all(ident(r) and when(t) for r, t in slots.items())
+                      for k, slots in rec["interrupts"].items()))
+    except (StateError, TypeError, RecursionError):
+        return None
+    return rec if ok else None
+
+
 def _load_trust(where: Path) -> dict:
     """checkpoint.json as {root: {"cert", "checkpoint", "applied"}}, each
     document parsed and its signature checked: the certificate under its
@@ -112,6 +161,13 @@ class State:
     seen: set = field(default_factory=set)
     last_pull: dict = field(default_factory=dict)
     trust: dict = field(default_factory=dict)  # root -> {"cert": Cert, "checkpoint": Checkpoint | None, "applied": set}
+    # unverified.json (see _load_unverified); ``unverified_damaged``: the file was there and could not be used
+    lowerings: dict = field(default_factory=dict)
+    refused: set = field(default_factory=set)
+    interrupts: dict = field(default_factory=dict)
+    held: dict = field(default_factory=dict)
+    reset_at: int | None = None
+    unverified_damaged: bool = False
 
     @classmethod
     def load(cls, dir: Path | None = None) -> "State":
@@ -147,8 +203,12 @@ class State:
         last = _read(d / "last_pull.json", {})
         if not isinstance(last, dict):
             raise StateError(f"{d / 'last_pull.json'}: not an object")
+        u = _load_unverified(d / "unverified.json")
         return cls(dir=d, roots=roots, manifest_root=current, seen=set(seen), last_pull=last,
-                   trust=_load_trust(d / "checkpoint.json"))
+                   trust=_load_trust(d / "checkpoint.json"), unverified_damaged=u is None,
+                   **({} if u is None else {"lowerings": u["lowerings"], "refused": set(u["refused"]),
+                                            "interrupts": u["interrupts"], "held": u["held"],
+                                            "reset_at": u["reset_at"]}))
 
     @property
     def manifest(self) -> Manifest | None:
@@ -185,6 +245,8 @@ class State:
             fresh = State.load(self.dir)
             self.roots, self.manifest_root = fresh.roots, fresh.manifest_root
             self.seen, self.last_pull, self.trust = fresh.seen, fresh.last_pull, fresh.trust
+            self.lowerings, self.refused, self.interrupts = fresh.lowerings, fresh.refused, fresh.interrupts
+            self.reset_at, self.unverified_damaged, self.held = fresh.reset_at, fresh.unverified_damaged, fresh.held
             yield self
         finally:
             os.close(fd)
@@ -242,6 +304,12 @@ class State:
 
     def save_last_pull(self) -> None:
         write_json(self.dir / "last_pull.json", self.last_pull)
+
+    def save_unverified(self) -> None:
+        write_json(self.dir / "unverified.json", {"lowerings": self.lowerings, "refused": sorted(self.refused),
+                                                   "interrupts": self.interrupts, "held": self.held,
+                                                   "reset_at": self.reset_at})
+        self.unverified_damaged = False
 
     def save_seen(self) -> None:
         write_json(self.dir / "seen.json", sorted(self.seen))
