@@ -568,6 +568,45 @@ def test_a_kev_listed_member_is_the_fix_groups_first_id(env):
     assert got["Claude Code"]["result"] == "confirmed"
 
 
+def test_a_fix_group_is_as_new_as_its_newest_member(env):
+    """The loudest member comes first even when its advisory is months old. The group is
+    still news when another member is: it posts, and is not sent to the digest as old."""
+    old, new = finding(fid=G, severity="moderate"), finding(fid=G2, severity="moderate")
+    old["sources"][0]["published_at"], new["sources"][0]["published_at"] = "2026-08-01T00:00:00Z", "2026-11-04T00:00:00Z"
+    env.api.put(G, ghsa_json(G, type="malware"))
+    env.api.put(G2, ghsa_json(G2))
+    env.collector([old, new])
+    relay = run(env, 0)
+    (e,) = entries(env)
+    assert e["level"] == "critical" and e["advisory"]["id"].upper() == G.upper() and env.state()["held"] == []
+    assert [c[0] for c in relay.calls if c[1] is None] == ["critical", "feed"]
+
+
+def test_a_reading_the_first_id_does_not_tie_wins_no_place_in_a_fix_group(env):
+    """A CVE candidate whose page names the CVE while the advisory API's answer, which
+    supports critical, does not. Counted, it would come first and then lose that reading
+    to the tie rule, taking the group down to a notice. The other member's high stands."""
+    env.api.put(G, ghsa_json(G, type="malware"))  # names no CVE
+    env.api.put(G2, ghsa_json(G2))
+    env.collector([finding(fid=CVE, severity="moderate"), finding(fid=G2, severity="moderate")])
+    run(env, 0)
+    (e,) = entries(env)
+    assert e["level"] == "high" and e["advisory"]["id"].upper() == G2.upper()
+
+
+def test_a_kev_listing_first_seen_on_a_thread_this_run_posted_reaches_the_ledger(env):
+    env.api.put(G, ghsa_json(G, cve=CVE, type="malware", packages=NO_FIX))
+    env.collector([finding(fid=G, severity="moderate", fixed=None, aliases=[CVE])])
+    old = {**kev_item(CVE), "dateAdded": "2026-09-01"}  # before the watermark: no candidate brings it
+    run(env, 0, kev=FakeKEV(catalog=catalog("v1", old)))
+    (e,) = entries(env)
+    assert e["level"] == "critical" and e["exploited"] is True
+    env.config.recompute_state.unlink()  # and the recompute file lost: the KEV rules still govern it
+    env.api.put(G, ghsa_json(G, cve=CVE, **WEAK))
+    sent = [x for h in range(1, 40) for x in levels(run(env, h, kev=FakeKEV(catalog=catalog(f"v{h // 6 + 2}"))))]
+    assert sent == [] and entries(env)[0]["level"] == "critical"
+
+
 def test_a_fix_groups_other_member_lends_no_level(env):
     """The post's first id supports high; the other member a notice. When that other
     member comes to support critical and is sighted again alone, under its own id, the

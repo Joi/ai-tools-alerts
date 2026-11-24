@@ -56,9 +56,19 @@ Code findings and what was done:
 9. COSMETIC (Stage 1), the breaker test of this file passes with `judged` for `known`. Left: ny5g's own test fails under that change, as Stage 1 found.
 10. COSMETIC (Stage 1), `observe`'s docstring. Fixed.
 
+Pass 2 [code:readers]: 3B/0S/0C/0R · fixed 8/8 prior · velocity ↓ (10→3, escalation no)
+code passes: 2 (the whole branch, then the one delta `--since a7cda1e39597b085d6f7370b43baf05950307b77` at da8f7153ee97295f82a48b10036e5acf5fd1d556, fresheyes run 20261125-065553-5c5b41, gpt-6-astra; it gave three findings as "major" with no class, taken as BLOCKERs) · all three fixed in the next commit, which no reviewer has read; no further pass, as the review cycle rules
+
+Code findings, pass 2 (the delta), and what was done:
+1. A fix group now led by its loudest member was judged old by that member's date alone. Fixed: the group's age is its newest member's (`Run.plan_new`); `test_a_fix_group_is_as_new_as_its_newest_member`.
+2. A KEV listing first seen in the last judging of a run (a thread that run posted) was not marked in the ledger. Fixed: the ledger is marked after that judging; `test_a_kev_listing_first_seen_on_a_thread_this_run_posted_reaches_the_ledger`.
+3. The group's order counted readings the tie rule then rejects, so a member could win the first place and lose its level. Fixed: members are ranked by their tied readings; `test_a_reading_the_first_id_does_not_tie_wins_no_place_in_a_fix_group`.
+
 ## Chunks
 - [ ] readers: `poster/sources.py`, `recompute.support` and `judge`, `rules.readings_for`, `main.Run`
 
 ## Notes
+- The delta's first launch printed `FRESHEYES_STALLED … REASON=LOG_WAIT`: a caller error (scope text given with `--since`, which fresheyes refuses before it starts), not a stall. Relaunched without the text; not counted as a retry.
+- One spec edit and several code edits were made with a script that asserts each replaced text occurs exactly once, not with the Edit tool. The skill asks for Edit on run artifacts; the later artifact edits use it.
 - Agency: the skill's Step 3 names Agency tools; this session has none, as the ny5g run found. The plan's tasks are executed here and reviewed at the chunk boundary.
 - Prior work read: ai-tools-alerts#ny5g and every note on it (tyje, t8jr, s6mt, r0ra, fv4g, 9kgk), the notes on 3qyq (ny5g as built, yw7r). `kata search "GHSA OSV advisory API reading withdrawn state poster"`: 3qyq, ny5g, fv4g, h29n.

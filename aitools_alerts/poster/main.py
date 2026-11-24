@@ -851,6 +851,11 @@ class Run:
         held = self._held_for(scope.name, ids)
         seen = self.first_seen(scope.name, ids, held)
         published = _published(c.sources) or (_published(schema.validate(h["adv"]).sources) if (h := held) else None)
+        # 3qyq: a fix group's first member is its loudest, not its newest; the group is
+        # news if any member is (faxq), so its age is its newest member's.
+        dated = [d for m in self.groups.get((scope.name, c.id.casefold()), ()) if (d := _published(m.sources)) is not None]
+        if dated:
+            published = max([*dated, *([published] if published is not None else [])])
         w, key = self.state["waiting"], self._seen_key(scope.name, ids, f"{scope.name}|{c.id.casefold()}")
         # A KEV entry is exempt: the day CISA lists it is the news, whatever the advisory's age.
         if level != "notice" and not test and c.exploited is not True and published is not None \
@@ -1189,9 +1194,6 @@ class Run:
         ones that can be lowered: a ledger full of other threads must not make a mass
         lowering look small."""
         st = self.rc
-        for root in st["exploited"]:  # 3qyq: KEV listed it; the ledger says so from now on, after
-            if self.led.thread(root) is not None:  # this run's candidates were planned (plan_known reads the mark)
-                self.led.mark_exploited(root)
         now = [e for e in self.led.entries() if not compose.is_synthetic(e.advisory.get("id"))]
         self._judge([e for e in now if e.root_event_id not in self.judged
                      or (e.root_event_id in self.verdicts and self.verdicts[e.root_event_id][0] != e)],
@@ -1205,6 +1207,12 @@ class Run:
         due = recompute.select([(e, level) for e, kind, level in found
                                 if kind == "due" and recompute.quiet(e, self.now)], len(self.known & live), st, self.now)
         self.save_rc()
+        # 3qyq: KEV listed these threads; the ledger says so from now on. Here, after this
+        # run's candidates were planned (plan_known reads the mark) and after the last
+        # judging above, which is where a thread posted by this run is first seen listed.
+        for root in st["exploited"]:
+            if root in live:
+                self.led.mark_exploited(root)
         for e, level in raises + due:
             try:
                 items = self._level_items(e, level)
@@ -1645,7 +1653,7 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                 settled = {f"{it['scope']}|{i.casefold()}" for it in state["outbox"] + r._withheld_items()
                            for i in it["ids"]}
                 merged = ledger.merge(pairs, led, r.groups, settled=settled,  # BEFORE level_for
-                                      loud=rules.evidence_rank)
+                                      loud=lambda c, scope: rules.evidence_rank(r._tied(c), scope))
                 r.observe(kev_out)
                 r.drain()
                 for i, (c, scope) in enumerate(merged):

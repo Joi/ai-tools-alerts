@@ -205,7 +205,9 @@ def _prose_level(c, scope, verified: bool, rs) -> tuple[str, str]:
 def evidence_rank(c, scope) -> int:
     """How high the candidate's own structured evidence reaches for this product: its
     readings by the ruleset, and the KEV row when it is marked exploited. Orders the
-    members of a fix group (``ledger.merge``), loudest first; prose is not counted."""
+    members of a fix group (``ledger.merge``), loudest first; prose is not counted.
+    The caller passes the candidate with only the readings its own first id's source
+    ties (``Run._tied``): one the level would not count must not win the place."""
     rs = ruleset.load()
     level = _fields_level(c, scope)
     if c.exploited is True:
