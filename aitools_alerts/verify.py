@@ -50,6 +50,7 @@ MAX_ALIASES = 3  # aliases of one thread that are read
 MAX_NAMES = 50  # ids one response may name; more is a failed read
 MAX_CACHE_BYTES = 16 << 20
 FILE = "verify.json"
+VERSION = 2  # of the cache: raised whenever a stored value changes meaning, so nothing older is reused
 BOT = "relay-bot"
 CONFIRMED, CONTRADICTED, UNKNOWN = "confirmed", "contradicted", "unknown"
 _WHYS = {CONFIRMED: ("match",), CONTRADICTED: ("unsupported", "above-source", "below-source"),
@@ -115,9 +116,8 @@ def _request(host: str, path: str, etag: str | None, limit: int, timeout: float,
         rest = deadline - time.monotonic()
         if rest <= 0 or cancelled.is_set():
             raise OSError("out of time")
-        sock = getattr(conn, "sock", None)
-        if sock is not None:
-            sock.settimeout(rest)
+        if len(held) > 1:
+            held[1].settimeout(rest)
         return rest
 
     conn = _CONNECTION(host, timeout=timeout)
@@ -127,6 +127,10 @@ def _request(host: str, path: str, etag: str | None, limit: int, timeout: float,
         if etag is not None:
             headers["If-None-Match"] = etag
         conn.connect()  # name lookup, TCP and TLS; the one phase nothing can cut short
+        if getattr(conn, "sock", None) is not None:
+            # Kept here: http.client forgets the socket (conn.sock is None) once a response
+            # that closes the connection takes it over, and the body is still to be read.
+            held.append(conn.sock)
         left()  # a lookup that outlived the wait sends nothing
         conn.request("GET", path, headers=headers)
         left()
@@ -181,12 +185,11 @@ def default_fetch(url: str, etag: str | None, limit: int, timeout: float):
     worker.join(timeout)
     if worker.is_alive():
         cancelled.set()
-        for conn in held:  # wake a read that is blocked; the thread then ends by itself
+        for thing in reversed(list(held)):  # the socket, then the connection: wake a blocked read
             try:
-                sock = getattr(conn, "sock", None)
-                if sock is not None:
-                    sock.shutdown(socket.SHUT_RDWR)
-                conn.close()
+                if thing is not held[0]:
+                    thing.shutdown(socket.SHUT_RDWR)
+                thing.close()
             except Exception:
                 pass
         raise OSError("fetch failed")
@@ -375,7 +378,7 @@ def state_key(adv) -> str:
 # ------------------------------------------------------------------ the cache
 
 def _empty(digest: str) -> dict:
-    return {"version": 1, "ruleset": digest, "kev": None, "sources": {}, "results": {}}
+    return {"version": VERSION, "ruleset": digest, "kev": None, "sources": {}, "results": {}}
 
 
 def _well_formed(c, digest: str) -> bool:
@@ -386,7 +389,7 @@ def _well_formed(c, digest: str) -> bool:
 
 
 def _shape_ok(c, digest: str) -> bool:
-    if not isinstance(c, dict) or set(c) != set(_empty(digest)) or c["version"] != 1 or c["ruleset"] != digest:
+    if not isinstance(c, dict) or set(c) != set(_empty(digest)) or c["version"] != VERSION or c["ruleset"] != digest:
         return False
 
     def tag(v):
@@ -404,7 +407,7 @@ def _shape_ok(c, digest: str) -> bool:
         if norm_id(i) != i or not isinstance(r, dict) or set(r) != {"etag", "at", "lowers", "support", "names"} \
                 or not tag(r["etag"]) or not when(r["at"]) or type(r["lowers"]) is not bool \
                 or not isinstance(r["support"], dict) or not isinstance(r["names"], list) \
-                or len(r["names"]) > MAX_NAMES or not all(norm_id(n) == n for n in r["names"]) \
+                or len(r["names"]) > MAX_NAMES or not all(isinstance(n, str) and norm_id(n) == n for n in r["names"]) \
                 or not all(isinstance(n, str) and isinstance(s, list) and len(s) == 2 and type(s[0]) is str and s[0] in _LEVELS
                            and type(s[1]) is bool for n, s in r["support"].items()):
             return False
@@ -617,9 +620,16 @@ def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=
     for t in waiting:
         if job.spent():
             break
+        asked = job.requests
         products = job.thread(t, known)
         if job.exhausted:
-            break  # not tried in full: what is left stays as it was
+            # Not tried in full: its result stays as it was. But a thread that spent
+            # requests has had its turn, or it would come first again every run.
+            if job.requests > asked:
+                held = results.get(t.key)
+                results[t.key] = {"at": now, "products": held["products"] if held is not None and set(
+                    held["products"]) == set(t.products) else {p: judge(t.level, p, [], False, rs) for p in t.products}}
+            break
         results[t.key] = {"at": now, "products": products}
     live = [_Target(adv) for adv in current if adv.posted_by == BOT and norm_id(adv.id) is not None]
     keys = {t.key for t in live}

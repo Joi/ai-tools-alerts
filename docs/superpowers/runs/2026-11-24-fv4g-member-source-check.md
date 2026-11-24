@@ -1,10 +1,12 @@
 # Run: fv4g-member-source-check
 Instruction: Read TASK-ai-tools-alerts#fv4g.md in this worktree root, then run `kata show ai-tools-alerts#fv4g` and follow the brief and the dispatch rules (ai-tools-alerts#fv4g, /do-it with the starting rung floored at medium): the member source check from three fixed endpoints, three results, and what cannot-verify means (findings D7 and D8 of the design review on ai-tools-alerts#h29n)
-Stage: code-review:verify+cli (delta)
+Stage: verifying
 Rung: medium (start-floor medium: constraint-lens, BR1 REV0 NOV1 INT1 FC1 = 4; the dispatch brief floors it at medium too)
 Lens: "No URL taken from an event is ever fetched"; "https only, no redirects"; "At most 10 fetches and 30 s per run"; "Runs in the hourly job, never in the session-start hook"; "no string from a source is printed or stored"; "a 404, a 429 and a truncated body are each `unknown` and change nothing"
 Last reviewed: spec 6c065d9d7c14b70e4715cf4fc4684a960685caba
 Last reviewed: plan 5106781b36e16a2b29fb4f6b4da1882ebb315983
+Last reviewed: code 785da1da9f467e1b495435e6d909e8f8775c4d5f (the whole branch), then the delta `--since` it at 702d0560f6aac22b1ed3a3af2b277630606f3159
+Unreviewed after the delta: the commit that fixes what the delta raised, and this record
 Review tier: gpt-6-astra at high (ai-tools-alerts#h29n calls the work security-shaped)
 Spec: docs/superpowers/specs/2026-11-24-fv4g-member-source-check-design.md   Plan: docs/superpowers/plans/2026-11-24-fv4g-member-source-check.md
 Agency project: — (the Agency tools are not offered in this session; both chunks were built in the session itself)
@@ -59,6 +61,15 @@ Code findings, pass 1, and what was done (the fix commit after 785da1d):
 13. COSMETIC, fixed: an empty KEV vendor no longer makes a name the ruleset refuses; more than 50 named ids is a failed read; the timing test's window is wider.
 Also changed with these: `below-source` stands when a related id's read failed (it rests on bodies that were read; a junk alias must not hide it). The spec review had asked for every failure to be `unknown`; the first id's failure still is.
 
+Pass 2 [code:verify+cli]: 0B/4S/0C/0R · fixed 13/13 prior (12 fixed, 1 rebutted) · velocity ↓ (16→4, escalation no)
+code passes: 2 (the whole branch, then the one delta `--since 785da1da9f467e1b495435e6d909e8f8775c4d5f` at 702d0560f6aac22b1ed3a3af2b277630606f3159, fresheyes run 20261124-161340-4f910e, gpt-6-astra). No standing rebuttal was overturned.
+
+Code findings, pass 2 (the delta), and what was done (the commit after 702d056; no further pass):
+1. SUBSTANTIVE ("major"), `http.client` clears `conn.sock` once a closing response owns the socket, so the deadline and the cancellation lost it. Fixed: the socket is kept from the connect.
+2. SUBSTANTIVE, a cache written before the KEV rule changed kept `lowers: true` for an unlisted CVE. Fixed: the cache version is 2; version 1 is an empty cache. (No release carried version 1.)
+3. SUBSTANTIVE, `"names": [null]` passed the shape check and then raised in every run. Fixed: every name is text.
+4. SUBSTANTIVE, a thread cut off by the budget stayed "never tried" and came first again each run. Fixed: it is marked as tried when it spent requests.
+
 ## Chunks
 - [x] verify: aitools_alerts/verify.py, the `verify` config key, tests/test_verify.py
 - [x] cli: the check in `run` and `verify`, results in `check`, README and changelog
@@ -70,3 +81,5 @@ Also changed with these: `below-source` stands when a related id's read failed (
 - The plan says tests first. The code of both chunks was written before its tests; every test was then run against it, and the six that failed were wrong tests (a helper that turned a wrong-typed value into a valid one, two cases that shared one state key, a mirror rebuilt under a new root, an output compared with another command's), not wrong code.
 - Tempted to skip the Agency step when its tools were missing; there was nothing to run it with, so the build was done directly and is recorded as such.
 - Size: `aitools_alerts/verify.py` about 540 lines, 120 more in `cli.py`, `config.py` and `ruleset.py`, about 960 of tests. Larger than the 600 the split aimed for; the half kept is one deliverable and was not split again.
+- The rung did not climb: no hard trigger in the diff (no secret, credential or deploy path), and no BLOCKER or SUBSTANTIVE finding was left unfixed or unanswered after its pass. The delta is the Review Cycle rule's for a behaviour-changing BLOCKER fix, not heavy's.
+- Found in review and worth knowing elsewhere: the poster's thread ids are ledger keys (`CVE-...:slug`); `ruleset.source_of` reads those as nothing and reads internal keys (`LEAD-...`, `AITA-...`) as OSV ids. `verify.norm_id` handles both; ai-tools-alerts#ny5g and ai-tools-alerts#tavj are told.

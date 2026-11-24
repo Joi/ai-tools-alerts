@@ -691,8 +691,23 @@ class FakeResponse:
         return out
 
 
-def fake_connection(monkeypatch, response=None, connect_delay=0.0, response_delay=0.0):
+class FakeSock:
+    def __init__(self):
+        self.calls = []
+
+    def settimeout(self, t):
+        self.calls.append("settimeout")
+
+    def shutdown(self, how):
+        self.calls.append("shutdown")
+
+    def close(self):
+        self.calls.append("close")
+
+
+def fake_connection(monkeypatch, response=None, connect_delay=0.0, response_delay=0.0, sock=None):
     log = []
+    sock_of = {"sock": sock}
 
     class Conn:
         def __init__(self, host, timeout=None):
@@ -702,12 +717,14 @@ def fake_connection(monkeypatch, response=None, connect_delay=0.0, response_dela
 
         def connect(self):
             time.sleep(connect_delay)
+            self.sock = sock_of.get("sock")
 
         def request(self, method, path, headers=None):
             log.append((method, path, headers))
 
         def getresponse(self):
             time.sleep(response_delay)
+            self.sock = None  # as http.client does when the response will close the connection
             return response
 
         def close(self):
@@ -865,7 +882,7 @@ def test_a_result_that_is_not_confirmed_is_read_again_after_a_day(tmp_path):
 @pytest.mark.parametrize("path, value", [
     (("results", "KEY", "products", "Claude Code", "result"), []), (("results", "KEY", "products", "Claude Code", "why"), {}),
     (("results", "KEY", "products", "Claude Code", "source"), []), (("sources", G1, "support", "Claude Code"), [[], True]),
-    (("sources", G1, "names"), [[]]), (("sources", G1, "etag"), []), (("kev",), []), (("ruleset",), []), (("version",), []),
+    (("sources", G1, "names"), [[]]), (("sources", G1, "names"), [None]), (("version",), 1), (("sources", G1, "etag"), []), (("kev",), []), (("ruleset",), []), (("version",), []),
     (("results", "KEY", "products"), [["Claude Code"]]), (("sources", G1), None), (("results",), None),
 ])
 def test_a_cache_with_a_value_of_the_wrong_kind_is_an_empty_one_not_a_crash(tmp_path, path, value):
@@ -890,3 +907,36 @@ def test_a_thread_key_of_the_poster_s_is_read_by_its_public_id(tmp_path):
     n2 = Net()
     go(tmp_path, [internal], n2)
     assert n2.calls == [] and res(tmp_path, internal)["Claude Code"]["why"] == "no-source"
+
+
+def test_the_socket_is_still_reached_after_the_response_took_it_over(monkeypatch):
+    """http.client clears conn.sock for a response that closes the connection; the body is still to come."""
+    sock = FakeSock()
+    resp = FakeResponse(headers={"Content-Length": "2"}, read_delay=0.5)
+    fake_connection(monkeypatch, resp, sock=sock)
+    with pytest.raises(OSError):
+        REAL_FETCH(gurl(G1), None, 1000, 0.15)
+    assert "shutdown" in sock.calls  # the blocked read is woken
+    assert sock.calls.count("settimeout") >= 3  # connect, send, headers: each sets what is left on the kept socket
+
+
+def test_a_thread_cut_off_by_the_budget_has_had_its_turn(tmp_path):
+    greedy = adv(id=CVE, aliases=[G2, G3], level="critical")
+    other = adv(id=G1, level="notice")
+    clock = Clock()
+
+    asked = []
+
+    def slow(url, etag, limit, timeout):
+        asked.append(url)
+        clock.t += 16
+        if url == verify.KEV_URL:
+            return 200, None, json.dumps(kev()).encode()
+        raise OSError("slow")
+    cache = go(tmp_path, [greedy, other], slow, clock=clock)  # KEV, one alias, and the 30 seconds are gone
+    assert asked == [verify.KEV_URL, gurl(G2)]
+    assert res(tmp_path, greedy)["Claude Code"]["why"] == "unread"
+    assert verify.state_key(other) not in cache["results"]
+    n = net((gurl(G1), ghsa(high=False)))
+    go(tmp_path, [greedy, other], n, now=NOW + 3600)
+    assert n.urls[0] == gurl(G1)  # the thread that was cut off no longer comes first

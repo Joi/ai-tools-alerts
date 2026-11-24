@@ -59,7 +59,7 @@ Residue, stated: a CVE thread whose only support came through a listed alias los
 **Fetch.** `default_fetch(url, etag, limit, timeout) -> (status, etag, body)`:
 
 - refuses a URL that is not `https://<one of the three hosts>/...` with no port and no userinfo;
-- runs the request in a daemon thread and waits `timeout` seconds for it, no longer. Inside the thread the request has the same deadline: it is checked between connect, send, the header read and every body read, and the socket's timeout is set to what is left, so no phase restarts the clock. When the wait ends the thread is told to stop and its connection is shut; a name lookup cannot be interrupted, but nothing is sent once it returns. The engine passes `min(10, what is left of the run's 30 seconds)`;
+- runs the request in a daemon thread and waits `timeout` seconds for it, no longer. Inside the thread the request has the same deadline: it is checked between connect, send, the header read and every body read, and the socket's timeout is set to what is left, so no phase restarts the clock. When the wait ends the thread is told to stop and its socket is shut (the socket is kept from the moment of connection, because `http.client` forgets it once a response that closes the connection takes it over); a name lookup cannot be interrupted, but nothing is sent once it returns. The engine passes `min(10, what is left of the run's 30 seconds)`;
 - inside the thread: `http.client.HTTPSConnection` (it follows no redirect and reads no proxy variable), socket timeout `timeout`, headers `User-Agent: aitools-alerts`, `Accept: application/json`, `Accept-Encoding: identity`, and `If-None-Match` when an ETag is passed;
 - a 200 body is accepted only when the response has no `Content-Encoding` other than `identity`, and either declares `Content-Length` and exactly that many bytes arrived, or is chunked and was read to the end of the last chunk (`http.client` raises on a chunk cut short). A response with neither is a failed read: nothing says where it ends. More than `limit` bytes is a failed read;
 - raises `OSError` on any failure.
@@ -110,7 +110,7 @@ Other fixed reasons for `unknown`: `no-source`, and `off`, which is never stored
 **Budget and cache.** `verify.json` in the state directory, written whole with `state.write_json`:
 
 ```
-{"version": 1, "ruleset": "<digest>",
+{"version": 2, "ruleset": "<digest>",
  "kev": {"etag": "...", "at": 0},
  "sources": {"<id>": {"etag": "..." or null, "at": 0, "lowers": true,
                       "support": {"<product>": ["<level>", true]}, "names": ["<id>"]}},
@@ -122,6 +122,8 @@ Other fixed reasons for `unknown`: `no-source`, and `off`, which is never stored
 - A thread is read when it has no result for its state key, or any of its products is `unknown` for `unread`. A `confirmed` result stands until the published state or the ruleset changes (finding D7's rule). Any other result is read again after 24 hours: a source read minutes before CISA listed the CVE, or before GitHub reviewed the advisory, must not stand for good.
 - Threads waiting are taken longest untried first (never tried before any tried), then highest level, so threads that keep failing cannot hold the budget against the rest. The 30 seconds run from the start of the run and also end work that needs no request. Each id is requested at most once a run. The KEV file is requested at most once a run and serves every CVE id. A request is counted before it is sent; at 10, or once 30 seconds have passed, the run stops and what is left stays as it was.
 - Conditional requests. A request carries the stored ETag only when the support it would confirm is held under this ruleset (for KEV: every CVE id wanted this run has a support read at that ETag). A 304 then means the body whose 200 was parsed is still what the source serves, and the stored support is used. A 304 with no such support is a failed read. So every decisive result rests on a parsed 200 body; the 304 only says that body is current. An ETag is stored only when it matches `(W/)?"<1 to 128 printable ASCII characters, no quote>"`.
+- `version` is raised whenever a stored value changes meaning (2: KEV not listing a CVE is no authority), so nothing computed under an older meaning is reused.
+- A thread the budget cut off after it had spent requests is marked as tried (its result stays as it was), so it does not come first again in every run.
 - Entries for threads and ids no longer current are dropped at each save.
 - The run does not hold the state lock while it fetches: a pull started by the hook must not wait 30 seconds. Two runs at once each save a whole file; the later one wins, and the loss is a cached result.
 
