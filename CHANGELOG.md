@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 — 2026-11-25
+## Unreleased
 
 The member's CLI now applies the rest of what its own source check finds (design review of 2026-11-23, finding D8, ai-tools-alerts#tavj). Until now a relay-bot lowering applied only when the member's read of the source gave exactly that level, never below `high`, and an alert the member could not check interrupted without limit.
 
@@ -13,6 +13,8 @@ The member's CLI now applies the rest of what its own source check finds (design
 - A new state file, `unverified.json`. A damaged one is started again with one line on stderr; for 24 hours after that no unverified alert interrupts.
 
 What it changes for a member with `verify = "off"`, or with an out-of-date CLI: every relay-bot critical is unverified, so a third within a day waits. What stays open: an alert the source does not support is flagged and still shown at its level (ai-tools-alerts#0z4e); a narrowing of products, range or fixed version is not compared (ai-tools-alerts#swfe); an alert with more than three aliases the CLI never read support through is not read whole, so its lowering takes the 72 hours. No wire format, schema or manifest changes; released readers keep the higher level (`tests/test_wire_compat.py`). The source check's cache is rebuilt once (version 3).
+
+## 0.2.0 — 2026-11-25
 
 The daily digest is short, and the notices move to a weekly summary (ai-tools-alerts#qwpw, design section 7 of ai-tools-alerts#9mx8). The daily digest at 09:00 Tokyo lists each alert the relay bot posted since the last digest, one line each with its level (`- HIGH: <title>; fixed in <version>. <source>`), and nothing else: no level sections, no notices, no grouping of one vendor release's CVEs (one post per fix already does that). A thread is listed once, by its root; a fix or level change later is a reply in its thread and is not listed again. A day with no new alert posts one line: `no new alerts. N notices added to the catalog this week: https://buzz.ai-tools.md/alerts/`. The first digest of each week, Monday's (or the next one when Monday's run was missed), adds a weekly summary: the week's notices counted by product, counts only, with the link. A notice is summarized once. One that has since posted an alert, or was retracted or expired, is dropped from the count. The CLI does not read the digest: its freshness signal is the signed checkpoint. The poster state gains `weekly`, the ISO week of the last summary; a state from before starts at the current week, so the first summary is the next Monday's. To roll back, also run `jq 'del(.weekly) | (.outbox[], .withheld[].items[]) |= (if .kind == "digest" then del(.adv.week) else . end)'` on the poster state, which the previous version refuses otherwise.
 
