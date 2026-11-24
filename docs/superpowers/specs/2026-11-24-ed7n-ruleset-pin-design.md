@@ -94,3 +94,19 @@ Rollback is reverting the pull request. A certificate that carries a pin is igno
 ## Open questions
 
 None that block. Whether the hourly job should upgrade the CLI by itself when it is out of date belongs to the install path (ai-tools-alerts#mx38), not here.
+
+## Amendment after the whole-branch review (2026-11-24)
+
+The review of the built branch found that "a malformed pin refuses the certificate" does not fail closed. `pull._choose_cert` skips a certificate that does not load and goes on with the one the reader already holds. A reader holding a certificate with no pin, shown a later root-signed certificate whose pin it cannot read, would keep judging as if nothing were pinned.
+
+What changed, and it replaces the text above wherever they differ:
+
+- A `ruleset` value that is present, not null and does not pass `ruleset.parse_pin` no longer raises. `_parse_cert` returns no pin and `ruleset_unreadable = True`; `Cert` carries that flag and `verify_cert` binds it. The certificate is accepted, so checkpoints go on verifying.
+- `cli._ruleset_outdated` returns `{"have", "pinned": None, "min_version": None}` for such a certificate and the CLI prints a third form of the line ("pins a ruleset in a form this aitools-alerts cannot read"). Everything an out-of-date CLI does and does not do applies.
+- `build_cert` and the signing script still refuse a malformed pin, now before the key signs anything. The script warns when the certificate it replaces has a pin it cannot read.
+- Success criterion 1 therefore reads: a malformed pin is refused when built; when read it makes the reader out of date. This departs from the issue's acceptance line "one with a malformed pin is refused" in the direction of the issue's purpose; the `notice:` comment on the issue says so.
+- The "Blast radius" paragraph about `State.load` refusing a stored certificate with a malformed pin no longer applies: such a certificate loads.
+- The alternative "a looser `parse_pin`" stays rejected: `parse_pin` is unchanged and strict. What is looser is what the certificate does with a pin that fails it. A later form of the pin may now add keys inside `ruleset`; readers that do not know them stop judging.
+- `verify` prints `the source check did not run: this aitools-alerts is out of date`, so no line of an out-of-date CLI starts with `source check:`.
+- Main released 0.1.8 while this was in review. 0.1.8 ignores the key too; the documents say "0.1.8 and earlier", the compatibility case runs v0.1.6, v0.1.7 and v0.1.8, each against the same feed with and without the pin, and the changelog entry sits under a new Unreleased heading.
+- Exit statuses: an out-of-date CLI keeps a relay-bot critical that a current CLI would have aged down, so `run` can exit 2 where a current CLI exits 0. That is the intended direction and the only difference.

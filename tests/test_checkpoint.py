@@ -616,11 +616,29 @@ GOOD_PIN = {"version": 7, "sha256": "ab" * 32, "min_version": 5}
     {**GOOD_PIN, "min_version": 8}, {**GOOD_PIN, "min_version": 0}, {**GOOD_PIN, "version": True},
     {**GOOD_PIN, "version": 7.0}, {**GOOD_PIN, "sha256": "ab" * 31 + "a"}, {**GOOD_PIN, "sha256": "AB" * 32},
     {**GOOD_PIN, "sha256": None}, {**GOOD_PIN, "version": 2**53}])
-def test_a_malformed_pin_is_refused_when_read(w, bad):
-    with pytest.raises(cp.CheckpointError, match="certificate: ruleset: "):
-        cp.load_cert(raw(w.resign(w.m.root_sec, w.cert_ev, {"ruleset": bad})))
-    with pytest.raises(cp.CheckpointError, match="ruleset"):
-        cp.cert_from_event(w.resign(w.m.root_sec, w.cert_ev, {"ruleset": bad}))
+def test_a_pin_this_reader_cannot_read_is_kept_as_unreadable_and_the_certificate_still_loads(w, bad):
+    """Refusing the certificate would let the pull go on with an older one and no pin
+    (pull._choose_cert). The root pinned something: the reader is out of date."""
+    ev = w.resign(w.m.root_sec, w.cert_ev, {"ruleset": bad})
+    cert = cp.load_cert(raw(ev))
+    assert cert.ruleset is None and cert.ruleset_unreadable and cp.cert_from_event(ev) == cert
+    assert cp.verify_cert(cert, w.m.root) and cp.cert_problem(cert, w.man, T0 + 5) is None
+    # bound by the signature like the pin itself: the object cannot say "no pin" for it
+    assert not cp.verify_cert(replace(cert, ruleset_unreadable=False), w.m.root)
+    assert not cp.verify_cert(replace(w.cert, ruleset_unreadable=True), w.m.root)
+    stranger, _ = nostr.keygen()
+    assert not cp.verify_cert(cp.load_cert(raw(w.resign(stranger, ev))), w.m.root)
+
+
+def test_a_pin_nested_too_deeply_is_unreadable_or_refused_never_a_crash(w):
+    deep = "[" * 400 + "]" * 400
+    ev = w.resign(w.m.root_sec, w.cert_ev)
+    ev = nostr.sign_event(w.m.root_sec, {"created_at": ev["created_at"], "kind": ev["kind"], "tags": ev["tags"],
+                                         "content": ev["content"][:-1] + ',"ruleset":{"version":' + deep + "}}"})
+    try:
+        assert cp.load_cert(raw(ev)).ruleset_unreadable
+    except cp.CheckpointError:
+        pass
 
 
 @pytest.mark.parametrize("bad", [GOOD_PIN, (7, "ab" * 32, 5), "pin", 7,
@@ -634,7 +652,8 @@ def test_a_malformed_pin_is_refused_when_built(w, bad):
 
 def test_a_null_pin_reads_as_absent(w):
     cert = cp.load_cert(raw(w.resign(w.m.root_sec, w.cert_ev, {"ruleset": None})))
-    assert cert.ruleset is None and cp.verify_cert(cert, w.m.root)
+    assert cert.ruleset is None and not cert.ruleset_unreadable and cp.verify_cert(cert, w.m.root)
+    assert not w.cert.ruleset_unreadable
 
 
 def test_script_signs_the_pin_of_this_checkout_and_checks_it_before_reading_the_root_key(w, script, capsys):
@@ -668,3 +687,15 @@ def test_script_warns_when_a_new_certificate_drops_or_lowers_the_pin(w, script, 
     assert script.main(script.argv(nostr.npub(w.ck))) == 0
     assert "and this one pins none; pass --ruleset-min-version to keep the pin" in capsys.readouterr().err
     assert cp.load_cert(script.out).ruleset is None
+
+
+def test_script_says_when_the_certificate_it_replaces_has_a_pin_it_cannot_read(w, script, monkeypatch, capsys):
+    assert script.main(script.argv(nostr.npub(w.ck))) == 0
+    capsys.readouterr()
+    old = json.loads(script.out.read_text())
+    script.out.write_bytes(raw(w.resign(w.m.root_sec, old, {"ruleset": {"version": 9, "sha256": "ab" * 32,
+                                                                       "min_version": 9, "scope": 7}})))
+    monkeypatch.setattr(script.time, "time", lambda: T0 + 60.0)
+    assert script.main(script.argv(nostr.npub(w.ck), "--ruleset-min-version", "1")) == 0
+    assert "carries a ruleset pin this checkout cannot read" in capsys.readouterr().err
+    assert cp.load_cert(script.out).ruleset.min_version == 1

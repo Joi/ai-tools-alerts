@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from aitools_alerts import cli, config, inventory, notify, pull
+from aitools_alerts import cli, config, inventory, nostr, notify, pull
 from aitools_alerts.check import Match
 from aitools_alerts.config import Settings
 from aitools_alerts.inventory import Installed, Inventory
@@ -927,6 +927,42 @@ def test_an_old_release_with_an_old_ruleset_prints_both_lines_once_each(tmp_path
     assert cli.main(["pull"]) == 0
     err = capsys.readouterr().err
     assert err.count("aitools-alerts: upgrade:") == 1 and err.count("aitools-alerts: out of date:") == 1
+
+
+def _publish_unreadable_pin(m, tmp_path, later=500):
+    """Replace the mirror's certificate with a later one whose pin has a fourth key."""
+    from mirror_helpers import iso
+    old = m.cert
+    content = json.loads(old["content"])
+    issued = old["created_at"] + later
+    content.update(issued_at=iso(issued), ruleset={"version": 99, "sha256": "0" * 64, "min_version": 99, "scope": 7})
+    m.cert = nostr.sign_event(m.root_sec, {"created_at": issued, "kind": old["kind"], "tags": old["tags"],
+                                           "content": json.dumps(content)})
+    m.write(tmp_path / "mirror")
+
+
+@pytest.mark.parametrize("first", [None, "own"])
+def test_a_later_certificate_with_a_pin_this_cli_cannot_read_makes_it_out_of_date(tmp_path, monkeypatch, sent, capsys, first):
+    """The reader holds a good certificate (no pin, or a pin it meets). The root then
+    signs a later one whose pin is in a form this release does not know. The pull must
+    not go on with the older certificate as if nothing were pinned."""
+    m = _mirror_with_pin(tmp_path, monkeypatch, None if first is None else _pin())
+    assert cli.main(["pull"]) == 0 and _outdated_lines(capsys) == []
+    _publish_unreadable_pin(m, tmp_path)
+    assert cli.main(["pull"]) == 0
+    assert _outdated_lines(capsys) == [
+        f"aitools-alerts: out of date: the trust root pins a ruleset in a form this aitools-alerts (ruleset {_pin().version}) "
+        "cannot read. It judges no level until it is upgraded: no source check, no computed expiry; "
+        "alerts are shown as posted. See the README to upgrade."]
+    st = State.load()
+    cert = st.cert_for(m.root)
+    assert cert.ruleset is None and cert.ruleset_unreadable and cert.event["id"] == m.cert["id"]
+    assert pull.unverified(st) is None  # the feed is still verified: only judging stops
+    assert cli.main(["run", "--json"]) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["ruleset_outdated"] == {"have": _pin().version, "pinned": None, "min_version": None}
+    assert out["unverified"] is None and [x["level"] for x in out["matches"]] == ["critical"]
+    assert out["matches"][0]["source_check"] is None
 
 
 def test_a_ruleset_that_cannot_be_loaded_does_not_break_the_line(tmp_path, monkeypatch, sent, capsys):

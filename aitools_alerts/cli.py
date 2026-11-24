@@ -42,6 +42,8 @@ OUTDATED_LINE = ("out of date: this aitools-alerts has ruleset {have}; the trust
                  "and accepts none below {min_version}. {tail}")
 OUTDATED_DIGEST_LINE = ("out of date: this aitools-alerts has a ruleset {have} that differs from the ruleset {pinned} "
                         "the trust root pins. {tail}")
+OUTDATED_UNREADABLE_LINE = ("out of date: the trust root pins a ruleset in a form this aitools-alerts "
+                            "(ruleset {have}) cannot read. {tail}")
 OUTDATED_TAIL = ("It judges no level until it is upgraded: no source check, no computed expiry; "
                  "alerts are shown as posted. See the README to upgrade.")
 
@@ -313,10 +315,10 @@ def _check_json(t, m, cache, judged: bool = True) -> dict | None:
 
 def cmd_verify(a, st: State, s: config.Settings) -> int:
     """The source check on the stored state, then what it found."""
-    threads, pairs = _matches(a, st)
     if _ruleset_outdated(a, st) is not None:
-        print("source check: not run (this aitools-alerts is out of date)")
+        print("the source check did not run: this aitools-alerts is out of date")
         return 0
+    threads, pairs = _matches(a, st)
     _source_check(a, st, s, threads, pairs)
     cache = _cache(a, st, s)
     found = [verify.summary(r)[0] for t in threads if (r := verify.result_for(t.adv, cache)) is not None]
@@ -359,25 +361,32 @@ def _min_cli(a, st: State) -> str | None:
 def _ruleset_outdated(a, st: State) -> dict | None:
     """``{"have", "pinned", "min_version"}`` when the trust root pins a ruleset and
     this CLI's own is out of date under the pin (``ruleset.outdated``); else None.
-    The pin is in the stored certificate of the current root, like ``min_cli``.
-    While it is not None this CLI judges no level: no source check and no computed
-    expiry. Nothing is refused or hidden because of it. A ruleset that cannot be
-    loaded gives None here: the command that needs it reports the damage."""
+    The pin is in the stored certificate of the current root, like ``min_cli``. A
+    pin this CLI cannot read (a later form) is out of date too: ``pinned`` and
+    ``min_version`` are then None. While the result is not None this CLI judges no
+    level: no source check and no computed expiry. Nothing is refused or hidden
+    because of it. With a readable pin, a ruleset that cannot be loaded gives None
+    here: the command that needs it reports the damage."""
     cert = st.cert_for(a.root)
-    pin = cert.ruleset if cert is not None else None
-    if pin is None:
+    if cert is None or (cert.ruleset is None and not cert.ruleset_unreadable):
         return None
     try:
         rs = ruleset.load()
-        if not ruleset.outdated(pin, rs):
+    except Exception:
+        rs = None
+    if cert.ruleset_unreadable:
+        return {"have": rs.version if rs is not None else None, "pinned": None, "min_version": None}
+    try:
+        if rs is None or not ruleset.outdated(cert.ruleset, rs):
             return None
     except Exception:
         return None
-    return {"have": rs.version, "pinned": pin.version, "min_version": pin.min_version}
+    return {"have": rs.version, "pinned": cert.ruleset.version, "min_version": cert.ruleset.min_version}
 
 
 def _outdated_line(o: dict) -> str:
-    line = OUTDATED_DIGEST_LINE if o["have"] == o["pinned"] else OUTDATED_LINE
+    line = (OUTDATED_UNREADABLE_LINE if o["pinned"] is None
+            else OUTDATED_DIGEST_LINE if o["have"] == o["pinned"] else OUTDATED_LINE)
     return line.format(tail=OUTDATED_TAIL, **o)
 
 
@@ -515,11 +524,11 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
     threads, pairs = _matches(a, st)  # one inventory collection per run (the hook's time budget)
     pending = _unseen_critical(a, st, pairs)
     if a.json:
-        cache = _cache(a, st, s)
+        cache, old = _cache(a, st, s), _ruleset_outdated(a, st)
         out = {"pull_error": res.error, "ignored_env": a.ignored_env,
                "stale_since": _stale_since(a, st), "unverified": _unverified(a, st),
-               "min_cli": _min_cli(a, st), "ruleset_outdated": _ruleset_outdated(a, st),
-               "matches": [_match_json(t, m, cache, _ruleset_outdated(a, st) is None) for t, m in pairs],
+               "min_cli": _min_cli(a, st), "ruleset_outdated": old,
+               "matches": [_match_json(t, m, cache, old is None) for t, m in pairs],
                "unseen_critical": sorted({r for t, _ in pending for r in t.root_ids})}
     elif not a.quiet:
         a.json = False

@@ -1,6 +1,6 @@
 # Run: ed7n-ruleset-pin
 Instruction: Read TASK-ai-tools-alerts#ed7n.md in this worktree root, then run `kata show ai-tools-alerts#ed7n` and follow the brief and the dispatch rules. (Issue: self-correct: the root-signed manifest carries the ruleset pin; the CLI says when its ruleset is out of date, finding D10, second half of s6mt. Its first comment moves the pin from the manifest to the checkpoint key certificate.)
-Stage: spec
+Stage: code-review:whole-branch (the delta)
 Rung: heavy (start-floor heavy: hard-trigger, BR2 REV1 NOV1 INT2 FC2 = 8). Evaluator: "secrets, auth or credential handling — the diff changes `scripts/sign-checkpoint-key.py` (the script that signs with the trust root key) and changes what `checkpoint._parse_cert` / `verify_cert` check on the checkpoint key certificate". The dispatch floor was medium.
 Lens (every review pass carries it): "a certificate without the key behaves as today"; "No rollout" (no signing step is run; it is filed as an issue); nothing built may wait for a person to act; released readers v0.1.6 and v0.1.7 "show what they showed before".
 Last reviewed: spec 473b94f45de878e706b81d503c423ab5c15d6eb5 (the delta; first pass 8d460f1246dba3e2b9e57bc2ae54c7e0e1ec8d40)
@@ -19,12 +19,22 @@ Pass 1 [plan]: 1B/1S/0C/0R · fixed -/- · velocity = (—→2, escalation no)  
   B fixed: chunk 1's verification command named `tests/test_state.py`, which does not exist; it now names `tests/test_checkpoint_pull.py` and `tests/test_pull.py`, and chunk 2 names `tests/test_expiry.py` for the decay tests.
   S rebutted: the message of the reviewed commit is vague. It is the review snapshot, a dangling commit made to give the reviewer a fixed tree; it is on no branch and is never pushed.
 Pass 2 [plan]: 0B/0S/0C/0R · fixed 1/1 prior · velocity ↓ (2→0, escalation no)   (the delta, reviewed e015d6dfde1a7834653c1eadc29cf1c8b2204535; passed, the rebuttal stands)
+Pass 1 [code:whole-branch]: 1B/2S/5C/0R · fixed -/- · velocity = (—→8, escalation no)   (reviewed aeca706920adee5a76d72f986e35c01d3ade3692; Stage 2 fresheyes gpt-6.1-sol: failed, 1B; Stage 1 same-model subagent: 0B/2S/5C)
+  B fixed (Stage 2): a certificate with a pin the reader cannot parse was refused, and `pull._choose_cert` then went on with the older stored certificate and no pin. An unreadable pin now loads as `ruleset_unreadable` and makes the reader out of date; a pull test covers a later certificate replacing a good one. This changes behaviour, so it gets the one delta.
+  S fixed (Stage 1): main had released 0.1.8 under the branch. Merged; the changelog entry is under a new Unreleased heading; the documents say "0.1.8 and earlier"; the compatibility case runs v0.1.8 too.
+  S fixed (Stage 1): the out-of-date clause of `_cache` had no test (a mutant survived). A test now caches a contradiction on a current CLI, then pins past it.
+  C fixed: the wire.md sentence about a malformed pin (rewritten with the B fix); `verify`'s line no longer starts with `source check:`; the README names the three forms of the line; the exit-status sentence says a kept level can give exit 2; `cmd_run` computes the state once, `cmd_verify` returns before the inventory, `build_cert` parses the pin before signing.
 
 ## Chunks
-- [ ] pin in the certificate: `ruleset.outdated`, `checkpoint` parse, build and verify, the signing option
-- [ ] the CLI's out-of-date line, `run --json` key, no judgment while out of date
-- [ ] compatibility case with the released readers; changelog, `spec/wire.md`, README
+- [x] pin in the certificate: `ruleset.outdated`, `checkpoint` parse, build and verify, the signing option
+- [x] the CLI's out-of-date line, `run --json` key, no judgment while out of date
+- [x] compatibility case with the released readers; changelog, `spec/wire.md`, README
 
 ## Notes
 - Prior work searched: kata `ruleset pin certificate min_version` (two hits: this issue and ai-tools-alerts#s6mt, whose close-out and t8jr's note name the certificate as the place); auto-memory (three entries, all about this repository's test and merge rules). No earlier attempt at the pin.
 - The repository has no `.repoman-managed` marker: the ending is a pull request this session merges (brief, "Landing"), not a repoman handoff. The gate is `scripts/test-gate.sh`.
+- Agency execution: the agency tools are not available in this session (no `mcp__agency__*` tool is listed). The chunks were built in this session; the reviews and the gate are unchanged.
+- The three chunks were built while the spec and plan reviews ran and were reviewed as one unit, the whole branch, in one Stage 1 and Stage 2 round.
+- Departure from the issue's acceptance, with a `notice:` comment on the issue: a malformed pin is refused when built, and when read it makes the reader out of date and does not refuse the certificate (the BLOCKER of the code review).
+- Follow-up filed: ai-tools-alerts#46yr (rollout: sign a certificate that carries the pin). Notes posted on ai-tools-alerts#tavj, #0xq6, #c1g2, #faxq.
+- `RELEASED` in `tests/test_wire_compat.py` does not list v0.1.8 yet; that list is the release's to extend (`spec/wire.md`, "Adding to the format"). The pin's own case runs v0.1.8.

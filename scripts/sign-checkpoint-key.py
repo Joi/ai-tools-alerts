@@ -28,7 +28,7 @@ refused or hidden. Sign it from the verified checkout of the release whose
 ruleset members should have: the digest is of the files in this checkout. N
 may not be above this checkout's version. Without the option no pin is signed;
 like --min-cli it must be passed again on every later certificate, and the
-script warns when a pin is dropped or lowered. Releases up to 0.1.7 ignore
+script warns when a pin is dropped or lowered. Releases up to 0.1.8 ignore
 the key.
 
 The key is taken as an npub only. A 64-hex secret key is a valid public key
@@ -164,6 +164,9 @@ def main(argv=None) -> int:
             _warn(f"the certificate being replaced names min_cli {previous.min_cli} "
                   "and this one names none; pass --min-cli to keep the floor")
         old = previous.ruleset
+        if previous.ruleset_unreadable:
+            _warn("the certificate being replaced carries a ruleset pin this checkout cannot read; "
+                  "it may be newer than this checkout")
         if old is not None and pin is None:
             _warn(f"the certificate being replaced pins ruleset {old.version} (min_version {old.min_version}) "
                   "and this one pins none; pass --ruleset-min-version to keep the pin")

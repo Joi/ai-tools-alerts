@@ -209,18 +209,26 @@ def test_what_the_format_avoids_a_new_manifest_key_fails_the_released_pull(tmp_p
                       now=now).error == "bad manifest"
 
 
-@pytest.mark.parametrize("tag", ("v0.1.6", "v0.1.7"))
+@pytest.mark.parametrize("tag", ("v0.1.6", "v0.1.7", "v0.1.8"))
 def test_a_pin_of_a_later_ruleset_does_not_disturb_a_released_reader(tmp_path, tag):
     """The ruleset pin is in the certificate (ai-tools-alerts#ed7n). The root pins a
     ruleset no reader here has: the released readers that read the certificate ignore
-    the key, pull checked and show the alert; this reader reads the pin, says it is out
-    of date, and still shows the alert at its level."""
-    m, now = mirror_now(ruleset_pin=ruleset.Pin(version=99, sha256="0" * 64, min_version=99))
-    m.root_post(m.bot_sec, advisory(posted_by="relay-bot"), created_at=now - 3600,
-                tags=[claim("AITA-TEST-0001", "critical", now - 3600)])
+    the key, pull checked and show exactly what they show with no pin; this reader
+    reads the pin, says it is out of date, and still shows the alert at its level."""
+    def one(pin):
+        m, now = mirror_now(ruleset_pin=pin)
+        m.root_post(m.bot_sec, advisory(posted_by="relay-bot"), created_at=now - 3600,
+                    tags=[claim("AITA-TEST-0001", "critical", now - 3600)])
+        return m, now
+    m, now = one(ruleset.Pin(version=99, sha256="0" * 64, min_version=99))
     live = {"AITA-TEST-0001": ["critical", ["99.0.0"], True]}
-    theirs = released(tmp_path, tag, m, now)  # asserts the pull was a checked one
-    assert theirs[str(now)] == live and theirs[str(now + MONTH)] == live
+    (tmp_path / "pin").mkdir()
+    (tmp_path / "plain").mkdir()
+    theirs = released(tmp_path / "pin", tag, m, now)  # asserts the pull was a checked one
+    plain = released(tmp_path / "plain", tag, *one(None))
+    assert theirs[str(now)] == live and list(theirs.values()) == list(plain.values())  # the pin changes nothing there
+    if tag != "v0.1.8":  # 0.1.8 computes expiry with its own table; the earlier two compute none
+        assert theirs[str(now + MONTH)] == live
     st = State.load(tmp_path / "this-reader")
     assert pull.fetch("https://mirror.example.invalid/", st, fetch=m.fetch, root_pubkey=m.root, now=now).error is None
     pin = st.cert_for(m.root).ruleset

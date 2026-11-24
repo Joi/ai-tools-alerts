@@ -67,3 +67,14 @@ Acceptance: spec criteria 6, 7, 8.
 ## Rollback
 
 Revert the pull request. No certificate carries the key until the rollout issue is done, and a certificate that does is ignored by v0.1.6 and v0.1.7 and read as pin-less by a reverted reader.
+
+## Amendment after the whole-branch review
+
+The spec's amendment section lists what changed. Steps added:
+
+- [ ] `checkpoint.py`: `Cert.ruleset_unreadable`; `_parse_cert` returns it instead of raising; `verify_cert` compares it; `build_cert` runs `ruleset.parse_pin` on the pin before signing.
+- [ ] `cli.py`: `OUTDATED_UNREADABLE_LINE`; `_ruleset_outdated` handles the flag; `cmd_verify` returns before collecting the inventory and prints a line that does not start with `source check:`; `cmd_run` computes the out-of-date state once.
+- [ ] Tests: the malformed-pin cases assert "loads, unreadable, bound by the signature"; a pull test where a later certificate with a four-key pin replaces a good one (`tests/test_cli.py`); a cached contradiction is not shown once the CLI is out of date (`tests/test_verify_cli.py`); the script's warning for an unreadable previous pin; v0.1.8 in the compatibility case, compared with and without the pin.
+- [ ] Documents: "0.1.8 and earlier"; the changelog entry under a new Unreleased heading; the README names the three forms of the line.
+
+Verify: the six test files of chunks 1 to 3, then the gate.
