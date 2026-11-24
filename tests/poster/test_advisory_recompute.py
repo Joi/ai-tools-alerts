@@ -101,7 +101,7 @@ def test_an_id_a_member_never_reads_raises_nothing():
     ghsas = [f"GHSA-aaaa-bbbb-cc{n:02d}" for n in range(4)]
     answers = {g: ghsa_json(g, cve=CVE, type="malware" if g == ghsas[3] else "reviewed", **WEAK) for g in ghsas}
     e = thread((CVE, *ghsas), level="notice")
-    assert support(e, sources.Reader(Api(**answers)).read, catalog("v"))[:2] == ("notice", False)
+    assert support(e, sources.Reader(Api(**answers)).read, catalog("v"))[:2] == (ruleset.NONE, False)
     unpublished = thread((CVE,), level="notice")
     unpublished.aliases.append(ghsas[3])  # the ledger's identity set holds it; no post ever named it
     assert support(unpublished, sources.Reader(Api(**answers)).read, catalog("v"))[:2] == (ruleset.NONE, False)

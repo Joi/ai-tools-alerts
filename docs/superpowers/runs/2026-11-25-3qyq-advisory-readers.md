@@ -70,5 +70,6 @@ Code findings, pass 2 (the delta), and what was done:
 ## Notes
 - The delta's first launch printed `FRESHEYES_STALLED … REASON=LOG_WAIT`: a caller error (scope text given with `--since`, which fresheyes refuses before it starts), not a stall. Relaunched without the text; not counted as a retry.
 - One spec edit and several code edits were made with a script that asserts each replaced text occurs exactly once, not with the Edit tool. The skill asks for Edit on run artifacts; the later artifact edits use it.
+- Main moved twice during the run: the v0.2.0 release (merged before the whole-branch review) and ai-tools-alerts#tavj (merged after the delta; one conflict, in the changelog). tavj changed which aliases a member reads beside a CVE first id when there are more than three; `sources.chosen` now counts none in that case. That change and the three delta fixes are the code no reviewer has read.
 - Agency: the skill's Step 3 names Agency tools; this session has none, as the ny5g run found. The plan's tasks are executed here and reviewed at the chunk boundary.
 - Prior work read: ai-tools-alerts#ny5g and every note on it (tyje, t8jr, s6mt, r0ra, fv4g, 9kgk), the notes on 3qyq (ny5g as built, yw7r). `kata search "GHSA OSV advisory API reading withdrawn state poster"`: 3qyq, ny5g, fv4g, h29n.

@@ -120,7 +120,8 @@ def test_only_the_ids_a_member_reads_are_chosen():
     assert sources.chosen(G, [], {G: many}.get) == (four[:3], False)
     assert sources.tied(G, four[2], {G: many}.get) and not sources.tied(G, four[3], {G: many}.get)
     aliases = [f"GHSA-aaaa-bbbb-cc{n:02d}" for n in range(4)]
-    assert sources.chosen(CVE, aliases, lambda i: None) == (aliases[:3], False)
+    assert sources.chosen(CVE, aliases, lambda i: None) == ([], False)  # which three is each member's own matter
+    assert sources.chosen(CVE, aliases[:3], lambda i: None) == (aliases[:3], True)
     last = sources.Reader(Api(**{aliases[3]: ghsa_json(aliases[3], cve=CVE)})).read(aliases[3])
     assert last.lowers and CVE in last.names and not sources.tied(CVE, aliases[3], {aliases[3]: last}.get, aliases)
     assert verify.MAX_ALIASES == 3

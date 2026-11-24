@@ -117,11 +117,15 @@ def chosen(first, aliases, read) -> tuple[list, bool]:
     thread's published aliases, in lookup form, in order). ``first`` a GHSA or MAL id
     whose response may lower: the ids that response names, CVEs among them, sorted.
     Only the first ``verify.MAX_ALIASES`` are read; with more, the thread is not read
-    whole. ``read``: id -> Read or None."""
+    whole, and beside a CVE first id none is chosen. ``read``: id -> Read or None."""
     if not isinstance(first, str):
         return [], True
     if ruleset.source_of(first) == "kev":
         ids = list(dict.fromkeys(a for a in aliases if advisory_id(a) is not None))
+        if len(ids) > verify.MAX_ALIASES:
+            # Which three a member reads then depends on what its own machine read
+            # before (tavj): no three are every member's, so none is counted.
+            return [], False
     elif advisory_id(first) is not None:
         r = read(first)
         ids = [n for n in r.names if n != first] if r is not None and r.lowers else []
