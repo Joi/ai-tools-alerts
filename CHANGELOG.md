@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.8 — 2026-11-24
 
 The poster can now post every in-scope advisory to a catalog channel, and the mirror can serve it as `catalog.json` (ai-tools-alerts#q03f, design section 1 of ai-tools-alerts#9mx8). Both stay off until `spec/catalog-channel.json` names the channel, which ai-tools-alerts#q3fd adds once the channel exists; until then nothing changes. The channel posts are unchanged. Released readers never fetch `catalog.json`, and no catalog event is ever in `feed.json`, `critical.json` or the checkpoint. Reading and matching the catalog in the CLI is ai-tools-alerts#8nb4. `docs/design.md`, "Catalog channel", has the rules.
 
@@ -49,7 +49,7 @@ Expiry is computed by the reader and judged by the signed checkpoint, not by the
 
 Not done: the issue asked that an event dated after the checkpoint that lists it be refused. The poster's own checkpoint lists the posts of its run, which are dated after it, so the CLI does not judge an alert's expiry while one of its claims is dated after the checkpoint; the next checkpoint judges it.
 
-Nothing on the wire changes with this release: the poster sends no claim and no lowering yet.
+The poster sends no claim yet (ai-tools-alerts#3qyq). The one new event it sends is the level-only lowering described above. The relay was checked before this release: it stores and returns a 2048-byte claim tag, and the mirror exporter copies it, byte for byte (ai-tools-alerts#yw7r).
 
 ## 0.1.7 — 2026-11-24
 
