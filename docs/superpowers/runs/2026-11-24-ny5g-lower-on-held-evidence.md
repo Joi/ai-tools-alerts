@@ -1,11 +1,12 @@
 # Run: ny5g-lower-on-held-evidence
 Instruction: ai-tools-alerts#ny5g (starting rung floored at medium): the poster lowers only on positive evidence held 24 h; outage, 404 and flapping lower nothing (findings D4, D13 and D15 of the design review on ai-tools-alerts#h29n)
-Stage: code-review:recompute (delta)
+Stage: verifying
 Rung: heavy from the spec pass on (one BLOCKER of the spec pass is not fixed in this slice: see finding 4); started medium (start-floor medium: constraint-lens and FC=2, BR1 REV2 NOV1 INT1 FC2 = 7; the dispatch brief floors it at medium too)
 Lens: "Nothing you build may wait for a person to act."; "`unknown` (timeout, 3xx, 403, 404, 429, 5xx, parse error, truncated or oversized body) changes no level and does not count toward expiry"; "A 404 is never a withdrawal."; "The bot does not get `retract`"; "`fetch_kev` already separates `unavailable`; keep that through the recompute."
 Last reviewed: spec 7882422261538c32c5b289a756319316061c0e68, then the delta at b05a51660891e93b426e112a343e9959af692861
 Last reviewed: plan b0d8fdb37e08fc1017fe1ad4ac45fc8dfe5d3b12, then the delta at 1a2cddb0a5f16aacd355df089da1e99bf6281319
-Last reviewed: code d389897214eb710a576249ebbfc9e71a5920a85a (the whole branch)
+Last reviewed: code d389897214eb710a576249ebbfc9e71a5920a85a (the whole branch), then the delta `--since d389897214eb710a576249ebbfc9e71a5920a85a` at b973e755b84b6b479afa794b2224525faeea7a8c
+Unreviewed after the delta: the commit that fixes what the delta raised (named in the close-out comment on the issue)
 Review tier: gpt-6-astra at high (h29n calls the work security-shaped)
 Spec: docs/superpowers/specs/2026-11-24-ny5g-lower-on-held-evidence-design.md   Plan: docs/superpowers/plans/2026-11-24-ny5g-lower-on-held-evidence.md
 Agency project: — (this session has no Agency tools; see Notes)
@@ -73,6 +74,15 @@ Code findings, pass 1, and what was done:
 8. SUBSTANTIVE (Stage 1), on a lowered thread a raise whose only other change was an unchanged title was withheld whole. Fixed: the unchanged title is dropped and the level goes alone.
 9. SUBSTANTIVE (Stage 1), tests passed with the freshness check removed, and five paths had none. Fixed: a candidate on the due run, a failed lowering whose evidence still holds, an unknown outcome, a KEV candidate on a lowered thread, a redirect ending in 304, the digest still in the journal.
 10. COSMETIC (Stage 1), fixed: `kev_copy` defaults to "not known direct"; `floor` is accepted on a root item only; the breaker's digest line no longer says "1 threads"; the unused `fresh` helper is gone; the docstring says threads judged.
+
+Pass 2 [code:recompute]: 2B/1S/2C/0R · fixed 10/10 prior · velocity ↓ (14→5, escalation no)
+code passes: 2 (the whole branch, then the one delta) · Stage 2 gpt-6-astra (fresheyes run 20261124-165008-2554e2, `--since d389897`; no standing rebuttal overturned) · Stage 1 a same-model reviewer on an export of b973e75, which reverted each of the eight fixes in turn and ran the tests · all five fixed, no further pass
+
+Code findings, pass 2 (the delta), and what was done:
+1. BLOCKER (Stage 2; Stage 1 COSMETIC), a journal replay after a failed ledger write counted one lowering twice in the breaker. Fixed: the breaker's list holds the thread, and a thread counts once in the window.
+2. BLOCKER (Stage 2; Stage 1 SUBSTANTIVE, with a run that showed the ledger and the wire part ways after a requeue), the send step no longer checked for work in flight on a thread whose own entry was unchanged. Fixed: every verdict is checked against `busy` again before it is sent.
+3. SUBSTANTIVE (Stage 1), the test for "a thread whose pending work the run finished is judged in that run" passed with the fix reverted, because its catalog entry was also a candidate. Fixed: the entry predates the watermark.
+4. COSMETIC (Stage 1), fixed: the stderr line names the older-version cause; on a lowered thread, once the level has gone alone, ids, sources and a severity word make no reply of their own.
 
 ## Chunks
 - [x] recompute: the evidence rules, the KEV reader, the ledger marks, the digest line (59bdcf9, merge d389897, review fixes in the commit after)

@@ -87,7 +87,9 @@ def _ok(st) -> bool:
             and all(isinstance(x, list) and len(x) == 2 and isinstance(x[0], str) and x[1] in _LEVELS
                     for x in st["lowered"])
             and (st["direct"] is None or isinstance(st["direct"], str))
-            and isinstance(st["recent"], list) and all(type(t) is int for t in st["recent"])
+            and isinstance(st["recent"], list)
+            and all(isinstance(x, list) and len(x) == 2 and type(x[0]) is int and isinstance(x[1], str)
+                    for x in st["recent"])
             and (st["reported"] is None or isinstance(st["reported"], str))
             and (st["open"] is None or type(st["open"]) is int)
             and (st["kev"] is None or version_of(st["kev"]["version"]) is not None)
@@ -268,6 +270,14 @@ def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int):
     return None
 
 
+def note(st: dict, root: str, now: int) -> None:
+    """A lowering of this thread was recorded: the breaker counts it for ``TRIP_WINDOW``.
+    Once a thread: a replay of the journal after a failed ledger write comes here again
+    for the same lowering, and a thread is lowered at most once in seven days."""
+    if not any(r == root and 0 <= now - t < TRIP_WINDOW for t, r in st["recent"]):
+        st["recent"].append([now, root])
+
+
 def pause(st: dict, root: str) -> None:
     """The thread was not judged this run: its wait keeps what it holds and takes
     nothing for the stretch up to the next complete read."""
@@ -283,14 +293,14 @@ def quiet(entry, now: int) -> bool:
 def select(due: list, open_count: int, st: dict, now: int) -> list:
     """The circuit breaker over ``due``, [(entry, level)]; what it returns is lowered
     now. The count is of the threads due plus those lowered in the last ``TRIP_WINDOW``
-    (``st["recent"]``, which the caller adds to when a lowering is recorded, never for
+    (``st["recent"]``: ``note`` adds a thread when its lowering is recorded, never for
     one that did not send), so a source that sheds its entries a few an hour
     trips it as one that sheds them at once does. More than ``TRIP_MIN`` and more than
     ``TRIP_SHARE`` of the ``open_count`` threads judged: none is lowered and
     ``st["tripped"]`` says since when, for the digest; once that has lasted
     ``RELEASE_AFTER``, ``RELEASE`` a run go through, oldest thread first. Otherwise all
     of them."""
-    st["recent"] = [t for t in st["recent"] if 0 <= now - t < TRIP_WINDOW][-1000:]
+    st["recent"] = [x for x in st["recent"] if 0 <= now - x[0] < TRIP_WINDOW][-1000:]
     count = len(due) + len(st["recent"])
     if not due or count <= TRIP_MIN or count <= TRIP_SHARE * open_count:
         st["tripped"] = None

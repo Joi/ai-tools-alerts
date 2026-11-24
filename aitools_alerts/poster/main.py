@@ -486,7 +486,7 @@ class Run:
                 if RANK[adv.level] < RANK[e.level]:  # ny5g: a lowering, recorded for its first channel
                     if low not in self.rc["lowered"]:  # for the digest; once, though a replay comes here again
                         self.rc["lowered"] = (self.rc["lowered"] + [low])[-recompute.MAX_LOWERED:]
-                    self.rc["recent"].append(self.now)  # for the breaker: only a lowering that was sent counts
+                    recompute.note(self.rc, e.root_event_id, self.now)  # the breaker counts what was sent, once
                     self.save_rc()
                 self.led.record_reply(e.root_event_id, adv, {ch: eid},
                                       now=self.now, exploited=it["exploited"], ids=it["ids"])
@@ -854,6 +854,11 @@ class Run:
             prev = replace(prev, level=level)
             if changes.get("title") == prev.title:  # it came with the level; unchanged, it is no reply
                 del changes["title"]
+            if set(changes) <= {"aliases", "sources", "advisory_severity"}:
+                # 8ke5 and 0dvh again, now that the level has gone its own way: ids, sources
+                # and a severity word alone make no reply; the sources wait for the next one.
+                self.led.learn_sources(entry.root_event_id, compose._sources(extra))
+                changes = {}
         if changes:
             reply = compose.reply_post(prev, k, changes, reason=reason, lowered=bool(entry.lowered))
             merged = compose.parse_reply(reply, prev)
@@ -913,8 +918,8 @@ class Run:
         copy = self.copy = recompute.kev_copy(kev_out.get("catalog"), kev_out.get("status"), st, self.now,
                                               kev_out.get("redirected"))
         if copy is not None and copy.version and not copy.complete:
-            _say("kev copy is not complete (a redirect, its count, or fewer entries than 98% of the largest "
-                 "read): its absences lower nothing")
+            _say("kev copy is not complete (a redirect, its count, fewer entries than 98% of the largest read, "
+                 "or a version older than the latest read): its absences lower nothing")
         self.drop_unsent_lowerings()  # first: what it removes no longer makes its thread busy
         entries = [e for e in self.led.entries() if not compose.is_synthetic(e.advisory.get("id"))]
         self.observed = {e.root_event_id for e in entries}
@@ -960,7 +965,10 @@ class Run:
                      or (e.root_event_id in self.verdicts and self.verdicts[e.root_event_id][0] != e)],
                     ruleset.load())
         live = {e.root_event_id for e in now}
-        found = [v for root, v in self.verdicts.items() if root in live]  # judged, so not busy when judged
+        # Not busy when judged, and not busy now: a candidate of this run can leave work in
+        # flight under a thread's ids without touching its entry (a refused item of a thread
+        # that shares an id), and nothing is sent on top of work in flight.
+        found = [v for root, v in self.verdicts.items() if root in live and not self.busy(v[0].aliases, v[0].scope)]
         raises = [(e, level) for e, kind, level in found if kind == "raise"]
         due = recompute.select([(e, level) for e, kind, level in found
                                 if kind == "due" and recompute.quiet(e, self.now)], len(self.judged), st, self.now)

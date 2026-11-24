@@ -378,7 +378,7 @@ def test_a_lowering_that_did_not_send_goes_out_when_the_evidence_still_holds(env
         assert len(relay.calls) == 1 and state(env)["recent"] == []
     relay = one(env, 27, FIVE[1:])
     assert levels(relay) == levels(relay, "critical") == [{"level": "notice"}]
-    assert state(env)["tripped"] is None and state(env)["recent"] == [T0 + 27 * HOUR]
+    assert state(env)["tripped"] is None and [t for t, root in state(env)["recent"]] == [T0 + 27 * HOUR]
 
 
 def test_a_lowering_whose_outcome_is_unknown_is_neither_dropped_nor_sent_again(env):
@@ -405,6 +405,22 @@ def test_kev_listing_a_lowered_thread_again_as_new_raises_it_once_alone(env):
     assert entry(env)["level"] == "critical"
 
 
+def test_on_a_lowered_thread_a_raise_with_only_a_new_source_sends_the_level_and_no_other_reply(env):
+    """CISA lists the entry again, as new, with a note that links one of its own pages. The
+    level goes alone; the new source makes no reply of its own (as on any thread) and is
+    kept for the next reply that has something to say."""
+    post(env)
+    hours(env, 1, 25)
+    note = "https://www.cisa.gov/news-events/alerts/2026/11/06/example"
+    again = {**kev_item(CVE), "dateAdded": "2026-11-06", "notes": note}
+    env.kev = FakeKEV(catalog=catalog("v9", again))
+    code, summary, relay = env.run(now=T0 + 26 * HOUR)
+    assert code == 0 and "withheld=0" in summary, summary
+    assert levels(relay) == levels(relay, "critical") == [{"level": "critical"}] and len(replies(relay)) == 2
+    e = entry(env)
+    assert e["level"] == "critical" and [x["url"] for x in e["learned_sources"]] == [note]
+
+
 def _lowering_acknowledged_but_not_recorded(env, monkeypatch):
     """Hour 25: the critical channel's lowering is acknowledged and journaled, and the
     ledger write that would record it fails. The run stops there."""
@@ -425,6 +441,38 @@ def test_a_lowering_acknowledged_but_not_recorded_still_reaches_the_other_channe
     assert [c[0] for c in relay.calls] == ["feed"] and levels(relay) == [{"level": "notice"}]
     e = entry(env)
     assert e["level"] == "notice" and len(e["replies"]) == 2 and env.state()["outbox"] == []
+    assert len(state(env)["recent"]) == 1  # the replay recorded one lowering, and the breaker counts one
+
+
+def test_a_replayed_lowering_does_not_trip_the_breaker_for_the_next_one(env, monkeypatch):
+    """Five threads. One lowering is acknowledged, its ledger write fails, and the next
+    run records it from the journal: one lowering. A second thread falling due inside
+    the day makes two, which is within the limit."""
+    post(env, *FIVE)
+    hours(env, 1, 3, FIVE[1:])  # the first entry leaves at hour 1
+    hours(env, 4, 24, FIVE[2:])  # the second at hour 4
+    real = Ledger.record_reply
+    monkeypatch.setattr(Ledger, "record_reply", lambda *a, **k: (_ for _ in ()).throw(LedgerError("disk")))
+    one(env, 25, FIVE[2:], code=1)
+    monkeypatch.setattr(Ledger, "record_reply", real)
+    assert hours(env, 26, 27, FIVE[2:]) == [(26, "notice")] and len(state(env)["recent"]) == 1
+    assert hours(env, 28, 28, FIVE[2:]) == [(28, "notice")] and state(env)["tripped"] is None
+
+
+def test_a_thread_that_became_busy_after_it_was_judged_is_not_lowered_on_top_of_that(env, monkeypatch):
+    """Due at hour 25, and judged so before the journal drained. By the time the run sends
+    its verdicts there is work in flight under the thread's ids, though its own entry is
+    as it was. Nothing is sent on top of it; the next run, with nothing in flight, lowers."""
+    from aitools_alerts.poster import main
+    post(env)
+    hours(env, 1, 24)
+    busy, drain, late = main.Run.busy, main.Run.drain, []
+    monkeypatch.setattr(main.Run, "drain", lambda self: late.append(1))
+    monkeypatch.setattr(main.Run, "busy", lambda self, ids, scope: bool(late) or busy(self, ids, scope))
+    assert replies(one(env, 25)) == [] and entry(env)["level"] == "critical"
+    monkeypatch.setattr(main.Run, "drain", drain)
+    monkeypatch.setattr(main.Run, "busy", busy)
+    assert hours(env, 26, 26) == [(26, "notice")]
 
 
 def test_a_candidate_merged_before_the_journal_drained_does_not_lend_the_exploited_mark(env, monkeypatch):
@@ -564,7 +612,8 @@ def test_a_thread_whose_lowering_finishes_in_this_run_is_still_raised_in_it(env)
     post(env)
     hours(env, 1, 24)
     one(env, 25, relay=FakeRelay("ok", "fail"), code=1)
-    relay = one(env, 26, BACK)
+    old = {**kev_item(CVE), "dateAdded": "2026-09-01"}  # before the watermark: no candidate, only the recompute
+    relay = one(env, 26, (old,))
     assert levels(relay) == [{"level": "notice"}, {"level": "critical"}]
     assert levels(relay, "critical") == [{"level": "critical"}] and entry(env)["level"] == "critical"
 
