@@ -101,14 +101,18 @@ def test_a_narrower_entry_never_replaces_the_thread_s(mirror, entry, joins):
 def test_a_fixed_version_where_there_was_none_is_held(mirror):
     """The patch a real fix sends, and the one a thief sends with 0.0.1: the
     reader cannot tell them apart, so members at the fixed version keep the
-    alert until a curator or the member's own source check confirms it."""
+    alert until a curator or the member's own source check confirms it.
+    The bounded entry joins the no-range one (0xq6: a no-range product only
+    may apply, so neither stands for the other); every match stays."""
     nofix = advisory(posted_by="relay-bot", products=[Product("Claude Code", "claude-code", None, None)],
                      actions=[])
     t, dropped = bot_thread(mirror, adv=nofix, products=[dict(CC, affected=None, fixed="0.0.1")],
                             actions=[{"verb": "upgrade", "target": "Claude Code", "value": "0.0.1"}])
-    assert t.adv.products == nofix.products and dropped == {"narrowing": 1}
+    assert t.adv.products == nofix.products + [Product("Claude Code", "claude-code", None, "0.0.1")]
+    assert dropped == {"narrowing": 1}
     assert t.adv.actions == [Action("upgrade", "Claude Code", "0.0.1")]  # an action added: applied
-    assert member_sees(t) == [Action("upgrade", "Claude Code", None)]  # the version is products[].fixed
+    # The no-range entry still matches (may apply); the version is products[].fixed.
+    assert member_sees(t)[0] == Action("upgrade", "Claude Code", None)
 
 
 @pytest.mark.parametrize("fixed,shown", [("99.0.0", "99.0.0"), (None, None)])
@@ -216,8 +220,6 @@ def test_a_relay_bot_patch_raising_fixed_applies(mirror):
      "products", [Product(**CC), Product("Codex", "codex", "*", None)]),
     ({"products": [dict(CC, affected="<=99.0.0", fixed=None)]},
      "products", [Product("Claude Code", "claude-code", "<=99.0.0", None)]),
-    ({"products": [dict(CC, affected=None, fixed=None)]},
-     "products", [Product("Claude Code", "claude-code", None, None)]),
     ({"products": [dict(CC, name="CLAUDE CODE")]},  # the same entry to check.match: nothing to add
      "products", [Product(**CC)]),
     ({"actions": [{"verb": "stop_using", "target": "Claude Code", "value": None},
@@ -403,8 +405,8 @@ ANY = ("*", None)
 @pytest.mark.parametrize("inner,outer,want", [
     (("<2.0", "2.0"), ("<2.0", "2.0"), True),       # 1. the same range
     (("1.0zz", None), ("1.0zz", None), True),
-    (("<2.0", "2.0"), (None, None), True),          # 2. covered by a match by name
-    (("1.0zz", None), (None, None), True),
+    (("<2.0", "2.0"), (None, None), False),         # 2. a no-range match may apply, never interrupts:
+    (("1.0zz", None), (None, None), False),         #    it covers nothing else (0xq6)
     ((None, None), ANY, False),                     # 3. a match by name is covered by nothing else
     ((None, None), (None, "999"), False),
     ((None, "1.0zz"), (None, "2.0zz"), True),       # 4. unreadable: by unreadable, or by no bound
@@ -447,12 +449,18 @@ def test_covers_agrees_with_check_match():
               for f in [None, "1.5", "2.0", "1.0zz"]]
     installed = ["0.9", "1.0", "1.2", "1.5", "1.7", "2.0rc1", "2.0", "2.0p1", "2.1", "junk", None]
 
-    def seen(rng, v):  # 0 no match, 1 matched without actions, 2 matched with them
+    def seen(rng, v):  # (matched, interrupts: reason is not may apply, matched with the actions)
         adv = advisory(products=[Product("Claude Code", "claude-code", *rng)])
         found = check.match([adv], Inventory(products={"claude-code": [Installed("Claude Code", v, "claude")]}))
-        return 0 if not found else 2 if found[0].actions_allowed == [UPGRADE] else 1
+        if not found:
+            return (0, 0, 0)
+        return (1, int(found[0].reason != check.MAY_APPLY), int(found[0].actions_allowed == [UPGRADE]))
 
-    assert [seen((None, None), "junk"), seen(ANY, "junk"), seen(ANY, "1.0")] == [2, 1, 2]  # why case 3 is a no
+    def at_least(a, b):
+        return all(x >= y for x, y in zip(a, b))
+
+    # why case 3 is a no: name-only has the actions; * on junk interrupts without them
+    assert [seen((None, None), "junk"), seen(ANY, "junk"), seen(ANY, "1.0")] == [(1, 0, 1), (1, 1, 0), (1, 1, 1)]
     assert not versions.covers(None, None, *ANY)
     said_yes = 0
     for inner in ranges:
@@ -460,7 +468,7 @@ def test_covers_agrees_with_check_match():
             if versions.covers(*inner, *outer):
                 said_yes += 1
                 for v in installed:
-                    assert seen(outer, v) >= seen(inner, v), (inner, outer, v)
+                    assert at_least(seen(outer, v), seen(inner, v)), (inner, outer, v)
     assert said_yes > len(ranges)  # more than each range covering itself
 
 
@@ -474,3 +482,24 @@ def test_covers_is_transitive():
         for b in over[c]:
             for a in over[b]:
                 assert versions.covers(*c, *a), (c, b, a)
+
+
+# ------------------------------------- a dropped range keeps the interrupt (0xq6)
+
+def test_a_reply_that_drops_the_range_keeps_the_critical_interrupt(mirror):
+    """A product with no range only may apply and never interrupts, so a
+    relay-bot reply that nulls both fields must not replace the bounded
+    product: the member at 2.1.3 is still an unseen critical."""
+    from types import SimpleNamespace
+
+    from aitools_alerts import cli
+
+    crit = advisory(posted_by="relay-bot", level="critical")
+    t, dropped = bot_thread(mirror, adv=crit, products=[dict(CC, affected=None, fixed=None)])
+    assert t.adv.products == [Product(**CC), Product("Claude Code", "claude-code", None, None)]
+    assert dropped == {"narrowing": 1}
+    ms = check.match([t.adv], MEMBER)
+    assert sorted(m.reason for m in ms) == sorted([check.AFFECTED, check.MAY_APPLY])
+    entry = SimpleNamespace(adv=t.adv, root_ids=(t.root_id,))  # cli's Entry, for _seen
+    pending = cli._unseen_critical(None, SimpleNamespace(seen=set()), [(entry, m) for m in ms])
+    assert [m.reason for _, m in pending] == [check.AFFECTED]
