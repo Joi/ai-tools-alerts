@@ -123,3 +123,123 @@ def test_docker_component_probes():
     got = {(i.name, i.version) for i in inv.products["docker"]}
     assert {("containerd", "1.7.20"), ("runc", "1.1.12")} <= got
     assert not {"containerd", "runc"} & set(names(collect_fixture(), "docker"))
+
+
+# ------------------------------------------------------ MCP by package (0xq6)
+
+import pytest  # noqa: E402
+
+from aitools_alerts.inventory import mcp_package  # noqa: E402
+
+
+@pytest.mark.parametrize("command,args,want", [
+    ("npx", ["-y", "@modelcontextprotocol/server-filesystem@1.2.3", "/dir"],
+     ("npm:@modelcontextprotocol/server-filesystem", "@modelcontextprotocol/server-filesystem", "1.2.3")),
+    ("npx", ["-y", "@modelcontextprotocol/server-memory"],
+     ("npm:@modelcontextprotocol/server-memory", "@modelcontextprotocol/server-memory", None)),
+    ("npx", ["mcp-remote@latest", "https://x.invalid/"], ("npm:mcp-remote", "mcp-remote", None)),
+    ("npx", ["--yes", "--package", "mcp-remote@0.1.9", "mcp-remote"], ("npm:mcp-remote", "mcp-remote", "0.1.9")),
+    ("npx", ["-y", "mcp-remote@^0.1.0"], ("npm:mcp-remote", "mcp-remote", None)),  # a range is no version
+    ("/opt/homebrew/bin/bunx", ["mcp-remote@0.1.9"], ("npm:mcp-remote", "mcp-remote", "0.1.9")),
+    ("uvx", ["mcp-server-git"], ("pypi:mcp-server-git", "mcp-server-git", None)),
+    ("uvx", ["mcp-server-git==0.6.2", "--repository", "/r"], ("pypi:mcp-server-git", "mcp-server-git", "0.6.2")),
+    ("uvx", ["--from", "mcp-server-git==0.6.2", "mcp-server-git"], ("pypi:mcp-server-git", "mcp-server-git", "0.6.2")),
+    ("uvx", ["--python", "3.12", "Mcp_Server.Fetch[extra]@1.0"], ("pypi:mcp-server-fetch", "mcp-server-fetch", "1.0")),
+    ("uv", ["tool", "run", "mcp-server-time"], ("pypi:mcp-server-time", "mcp-server-time", None)),
+    ("pipx", ["run", "--spec", "mcp-server-git==0.6.2", "mcp-server-git"],
+     ("pypi:mcp-server-git", "mcp-server-git", "0.6.2")),
+])
+def test_mcp_command_names_its_package(command, args, want):
+    assert mcp_package(command, args) == want
+
+
+@pytest.mark.parametrize("command,args", [
+    ("npx", ["-y", "Not A Name"]),
+    ("npx", ["--registry", "https://evil.invalid/", "pkg"]),  # an option it does not know ends the reading
+    ("npx", []),
+    ("uvx", ["git+https://example.invalid/repo"]),
+    ("uvx", ["--from"]),
+    ("widget-db-server", []),
+    ("npx", "mcp-remote"),  # args not a list
+    ("npx", ["mcp-remote"] * 65),
+    ("npx", ["x" * 5000]),
+    (None, []),
+    ("docker", ["run", "-i", "mcp/git"]),
+])
+def test_mcp_commands_that_name_no_package(command, args):
+    assert mcp_package(command, args) is None
+
+
+def test_node_modules_path_reads_the_version_its_package_json_names(tmp_path):
+    pkg = tmp_path / "node_modules" / "@modelcontextprotocol" / "server-memory"
+    (pkg / "dist").mkdir(parents=True)
+    (pkg / "package.json").write_text(json.dumps({"name": "@modelcontextprotocol/server-memory",
+                                                  "version": "2025.4.25"}))
+    script = str(pkg / "dist" / "index.js")
+    want = ("npm:@modelcontextprotocol/server-memory", "@modelcontextprotocol/server-memory", "2025.4.25")
+    assert mcp_package("node", [script]) == want
+    assert mcp_package(script, []) == want
+    (pkg / "package.json").write_text(json.dumps({"name": "something-else", "version": "9.9.9"}))
+    assert mcp_package("node", [script]) == want[:2] + (None,)
+
+
+def test_venv_path_reads_the_dist_info_of_its_executable(tmp_path):
+    venv = tmp_path / "venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    site = venv / "lib" / "python3.12" / "site-packages"
+    (site / "mcp_server_git-0.6.2.dist-info").mkdir(parents=True)
+    (site / "other-1.0.dist-info").mkdir()
+    exe = venv / "bin" / "mcp-server-git"
+    exe.write_text("#!/bin/sh\n")
+    assert mcp_package(str(exe), []) == ("pypi:mcp-server-git", "mcp-server-git", "0.6.2")
+    assert mcp_package(str(venv / "bin" / "unknown-tool"), []) is None
+    (venv / "pyvenv.cfg").unlink()
+    assert mcp_package(str(exe), []) is None
+
+
+def test_collect_mcp_keeps_every_key_and_no_argument(tmp_path):
+    (tmp_path / ".claude.json").write_text(json.dumps({"mcpServers": {
+        "fs-primary": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem@1.2.3", "/secret-dir"]},
+        "fs-backup": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem@1.2.3", "/other-dir"]},
+        "git": {"command": "uvx", "args": ["mcp-server-git"], "env": {"TOKEN": "hunter2"}},
+        "local": {"command": "my-server"}}}))
+    got = inventory.collect_mcp(tmp_path)
+    by_key = {i.server: i for i in got}
+    assert set(by_key) == {"fs-primary", "fs-backup", "git", "local"}
+    assert by_key["fs-backup"].package == "npm:@modelcontextprotocol/server-filesystem"
+    assert by_key["fs-backup"].version == "1.2.3"
+    assert by_key["git"] == Installed("mcp-server-git", None, str(tmp_path / ".claude.json"),
+                                      package="pypi:mcp-server-git", server="git")
+    assert by_key["local"].name == "local" and by_key["local"].package is None
+    text = repr(got)
+    for leaked in ("/secret-dir", "/other-dir", "hunter2", "my-server", "TOKEN"):
+        assert leaked not in text
+
+
+def test_plugins_carry_their_marketplace_as_source():
+    inv = collect_fixture()
+    plugin = [i for i in inv.products["skill"] if i.name == "sample-linter"]
+    assert [p.source for p in plugin] == ["example-market"]
+    assert all(i.source is None for i in inv.products["skill"] if i.name != "sample-linter")
+
+
+def test_hermes_from_its_project_file(tmp_path):
+    proj = tmp_path / ".hermes" / "hermes-agent"
+    proj.mkdir(parents=True)
+    (proj / "pyproject.toml").write_text('[project]\nname = "hermes-agent"\nversion = "0.15.1"\n')
+    ran = []
+    inv = inventory.collect(tmp_path, runner=lambda argv: ran.append(argv), apps_dirs=[])
+    assert inv.products["hermes"] == [Installed("Hermes", "0.15.1", str(proj / "pyproject.toml"))]
+    assert not any(argv[0] == "hermes" for argv in ran)
+    (proj / "pyproject.toml").write_text('[project]\nname = "someone-else"\nversion = "0.15.1"\n')
+    assert inventory.collect(tmp_path, runner=lambda argv: None, apps_dirs=[]).products["hermes"] == []
+
+
+@pytest.mark.parametrize("out,want", [("2026.3.13\n", "2026.3.13"), ("OpenClaw 2026.3.13 (abc1234)\n", "2026.3.13"),
+                                      ("openclaw v1.2.0\n", "1.2.0"), ("something else\n", None)])
+def test_openclaw_probe(out, want):
+    inv = collect_fixture(runner=lambda argv: out if argv == ("openclaw", "--version") else None)
+    assert [i.version for i in inv.products["openclaw"]] == ([want] if want else [])
+    if want:
+        assert inv.products["openclaw"][0].name == "OpenClaw"
