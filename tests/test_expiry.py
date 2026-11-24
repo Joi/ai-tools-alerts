@@ -217,9 +217,12 @@ def test_a_curated_thread_and_a_thread_without_a_claim_do_not_decay(mirror):
     ts = pull.threads_from(mirror.events["feed.json"], mirror.man)
     assert by_id(pull.active(ts, year)) == {"AITA-TEST-0002": "critical"}
     assert by_id(pull.active(ts, year, frozenset({plain["id"]}))) == {"AITA-TEST-0002": "critical", CVE: "critical"}
-    mirror.reply(mirror.cur_sec, root, mirror.patch_text(title="A curator's title"), created_at=T0 + 200)
+    mirror.reply(mirror.cur_sec, root, mirror.patch_text(title="A curator's title"), created_at=T0 + 20 * DAY)
     ts = pull.threads_from(mirror.events["feed.json"], mirror.man)
-    assert by_id(pull.active(ts, year)) == {"AITA-TEST-0002": "critical", CVE: "critical"}
+    # c1g2: while the curator's hold is in force (14 days). After it the claims govern again.
+    assert by_id(pull.active(ts, T0 + 34 * DAY)) == {"AITA-TEST-0002": "critical", CVE: "critical"}
+    assert by_id(pull.active(ts, T0 + 34 * DAY + 1)) == {"AITA-TEST-0002": "critical", CVE: "notice"}
+    assert by_id(pull.active(ts, year)) == {"AITA-TEST-0002": "critical"}
 
 
 def test_a_thread_with_a_renewal_dated_after_the_head_is_not_judged_yet(mirror):

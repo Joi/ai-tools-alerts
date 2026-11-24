@@ -8,7 +8,7 @@
     aitools-alerts plan <advisory-id>
     aitools-alerts run
     aitools-alerts verify
-    aitools-alerts curator post|amend|retract ...   (needs the curator extra)
+    aitools-alerts curator post|amend|retract|renew ...   (needs the curator extra)
 
 Nothing here executes a string from a post. ``plan`` prints commands built
 from fixed templates keyed by the product's ecosystem; it runs none of them.
@@ -173,6 +173,7 @@ class Entry:
     root_ids: tuple[str, ...]
     adv: schema.Advisory
     translations: dict  # lang -> text, of the first root
+    refused: str | None = None  # c1g2: a lowering to this level was not applied (pull.standing)
 
 
 def _entries(threads: list, warned: set) -> list[Entry]:
@@ -193,7 +194,8 @@ def _entries(threads: list, warned: set) -> list[Entry]:
         if len(copies) > 1 and key not in warned:
             warned.add(key)
             _err(f"copies of {copies[0][0].adv.id} differ; listing each")
-        out += [Entry(c[0].root_id, tuple(t.root_id for t in c), c[0].adv, _merged(c)) for c in copies]
+        out += [Entry(c[0].root_id, tuple(t.root_id for t in c), c[0].adv, _merged(c),
+                      next((t.refused for t in c if t.refused), None)) for c in copies]
     return out
 
 
@@ -232,14 +234,40 @@ def _matches(a, st: State) -> tuple[list, list]:
     """Current advisories (one Entry per advisory id and poster role), and
     (entry, Match) pairs for this machine. State pulled under another trust
     root is not used."""
+    a.raw, a.asked = [], []
     if st.manifest is not None and st.manifest_root != a.root:
         _err("the stored state was pulled under another trust root; run: aitools-alerts pull")
         return [], []
-    threads = _entries(pull.active(pull.advisories(st), *pull.head_clock(st), decay=_ruleset_outdated(a, st) is None),
+    a.raw = pull.advisories(st)
+    threads = _entries(pull.active(a.raw, *pull.head_clock(st), _lowering_check(a, st),
+                                   decay=_ruleset_outdated(a, st) is None),
                        a.__dict__.setdefault("warned", set()))
-    ms = check.match([t.adv for t in threads], inventory.collect())
+    inv = inventory.collect()
+    ms = check.match([t.adv for t in threads], inv)
     by_adv = {id(t.adv): t for t in threads}
+    # c1g2: the states a published lowering or a curator's hold asks the sources about,
+    # each with whether its widest state matches this machine (``verify = "matched"``).
+    wide = [(t, pull.widest(t)) for t in a.raw if pull.asks(t)]
+    here = {id(m.adv) for m in check.match([w for _, w in wide], inv)}
+    a.asked = [(verify.at_level(w, level), id(w) in here) for t, w in wide for level in pull.asks(t)]
     return threads, [(by_adv[id(m.adv)], m) for m in ms]
+
+
+def _lowering_check(a, st: State):
+    """The ``check`` of pull.standing from the source-check results on disk, or None:
+    with ``verify = "off"``, without settings, and for a CLI the trust root calls too
+    old or whose ruleset the trust root calls out of date (its ruleset may be the
+    one that is wrong). None settles nothing: a relay-bot
+    lowering is not applied and a curator's holds its 14 days."""
+    s = getattr(a, "settings", None)
+    if s is None or s.verify == "off" or _min_cli(a, st) is not None or _ruleset_outdated(a, st) is not None \
+            or not any(pull.asks(t) for t in getattr(a, "raw", ())):
+        return None  # and with no lowering to judge, no cache and no ruleset is loaded
+    try:
+        cache, rs = _cache(a, st, s), ruleset.load()
+    except Exception:  # a damaged ruleset: nothing is settled, and every alert is still shown and notified
+        return None
+    return lambda adv, level: verify.lowering(adv, level, cache, time.time(), rs)
 
 
 def _source(adv) -> tuple[str, bool]:
@@ -268,16 +296,19 @@ def _cache(a, st: State, s: config.Settings) -> dict | None:
     return None if s.verify == "off" or _ruleset_outdated(a, st) is not None else verify.load(st.dir)
 
 
-def _source_check(a, st: State, s: config.Settings, threads: list, pairs: list) -> None:
+def _source_check(a, st: State, s: config.Settings, threads: list, pairs: list, asked=()) -> None:
     """Read the primary sources (aitools_alerts.verify) for the threads the
-    ``verify`` setting names. Never in ``run --json``, which the session-start
-    hook runs, and never while this CLI's ruleset is out of date. Nothing it
-    does changes a level or an exit status."""
+    ``verify`` setting names, and for the lowered states of ``asked`` (``_matches``).
+    Never in ``run --json``, which the session-start hook runs, and never while
+    this CLI's ruleset is out of date. It changes no exit status; what it finds
+    about a lowering is applied by the next ``_matches``."""
     if s.verify == "off" or _ruleset_outdated(a, st) is not None:
         return
     wanted = [t.adv for t in threads] if s.verify == "all" else [t.adv for t, _ in pairs]
+    wanted += [adv for adv, here in asked if here or s.verify == "all"]
     try:
-        verify.run([t.adv for t in threads], wanted, st.dir)
+        verify.run([t.adv for t in threads] + [adv for adv, _ in asked], wanted, st.dir,
+                   recheck=[adv for adv, _ in asked])
     except Exception:
         _err(SOURCE_CHECK_FAILED)
 
@@ -301,6 +332,17 @@ def _source_lines(a, st: State, s: config.Settings, threads: list) -> list[str]:
             else:
                 out.append(f"source check: {ident} is published at {t.adv.level} for {name}; "
                            f"the source supports {r['source']}")
+    # c1g2: a lowering or retraction the member's source contradicts, from the results as
+    # they are now (this run's source check may have just read them).
+    shown = {r for t in threads for r in t.root_ids}
+    for t in pull.active(getattr(a, "raw", ()), *pull.head_clock(st), _lowering_check(a, st)):
+        ident = verify.norm_id(t.adv.id)
+        if t.refused is None or ident is None or t.root_id not in shown:
+            continue
+        what = f"a retraction of {ident}" if t.refused == pull.NONE else f"a lowering of {ident} to {t.refused}"
+        found = verify.result_for(verify.at_level(pull.widest(t), t.refused), cache) or {}
+        out += [f"source check: {what} is not applied: the source supports {r['source']} for {name}"
+                for name, r in sorted(found.items()) if r["why"] == "below-source" and name in scope]
     return list(dict.fromkeys(out))
 
 
@@ -319,11 +361,17 @@ def cmd_verify(a, st: State, s: config.Settings) -> int:
         print("the source check did not run: this aitools-alerts is out of date")
         return 0
     threads, pairs = _matches(a, st)
-    _source_check(a, st, s, threads, pairs)
+    _source_check(a, st, s, threads, pairs, a.asked)
+    if a.asked:  # c1g2: the alerts as they stand after what the sources just said about a lowering
+        threads, pairs = _matches(a, st)
     cache = _cache(a, st, s)
     found = [verify.summary(r)[0] for t in threads if (r := verify.result_for(t.adv, cache)) is not None]
     print(f"source check: {found.count(verify.CONFIRMED)} confirmed, {found.count(verify.CONTRADICTED)} "
           f"contradicted, {found.count(verify.UNKNOWN)} not verified")
+    if a.asked and (check := _lowering_check(a, st)) is not None:
+        said = [check(pull.widest(t), level) for t in a.raw for level in pull.asks(t)]
+        print(f"source check: {len(said)} lowerings or retractions asked about: {said.count(True)} confirmed, "
+              f"{said.count(False)} contradicted, {said.count(None)} not settled")
     for line in _source_lines(a, st, s, threads):
         print(line)
     return 0
@@ -336,7 +384,8 @@ def _match_json(t, m, cache=None, judged: bool = True) -> dict:
             "source_primary": primary, "sources": [asdict(x) for x in t.adv.sources],
             "installed": asdict(m.installed), "product": asdict(m.product) if m.product else None,
             "actions": [asdict(x) for x in m.actions_allowed],
-            "translations": dict(t.translations), "source_check": _check_json(t, m, cache, judged)}
+            "translations": dict(t.translations), "source_check": _check_json(t, m, cache, judged),
+            "lowering_refused": t.refused}
 
 
 def _unverified(a, st: State) -> str | None:
@@ -534,14 +583,27 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
     elif not a.quiet:
         a.json = False
         cmd_check(a, st, s, source_lines=False)  # printed below, once the sources are read
-    if a.quiet or a.json:
-        with contextlib.redirect_stdout(io.StringIO()):
-            status = _notify(st, s, pending)
-    else:
-        status = _notify(st, s, pending)
+    def send(them) -> int:
+        if a.quiet or a.json:
+            with contextlib.redirect_stdout(io.StringIO()):
+                return _notify(st, s, them)
+        return _notify(st, s, them)
+    status = send(pending)
     if not a.json:  # the hourly job's form; the hook runs --json and must read no source.
         # After the notification: a critical never waits for a source.
-        _source_check(a, st, s, threads, pairs)
+        _source_check(a, st, s, threads, pairs, a.asked)
+        if a.asked and s.verify != "off":
+            # c1g2: what the sources just said about a lowering counts in this run. A
+            # critical that a contradicted lowering had hidden is notified now.
+            before = sorted((t.root_id, t.adv.level) for t in threads)
+            threads, pairs = _matches(a, st)
+            tried = {r for t, _ in pending for r in t.root_ids}
+            late = [x for x in _unseen_critical(a, st, pairs) if tried.isdisjoint(x[0].root_ids)]
+            status = send(late) or status
+            pending = pending + late
+            if not a.quiet and before != sorted((t.root_id, t.adv.level) for t in threads):
+                print("After the source check:")  # what was listed above is no longer what stands
+                cmd_check(a, st, s, source_lines=False)
         for line in () if a.quiet else _source_lines(a, st, s, threads):
             print(line)
     if a.json:
@@ -584,6 +646,7 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_keygen(a)
         s = config.load()
         a.root, a.ignored_env = _root(s)
+        a.settings = s
         if a.cmd == "curator":
             return curator.cmd_curator(a, State.load())
         pull.channel_ids()  # a damaged package: one error line, before any command half-runs

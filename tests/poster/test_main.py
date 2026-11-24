@@ -1344,6 +1344,13 @@ def test_digest_leaves_out_withdrawn_ledger_posts(env, monkeypatch):
         ids, roots = main.Run(T0, env.config, led, inputs.load_state(env.config.state, T0, 3),
                               CHANNELS, FakeRelay(), None)._withdrawn(m.root, m.fetch)
     assert ids == {"ghsa-abcd-efgh-ijkl"} and roots == {r["id"], old["id"]}  # a thread: by root only
+    # c1g2: a curator's retraction of a relay-bot thread is withdrawn for its 14 days, then the bot's again
+    b = m.root_post(m.bot_sec, advisory(id="AITA-TEST-0003", posted_by="relay-bot"), created_at=T0 - 20 * 86400)
+    m.reply(m.cur_sec, b, "retract", created_at=T0 - 14 * 86400)
+    with main.Ledger(env.config.ledger) as led:
+        withdrawn = lambda now: main.Run(now, env.config, led, inputs.load_state(env.config.state, now, 3),  # noqa: E731
+                                         CHANNELS, FakeRelay(), None)._withdrawn(m.root, m.fetch)[1]
+        assert b["id"] in withdrawn(T0) and b["id"] not in withdrawn(T0 + 1)
     env.collector([finding(fid="GHSA-mnop-qrst-uvwx", sources=(GHSA2,)),  # one id, two products, each
                    finding(fid="GHSA-mnop-qrst-uvwx", product="Cursor IDE", severity="high",  # on its own vendor's page
                            sources=("https://cursor.com/security/ghsa-mnop",))])

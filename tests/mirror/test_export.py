@@ -680,6 +680,22 @@ def test_index_honours_manifest_retracted_and_curator_level(env, monkeypatch):
     assert '<span class="level level-notice">notice</span> Lowered' in text
 
 
+def test_index_shows_a_curator_s_hold_on_a_bot_thread_until_it_lapses(env):
+    """ai-tools-alerts#c1g2: a curator's lowering or retraction of a relay-bot thread holds 14 days."""
+    from aitools_alerts import pull
+    lowered = ev(BOT_SEC, _adv_post("Lowered", "AITA-TEST-0006", "critical"), 1793865610)
+    gone = ev(BOT_SEC, _adv_post("Gone", "AITA-TEST-0007", "critical"), 1793865611)
+    replies = [ev(CUR_SEC, "level: notice", 1793865620, tags=[("e", lowered["id"], "", "root")]),
+               ev(CUR_SEC, "retract", 1793865620, tags=[("e", gone["id"], "", "root")])]
+    run_export(env, rows_reader([lowered, gone, *replies]), now=1793865620 + pull.CURATOR_HOLD_S)
+    text = page(env)
+    assert '<span class="level level-notice">notice</span> Lowered' in text and "Retracted: Gone" in text
+    run_export(env, rows_reader([lowered, gone, *replies]), now=1793865621 + pull.CURATOR_HOLD_S)
+    text = page(env)
+    assert '<span class="level level-critical">critical</span> Lowered' in text
+    assert '<span class="level level-critical">critical</span> Gone' in text and "Retracted" not in text
+
+
 def test_index_drops_threads_the_cli_ages_out(env):
     old = ev(BOT_SEC, _adv_post("Ancient", "AITA-TEST-0007"), 1793865900 - pull_retention() - 1)
     fresh = ev(BOT_SEC, _adv_post("Fresh", "AITA-TEST-0008"), 1793865800)

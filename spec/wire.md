@@ -1,6 +1,6 @@
 # Wire format: where new signed data may go
 
-Readers already installed cannot be changed. This file says what each released reader (v0.1.4 to v0.1.7) does with a field it does not know, and where the self-correcting design (ai-tools-alerts#h29n) therefore puts what it adds. `tests/test_wire_compat.py` unpacks each release from its tag and runs it against a feed built to these rules. The promise it checks: every alert is still shown on a released reader, at the level the current reader shows or a higher one, to the member whose machine it matches.
+Readers already installed cannot be changed. This file says what each released reader (v0.1.4 to v0.1.7) does with a field it does not know, and where the self-correcting design (ai-tools-alerts#h29n) therefore puts what it adds. `tests/test_wire_compat.py` unpacks each release from its tag and runs it against a feed built to these rules. The promise it checks: every alert is still shown on a released reader, at the level the current reader shows or a higher one, to the member whose machine it matches. One exception, which no wire format causes and the same test states: a relay-bot thread a curator lowered, narrowed or retracted (see "A curator's reply to a relay-bot thread").
 
 ## What released readers do
 
@@ -44,7 +44,19 @@ From the release after 0.1.7 (ai-tools-alerts#r0ra). Released readers do none of
 - One renewal keeps the thread's level standing until `max(confirmed_at + TTL, min(checked_at + TTL, confirmed_at + 45 days))`, with the TTL of `spec/ruleset.json` for the level the reader shows. A check that could not confirm leaves `confirmed_at` as it was and moves `checked_at`. The longest renewal counts; a shorter one changes nothing. When the level no longer stands, the thread shows at the highest lower level that still stands by the same formula (critical 14 days, then high to day 30, then notice to day 90), and then it is gone. A relay-bot reply whose block names a level counts as a renewal of its own date, with or without a claim, so raising a thread never shortens what it shows.
 - The clock is the `created_at` of the newest checkpoint the reader has accepted, never the machine's clock. A thread decays only under a checkpoint that lists its root. With a frozen mirror the checkpoint stops, so nothing expires and the reader says the feed is stale.
 - While any renewal of a thread is on an event dated after the checkpoint, the thread is not judged and keeps its level; the next checkpoint judges it with every renewal counted. The poster's checkpoint is dated at the start of its run and lists the posts of that run, so such an event is not refused, and a raise posted in that run shows at once.
-- A thread a curator posted or amended does not decay.
+- A thread a curator posted does not decay. A relay-bot thread a curator amended does not decay while the curator's hold is in force (next section).
+
+## A curator's reply to a relay-bot thread
+
+From the release after 0.1.8 (ai-tools-alerts#c1g2). No event differs; only what a reader does with it.
+
+- Released readers take a curator's `retract`, `level:` line or block as final, and read every later relay-bot reply to that thread as discussion.
+- This reader holds it for 14 days from the reply's `created_at`, judged by the checkpoint's time under a checkpoint that lists the root. A curator's later action renews the hold; `curator renew` signs the held action again. After the hold the thread is its widest state: every reply, the curator's too, applied under the relay bot's rules.
+- During a hold a relay-bot reply that names a level above the held one raises it at once. Its other changes show after the hold.
+- The member's source check can refuse a curator's lowering or retraction (the source supports more) and can keep a lowering past the hold (the source gives exactly that level, and the level is not below the ruleset's `reading_cap`).
+- So on such a thread, after the hold, a released reader can show a lower level than this reader, or nothing where this reader shows the alert. That is the exception to the promise above. The curator role is unused on the feed; the next manifest names no curator.
+
+A relay-bot level-only lowering (rule 1 above) is no longer only skipped by this reader: it is kept as the thread's published level and applied when the member's own source check gives exactly that level, read no more than two days ago. Without that the reader keeps the higher level, as a released reader does.
 
 A released reader that has refused a lowering shows the alert at its earlier, higher level for as long as the thread lasts. That is intended: the reader cannot check the lowering, and too high is the safe side.
 

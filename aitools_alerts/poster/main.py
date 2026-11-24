@@ -1044,6 +1044,7 @@ class Run:
         m = st.accepted(root)
         roots = set()
         for t in pull.threads_from(list(st.events_for(root).values()), m):
+            t = pull.standing(t, self.now)  # c1g2: a curator's retraction of a bot thread lapses
             if t.retracted or (t.adv.expires_at is not None and t.adv.expires_at < self.now):
                 roots.add(t.root_id)
         return {i.casefold() for i in m.retracted}, roots
