@@ -12,8 +12,9 @@ whole, parsed strictly and passed ``Ruleset.read``. If any read a thread
 needs fails (a timeout, a redirect, 403, 404, 429, 5xx, a body cut short, a
 parse error, a size overrun), every product of it is ``unknown``. This module
 changes no level: it reports. ``lowering`` is the answer the reader applies to a
-published lowering or retraction (ai-tools-alerts#c1g2, ``pull.standing``); the rest
-of the results' table is ai-tools-alerts#tavj.
+published lowering or retraction (ai-tools-alerts#c1g2, ``pull.standing``), and
+``claimed`` tells a level that rests on the first id's fields from one that may rest
+on a reading (ai-tools-alerts#tavj).
 
 Nothing a response says is printed. What is stored from one: levels and
 booleans the ruleset computed, an ETag of an ETag's shape, and the ids the
@@ -30,7 +31,7 @@ import re
 import socket
 import threading
 import time
-from dataclasses import replace
+from dataclasses import dataclass, fields
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
@@ -39,7 +40,7 @@ from .state import write_json
 
 __all__ = ["KEV_URL", "HOSTS", "LIMITS", "TIMEOUT", "MAX_FETCHES", "RUN_SECONDS", "FILE", "BOT",
            "norm_id", "url_of", "default_fetch", "state_key", "judge", "summary", "load", "run",
-           "result_for", "at_level", "lowering"]
+           "result_for", "at_level", "lowering", "claimed", "Asked"]
 
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 _GHSA_URL = "https://api.github.com/advisories/"
@@ -53,10 +54,10 @@ MAX_ALIASES = 3  # aliases of one thread that are read
 MAX_NAMES = 50  # ids one response may name; more is a failed read
 MAX_CACHE_BYTES = 16 << 20
 FILE = "verify.json"
-VERSION = 2  # of the cache: raised whenever a stored value changes meaning, so nothing older is reused
+VERSION = 3  # of the cache: raised whenever a stored value changes meaning, so nothing older is reused
 BOT = "relay-bot"
 CONFIRMED, CONTRADICTED, UNKNOWN = "confirmed", "contradicted", "unknown"
-_WHYS = {CONFIRMED: ("match",), CONTRADICTED: ("unsupported", "above-source", "below-source"),
+_WHYS = {CONFIRMED: ("match", "withdrawn"), CONTRADICTED: ("unsupported", "above-source", "below-source"),
          UNKNOWN: ("unread", "unauthoritative", "reading", "no-source", "off")}
 _LEVELS = (ruleset.NONE, "notice", "high", "critical")
 _RANK = {name: i for i, name in enumerate(_LEVELS)}
@@ -326,7 +327,11 @@ def judge(level: str, product: str, records, complete: bool, rs, actions=(), fix
 
     ``level`` may be ``none``, a retraction (c1g2). That is confirmed only when a
     source that may lower names this product and supports nothing for it (a withdrawn
-    advisory): a source that is silent about the product confirms no retraction."""
+    advisory): a source that is silent about the product confirms no retraction.
+
+    At ``notice``, the lowest level a post carries, the same finding is ``confirmed``,
+    why ``withdrawn`` (tavj): the relay bot has no retraction, so an alert whose advisory
+    was withdrawn stands at notice, and that is not "the source never supported it"."""
     def out(result, why, source):
         return {"result": result, "why": why, "source": source}
     if product not in rs.products():
@@ -351,6 +356,8 @@ def judge(level: str, product: str, records, complete: bool, rs, actions=(), fix
         return out(CONFIRMED, "match", s)
     if not may_lower or level == ruleset.NONE:
         return out(UNKNOWN, "unauthoritative", s)
+    if s == ruleset.NONE and named and level == _LEVELS[1]:
+        return out(CONFIRMED, "withdrawn", s)
     if s == ruleset.NONE:
         return out(CONTRADICTED, "unsupported", s)
     if level == "critical":
@@ -381,9 +388,12 @@ class _Target:
         # 9kgk: what the post can be acted on with; the source's level is held to it
         self.fixed = {p.name: p.fixed for p in adv.products}
         self.actions = [(a.verb, a.target, a.value) for a in adv.actions]
+        # tavj: an asked state whose higher levels are all claimed from the first id's fields
+        self.claimed = getattr(adv, "claimed", False) is True
         self.key = hashlib.sha256(json.dumps(
             {"id": self.first, "aliases": sorted(self.aliases), "level": self.level, "products": self.products,
-             "fixed": self.fixed, "actions": sorted(self.actions, key=repr)},
+             "fixed": self.fixed, "actions": sorted(self.actions, key=repr),
+             **({"claimed": True} if self.claimed else {})},
             sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
     def ids(self) -> list:
@@ -393,42 +403,98 @@ class _Target:
         return judge(self.level, product, records, complete, rs, self.actions, self.fixed.get(product))
 
 
-def at_level(adv, level: str):
+@dataclass(frozen=True)
+class Asked(schema.Advisory):
+    """A thread's widest state at a published lower level: what the sources are asked
+    about. ``claimed``: every level the thread stated above it rests on the first id's
+    fields (``claimed``); part of the state's key, because it changes how the catalog's
+    silence is read (``_Run.thread``)."""
+    claimed: bool = False
+
+
+def at_level(adv, level: str, claimed: bool = False):
     """``adv`` as a published lowering or retraction would leave it: what the sources
     are asked about (c1g2). ``level`` may be ``none`` (retracted), which no post carries."""
-    return replace(adv, level=level)
+    return Asked(**{**{f.name: getattr(adv, f.name) for f in fields(schema.Advisory)}, "level": level},
+                 claimed=claimed is True)
 
 
-def lowering(adv, level: str, cache: dict | None, now: float, rs=None) -> bool | None:
+def claimed(adv, level: str, stated, rs=None, pin=None) -> bool:
+    """Whether every level above ``level`` that the thread of ``adv`` has stated rests on
+    its first id's fields (tavj). ``stated``: ``pull.Thread.stated``, (level, the event's
+    claim or None) for the root and each reply that names a level.
+
+    True only when each such statement carries a claim that is well formed, names the
+    thread's first id (``norm_id`` of both), that this reader's ruleset reproduces for
+    every product of ``adv`` (``ruleset.check_claim`` gives ``ok``, under ``pin``), and
+    whose level is at least the stated one. A statement with no claim, a curator's, one
+    whose claim names another id (support this reader does not read as the thread's) or
+    whose fields give this reader another level, may rest on a reading of prose: False.
+    False too with no statement at all, with no product, and for an id that names no
+    source. A claim is the relay-bot key's word and proves nothing alone: it decides
+    only whether a result this machine read from the source itself may confirm a
+    lowering below the ruleset's ``reading_cap``, or read the catalog's silence. Never
+    raises."""
+    try:
+        rs = rs or ruleset.load()
+        first = norm_id(adv.id)
+        names = [p.name for p in adv.products]
+        if first is None or not stated or not names or level not in rs.levels:
+            return False  # and never for a retraction ("none"), which no result confirms
+        for said, claim in stated:
+            if said not in rs.levels:
+                return False
+            if rs.rank(said) <= rs.rank(level):
+                continue
+            if claim is None or norm_id(ruleset.parse_claim(claim)["id"]) != first \
+                    or rs.rank(claim["level"]) < rs.rank(said) \
+                    or any(ruleset.check_claim(claim, n, pin, rs) != "ok" for n in names):
+                return False
+        return True
+    except Exception:  # a hostile claim, a damaged ruleset: nothing is claimed
+        return False
+
+
+def lowering(adv, level: str, cache: dict | None, now: float, rs=None, stated=None, pin=None, *,
+             whole: bool = False) -> bool | None:
     """What the cached results say about lowering ``adv`` to ``level`` (c1g2; the
-    ``check`` of ``pull.standing``). ``adv`` is ``pull.widest`` of the thread.
+    ``check`` of ``pull.standing``). ``adv`` is ``pull.widest`` of the thread and
+    ``stated`` its ``stated``.
 
     False: a source supports more for some product (``below-source``). It stays False
     however old the result is: too high is the safe side.
 
-    True: every product's sources were read whole, give exactly ``level`` (``match``),
-    and were read no more than FRESH_S ago by this machine's clock (``run`` reads such
-    a state again every day, and a failed read is ``unread`` at once). And ``level`` is
-    not below the ruleset's ``reading_cap``: a reading of prose may hold an alert at up
-    to that level and this reader cannot see readings, so fields that give less prove
-    nothing below it. A retraction (``none``) is therefore never True.
+    True: every product's sources were read whole, every one of them an authority, none
+    gives more than ``level`` (``match``, ``withdrawn``, ``reading``, ``unsupported``),
+    and they were read no more than FRESH_S ago by this machine's clock (``run`` reads
+    such a state again every day, and a failed read is ``unread`` at once). And either
+    ``level`` is not below the ruleset's ``reading_cap``, or the state is ``claimed``
+    (tavj): a reading of prose may hold an alert at up to ``reading_cap`` and this reader
+    cannot see readings, so fields that give less prove nothing below it unless the
+    thread's signed claims say every higher level rested on those fields. A retraction
+    (``none``) is never True.
 
-    None: anything else, and ``verify = "off"`` (``cache`` None)."""
+    None: anything else, and ``verify = "off"`` (``cache`` None).
+
+    ``whole`` asks a weaker question, for ending a refusal this machine remembers
+    (``cli._note_offers``): True whenever the fresh results rest on whole reads of
+    authorities that give no more than ``level``, claimed or not."""
     if cache is None:
         return None
-    asked = at_level(adv, level)
+    rs = rs or ruleset.load()
+    said = claimed(adv, level, stated, rs, pin)
+    asked = at_level(adv, level, said)
     products = result_for(asked, cache)
     if not products:
         return None
     whys = {p["why"] for p in products.values()}
     if "below-source" in whys:
         return False
-    rs = rs or ruleset.load()
     held = cache["results"].get(_Target(asked).key)
-    if whys != {"match"} or level not in rs.levels or rs.rank(level) < rs.rank(rs.reading_cap) \
+    if not whys <= {"match", "withdrawn", "reading", "unsupported"} or level not in rs.levels \
             or held is None or not 0 <= now - held["at"] <= FRESH_S:
         return None
-    return True
+    return True if whole or said or rs.rank(level) >= rs.rank(rs.reading_cap) else None
 
 
 def state_key(adv) -> str:
@@ -624,13 +690,33 @@ class _Run:
         or not the thread lists them: dropping an alias takes nothing away.
         When the first id is a CVE (KEV names no other id), each GHSA or MAL
         alias the thread lists is read, and counts only when its own response
-        is an authority and names that CVE. Anything else adds nothing."""
+        is an authority and names that CVE. Anything else adds nothing.
+
+        The catalog not listing a CVE is no authority, with one exception (tavj): for a
+        claimed state (``claimed``) it is. The thread's signed claims then say the
+        catalog listed this CVE for this product, this machine's whole read says it
+        does not, and nothing the thread stated rests on anything else."""
         first = self.read(t.first, known_cves)
         if first is None:
             return {p: t.judge(p, [], False, self.rs) for p in t.products}
-        records, from_kev = [first], ruleset.source_of(t.first) == "kev"
+        from_kev = ruleset.source_of(t.first) == "kev"
+        if t.claimed and from_kev and not first["lowers"] and not first["support"]:
+            first = dict(first, lowers=True)  # judged so, stored as it was read
+        records = [first]
+        held = self.cache["sources"]
+
+        def weight(alias) -> int:
+            """What this machine last read ``alias`` to support for the thread's products,
+            as a rank; 0 when it did not count. Read first: only MAX_ALIASES are read,
+            and a reply that puts other aliases in front must not push out the one
+            whose support refused a lowering."""
+            r = held.get(alias)
+            if r is None or not r["lowers"] or t.first not in r["names"]:
+                return 0
+            return max((_RANK[r["support"][p][0]] for p in t.products
+                        if p in r["support"] and r["support"][p][1]), default=0)
         if from_kev:
-            related = [a for a in t.aliases if ruleset.source_of(a) != "kev"]
+            related = sorted((a for a in t.aliases if ruleset.source_of(a) != "kev"), key=lambda a: -weight(a))
         else:
             related = [n for n in first["names"] if n != t.first] if first["lowers"] else []
         complete = len(related) <= MAX_ALIASES
@@ -705,7 +791,12 @@ def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=
         if job.exhausted:
             # Not tried in full: its result stays as it was. But a thread that spent
             # requests has had its turn, or it would come first again every run.
-            if job.requests > asked:
+            if any(p["why"] == "below-source" for p in products.values()):
+                # tavj: what was read before the budget ran out supports more. That rests on
+                # bodies that arrived whole, whatever was not read: kept, so the lowering it
+                # contradicts is refused and never runs out its 72 hours unchecked.
+                results[t.key] = {"at": now, "products": products}
+            elif job.requests > asked:
                 held = results.get(t.key)
                 # c1g2: not for a state whose result authorises a lowering. Kept with a new
                 # time, an old ``match`` would read as confirmed today, and would stand in
