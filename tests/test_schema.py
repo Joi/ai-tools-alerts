@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from aitools_alerts import schema
+from aitools_alerts.poster import rules
 from aitools_alerts.schema import (
     LEVELS, ROLES, VERBS, Action, Advisory, Product, Source,
     is_primary, load_primary_domains, load_scope, parse_post, render_post,
@@ -74,12 +75,31 @@ def test_primary_domain_github_only_under_advisories_paths():
     assert is_primary("https://www.cisa.gov/known-exploited-vulnerabilities-catalog")
 
 
-def test_scope_tiers_loaded():
+def test_scope_classes_loaded():
     by_name = {e.name: e for e in load_scope()}
-    assert by_name["Claude Code"].tier == 1
-    assert by_name["macOS"].tier == 2
-    assert len(by_name) == 19
-    assert {e.tier for e in by_name.values()} == {1, 2}
+    assert by_name["Claude Code"].scope_class == "channel"
+    assert by_name["@modelcontextprotocol/sdk"].scope_class == "catalog"
+    assert by_name["macOS"].scope_class == by_name["OpenSSH"].scope_class == "out"
+    assert len(by_name) == 29
+    assert {e.scope_class for e in by_name.values()} == {"channel", "catalog", "out"}
+    assert {n for n, e in by_name.items() if e.channel_if} == {"@modelcontextprotocol/inspector", "git"}
+
+
+def test_mcp_items_are_named_by_their_package():
+    """wa6n: no pseudo-product; an MCP server or client is the package a member installs."""
+    entries = load_scope()
+    names = {n for e in entries for n in (e.name, *(c.name for c in e.components))}
+    old = {"MCP servers and clients", "MCP Inspector", "MCP Python SDK", "MCP TypeScript SDK"}
+    assert not old & names and {f for e in entries for f in e.formerly} == old
+    mcp = [e for e in entries if e.package and ("modelcontextprotocol" in e.package or "mcp" in e.package.split(":")[1])]
+    assert len(mcp) == 11
+    for e in mcp:
+        # The wire keeps ecosystem mcp: released readers list MCP servers under it.
+        assert e.ecosystem == "mcp" and e.package.split(":", 1)[1] == e.name and e.package in e.match, e.name
+    assert rules.scope_of("pypi:mcp-server-git").name == rules.scope_of("pip:mcp-server-git").name == "mcp-server-git"
+    assert rules.scope_of("npm:@anthropic-ai/claude-code").name == "Claude Code"  # a package is an identity
+    for text in ("mcp server", "model context protocol", "modelcontextprotocol/servers", "mcp-server-gitlab"):
+        assert rules.scope_of(text) is None, text
 
 
 # ---------------------------------------------------------- contract tests
@@ -345,19 +365,25 @@ def test_is_primary_accepts_www_trailing_dot_and_case():
 
 
 def test_load_scope_rejects_bad_entries(tmp_path):
-    good = {"name": "X", "ecosystem": "x", "tier": 1, "match": ["x", "npm:@x/y"],
+    good = {"name": "X", "ecosystem": "x", "class": "channel", "match": ["x", "npm:@x/y"],
             "authority": ["anthropic.com/", "github.com/anthropics/claude-code/"]}
     p = tmp_path / "scope.json"
 
     def load(*entries, **top):
-        p.write_text(json.dumps({"version": 5, "entries": list(entries), **top}))
+        p.write_text(json.dumps({"version": 6, "entries": list(entries), **top}))
         return load_scope(p)
 
     assert load(good)[0].authority == ("anthropic.com/", "github.com/anthropics/claude-code/")  # the control
     for bad in (dict(good, match=["Upper"]), dict(good, match=[]), dict(good, match=["two  spaces"]),
                 dict(good, match=[" x"]), dict(good, match=["x", "x"]),  # an identity listed twice
                 dict(good, match=["tool\u2013code"]),  # the lookup reads a Unicode dash as "-": one spelling only
-                dict(good, tier=3), dict(good, tier=True), dict(good, extra=1),
+                dict(good, tier=1), dict(good, **{"class": "tier1"}), dict(good, **{"class": True}),
+                dict(good, extra=1), dict(good, channel_if="code-execution"),  # a channel entry needs none
+                dict(good, **{"class": "out"}, channel_if="any"), dict(good, package="npm:@x/y"),  # listed twice
+                dict(good, package="NPM:z"), dict(good, package="z"), dict(good, package="npm:Z"),
+                dict(good, package=["npm:z"]), dict(good, components=[{"name": "C"}]),
+                dict(good, **{"class": "out"}, channel_if=[]), dict(good, **{"class": "out"}, channel_if={}),
+                dict(good, **{"class": ["out"]}), dict(good, formerly=[]), dict(good, formerly="Old"), dict(good, formerly=["X"]),  # its own name
                 dict(good, match_mode="word"), dict(good, not_match=["y"]),  # the word rule is gone (h340)
                 dict(good, authority=["github.com/anthropics/"]),  # an owner is not a product
                 dict(good, authority=["github.com/attacker/claude-code-router/"]),  # owner not on the primary list
@@ -372,10 +398,12 @@ def test_load_scope_rejects_bad_entries(tmp_path):
     with pytest.raises(ValueError):
         load(good, good)
     with pytest.raises(ValueError):  # the same identity under two products
-        load(good, {"name": "Y", "ecosystem": "y", "tier": 1, "match": ["npm:@x/y"]})
+        load(good, {"name": "Y", "ecosystem": "y", "class": "channel", "match": ["npm:@x/y"]})
+    got = load(dict(good, **{"class": "out"}, channel_if="code-execution", package="pypi:x-y"))[0]
+    assert (got.scope_class, got.channel_if, got.package, got.match[-1]) == ("out", "code-execution", "pypi:x-y", "pypi:x-y")
     with pytest.raises(ValueError):
         load(good, match_mode="word")
-    for version in (4, 6, "5", True):  # version 5 is the only one read: an old poster cannot word-match this file
+    for version in (4, 5, 7, "6", True):  # version 6 is the only one read: an old poster cannot word-match this file
         p.write_text(json.dumps({"version": version, "entries": [good]}))
         with pytest.raises(ValueError):
             load_scope(p)
@@ -460,7 +488,8 @@ def test_scope_identities_and_ecosystems():
     for text in ("anthropic claude code", "apple macos", "opencontainers runc", "npm:@anthropic-ai/claude-code"):
         assert text in ids, text
     assert [e.ecosystem for e in entries] == [
-        "claude-code", "codex", "cursor", "gemini-cli", "hermes", "openclaw", "mcp", "skill",
+        "claude-code", "codex", "cursor", "gemini-cli", "hermes", "openclaw",
+        *["mcp"] * 11, "skill",
         "node", "python", "go", "rust", "docker", "tailscale", "openssh", "git",
         "macos", "linux", "browser"]
 

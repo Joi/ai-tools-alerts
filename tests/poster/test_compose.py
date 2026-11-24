@@ -346,8 +346,8 @@ def test_containerd_kev_composes_containerd():
 
 
 def test_entry_fallback_composes_under_the_entry_name():
-    _, adv = root(cand(product_text="MCP server", fixed="1.2.0"))
-    assert adv.products[0].name == adv.actions[0].target == "MCP servers and clients"
+    _, adv = root(cand(product_text="agent skills", fixed="1.2.0"))
+    assert adv.products[0].name == adv.actions[0].target == "ClawHub and skills.sh"
 
 
 def test_root_post_refuses_unresolved_entry():

@@ -59,6 +59,8 @@ What the relay bot signs (ai-tools-alerts#h340, 2026-11-23; it narrows the parag
 
 ### Scope list
 
+Superseded on 2026-11-24 (ai-tools-alerts#wa6n, design ai-tools-alerts#9mx8 section 2): each entry of `spec/scope.json` is now channel, catalog or out, and an MCP server is named by its package. The file's own description is the current rule; the tiers below are the version 1 design.
+
 A file in the repo, edited by pull request, in two tiers (jibot's call, to keep the interrupt channel from paging on every exploited WebKit or kernel entry the OS updater already handles).
 
 Tier 1, interrupt-eligible: agents and IDEs (Claude Code, Codex, Cursor, Gemini CLI, Hermes, OpenClaw), MCP servers and clients, skill marketplaces (ClawHub, skills.sh), runtimes used by agents (Node, Python, Go, Rust toolchains), Docker and container runtimes, Tailscale, OpenSSH, git.
