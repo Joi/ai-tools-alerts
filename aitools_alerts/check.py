@@ -138,9 +138,10 @@ def _concerns(action: Action, ecosystem: str, aliases: set[str]) -> bool:
 
 
 def match(advs: list[Advisory], inv: Inventory) -> list[Match]:
-    """One Match per (advisory, installation, range): product entries that
-    repeat the same range and fixed version for one installation collapse;
-    entries with different constraints each yield their own Match."""
+    """One Match per (advisory, installation, range, reason): product entries
+    that repeat the same range and fixed version for one installation with
+    the same reason collapse; entries with different constraints, or one that
+    may apply beside one that is affected, each yield their own Match."""
     out = []
     for adv in advs:
         seen = set()
