@@ -221,3 +221,19 @@ def test_the_alert_block_schema_is_the_released_one(tmp_path):
     assert out.returncode == 0, out.stderr
     import dataclasses
     assert json.loads(out.stdout) == {n: [f.name for f in dataclasses.fields(getattr(schema, n))] for n in names}
+
+
+@pytest.mark.parametrize("tag", ("v0.1.4", "v0.1.7"))
+def test_the_exception_a_curator_s_lowering_of_a_bot_thread_lasts_for_good_on_a_released_reader(tmp_path, tag):
+    """The one place a released reader may show less than this one (ai-tools-alerts#c1g2,
+    spec/wire.md). A curator's lowering of a relay-bot thread is final to a released
+    reader. Here it holds 14 days and then the thread's widest state shows again, unless
+    the member's own source check confirms the lowering. No wire format differs: the
+    released reader reads the same events."""
+    m, now = mirror_now()
+    root = m.root_post(m.bot_sec, advisory(posted_by="relay-bot"), created_at=now - 3600)
+    m.post(m.cur_sec, "level: notice", created_at=now - 3000, tags=[["e", root["id"], "", "root"]])
+    mine, theirs = this_reader(m, now, tmp_path), released(tmp_path, tag, m, now)
+    level = lambda got, at: got[str(at)]["AITA-TEST-0001"][0]  # noqa: E731
+    assert (level(theirs, now), level(theirs, now + MONTH)) == ("notice", "notice")
+    assert (level(mine, now), level(mine, now + MONTH)) == ("notice", "critical")

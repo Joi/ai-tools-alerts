@@ -537,3 +537,124 @@ def test_a_curator_amend_never_makes_an_actionless_critical(mirror, monkeypatch)
         old = publish(mirror, *post(mirror, level="critical", channel="feed", actions=[]))
     assert amend(mirror, old, title="A better title")
     assert amend(mirror, old, level="high")
+
+
+# ---------------------------------------------------------------- the 14-day hold (ai-tools-alerts#c1g2)
+
+DAY = 86400
+
+
+def bot_thread(m, **over):
+    """(the root of a relay-bot thread dated NOW, the pulled state)."""
+    from mirror_helpers import advisory
+    root = m.root_post(m.bot_sec, advisory(posted_by="relay-bot", **over), created_at=NOW, files=("feed.json",))
+    return root, pulled(m)
+
+
+def as_replayed(st, root):
+    """The thread as replay leaves it, a curator's hold still on it."""
+    return next(t for t in pull.advisories(st, checkpointed=False) if t.root_id == root["id"])
+
+
+def signed(st, ev):
+    st.events[ev["id"]] = ev
+    return ev
+
+
+def test_renew_signs_again_the_lowering_and_the_narrowing_that_are_held(mirror):
+    root, st = bot_thread(mirror, level="high")
+    low = signed(st, curator.amend_event(mirror.cur_sec, st.manifest, mirror.root, st, as_replayed(st, root), root,
+                                         now=NOW + 1, level="notice", actions=[]))
+    t = as_replayed(st, root)
+    assert (t.adv.level, t.adv.actions, t.held_until) == ("notice", [], low["created_at"] + pull.CURATOR_HOLD_S)
+    assert (t.wide.level, len(t.wide.actions)) == ("high", 1)
+    again = signed(st, curator.renew_event(mirror.cur_sec, st.manifest, mirror.root, st, t, root, now=NOW + 5 * DAY))
+    assert again["content"].startswith("level: notice\n") and pull._patch(again["content"]) == {"actions": []}
+    after = as_replayed(st, root)
+    assert after.adv == t.adv and after.held_until == again["created_at"] + pull.CURATOR_HOLD_S
+    assert again["created_at"] >= NOW + 5 * DAY
+
+
+def test_renew_signs_a_retraction_again(mirror):
+    root, st = bot_thread(mirror)
+    gone = signed(st, curator.retract_event(mirror.cur_sec, st.manifest, mirror.root, st, as_replayed(st, root), root,
+                                            now=NOW + 1))
+    again = signed(st, curator.renew_event(mirror.cur_sec, st.manifest, mirror.root, st, as_replayed(st, root), root,
+                                           now=NOW + 10 * DAY))
+    t = as_replayed(st, root)
+    assert again["content"] == "retract" and t.retracted
+    assert t.held_until == again["created_at"] + pull.CURATOR_HOLD_S > gone["created_at"] + pull.CURATOR_HOLD_S
+
+
+def test_renew_refuses_when_nothing_is_held(mirror):
+    root, st = bot_thread(mirror, level="high")
+    renew = lambda now: curator.renew_event(mirror.cur_sec, st.manifest, mirror.root, st,  # noqa: E731
+                                            as_replayed(st, root), root, now=now)
+    with pytest.raises(curator.CuratorError, match="nothing to renew: no hold"):
+        renew(NOW + 1)
+    up = signed(st, curator.amend_event(mirror.cur_sec, st.manifest, mirror.root, st, as_replayed(st, root), root,
+                                        now=NOW + 1, title="Only a title"))
+    with pytest.raises(curator.CuratorError, match="nothing to renew: the hold lowers"):
+        renew(NOW + 2)
+    signed(st, curator.amend_event(mirror.cur_sec, st.manifest, mirror.root, st, as_replayed(st, root), root,
+                                   now=NOW + 3, level="notice"))
+    assert renew(NOW + 4)["content"] == "level: notice"
+    with pytest.raises(curator.CuratorError, match="nothing to renew: no hold"):
+        renew(up["created_at"] + 20 * DAY)  # lapsed: the lowering has to be issued again
+    own = publish(mirror, *post(mirror))  # a curator's own thread holds nothing: its word stands
+    st2 = pulled(mirror)
+    with pytest.raises(curator.CuratorError, match="nothing to renew: no hold"):
+        curator.renew_event(mirror.cur_sec, st2.manifest, mirror.root, st2, as_replayed(st2, own), own, now=NOW + 5)
+
+
+def test_an_amendment_after_the_hold_is_written_against_the_widest_state(mirror, reader_clock):
+    root, st = bot_thread(mirror)
+    signed(st, curator.amend_event(mirror.cur_sec, st.manifest, mirror.root, st, as_replayed(st, root), root,
+                                   now=NOW + 1, level="notice"))
+    late = NOW + 20 * DAY
+    reader_clock.at = late
+    [(t, _)] = curator.find_threads(st, mirror.root, root["id"])
+    assert (t.adv.level, t.held_until) == ("critical", None)  # as it stands now: the lowering lapsed
+    [(held, _)] = curator.find_threads(st, mirror.root, root["id"], held=True)
+    assert held.adv.level == "notice"
+    signed(st, curator.amend_event(mirror.cur_sec, st.manifest, mirror.root, st, t, root, now=late, title="A fix of the title"))
+    after = as_replayed(st, root)
+    assert (after.adv.level, after.adv.title) == ("critical", "A fix of the title")
+    with pytest.raises(curator.CuratorError, match="nothing to change"):  # critical is what it is
+        curator.amend_event(mirror.cur_sec, st.manifest, mirror.root, st, after, root, now=late + 5, level="critical")
+
+
+def test_a_lapsed_retraction_can_be_amended_and_retracted_again(mirror, reader_clock):
+    root, st = bot_thread(mirror)
+    signed(st, curator.retract_event(mirror.cur_sec, st.manifest, mirror.root, st, as_replayed(st, root), root, now=NOW + 1))
+    with pytest.raises(curator.CuratorError, match="retracted"):
+        curator.find_threads(st, mirror.root, root["id"])
+    reader_clock.at = NOW + 15 * DAY
+    [(t, _)] = curator.find_threads(st, mirror.root, root["id"])
+    assert not t.retracted
+    signed(st, curator.retract_event(mirror.cur_sec, st.manifest, mirror.root, st, t, root, now=NOW + 15 * DAY))
+    assert as_replayed(st, root).retracted
+
+
+def test_the_cli_says_when_a_hold_ends_and_renews(mirror, capsys):
+    root = mirror.root_post(mirror.bot_sec, __import__("mirror_helpers").advisory(posted_by="relay-bot"), created_at=NOW,
+                            files=("feed.json",))
+    pulled(mirror)
+    write_key(nostr.nsec(mirror.cur_sec))
+    assert cli.main(["curator", "renew", root["id"], "--no-pull", "--dry-run"]) == 1
+    assert "nothing to renew" in capsys.readouterr().err
+    assert cli.main(["curator", "amend", root["id"], "--no-pull", "--dry-run", "--level", "notice"]) == 0
+    got = capsys.readouterr()
+    [low] = json.loads(got.out)
+    until = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(low["created_at"] + pull.CURATOR_HOLD_S))
+    assert f"{root['id']}: this holds until {until}" in got.err and f"curator renew {root['id']}" in got.err
+    publish(mirror, low)
+    pulled(mirror)
+    assert cli.main(["curator", "renew", root["id"], "--no-pull", "--dry-run"]) == 0
+    got = capsys.readouterr()
+    [again] = json.loads(got.out)
+    assert again["content"] == "level: notice" and "this holds until" in got.err
+    own = publish(mirror, *post(mirror))  # a curator's own thread: no hold, no note
+    pulled(mirror)
+    assert cli.main(["curator", "amend", own["id"], "--no-pull", "--dry-run", "--level", "notice"]) == 0
+    assert "holds until" not in capsys.readouterr().err

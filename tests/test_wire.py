@@ -110,8 +110,9 @@ def test_reply_post_refuses_a_lowering_alone_or_with_a_fix():
 
 
 def test_this_reader_keeps_the_higher_level_and_ignores_the_claim_tag():
-    """The reader does not change in this slice: a relay-bot lowering is refused (the level
-    stays), and an event reads the same with a claim tag as without one."""
+    """Replay keeps the higher level: a relay-bot lowering is published on the thread
+    (``offered``, ai-tools-alerts#c1g2), applied only by a member whose source check
+    confirms it; and an event reads the same with a claim tag as without one."""
     m = Mirror()
     plain = m.root_post(m.bot_sec, bot_adv(id="AITA-TEST-0001"), files=("feed.json",))
     tagged = m.root_post(m.bot_sec, bot_adv(id="AITA-TEST-0002"), files=("feed.json",),
@@ -123,4 +124,5 @@ def test_this_reader_keeps_the_higher_level_and_ignores_the_claim_tag():
     dropped = pull.Counter()
     got = {t.adv.id: t for t in pull.threads_from(m.events["feed.json"], m.man, dropped)}
     assert got["AITA-TEST-0002"].adv == replace(got["AITA-TEST-0001"].adv, id="AITA-TEST-0002")
-    assert got["AITA-TEST-0002"].adv.level == "critical" and dropped == {"bad-patch": 1}
+    assert got["AITA-TEST-0002"].adv.level == "critical" and dropped == {}
+    assert (got["AITA-TEST-0002"].offered, got["AITA-TEST-0001"].offered) == ("notice", None)

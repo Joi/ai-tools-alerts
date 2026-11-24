@@ -489,12 +489,17 @@ def test_state_limit_refuses_new_events_but_applies_the_manifest(monkeypatch, mi
     State.load()  # still loadable
 
 
-def test_relay_bot_cannot_undo_a_curator_amendment(mirror):
+def test_a_relay_bot_raise_applies_over_a_curator_amendment_and_nothing_else_does(mirror):
+    """ai-tools-alerts#c1g2: a curator's word no longer silences the bot. A raise shows at
+    once; any other change waits for the hold to lapse (tests/test_curator_hold.py)."""
     root = mirror.root_post(mirror.bot_sec, advisory(posted_by="relay-bot"))
-    mirror.reply(mirror.cur_sec, root, "level: high", created_at=T0 + 150)
-    mirror.reply(mirror.bot_sec, root, mirror.patch_text(level="critical"), created_at=T0 + 160)
+    mirror.reply(mirror.cur_sec, root, "level: high\n" + mirror.patch_text(title="Curated"), created_at=T0 + 150)
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(title="The bot's"), created_at=T0 + 155)
     do_pull(mirror)
-    assert threads()[0].adv.level == "high"
+    assert (threads()[0].adv.level, threads()[0].adv.title) == ("high", "Curated")
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(level="critical", title="Raised"), created_at=T0 + 160)
+    do_pull(mirror)
+    assert (threads()[0].adv.level, threads()[0].adv.title) == ("critical", "Curated")
 
 
 def test_telegram_chat_ids(home):

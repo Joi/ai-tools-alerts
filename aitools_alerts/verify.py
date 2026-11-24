@@ -11,7 +11,9 @@ and ``contradicted`` rest only on bodies that came with status 200, arrived
 whole, parsed strictly and passed ``Ruleset.read``. If any read a thread
 needs fails (a timeout, a redirect, 403, 404, 429, 5xx, a body cut short, a
 parse error, a size overrun), every product of it is ``unknown``. This module
-changes no level: it reports (ai-tools-alerts#tavj applies the results).
+changes no level: it reports. ``lowering`` is the answer the reader applies to a
+published lowering or retraction (ai-tools-alerts#c1g2, ``pull.standing``); the rest
+of the results' table is ai-tools-alerts#tavj.
 
 Nothing a response says is printed. What is stored from one: levels and
 booleans the ruleset computed, an ETag of an ETag's shape, and the ids the
@@ -28,6 +30,7 @@ import re
 import socket
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
@@ -36,7 +39,7 @@ from .state import write_json
 
 __all__ = ["KEV_URL", "HOSTS", "LIMITS", "TIMEOUT", "MAX_FETCHES", "RUN_SECONDS", "FILE", "BOT",
            "norm_id", "url_of", "default_fetch", "state_key", "judge", "summary", "load", "run",
-           "result_for"]
+           "result_for", "at_level", "lowering"]
 
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 _GHSA_URL = "https://api.github.com/advisories/"
@@ -64,6 +67,7 @@ _REPO_URL = re.compile(r"https://api\.github\.com/repos/([A-Za-z0-9._-]{1,100})/
 _LEDGER_KEY = re.compile(r"((?:CVE-[0-9]{4}-[0-9]{4,19}|GHSA(?:-[0-9A-Za-z]{4}){3})):[A-Za-z0-9][A-Za-z0-9._-]{0,63}",
                          re.IGNORECASE)
 RETRY_S = 86400  # a result that is not "confirmed" is read again after a day
+FRESH_S = 2 * RETRY_S  # c1g2: a result older than this confirms no lowering
 _CONNECTION = http.client.HTTPSConnection  # tests replace it
 
 
@@ -318,15 +322,21 @@ def judge(level: str, product: str, records, complete: bool, rs, actions=(), fix
     confirms nothing and contradicts nothing: it only makes the result unknown.
     The source's level is what a post with the thread's ``actions`` and ``fixed``
     version may carry (9kgk, ``Ruleset.action_level``): a KEV listing with no fix
-    known supports high, not critical."""
+    known supports high, not critical.
+
+    ``level`` may be ``none``, a retraction (c1g2). That is confirmed only when a
+    source that may lower names this product and supports nothing for it (a withdrawn
+    advisory): a source that is silent about the product confirms no retraction."""
     def out(result, why, source):
         return {"result": result, "why": why, "source": source}
     if product not in rs.products():
         return out(UNKNOWN, "no-source", None)  # not in this reader's scope file: it cannot judge
     s, may_lower = ruleset.NONE, True  # s: the highest level a source that may set one gives
     stop = False  # a source gives s through a stop_using row
+    named = False  # a source that may lower states something about this product
     for r in records:
         own = r["support"].get(product)
+        named = named or (own is not None and own[1])
         if own is not None and own[1] and _RANK[own[0]] > _RANK[s]:
             s, stop = own[0], False
         if own is not None and own[1] and own[0] == s:
@@ -337,9 +347,9 @@ def judge(level: str, product: str, records, complete: bool, rs, actions=(), fix
         return out(CONTRADICTED, "below-source", s)  # rests on bodies that were read: a missing one could only add
     if not complete:
         return out(UNKNOWN, "unread", None)  # one read missing: the source's level is only a lower bound
-    if s == level:
+    if s == level and (level != ruleset.NONE or (named and may_lower)):
         return out(CONFIRMED, "match", s)
-    if not may_lower:
+    if not may_lower or level == ruleset.NONE:
         return out(UNKNOWN, "unauthoritative", s)
     if s == ruleset.NONE:
         return out(CONTRADICTED, "unsupported", s)
@@ -381,6 +391,44 @@ class _Target:
 
     def judge(self, product, records, complete, rs) -> dict:
         return judge(self.level, product, records, complete, rs, self.actions, self.fixed.get(product))
+
+
+def at_level(adv, level: str):
+    """``adv`` as a published lowering or retraction would leave it: what the sources
+    are asked about (c1g2). ``level`` may be ``none`` (retracted), which no post carries."""
+    return replace(adv, level=level)
+
+
+def lowering(adv, level: str, cache: dict | None, now: float, rs=None) -> bool | None:
+    """What the cached results say about lowering ``adv`` to ``level`` (c1g2; the
+    ``check`` of ``pull.standing``). ``adv`` is ``pull.widest`` of the thread.
+
+    False: a source supports more for some product (``below-source``). It stays False
+    however old the result is: too high is the safe side.
+
+    True: every product's sources were read whole, give exactly ``level`` (``match``),
+    and were read no more than FRESH_S ago by this machine's clock (``run`` reads such
+    a state again every day, and a failed read is ``unread`` at once). And ``level`` is
+    not below the ruleset's ``reading_cap``: a reading of prose may hold an alert at up
+    to that level and this reader cannot see readings, so fields that give less prove
+    nothing below it. A retraction (``none``) is therefore never True.
+
+    None: anything else, and ``verify = "off"`` (``cache`` None)."""
+    if cache is None:
+        return None
+    asked = at_level(adv, level)
+    products = result_for(asked, cache)
+    if not products:
+        return None
+    whys = {p["why"] for p in products.values()}
+    if "below-source" in whys:
+        return False
+    rs = rs or ruleset.load()
+    held = cache["results"].get(_Target(asked).key)
+    if whys != {"match"} or level not in rs.levels or rs.rank(level) < rs.rank(rs.reading_cap) \
+            or held is None or not 0 <= now - held["at"] <= FRESH_S:
+        return None
+    return True
 
 
 def state_key(adv) -> str:
@@ -606,11 +654,14 @@ def _waits(t: _Target, results: dict, now: int) -> bool:
     return "unread" in whys or (whys - {"match", "no-source"} and now - held["at"] >= RETRY_S)
 
 
-def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=time.monotonic, rs=None) -> dict:
+def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=time.monotonic, rs=None,
+        recheck=()) -> dict:
     """Read the sources for the threads of ``wanted`` that need it and save
     the cache; returns it. ``current``: every current advisory (what the
     cache keeps); ``wanted``: the ones this run may read (all of them, or
-    those matching this machine). Threads waiting (``_waits``) are taken
+    those matching this machine). ``recheck``: the states among them whose
+    result authorises a lowering (c1g2): each is read again once its result is
+    RETRY_S old, a confirmed one too, so a source that changed is seen. Threads waiting (``_waits``) are taken
     longest untried first, then highest level, so no thread that keeps failing
     holds the others back. The 30 seconds run from this call. The state lock
     is not held: a pull must not wait."""
@@ -626,7 +677,9 @@ def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=
             t = _Target(adv)
             if t.first is not None:
                 targets.setdefault(t.key, t)
-    waiting = sorted((t for t in targets.values() if _waits(t, results, now)),
+    again = {_Target(adv).key for adv in recheck}
+    waiting = sorted((t for t in targets.values() if _waits(t, results, now)
+                      or (t.key in again and now - results[t.key]["at"] >= RETRY_S)),
                      key=lambda t: (results.get(t.key, {}).get("at", 0), -_RANK[t.level], t.key))
     known = {i for t in waiting for i in [t.first, *cache["sources"].get(t.first, {}).get("names", [])]
              if ruleset.source_of(i) == "kev"}
@@ -641,8 +694,12 @@ def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=
             # requests has had its turn, or it would come first again every run.
             if job.requests > asked:
                 held = results.get(t.key)
-                results[t.key] = {"at": now, "products": held["products"] if held is not None and set(
-                    held["products"]) == set(t.products) else {p: judge(t.level, p, [], False, rs) for p in t.products}}
+                # c1g2: not for a state whose result authorises a lowering. Kept with a new
+                # time, an old ``match`` would read as confirmed today, and would stand in
+                # for what the requests this run did make had found. It is unread instead.
+                keep = held is not None and set(held["products"]) == set(t.products) and t.key not in again
+                results[t.key] = {"at": now, "products": held["products"] if keep else {
+                    p: judge(t.level, p, [], False, rs) for p in t.products}}
             break
         results[t.key] = {"at": now, "products": products}
     live = [_Target(adv) for adv in current if adv.posted_by == BOT and norm_id(adv.id) is not None]
