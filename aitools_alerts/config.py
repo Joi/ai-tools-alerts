@@ -28,6 +28,7 @@ DEFAULT_MIRROR_URL = "https://buzz.ai-tools.md/alerts/"
 DEFAULT_SECOND_ORIGIN = "https://raw.githubusercontent.com/Joi/ai-tools-alerts/main/trust/"
 CHANNELS = ("desktop", "imessage", "signal", "telegram", "webhook")
 LANGS = ("en", "ja")
+VERIFY = ("matched", "all", "off")
 _RECIPIENT = re.compile(r"[A-Za-z0-9+@._:][A-Za-z0-9+@._:-]{0,127}")
 _RECIPIENT_KEYS = ("imessage_to", "signal_to", "signal_account")
 # Telegram ids go into JSON, never argv: negative group/channel ids or @name.
@@ -88,6 +89,9 @@ class Settings:
     # root; "": none.
     second_origin: str | None = None
     lang: str = "en"
+    # Which alerts are checked against their primary source (aitools_alerts.verify):
+    # those matching this machine, all of them, or none.
+    verify: str = "matched"
 
     def check_config(self) -> Config:
         return Config(auto_apply=self.auto_apply)
@@ -142,6 +146,10 @@ def load(path: Path | None = None) -> Settings:
         if raw["lang"] not in LANGS:
             raise ConfigError(f"lang must be one of {', '.join(LANGS)}")
         out["lang"] = raw["lang"]
+    if "verify" in raw:
+        if raw["verify"] not in VERIFY:
+            raise ConfigError(f"verify must be one of {', '.join(VERIFY)}")
+        out["verify"] = raw["verify"]
     if "auto_apply" in raw:
         out["auto_apply"] = frozenset(_strings(raw["auto_apply"], "auto_apply")) & schema.VERBS
     if "trust_root_override" in raw:
@@ -201,6 +209,13 @@ auto_apply = []
 # Show advisory text in Japanese where a translation exists ("en" or "ja").
 # Commands and versions are never translated.
 # lang = "ja"
+
+# Check alerts against their primary source once an hour: the CISA KEV file,
+# api.github.com/advisories and api.osv.dev, at most 10 requests a run.
+# "matched": only alerts that match a tool on this machine (GitHub or OSV can
+# then tell, by address, which advisories apply here). "all": every alert.
+# "off": no request; nothing is verified.
+# verify = "matched"
 
 # imessage_to = "+15555550100"        # needs the imsg CLI
 # signal_to = "+15555550100"          # needs signal-cli
