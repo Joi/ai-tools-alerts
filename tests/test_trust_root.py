@@ -35,5 +35,10 @@ def test_committed_certificate_fits_the_manifest_and_pins_this_ruleset():
     assert checkpoint.verify_cert(cert, TRUST_ROOT_PUBKEY)
     assert (cert.manifest_id, cert.manifest_version) == (m.event["id"], m.version)
     assert not cert.ruleset_unreadable
-    if cert.ruleset is not None:
-        assert not ruleset.outdated(cert.ruleset, ruleset.load())
+    # Since 0.2.1 every certificate carries the pin; dropping or lowering it is a
+    # deliberate change that edits this test too.
+    pin, own = cert.ruleset, ruleset.load()
+    assert pin is not None and pin.min_version >= 3
+    assert not ruleset.outdated(pin, own)
+    if pin.version == own.version:
+        assert pin.sha256 == own.digest
