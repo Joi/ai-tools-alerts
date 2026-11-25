@@ -1,6 +1,6 @@
 {
   "pubkey": "afb55ca02209ca12e980bba67262f478b7977b6fdc6bbaf8c3b9fb96983c78a4",
-  "created_at": 1795464556,
+  "created_at": 1795566408,
   "kind": 30078,
   "tags": [
     [
@@ -8,7 +8,7 @@
       "aitools-alerts-checkpoint-key"
     ]
   ],
-  "content": "{\"checkpoint_key\":\"64c1fac69047031a938aa1d414fa64f80e73544d5446bbdc24c8003bcbdc9f92\",\"expires_at\":\"2027-03-23T20:09:16Z\",\"issued_at\":\"2026-11-23T20:09:16Z\",\"manifest_id\":\"88c95a87c7ecfbcbeab49ac532df588399c323f27b85ba2c819cc5af39171309\",\"manifest_version\":3,\"v\":1}",
-  "id": "7e341126b498a0b2b1fee435205baa789896ba5459ff79367b88c43fb106f6b4",
-  "sig": "dc2130c1effc50c4d7ea32d7fd861c6c4d966fd7903b5625087605d568acbb0375e7d0081f30afa842d90a71f01450c6393a93bb49d2f66539884a34cd15caae"
+  "content": "{\"checkpoint_key\":\"64c1fac69047031a938aa1d414fa64f80e73544d5446bbdc24c8003bcbdc9f92\",\"expires_at\":\"2027-03-25T00:26:48Z\",\"issued_at\":\"2026-11-25T00:26:48Z\",\"manifest_id\":\"37dfbadcf634db91a00be5a634d0deb4733927b84bc5ce2395be3206c1aa5c00\",\"manifest_version\":4,\"v\":1}",
+  "id": "9816f259c11aeeacc8074eaf2975f191e8974f351d0e2daf956ebaa1b1f8c2a8",
+  "sig": "efe0e8887a8de45071531788fb92e498b78bb4cd3748df831635a4deeddc4edb9de312d5dac48faaf45e6852db8b30c4d7131e093dc978dd0d34f7a07889880c"
 }

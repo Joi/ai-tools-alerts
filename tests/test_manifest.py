@@ -100,13 +100,15 @@ def test_committed_manifest_verifies_against_pinned_root():
     m = manifest.load(COMMITTED)
     assert manifest.verify(m, TRUST_ROOT_PUBKEY)
     # Pin the exact release: a commit that signs a new version updates this
-    # line with it (v3: E3's test curator removed again, jibot-code#gs18).
-    assert m.version == 3
+    # line with it (v3: E3's test curator removed again, jibot-code#gs18;
+    # v4: no curator, the shared relay-owner key is no longer a poster,
+    # ai-tools-alerts#b5qs).
+    assert m.version == 4
     assert {(p.name, p.pubkey, p.role) for p in m.posters} == {
-        ("Joi", JOI, "curator"),
         ("jibot", JIBOT, "relay-bot"),
     }
-    assert len(m.posters) == 2
+    assert len(m.posters) == 1
+    assert manifest.role_of(m, JOI) is None
     assert manifest.role_of(m, TEST_CURATOR_E3) is None
 
 
