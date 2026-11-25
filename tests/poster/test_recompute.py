@@ -161,7 +161,7 @@ def _thread(aliases=(CVE,), level="critical", product="Claude Code", **more):
 def _support(entry, cat, status="ok"):
     copy = kc(cat, status, recompute.new_state(), 0) if cat else None
     scope = next(e for e in schema.load_scope() if e.name == entry.scope)
-    return recompute.support(entry, scope, copy, ruleset.load())
+    return recompute.support(entry, scope, copy, ruleset.load())[:4]  # 3qyq: and whether a read says stop_using
 
 
 def test_support_is_what_the_copy_states():
@@ -491,7 +491,7 @@ def test_a_thread_that_became_busy_after_it_was_judged_is_not_lowered_on_top_of_
     hours(env, 1, 24)
     busy, drain, late = main.Run.busy, main.Run.drain, []
     monkeypatch.setattr(main.Run, "drain", lambda self: late.append(1))
-    monkeypatch.setattr(main.Run, "busy", lambda self, ids, scope: bool(late) or busy(self, ids, scope))
+    monkeypatch.setattr(main.Run, "busy", lambda self, ids, scope, **kw: bool(late) or busy(self, ids, scope, **kw))
     assert replies(one(env, 25)) == [] and entry(env)["level"] == "critical"
     monkeypatch.setattr(main.Run, "drain", drain)
     monkeypatch.setattr(main.Run, "busy", busy)
@@ -628,17 +628,17 @@ def test_a_candidate_on_the_run_a_lowering_falls_due_is_seen_before_anything_is_
     assert hours(env, 26, 60) == []
 
 
-def test_a_thread_whose_lowering_finishes_in_this_run_is_still_raised_in_it(env):
-    """One channel had the lowering; the other's send failed. The next run finishes it
-    from the journal, and the catalog it read lists the entry again: the raise goes
-    out in that run, to both channels."""
+def test_a_thread_whose_lowering_one_channel_lacks_is_raised_without_it(env):
+    """One channel had the lowering; the other's send failed. The catalog the next run
+    reads lists the entry again: the raise goes out in that run, to both channels, and
+    the unsent lowering does not (jsje: a raise supersedes it)."""
     post(env)
     hours(env, 1, 24)
     one(env, 25, relay=FakeRelay("ok", "fail"), code=1)
     old = {**kev_item(CVE), "dateAdded": "2026-09-01"}  # before the watermark: no candidate, only the recompute
     relay = one(env, 26, (old,))
-    assert levels(relay) == [{"level": "notice"}, {"level": "critical"}]
-    assert levels(relay, "critical") == [{"level": "critical"}] and entry(env)["level"] == "critical"
+    assert levels(relay) == levels(relay, "critical") == [{"level": "critical"}]
+    assert entry(env)["level"] == "critical" and env.state()["outbox"] == []
 
 
 # ---------------------------------------------------------------- the circuit breaker and the digest

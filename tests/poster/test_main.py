@@ -12,6 +12,7 @@ from pathlib import Path
 
 from aitools_alerts.poster import inputs, main, transport
 from mirror_helpers import Mirror, advisory
+from advisories import Api, ghsa_json, plain
 from pages import Pages, advisory_page
 from aitools_alerts.poster.ledger import Ledger, LedgerError
 
@@ -121,6 +122,7 @@ def env(tmp_path):
                                kev_cache=tmp_path / "state" / "kev.json", **RELAY)
         kev, mirror = FakeKEV(), Mirror()  # the digest pulls the mirror first (ai-tools-alerts#d3f6)
         pages = Pages()  # the vendor pages the run fetches: each states what its finding says (h340)
+        api = Api(default=plain)  # 3qyq: the advisory API answers, and says no more than the page
         _n = itertools.count()
 
         def collector(self, findings, validate="ok", name=None):
@@ -143,6 +145,7 @@ def env(tmp_path):
             kw = {"mirror_fetch": self.mirror.fetch, "root": self.mirror.root, "page": self.pages, **kw}
             kw.setdefault("ssh", relay)  # the checkpoint route; a test's PutRelay takes both
             kw.setdefault("catalog_channel", False)  # q03f: tests/poster/test_catalog.py turns it on
+            kw.setdefault("advisory_fetch", self.api)
             code, summary = main.run(now, self.config, send=relay, kev_fetch=kev or self.kev,
                                      channels=CHANNELS, **kw)
             return code, summary, relay
@@ -513,7 +516,10 @@ def test_compose_value_error_sends_nothing(env, monkeypatch):
 
     monkeypatch.setattr(main.compose, "reply_post", refuse)
     code, summary, relay = env.run(now=T0 + 3600)
-    assert code == 0 and relay.calls == [] and "withheld=1" in summary  # not even the critical copy
+    assert code == 0 and "withheld=1" in summary and "copies=0" in summary  # not even the critical copy
+    # 3qyq: nothing of the candidate's plan is sent. The recompute, which now judges a thread
+    # that carries a GHSA id, sees KEV list its CVE and raises the level, alone.
+    assert [(ch, text.splitlines()[0]) for ch, _, text in relay.calls] == [("feed", "Level is now critical.")]
     assert env.state()["outbox"] == []
 
 
@@ -2261,6 +2267,9 @@ def test_admit_puts_the_readings_on_what_the_level_is_computed_from(env, monkeyp
     from aitools_alerts import ruleset
     env.collector([finding(fid="CVE-2026-0001", severity="high", affected="<2.1.0")])
     env.kev.catalog = {"vulnerabilities": [kev_item()]}
+    # 3qyq: the ghsa reading is the advisory API's answer, and counts for a CVE thread
+    # because that answer names the CVE.
+    env.api.put("GHSA-abcd-efgh-ijkl", ghsa_json("GHSA-abcd-efgh-ijkl", cwes=(), cve="CVE-2026-0001"))
     (code, summary, relay), seen = _levelled(env, monkeypatch)
     assert code == 0 and "roots=1" in summary and len(seen) == 1
     c, scope = seen[0]
@@ -2268,7 +2277,8 @@ def test_admit_puts_the_readings_on_what_the_level_is_computed_from(env, monkeyp
     fields = dict((s, json.loads(t)) for s, t in c.readings)
     assert fields["kev"] == {"cve_id": "CVE-2026-0001", "name": "Anthropic Claude Code"}
     assert fields["ghsa"]["repository"] == "anthropics/claude-code" and fields["ghsa"]["severity"] == "high"
-    assert [(p["ecosystem"], p["name"], p["first_patched"]) for p in fields["ghsa"]["packages"]] == [("", "Claude Code", "2.1.0")]
+    assert [(p["ecosystem"], p["name"], p["first_patched"]) for p in fields["ghsa"]["packages"]] == [
+        ("npm", "@anthropic-ai/claude-code", "2.1.0")]
     claims = main.rules.claims_for(c, scope, T0)
     assert sorted(x["level"] for x in claims) == ["critical", "notice"]  # 9kgk: the page's severity sets nothing
     assert all(ruleset.check_claim(x, scope.name) == "ok" for x in claims)

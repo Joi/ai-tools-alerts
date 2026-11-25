@@ -741,7 +741,8 @@ def weekly(products, link: str, lang: str = "en") -> str:
 
 
 def digest(advs_today, date, lang: str = "en", *, retracted=(), now: int | None = None,
-           titles=None, held: int = 0, link: str = DEFAULT_MIRROR_URL, summary: str | None = None) -> str:
+           titles=None, held: int = 0, link: str = DEFAULT_MIRROR_URL, summary: str | None = None,
+           dropped: int = 0) -> str:
     """The daily digest (qwpw, v2 design section 7): the day's new relay-bot posts, one
     line each, loudest first then oldest first, and nothing else. ``advs_today`` is
     the advisory of each thread whose root was posted since the last digest; one
@@ -754,7 +755,9 @@ def digest(advs_today, date, lang: str = "en", *, retracted=(), now: int | None 
 
     With nothing to list, one line: no new alerts, ``held`` notices added to the
     catalog this week and ``link``; without the count when ``summary`` (the weekly
-    summary, ``weekly``) follows, which carries it. ``lang="ja"``: the Japanese templates."""
+    summary, ``weekly``) follows, which carries it. ``lang="ja"``: the Japanese templates.
+    ``dropped`` (jsje): posts the relay refused that the poster has since dropped; they
+    join the withheld count, which a quiet day then prints too."""
     t = _DIGEST[lang]
     latest: dict[tuple, schema.Advisory] = {}
     for adv in advs_today:
@@ -769,8 +772,10 @@ def digest(advs_today, date, lang: str = "en", *, retracted=(), now: int | None 
     day = date.isoformat() if hasattr(date, "isoformat") else str(date)
     tail = [] if summary is None else ["", summary]
     if not shown:
-        return _guard("\n".join([t["quiet"](day, held, link) if summary is None else t["bare"](day)] + tail))
-    lines, withheld = [t["head"](day, len(shown))], 0
+        gone_too = ["", t["withheld"](dropped)] if dropped > 0 else []
+        return _guard("\n".join([t["quiet"](day, held, link) if summary is None else t["bare"](day)]
+                                + gone_too + tail))
+    lines, withheld = [t["head"](day, len(shown))], max(dropped, 0)
     for a in shown:
         try:
             lines.append(_guard(_inline(_single(a, t, _upstream((titles or {}).get((a.id, a.products[0].name)))))))

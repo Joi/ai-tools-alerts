@@ -328,6 +328,15 @@ class Ledger:
             e["floor"] = level
             self._save()
 
+    def mark_exploited(self, root_event_id: str) -> None:
+        """KEV lists a CVE of this thread for its product (3qyq): the recompute saw
+        it, whether or not a level changed, and the rules about a later absence from
+        the catalog govern the thread from then on, a lost recompute file or not."""
+        e = self._entry(root_event_id)
+        if e["exploited"] is not True:
+            e["exploited"] = True
+            self._save()
+
     def learn_sources(self, root_event_id: str, sources) -> None:
         """Sources a run saw and did not post (8ke5): kept for the next real reply."""
         e = self._entry(root_event_id)
@@ -502,7 +511,7 @@ def _components(items, keys_of) -> list[list]:
     return list(comps.values())
 
 
-def merge(pairs, ledger: Ledger | None = None, groups: dict | None = None, settled=frozenset()) -> list:
+def merge(pairs, ledger: Ledger | None = None, groups: dict | None = None, settled=frozenset(), loud=None) -> list:
     """Merge (Candidate, ScopeEntry) pairs that share an id or alias under the same
     scope entry, then (faxq) those that state the same fixed version: advisories of one
     product fixed by one release are one post. ``exploited`` crosses only within one
@@ -514,6 +523,9 @@ def merge(pairs, ledger: Ledger | None = None, groups: dict | None = None, settl
     nothing by its fix: two threads never become one, a thread keeps its range, and an
     unresolved send never records another advisory's ids. A
     fix group's first member, whose id and primary source the post carries, is the one
+    whose own evidence supports the highest level (``loud(candidate, scope)``, 3qyq: a
+    member's check reads the post's first id, so the level the group posts at must be
+    one that id's sources give), and among equals the one
     its primary source published last: the group is news if any member is. A fix group's range is
     one that covers every member's: theirs when they agree, none stated when one states
     none, else everything before the fix. ``groups``, when given, receives
@@ -537,8 +549,11 @@ def merge(pairs, ledger: Ledger | None = None, groups: dict | None = None, settl
                 return set()
             return _fix_key(c)
 
+        def order(c, scope=group[0][1]):
+            return (loud(c, scope) if loud is not None else 0, _published_key(c))
+
         for component in _components(by_id, fix_keys):
-            for members in _chunks(sorted(component, key=_published_key, reverse=True)):
+            for members in _chunks(sorted(component, key=order, reverse=True)):
                 c = members[0] if len(members) == 1 else _fix_group(members, name, ledger)
                 if len(members) > 1 and groups is not None:  # under former names too (Run._former)
                     groups.update({(n, c.id.casefold()): members for n in names})

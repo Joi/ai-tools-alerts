@@ -202,6 +202,21 @@ def _prose_level(c, scope, verified: bool, rs) -> tuple[str, str]:
     return "notice", "notice"  # 9kgk: the severity word alone never raises
 
 
+def evidence_rank(c, scope) -> int:
+    """How high the candidate's own structured evidence reaches for this product: its
+    readings by the ruleset, and the KEV row when it is marked exploited. Orders the
+    members of a fix group (``ledger.merge``), loudest first; prose is not counted.
+    The caller passes the candidate with only the readings its own first id's source
+    ties (``Run._tied``): one the level would not count must not win the place."""
+    rs = ruleset.load()
+    level = _fields_level(c, scope)
+    if c.exploited is True:
+        level = rs.highest(level, rs.class_level("kev", scope))
+    # No evidence and a notice's worth are one rank: every post is at least a notice, and
+    # only evidence that sets a level above it should move a member ahead of a newer one.
+    return rs.rank(rs.highest(level, "notice"))
+
+
 def basis(c: Candidate, scope: schema.ScopeEntry, level: str) -> str:
     """``fields`` when the level rests on structured source fields: the candidate's
     readings support it, or it is the KEV row's (``exploited``). ``reading`` when it
@@ -239,21 +254,24 @@ def reading_text(source: str, fields) -> str | None:
         return None
 
 
-def readings_for(c: Candidate, ev: "Evidence") -> tuple:
+def ghsa_lookup(ghsa) -> str | None:
+    """A GHSA id as the advisory API is asked for it: ``GHSA-`` then lower case."""
+    return "GHSA" + ghsa.lower()[4:] if isinstance(ghsa, str) and _GHSA.fullmatch(ghsa) else None
+
+
+def readings_for(c: Candidate, ev: "Evidence", read=None) -> tuple:
     """The candidate's readings after admission. A ``kev`` reading comes only from
     ``candidates.from_kev``, made from the catalog entry this run read, and is kept
     when the evidence is KEV's; the ``exploited`` flag alone, which a merge and the
     state file carry, never makes one. A ``ghsa`` reading is added when a repository
-    advisory page confirmed the candidate by its own fields. Fields the page does
-    not show are null or empty."""
+    advisory page confirmed the candidate and ``read`` (``sources.Reader.read``) gave
+    that advisory's response from ``api.github.com/advisories/<id>``: its fields,
+    whole, as a member's check builds them (3qyq). The page itself makes no reading:
+    it shows no type, CWE or withdrawal. With no read there is none this run."""
     out = [r for r in getattr(c, "readings", ()) if r[0] == "kev" and ev.kev]
-    if ev.structured and ev.ghsa and ev.repository:
-        text = reading_text("ghsa", lambda: {
-            "ghsa_id": "GHSA" + ev.ghsa.lower()[4:], "type": None, "withdrawn_at": None,
-            "repository": ev.repository, "severity": {"moderate": "medium"}.get(ev.severity, ev.severity),
-            "cvss_vector": None, "cwes": [],
-            "packages": ruleset.ordered({"ecosystem": e, "name": n, "range": a or None, "first_patched": p or None}
-                                        for e, n, a, p in ev.packages)})
+    got = read(ghsa_lookup(ev.ghsa)) if read is not None and ev.structured and ev.ghsa else None
+    if got is not None and got.source == "ghsa":
+        text = reading_text("ghsa", got.fields)
         if text is not None:
             out.append(("ghsa", text))
     return tuple(dict.fromkeys(out))
