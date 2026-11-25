@@ -228,7 +228,7 @@ def test_symlinks_are_not_followed(tmp_path, manifest, capsys):
 
 def test_the_repo_manifest_loads():
     keys = scan.poster_pubkeys(REPO / "trust" / "manifest.json")
-    assert len(keys) == 2
+    assert len(keys) == 1  # manifest v4: the relay bot only (ai-tools-alerts#b5qs)
 
 
 def test_an_archive_past_the_depth_limit_fails_closed(tmp_path, manifest, capsys, monkeypatch):

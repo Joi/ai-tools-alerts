@@ -17,7 +17,7 @@ The CLI is the product for your agent and needs nothing else. The Buzz channels 
 
 Trusting this project means trusting Joi Ito. Everything an alert's authority rests on is his:
 
-- The trust root key that signs the manifest is a key he holds. The manifest names who may post: Joi as curator, and jibot, the automated poster he runs.
+- The trust root key that signs the manifest is a key he holds. The manifest names who may post: jibot, the automated poster he runs. Since manifest version 4 it names no curator: the service runs with no person in the loop, and a curator is added back only by a new manifest the root key signs.
 - The relay and the mirror run on a machine he operates. Every post is signed, and no key that may post (the curator's or the bot's) is kept on that machine: the bot signs on a separate poster machine and sends the signed post to the relay. So someone who takes the relay machine cannot sign an alert the CLI accepts. They can delay alerts, change what the mirror serves, including the copy of the trust root it publishes, and hide alerts from a CLI at 0.1.5 or older. Revoking a key is a manifest update only the root key can sign. From the release after 0.1.5, hiding one is noticed too: a second key, kept off that machine and named in a certificate the root signs, signs a checkpoint listing the posts that exist. The CLI admits a new post only when a checkpoint lists it, refuses a mirror that lacks a listed post, reads stale when no fresh checkpoint arrives for a day, and while any of that fails it applies nothing automatically. It also fetches the manifest from this repository, so a mirror that keeps serving a manifest from before a revocation is overruled. What this does not cover: whoever holds that second key and the mirror together can still withhold a post no member has seen.
 - Release tags are signed with a key on his GitHub account, and the repository is his.
 - What the bot posts comes from public sources (CISA's Known Exploited Vulnerabilities catalogue and vendor security releases), selected and ranked by the code in this repository, with no person reading each item before it posts. CISA's catalogue carries no version data, so an alert built from one of its entries may not name the fixed release even when the vendor has shipped one; such an alert says the source states no version and sends you to the vendor's advisory. A curator post is Joi writing by hand. A curator can also lower, narrow or retract one of the bot's alerts; your CLI holds that for 14 days at most unless your own check of the source agrees, and does not apply it at all when the source says more (see "Checking alerts against the source").
@@ -40,14 +40,14 @@ Trust root public key (x-only hex), the same value as `trust/root.pub`:
 afb55ca02209ca12e980bba67262f478b7977b6fdc6bbaf8c3b9fb96983c78a4
 ```
 
-Check it on two different hosts: `trust/root.pub` at the pinned release commit on GitHub (`https://github.com/Joi/ai-tools-alerts/blob/18569d1cad62f3ceafd42ec18a0dcd3cd6e18005/trust/root.pub`) and the copy the mirror on the relay VM publishes, `https://buzz.ai-tools.md/alerts/root.pub`. The VM's copy comes from a release deployed earlier, so agreement shows the root was not changed on GitHub alone since then. All three must show the same 64 characters. If they differ, do not install, and tell the ai-tools community; if the mirror's copy is missing, that is not a pass: wait for it.
+Check it on two different hosts: `trust/root.pub` at the pinned release commit on GitHub (`https://github.com/Joi/ai-tools-alerts/blob/6b0346c67ee53444f8a53f3ecc73f02bc612f16f/trust/root.pub`) and the copy the mirror on the relay VM publishes, `https://buzz.ai-tools.md/alerts/root.pub`. The VM's copy comes from a release deployed earlier, so agreement shows the root was not changed on GitHub alone since then. All three must show the same 64 characters. If they differ, do not install, and tell the ai-tools community; if the mirror's copy is missing, that is not a pass: wait for it.
 
 
 ## Quick install
 
-The pinned release is `v0.2.0`, commit `18569d1cad62f3ceafd42ec18a0dcd3cd6e18005`. Paste this into your agent chat to set up ai-tools-alerts:
+The pinned release is `v0.2.1`, commit `6b0346c67ee53444f8a53f3ecc73f02bc612f16f`. Paste this into your agent chat to set up ai-tools-alerts:
 
-> Set up ai-tools-alerts release v0.2.0, commit 18569d1cad62f3ceafd42ec18a0dcd3cd6e18005. Clone https://github.com/Joi/ai-tools-alerts and, before you read any other file from it or install anything, run `git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.2.0`, `git rev-parse 'v0.2.0^{commit}'` and `git tag --list 'v*' --sort=-v:refname` in the clone. Continue only if the tag check exits 0 and prints `Good "git" signature for 19930+Joi@users.noreply.github.com with ED25519 key SHA256:DS1FNZqf0HglC1QEQ50LS4AJny8P8MxvrHRj4vPEqaA`, that fingerprint also appears on https://buzz.ai-tools.md/alerts/, the commit is exactly 18569d1cad62f3ceafd42ec18a0dcd3cd6e18005, and v0.2.0 is the first line of the tag list. If any check fails, stop, install nothing, and tell me what failed. Then, in that clone, run `git checkout --detach 18569d1cad62f3ceafd42ec18a0dcd3cd6e18005` and `pipx install --force .`; never clone again, and never check out or install any other commit, tag or branch. Run `aitools-alerts init`, then, from that checkout and as its README describes, enable the hourly monitoring schedule for this system and add the supported agent instructions for your harness without weakening their safety rules. Verify that monitoring runs, then tell me what you installed and any remaining manual steps or limitations.
+> Set up ai-tools-alerts release v0.2.1, commit 6b0346c67ee53444f8a53f3ecc73f02bc612f16f. Clone https://github.com/Joi/ai-tools-alerts and, before you read any other file from it or install anything, run `git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.2.1`, `git rev-parse 'v0.2.1^{commit}'` and `git tag --list 'v*' --sort=-v:refname` in the clone. Continue only if the tag check exits 0 and prints `Good "git" signature for 19930+Joi@users.noreply.github.com with ED25519 key SHA256:DS1FNZqf0HglC1QEQ50LS4AJny8P8MxvrHRj4vPEqaA`, that fingerprint also appears on https://buzz.ai-tools.md/alerts/, the commit is exactly 6b0346c67ee53444f8a53f3ecc73f02bc612f16f, and v0.2.1 is the first line of the tag list. If any check fails, stop, install nothing, and tell me what failed. Then, in that clone, run `git checkout --detach 6b0346c67ee53444f8a53f3ecc73f02bc612f16f` and `pipx install --force .`; never clone again, and never check out or install any other commit, tag or branch. Run `aitools-alerts init`, then, from that checkout and as its README describes, enable the hourly monitoring schedule for this system and add the supported agent instructions for your harness without weakening their safety rules. Verify that monitoring runs, then tell me what you installed and any remaining manual steps or limitations.
 
 ## Detailed install
 
@@ -55,26 +55,26 @@ You need Python 3.11 or later and nothing else; the CLI uses the standard librar
 
 ### Verify the release
 
-The pinned release is `v0.2.0`, commit `18569d1cad62f3ceafd42ec18a0dcd3cd6e18005`. Release tags are signed with an SSH key on Joi's GitHub account. The README on the default branch pins the latest release; the README inside a release pins the one before it, because a commit cannot contain its own hash. Check the tag and the commit before you install anything:
+The pinned release is `v0.2.1`, commit `6b0346c67ee53444f8a53f3ecc73f02bc612f16f`. Release tags are signed with an SSH key on Joi's GitHub account. The README on the default branch pins the latest release; the README inside a release pins the one before it, because a commit cannot contain its own hash. Check the tag and the commit before you install anything:
 
 ```
 git clone https://github.com/Joi/ai-tools-alerts && cd ai-tools-alerts
-git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.2.0
-git rev-parse 'v0.2.0^{commit}'
+git -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.2.1
+git rev-parse 'v0.2.1^{commit}'
 git tag --list 'v*' --sort=-v:refname
 ```
 
-The tag check passes only if it exits 0 and prints `Good "git" signature for 19930+Joi@users.noreply.github.com with ED25519 key SHA256:DS1FNZqf0HglC1QEQ50LS4AJny8P8MxvrHRj4vPEqaA`. `No principal matched` or `no signature found` is a failure: do not install. The commit check passes only if it prints exactly `18569d1cad62f3ceafd42ec18a0dcd3cd6e18005`; anything else means the tag is not the release this README pins: do not install. The tag list must start with `v0.2.0`: a newer tag means this README is out of date, so get the current one from the default branch; an older pin can be a downgrade to a release with known flaws.
+The tag check passes only if it exits 0 and prints `Good "git" signature for 19930+Joi@users.noreply.github.com with ED25519 key SHA256:DS1FNZqf0HglC1QEQ50LS4AJny8P8MxvrHRj4vPEqaA`. `No principal matched` or `no signature found` is a failure: do not install. The commit check passes only if it prints exactly `6b0346c67ee53444f8a53f3ecc73f02bc612f16f`; anything else means the tag is not the release this README pins: do not install. The tag list must start with `v0.2.1`: a newer tag means this README is out of date, so get the current one from the default branch; an older pin can be a downgrade to a release with known flaws.
 
 `trust/allowed_signers` comes from the same repository as the tag, so the tag check alone shows only that the two agree. Compare the full fingerprint with the copy on the mirror page, `https://buzz.ai-tools.md/alerts/`, which the relay VM serves, not GitHub; a missing copy is not a pass: wait for it. GitHub's tags page shows the tag as Verified, and `https://github.com/Joi.keys` lists the key; both depend on the GitHub account alone.
 
 Only after every check passes, check out the pinned commit:
 
 ```
-git checkout --detach 18569d1cad62f3ceafd42ec18a0dcd3cd6e18005
+git checkout --detach 6b0346c67ee53444f8a53f3ecc73f02bc612f16f
 ```
 
-Then install from this checkout (Install, below). You may instead install the same commit from GitHub, which pip fetches by hash, so a moved tag or a push to a branch cannot change what it installs: `pipx install git+https://github.com/Joi/ai-tools-alerts@18569d1cad62f3ceafd42ec18a0dcd3cd6e18005`. Either way, check out the commit first: the template, hook and skill files below come from this checkout.
+Then install from this checkout (Install, below). You may instead install the same commit from GitHub, which pip fetches by hash, so a moved tag or a push to a branch cannot change what it installs: `pipx install git+https://github.com/Joi/ai-tools-alerts@6b0346c67ee53444f8a53f3ecc73f02bc612f16f`. Either way, check out the commit first: the template, hook and skill files below come from this checkout.
 
 ### Install
 
