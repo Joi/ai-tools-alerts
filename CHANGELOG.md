@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1 — 2026-11-25
+
+A trust-only release: the code is 0.2.0's; `trust/manifest.json` and `trust/checkpoint-key.json` change.
+
+The manifest names no curator (version 4, ai-tools-alerts#b5qs). Its one curator was a shared, general-purpose posting key (ai-tools-alerts#r98k); the service runs with no person in the loop, so version 4 lists the relay bot only. A reader that takes version 4, from the mirror or the repository, no longer reads a post, reply, lowering or retraction signed by that key, on every release. No curator has posted, so no alert changes. A curator, if one is wanted again, comes back with a new manifest that names a key used for nothing else.
+
+The checkpoint key certificate is signed again for manifest version 4 and carries the root's ruleset pin (ai-tools-alerts#46yr): ruleset version 3 with its digest, minimum version 3. A 0.2.0 or later reader whose ruleset is below 3, or is version 3 with spec files that differ from the release, prints one `out of date:` line and judges no level: no source check and no computed expiry. Nothing is refused or hidden. Every release that reads the pin ships ruleset 3 unchanged, so an unmodified install is not affected. Releases up to 0.1.8 ignore the pin.
+
+Readers keep the highest manifest version they have verified, so going back is a new manifest, not the old file: version 5 would name the curator again. A certificate without the pin, signed later, removes the pin.
+
 ## 0.2.0 — 2026-11-25
 
 The daily digest is short, and the notices move to a weekly summary (ai-tools-alerts#qwpw, design section 7 of ai-tools-alerts#9mx8). The daily digest at 09:00 Tokyo lists each alert the relay bot posted since the last digest, one line each with its level (`- HIGH: <title>; fixed in <version>. <source>`), and nothing else: no level sections, no notices, no grouping of one vendor release's CVEs (one post per fix already does that). A thread is listed once, by its root; a fix or level change later is a reply in its thread and is not listed again. A day with no new alert posts one line: `no new alerts. N notices added to the catalog this week: https://buzz.ai-tools.md/alerts/`. The first digest of each week, Monday's (or the next one when Monday's run was missed), adds a weekly summary: the week's notices counted by product, counts only, with the link. A notice is summarized once. One that has since posted an alert, or was retracted or expired, is dropped from the count. The CLI does not read the digest: its freshness signal is the signed checkpoint. The poster state gains `weekly`, the ISO week of the last summary; a state from before starts at the current week, so the first summary is the next Monday's. To roll back, also run `jq 'del(.weekly) | (.outbox[], .withheld[].items[]) |= (if .kind == "digest" then del(.adv.week) else . end)'` on the poster state, which the previous version refuses otherwise.
