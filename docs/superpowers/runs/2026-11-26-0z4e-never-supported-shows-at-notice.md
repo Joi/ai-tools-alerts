@@ -10,6 +10,7 @@ Kata: ai-tools-alerts#0z4e
 Limits: wall clock 5 hours from 2026-11-26T01:48Z; one independent pass per artifact (spec, plan, code), one delta only after a behaviour-changing BLOCKER fix, three review rounds at most; completion check: the three acceptance cases of the issue pass as tests in `scripts/test-gate.sh`.
 
 Last reviewed: plan c566f55b784d3e797fc198cedbb10a106eaabaff
+Last reviewed: code 34bf5f061d617940e9c265cdfd39dadb552e79f8 (whole branch)
 
 ## Scorecards
 Pass 1 [spec]: 5B/3S/0C/0R · fixed -/- · velocity = (—→8, escalation no)
@@ -35,6 +36,12 @@ Plan pass 1 (same reviewer, on c566f55; four "major", taken as BLOCKERs, all fix
 - budget exhaustion in `verify.run` discarded support already read and re-dated an old "unsupported";
 - a read whose cache could not be written never reached the memory.
 Rung stays medium.
+
+Pass 1 [code:all]: 3B/2S/4C/0R · fixed -/- · velocity = (—→9, escalation no)
+passes: 1 · elapsed: 11 min (Stage 2, fresheyes gpt-6.1-sol high on `git diff origin/main...34bf5f0`, and Stage 1, a same-model subagent, in parallel)
+Rung: climbs medium -> heavy here. Cause (do-it's evidence rule): the three BLOCKER fixes change behaviour, so they get the one delta pass (fresheyes `--since 34bf5f0`). No hard trigger.
+
+Code pass 1, what was found and done: the spec's "Review dispositions (code)". Stage 2: 3 BLOCKER (support read through a lowering's question; a result dated ahead of the clock never read again; `_settled` re-dating old "no support"), all fixed. Stage 1: 2 SUBSTANTIVE (a later thread inherited an older thread's read; the whole-thread demotion untested) and 4 COSMETIC, all fixed.
 
 Existing tests edited (the issue changes what they expect): `tests/test_unverified_cli.py::test_an_alert_the_source_contradicts_is_unverified_and_says_so` (now about `above-source`; the unsupported case is acceptance 1), `::test_a_copy_of_a_post_confirmed_earlier_is_not_confirmed_with_it` (the flag comes past 48 hours), `tests/test_unchecked_lowering.py::test_a_damaged_record_is_flagged_and_never_an_error` (the key set), `tests/test_verify.py::test_judge` (one row), `tests/test_verify_cli.py::test_an_alert_the_source_does_not_support_is_flagged_per_product` (a substring count). One existing test failed for a real defect and was not edited: `test_the_source_withdraws_and_the_lowering_is_accepted` (a `confirmed` result now clears a remembered "none").
 

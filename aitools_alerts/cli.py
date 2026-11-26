@@ -196,9 +196,11 @@ class Entry:
     # 0z4e. ``judged``: the state whose source-check result feeds the memory of support
     # (``_judged``); None for a thread that is not judged. ``published``: the level the
     # alert is published at, on an entry shown at notice because no source ever supported
-    # the product (``_shown``); ``adv`` then carries notice.
+    # the product (``_shown``); ``adv`` then carries notice. ``also``: the other states
+    # the sources are asked about for the thread (its lowered states, ``_matches``).
     judged: schema.Advisory | None = None
     published: str | None = None
+    also: tuple = ()
 
 
 def _judged(t):
@@ -292,6 +294,13 @@ def _matches(a, st: State) -> tuple[list, list]:
     wide = [(t, pull.widest(t)) for t in a.raw if pull.asks(t)]
     here = {id(m.adv) for m in check.match([w for _, w in wide], inv)}
     a.asked = [(_asked(a, st, t, level, w), id(w) in here) for t, w in wide for level in pull.asks(t)]
+    # 0z4e: support read while a lowering was asked about is support for the thread
+    lowered: dict = {}
+    for t, w in wide:
+        lowered[t.root_id] = tuple(_asked(a, st, t, level, w) for level in pull.asks(t))
+    threads = [replace(t, also=tuple(x for r in t.root_ids for x in lowered.get(r, ()))) if t.judged is not None else t
+               for t in threads]
+    by_adv = {id(t.adv): t for t in threads}
     _note_support(a, st, threads)
     return _shown(a, st, threads, [(by_adv[id(m.adv)], m) for m in ms])
 
@@ -313,11 +322,21 @@ def _support_step(record: dict, entries: list, cache: dict, digest: str, now: in
     withdrawn advisory at notice) clears ``gone`` the same way: the source and the alert
     agree. Any other result (a failed read above all) changes nothing.
 
-    Every time is cut to ``now``: one written while the clock was ahead counts from now.
-    Under another ruleset digest every ``gone`` is dropped: "no support" found under other
-    rules or another scope file is not reused (``last`` is kept: too high is the safe
-    side). Roots not in ``roots`` (the ids of the stored events) are dropped."""
+    Support counts from every state the sources are asked about for the thread: the
+    judged one, the alert as shown and its lowered states (``Entry.also``). Support does
+    not depend on the level asked about, and a read made to check a lowering must end a
+    demotion like any other. "No support" counts only from the judged state, and only
+    from a read made since this machine first saw the root (``first``): results are kept
+    per published state, and a thread posted with the state of an older one must not
+    inherit what was read before it existed. Nor from a result dated after ``now``: it
+    is read again (``verify._due``), and counted as one read then, not at every command.
+
+    Every stored time is cut to ``now``: one written while the clock was ahead counts from
+    now. Under another ruleset digest every ``gone`` is dropped: "no support" found under
+    other rules or another scope file is not reused (``last`` is kept: too high is the
+    safe side). Roots not in ``roots`` (the ids of the stored events) are dropped."""
     same = record["ruleset"] == digest
+    first = {root: min(at, now) for root, at in record["first"].items() if root in roots}
     threads: dict = {}
     for root, names in record["threads"].items():
         for name, (last, gone, seen) in names.items() if root in roots else ():
@@ -326,30 +345,34 @@ def _support_step(record: dict, entries: list, cache: dict, digest: str, now: in
             if last is not None or gone is not None:
                 threads.setdefault(root, {})[name] = [last, gone, seen]
     for t in entries:
-        held = cache["results"].get(verify.state_key(t.judged)) if t.judged is not None else None
-        if held is None:
+        if t.judged is None:
             continue
-        at = min(held["at"], now)
-        for name, r in held["products"].items():
-            up = r["source"] not in (None, ruleset.NONE)
-            agreed = r["result"] == verify.CONFIRMED
-            if not (up or agreed) and (r["result"], r["why"]) != (verify.CONTRADICTED, "unsupported"):
-                continue
-            for root in (r for r in t.root_ids if r in roots):
-                last, gone, seen = threads.get(root, {}).get(name, (None, None, None))
-                if up:
-                    last = at if last is None else max(last, at)
-                if up or agreed:
-                    if gone is not None and at >= gone:
-                        gone = seen = None
-                elif last is None or at >= last:
-                    gone, seen = (at, at) if gone is None else (gone, max(seen, at))
-                if last is None and gone is None:
-                    threads.get(root, {}).pop(name, None)
-                else:
-                    threads.setdefault(root, {})[name] = [last, gone, seen]
-    threads = {root: names for root, names in threads.items() if names}
-    return {"ruleset": digest, "threads": threads}
+        mine = [r for r in t.root_ids if r in roots]
+        for root in mine:
+            first.setdefault(root, now)
+        keys = list(dict.fromkeys(verify.state_key(x) for x in (t.judged, t.adv, *t.also)))
+        for key in keys:
+            held = cache["results"].get(key)
+            for name, r in held["products"].items() if held is not None else ():
+                whole = key == keys[0] and held["at"] <= now  # the judged state's, and not dated ahead
+                up = r["source"] not in (None, ruleset.NONE)
+                agreed = whole and r["result"] == verify.CONFIRMED
+                down = whole and (r["result"], r["why"]) == (verify.CONTRADICTED, "unsupported")
+                at = min(held["at"], now)
+                for root in mine if up or agreed or down else ():
+                    last, gone, seen = threads.get(root, {}).get(name, (None, None, None))
+                    if up:
+                        last = at if last is None else max(last, at)
+                    if up or agreed:
+                        if gone is not None and at >= gone:
+                            gone = seen = None
+                    elif at >= first[root] and (last is None or at >= last):
+                        gone, seen = (at, at) if gone is None else (gone, max(seen, at))
+                    if last is None and gone is None:
+                        threads.get(root, {}).pop(name, None)
+                    else:
+                        threads.setdefault(root, {})[name] = [last, gone, seen]
+    return {"ruleset": digest, "first": first, "threads": {root: names for root, names in threads.items() if names}}
 
 
 def _note_support(a, st: State, entries: list, cache: dict | None = None) -> bool:
@@ -382,6 +405,9 @@ def _note_support(a, st: State, entries: list, cache: dict | None = None) -> boo
         return False
     try:
         with st.locked():
+            if st.unverified_damaged:  # damaged since this command began: the next command mends it (``_mend``)
+                st.supported = want
+                return True
             st.supported = _support_step(st.supported, entries, cache or _results(a, st, s) or disk, digest,
                                          int(time.time()), set(st.events))
             st.save_unverified()
@@ -406,7 +432,7 @@ def _never(a, st: State, t: Entry, name: str, now: int) -> bool:
     SUPPORT_GAP_S after it was rebuilt from damage: what it held is unknown."""
     if t.judged is None or not getattr(a, "judging", False):
         return False
-    if st.reset_at is not None and now - SUPPORT_GAP_S < st.reset_at <= now:
+    if st.reset_at is not None and st.reset_at > now - SUPPORT_GAP_S:  # and when it is ahead of the clock
         return False
     last, gone, _ = _memory(st, t, name)
     return last is None and gone is not None

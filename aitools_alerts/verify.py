@@ -742,16 +742,25 @@ class _Run:
 
 
 def _settled(held, products: dict, asked: bool) -> dict:
-    """``products``, or for an asked state (c1g2) the held result when that said a source
-    supports more and the new one only failed to read: a contradiction of a lowering
-    stays until sources read whole say otherwise, so nobody ends it by making a read
-    fail or by crowding the run's budget."""
+    """``products``, or for an asked state (c1g2) with the held result of each product that
+    said a source supports more, when the new read only failed: a contradiction of a
+    lowering stays until sources read whole say otherwise, so nobody ends it by making a
+    read fail or by crowding the run's budget. Only those products' results are kept
+    (0z4e): every other product has what this run read, so support just read is not
+    lost, and an old "unsupported" is not stored again as if found today."""
     if asked and held is not None and set(held["products"]) == set(products) \
             and any(p["why"] == "below-source" for p in held["products"].values()) \
             and any(p["why"] == "unread" for p in products.values()) \
             and not any(p["why"] == "below-source" for p in products.values()):
-        return held["products"]
+        return {name: held["products"][name] if held["products"][name]["why"] == "below-source" else r
+                for name, r in products.items()}
     return products
+
+
+def _due(at: int, now: int) -> bool:
+    """A result read at ``at`` is old enough to be read again. One dated after the clock is
+    (0z4e): written while the clock was ahead, it would otherwise wait out that date."""
+    return at > now or now - at >= RETRY_S
 
 
 def _waits(t: _Target, results: dict, now: int) -> bool:
@@ -762,7 +771,7 @@ def _waits(t: _Target, results: dict, now: int) -> bool:
     if held is None or set(held["products"]) != set(t.products):
         return True
     whys = {p["why"] for p in held["products"].values()}
-    return "unread" in whys or (whys - {"match", "no-source"} and now - held["at"] >= RETRY_S)
+    return "unread" in whys or (whys - {"match", "no-source"} and _due(held["at"], now))
 
 
 def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=time.monotonic, rs=None,
@@ -791,7 +800,7 @@ def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=
                 targets.setdefault(t.key, t)
     again = {_Target(adv).key for adv in recheck}
     waiting = sorted((t for t in targets.values() if _waits(t, results, now)
-                      or (t.key in again and now - results[t.key]["at"] >= RETRY_S)),
+                      or (t.key in again and _due(results[t.key]["at"], now))),
                      key=lambda t: (results.get(t.key, {}).get("at", 0), -_RANK[t.level], t.key))
     known = {i for t in waiting for i in [t.first, *cache["sources"].get(t.first, {}).get("names", [])]
              if ruleset.source_of(i) == "kev"}

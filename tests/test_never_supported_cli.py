@@ -62,31 +62,32 @@ def test_a_record_written_before_this_change_is_not_damage(tmp_path):
     old = {"lowerings": {"a" * 64: 5}, "refused": ["b" * 64], "interrupts": {}, "held": {}, "reset_at": 7}
     (tmp_path / "unverified.json").write_text(json.dumps(old))
     st = State.load(tmp_path)
-    assert not st.unverified_damaged and st.supported == {"ruleset": None, "threads": {}}
+    assert not st.unverified_damaged and st.supported == {"ruleset": None, "first": {}, "threads": {}}
     assert (st.lowerings, st.refused, st.reset_at) == ({"a" * 64: 5}, {"b" * 64}, 7)
 
 
 def test_the_memory_is_saved_and_read_back(tmp_path):
     st = State.load(tmp_path)
-    st.supported = {"ruleset": "c" * 64, "threads": {"a" * 64: {"Claude Code": [5, None, None], "Codex": [None, 6, 9]}}}
+    st.supported = {"ruleset": "c" * 64, "first": {"a" * 64: 3}, "threads": {"a" * 64: {"Claude Code": [5, None, None], "Codex": [None, 6, 9]}}}
     st.save_unverified()
     back = State.load(tmp_path)
     assert not back.unverified_damaged and back.supported == st.supported
 
 
 @pytest.mark.parametrize("bad", [
-    [], {"threads": {}}, {"ruleset": "c" * 63, "threads": {}}, {"ruleset": None, "threads": []},
-    {"ruleset": None, "threads": {"not an id": {"Claude Code": [5, None, None]}}},
-    {"ruleset": None, "threads": {"a" * 64: {"Claude Code": [5, None]}}},
-    {"ruleset": None, "threads": {"a" * 64: {"Claude Code": [None, None, None]}}},
-    {"ruleset": None, "threads": {"a" * 64: {"Claude Code": [None, 6, None]}}},  # gone without seen
-    {"ruleset": None, "threads": {"a" * 64: {"Claude Code": [5, None, 6]}}},  # seen without gone
-    {"ruleset": None, "threads": {"a" * 64: {"Claude Code": [None, 6, 5]}}},  # seen before gone
-    {"ruleset": None, "threads": {"a" * 64: {"Claude Code": [-1, None, None]}}},
-    {"ruleset": None, "threads": {"a" * 64: {"Claude Code": [True, None, None]}}},
-    {"ruleset": None, "threads": {"a" * 64: {"": [5, None, None]}}},
-    {"ruleset": None, "threads": {"a" * 64: {"x" * 201: [5, None, None]}}},
-    {"ruleset": None, "threads": {}, "more": 1},
+    [], {"threads": {}}, {"ruleset": None, "threads": {}}, {"ruleset": None, "first": {"not an id": 5}, "threads": {}},
+    {"ruleset": None, "first": {"a" * 64: -1}, "threads": {}}, {"ruleset": "c" * 63, "first": {}, "threads": {}}, {"ruleset": None, "first": {}, "threads": []},
+    {"ruleset": None, "first": {}, "threads": {"not an id": {"Claude Code": [5, None, None]}}},
+    {"ruleset": None, "first": {}, "threads": {"a" * 64: {"Claude Code": [5, None]}}},
+    {"ruleset": None, "first": {}, "threads": {"a" * 64: {"Claude Code": [None, None, None]}}},
+    {"ruleset": None, "first": {}, "threads": {"a" * 64: {"Claude Code": [None, 6, None]}}},  # gone without seen
+    {"ruleset": None, "first": {}, "threads": {"a" * 64: {"Claude Code": [5, None, 6]}}},  # seen without gone
+    {"ruleset": None, "first": {}, "threads": {"a" * 64: {"Claude Code": [None, 6, 5]}}},  # seen before gone
+    {"ruleset": None, "first": {}, "threads": {"a" * 64: {"Claude Code": [-1, None, None]}}},
+    {"ruleset": None, "first": {}, "threads": {"a" * 64: {"Claude Code": [True, None, None]}}},
+    {"ruleset": None, "first": {}, "threads": {"a" * 64: {"": [5, None, None]}}},
+    {"ruleset": None, "first": {}, "threads": {"a" * 64: {"x" * 201: [5, None, None]}}},
+    {"ruleset": None, "first": {}, "threads": {}, "more": 1},
 ])
 def test_a_malformed_memory_is_damage(tmp_path, bad):
     rec = {"lowerings": {}, "refused": [], "interrupts": {}, "held": {}, "reset_at": None, "supported": bad}
@@ -359,7 +360,7 @@ def test_no_support_found_under_another_ruleset_is_not_reused(feed, monkeypatch,
     (config.state_dir() / verify.FILE).unlink()
     assert level(capsys) == "critical"
     rec = State.load().supported
-    assert rec == {"ruleset": ruleset.load().digest, "threads": {}}
+    assert (rec["ruleset"], rec["threads"]) == (ruleset.load().digest, {})
     assert cli.main(["verify"]) == 0 and level(capsys) == "notice"
 
 
@@ -411,7 +412,7 @@ def test_the_reads_are_ordered_by_their_own_times():
 
     def mem(record):
         return record["threads"].get(root, {}).get("Claude Code")
-    rec = step({"ruleset": digest, "threads": {}}, "contradicted", 100, "none")
+    rec = step({"ruleset": digest, "first": {root: 0}, "threads": {}}, "contradicted", 100, "none")
     assert mem(rec) == [None, 100, 100]
     assert mem(step(rec, "contradicted", 300, "none")) == [None, 100, 300]  # the first stays, the latest moves
     assert mem(step(rec, "unknown", 400, None)) == [None, 100, 100]  # a failed read
@@ -420,17 +421,29 @@ def test_the_reads_are_ordered_by_their_own_times():
     assert mem(late) == [200, None, None]
     assert mem(step(late, "contradicted", 150, "none")) == [200, None, None]  # "none" read before the support
     assert mem(step(late, "unknown", 500, "high")) == [500, None, None]  # what an incomplete read did read
-    assert mem(step(rec, "contradicted", 5000, "none")) == [None, 100, 1000]  # a time ahead of the clock is cut
+    ahead = {"ruleset": digest, "first": {root: 9000}, "threads": {root: {"Claude Code": [None, 7000, 8000]}}}
+    assert cli._support_step(ahead, [], {"results": {}}, digest, 1000, {root}) == {
+        "ruleset": digest, "first": {root: 1000}, "threads": {root: {"Claude Code": [None, 1000, 1000]}}}  # cut
     assert step(rec, "contradicted", 300, "none")["ruleset"] == digest
     assert cli._support_step(rec, [], {"results": {}}, digest, 1000, set())["threads"] == {}  # the root is gone
     assert cli._support_step(late, [], {"results": {}}, "d" * 64, 1000, {root})["threads"] == {root: {
         "Claude Code": [200, None, None]}}
-    assert cli._support_step(rec, [], {"results": {}}, "d" * 64, 1000, {root}) == {"ruleset": "d" * 64, "threads": {}}
+    assert cli._support_step(rec, [], {"results": {}}, "d" * 64, 1000, {root}) == {
+        "ruleset": "d" * 64, "first": {root: 0}, "threads": {}}
+    # "none" read before this machine first saw the thread is another thread's read: not counted
+    new = {"ruleset": digest, "first": {root: 200}, "threads": {}}
+    assert step(new, "contradicted", 100, "none")["threads"] == {} and mem(step(new, "confirmed", 100, "high")) == [
+        100, None, None]
+    assert step({"ruleset": digest, "first": {}, "threads": {}}, "contradicted", 100, "none") == {
+        "ruleset": digest, "first": {root: 1000}, "threads": {}}  # first seen now
+    # a result dated ahead of the clock says "none" only once it is read again
+    assert mem(step(rec, "contradicted", 5000, "none")) == [None, 100, 100]
+    assert mem(step(late, "confirmed", 5000, "critical")) == [1000, None, None]  # support is cut to the clock
     # the alert as it stands is what the source says (a withdrawn advisory at notice): "none" is over
     withdrawn = {"results": {verify.state_key(a): {"at": 300, "products": {
         "Claude Code": {"result": "confirmed", "why": "withdrawn", "source": "none"}}}}}
     assert cli._support_step(rec, [entry], withdrawn, digest, 1000, {root})["threads"] == {}
-    was = step({"ruleset": digest, "threads": {}}, "confirmed", 50, "critical")
+    was = step({"ruleset": digest, "first": {root: 0}, "threads": {}}, "confirmed", 50, "critical")
     assert mem(cli._support_step(step(was, "contradicted", 100, "none"), [entry], withdrawn, digest, 1000, {root})) \
         == [50, None, None]
 
@@ -504,3 +517,105 @@ def test_a_read_whose_cache_cannot_be_written_still_ends_the_demotion_for_that_c
     assert status == cli.EXIT_UNSEEN_CRITICAL and len(sent["texts"]) == 1 and cli.SOURCE_CHECK_FAILED in err
     assert "CRITICAL: " in out.partition("After the source check:\n")[2]
     assert memory()[0] is not None and memory()[1:] == [None, None]
+
+
+# ---------------------------------------------------------------- what the code's reviews asked for
+
+def test_support_read_while_a_lowering_is_checked_ends_the_demotion(feed, sent, monkeypatch, capsys, reader_clock):
+    """The read that refuses a lowering (the source supports more) is support for the thread."""
+    from test_curator_hold_cli import serve
+    from test_unverified_cli import C0, lower
+    m, n = read_as_unsupported(feed, monkeypatch)
+    assert level(capsys) == "notice"
+    lower(m, m.events["feed.json"][0], "high")
+    serve(m, reader_clock, C0)
+    n.set(verify.KEV_URL, KEV_CC)  # the catalog now lists it for Claude Code
+    status, out, _ = out_of(capsys, ["run"])  # the critical state's own result is too young to be read again
+    assert status == cli.EXIT_UNSEEN_CRITICAL and len(sent["texts"]) == 1
+    (d,) = matches(capsys)
+    assert (d["level"], d["published_level"], d["lowering_refused"]) == ("critical", None, "high")
+    assert memory()[0] is not None and memory()[1:] == [None, None]
+
+
+def test_a_result_dated_ahead_of_the_clock_is_read_again(feed, sent, monkeypatch, capsys):
+    real = int(verify.time.time())
+    clock_at(monkeypatch, real + 30 * DAY)
+    m, n = read_as_unsupported(feed, monkeypatch)
+    clock_at(monkeypatch, real)
+    n.set(verify.KEV_URL, KEV_CC)
+    before = len(n.calls)
+    assert out_of(capsys, ["run"])[0] == cli.EXIT_UNSEEN_CRITICAL and len(n.calls) == before + 1
+    assert level(capsys) == "critical"
+
+
+def test_a_kept_refusal_keeps_only_its_own_product_s_result():
+    more = {"result": "contradicted", "why": "below-source", "source": "critical"}
+    none = {"result": "contradicted", "why": "unsupported", "source": "none"}
+    unread = {"result": "unknown", "why": "unread", "source": None}
+    read = {"result": "unknown", "why": "unread", "source": "high"}
+    held = {"at": 5, "products": {"A": more, "B": none}}
+    assert verify._settled(held, {"A": unread, "B": read}, True) == {"A": more, "B": read}
+    assert verify._settled(held, {"A": unread, "B": unread}, True) == {"A": more, "B": unread}
+    assert verify._settled(held, {"A": unread, "B": read}, False) == {"A": unread, "B": read}
+
+
+def test_a_thread_posted_with_the_state_of_an_older_one_does_not_inherit_its_read(feed, sent, monkeypatch, capsys):
+    """Results are kept per published state. A root that arrives later must interrupt
+    once, unread, like any new alert; an old "no support" was not read about it."""
+    m, n = read_as_unsupported(feed, monkeypatch)
+    n.set(verify.KEV_URL, KEV_CC)  # since then the catalog lists it for Claude Code
+    clock_at(monkeypatch, verify.time.time() + 3600)
+    m.root_post(m.bot_sec, bot(id=CVE, level="critical", title="Another post, the same state"), created_at=T0 + 400)
+    serve_again(m)
+    status, data = run_json(capsys)  # the hook's command: no source is read
+    assert status == cli.EXIT_UNSEEN_CRITICAL and len(data["unseen_critical"]) == 1 and len(sent["texts"]) == 1
+    got = sorted((d["level"], d["published_level"]) for d in data["matches"])
+    assert got == [("critical", None), ("notice", "critical")]
+
+
+def test_a_thread_no_product_of_which_was_ever_supported_leaves_the_list_of_criticals(feed, monkeypatch, capsys):
+    codex = [Product("Codex", "codex", "<99.0.0", "99.0.0")]
+    acts = [Action("upgrade", "Codex", "99.0.0")]
+    feed([advisory(posted_by="relay-bot", id=CVE, level="critical", products=codex, actions=acts, title="Invented one"),
+          advisory(posted_by="relay-bot", id=G1, level="critical", products=codex, actions=acts, title="Invented two")],
+         'verify = "all"\n')
+    use(monkeypatch, Net().set(verify.KEV_URL, ELSEWHERE)
+        .set(gurl(G1), ghsa(G1, pkgs=(("npm", "@openai/codex"),), type="malware")))
+    _, out, _ = out_of(capsys, ["run"])
+    listed = out.rpartition("Critical advisories not installed here:\n")[2]
+    assert "Invented two" in listed and "Invented one" not in listed and listed.count("CRITICAL: ") == 1
+    assert f"source check: the source does not support {CVE} for Codex" in out
+    assert out_of(capsys, ["verify"])[1].startswith("source check: 1 confirmed, 1 contradicted, 0 not verified")
+
+
+def test_for_48_hours_after_a_rebuild_nothing_shows_at_notice_whatever_the_clock(feed, monkeypatch, capsys):
+    read_as_unsupported(feed, monkeypatch)
+    (config.state_dir() / "unverified.json").write_text("[]")
+    assert level(capsys) == "critical"
+    clock_at(monkeypatch, verify.time.time() - 3600)  # the clock is set back: the rebuild is "ahead"
+    assert level(capsys) == "critical"
+
+
+def test_the_record_is_cut_to_the_stored_events_as_read_under_the_lock(feed, monkeypatch, capsys):
+    """A command that loaded its state before another command pulled a thread and recorded
+    its memory writes a change of its own: the other thread's entry must survive."""
+    import argparse
+    m = feed([bot(id=CVE, level="critical")], 'verify = "all"\n')
+    n = use(monkeypatch, Net().set(verify.KEV_URL, ELSEWHERE).set(gurl(G1), ghsa(type="malware")))
+    assert cli.main(["pull"]) == 0
+    stale = State.load()  # this command's view: one root
+    (mine,) = [e["id"] for e in m.events["feed.json"]]
+    m.root_post(m.bot_sec, bot(id=G1, level="critical"), created_at=T0 + 400)
+    serve_again(m)
+    assert cli.main(["pull"]) == 0 and cli.main(["verify"]) == 0  # the other command: both roots read
+    other = next(r for r in State.load().supported["threads"] if r != mine)
+    s = config.load()
+    a = argparse.Namespace(settings=s, raw=[])
+    a.root, _ = cli._root(s)
+    adv = bot(id=CVE, level="critical")
+    entry = cli.Entry(mine, (mine,), adv, {}, judged=adv)
+    late = {"results": {verify.state_key(adv): {"at": int(verify.time.time()) + 5, "products": {
+        "Claude Code": {"result": "confirmed", "why": "match", "source": "critical"}}}}}
+    assert other not in stale.events and cli._note_support(a, stale, [entry], late) is True
+    now = State.load().supported["threads"]
+    assert now[other]["Claude Code"][0] is not None and now[mine]["Claude Code"][0] is not None

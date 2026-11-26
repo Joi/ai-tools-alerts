@@ -23,8 +23,9 @@ Almost all of it is in the member CLI (`aitools_alerts/cli.py`) and its state (`
 
 ### 1. A memory of support, per thread and product
 
-`unverified.json` gains `supported`: `{"ruleset": <digest or null>, "threads": {root event id: {product name: [last, gone, seen]}}}`.
+`unverified.json` gains `supported`: `{"ruleset": <digest or null>, "first": {root event id: time}, "threads": {root event id: {product name: [last, gone, seen]}}}`.
 
+- `first`: when this machine first saw the thread. Results are kept per published state, so a thread posted with the state of an older one finds that one's result in the cache. "No support" counts for a root only from a read made since `first`; support counts from any read.
 - `last`: this machine's time of the last read whose result for that product named a level above `none` from a source that may set one (the result's `source` is `notice`, `high` or `critical`). None: never.
 - `gone`: the time of the first read, not before `last`, whose result was `contradicted`, why `unsupported` (every source read whole, every one an authority, none supports the product). None: no such read since the last support.
 - `seen`: the time of the latest such read (`gone` when there was one only).
@@ -35,7 +36,7 @@ The rules, for one result read at `at`:
 - `unsupported`: ignored when `at < last`; else `gone = seen = at` when `gone` is None, and `seen = max(seen, at)` otherwise.
 - `confirmed` with nothing supported (a withdrawn advisory at notice, why `withdrawn`): `gone` and `seen` are cleared when `at >= gone`, as by support. The source and the alert as it stands agree, so an alert whose lowering to notice was accepted is not flagged for the level it had before.
 - anything else (`unread` with nothing read, `unauthoritative` with nothing supported, `no-source`, `off`): nothing. That is criterion 3: a failed read is `unread` at once in `verify.json`, and the memory does not move on it.
-- every time is cut to this machine's clock before it is used or stored (`min(t, now)`), the result's own `at` too. A time written while the clock was ahead becomes "now" at the next command and counts from there, so no entry is stuck in the future.
+- every stored time is cut to this machine's clock before it is used (`min(t, now)`). A time written while the clock was ahead becomes "now" at the next command and counts from there, so no entry is stuck in the future. A result in `verify.json` dated ahead of the clock is read again at the next source check (`verify._due`) and says "no support" only then; support from it counts at once, cut to the clock.
 - `ruleset` is the digest the entries were judged under. When it differs from this CLI's, every `gone` and `seen` is dropped (a finding of "no support" under other rules or another scope file is not reused; `last` is kept, which is the high side) and the digest is replaced. Nothing shows at notice on a record whose digest is not this CLI's.
 
 **An incomplete read reports the support it read** (`verify.judge`). Today a thread one of whose reads failed is `unread` with `source` None, even when a body that arrived whole supports the product. It stays `unread` (nothing is confirmed), and `source` now carries that level: a lower bound, as `below-source` already rests on. So support read beside a failing alias still ends a demotion. The cache version goes to 4.
@@ -46,7 +47,7 @@ Two more places in `verify.run` follow from "a failed read changes nothing". Whe
 
 The memory is not in `verify.json`, which is dropped whole when damaged (and whenever the ruleset changes).
 
-**Which state is asked.** The result that feeds the memory is the one for the thread's widest state (`pull.widest`: every alias it has held, every product name, the first fixed version) at the level it stands at. A thread's aliases are the relay bot's to replace, and for a CVE first id support can come only through an alias the thread lists. Judging the current state would let a reply that drops the supporting alias turn a true critical into "never supported". `_source_check` asks the sources about that state too whenever it differs from the alert as shown. A thread a curator posted, one a curator's hold is in force on (`Thread.curated`) and one the manifest retracts are not judged: a curator's word is not the relay bot's.
+**Which state is asked.** The result that feeds the memory is the one for the thread's widest state (`pull.widest`: every alias it has held, every product name, the first fixed version) at the level it stands at. A thread's aliases are the relay bot's to replace, and for a CVE first id support can come only through an alias the thread lists. Judging the current state would let a reply that drops the supporting alias turn a true critical into "never supported". `_source_check` asks the sources about that state too whenever it differs from the alert as shown. Support, which does not depend on the level asked about, is taken from every state asked about for the thread: the judged one, the alert as shown, and its lowered states. "No support" is taken from the judged state alone. A thread a curator posted, one a curator's hold is in force on (`Thread.curated`) and one the manifest retracts are not judged: a curator's word is not the relay bot's.
 
 **When it is written.** Two places, one function (`_note_support`), always under the state lock and against the record as it is on disk then:
 
@@ -88,7 +89,7 @@ A withdrawn advisory published at notice reads `confirmed`, why `withdrawn` (tav
 ### 6. The record
 
 - `State.supported`, loaded, saved and re-read under the lock with the rest of `unverified.json`. The loader accepts the record without the key (written before this change) as empty, so an upgrade does not read as damage.
-- Shape checked on load: `ruleset` is null or 64 hex characters; root ids are event ids, a product name is a string of 1 to 200 characters, each value is a list of three, each None or a time, `last` or `gone` set, `seen` set exactly when `gone` is and not before it. At most `MAX_UNVERIFIED_ENTRIES` roots and as many names per root. Roots are cut to the stored threads and names are scope product names (a product outside the scope file is never judged), so nothing the CLI writes is refused when read back.
+- Shape checked on load: `ruleset` is null or 64 hex characters; `first` maps event ids to times; root ids are event ids, a product name is a string of 1 to 200 characters, each value is a list of three, each None or a time, `last` or `gone` set, `seen` set exactly when `gone` is and not before it. At most `MAX_UNVERIFIED_ENTRIES` roots and as many names per root. Roots are cut to the stored threads and names are scope product names (a product outside the scope file is never judged), so nothing the CLI writes is refused when read back.
 - `_mend` (a damaged record) empties it with the rest and sets `reset_at`; for 48 hours from then nothing shows at notice.
 
 ## Alternatives considered
@@ -146,6 +147,22 @@ Eight findings, each rated major by the reviewer.
 6. A confirmed `high` was never read again, so its lost support was never seen. Fixed: every relay-bot match on this machine is read again daily.
 7. A failed read removed the 48-hour line. Fixed: the line comes from the memory (`seen - gone`), not from the cache.
 8. Existing tests contradict the design. Fixed: the section above names each.
+
+## Review dispositions (code, whole branch at 34bf5f0)
+
+Independent pass (fresheyes gpt-6.1-sol high): three findings rated major, taken as BLOCKERs, all fixed.
+
+1. Support read while a lowering was asked about did not end a demotion: the memory read only the judged state's result. Fixed: support counts from every state asked about for the thread, the alert as shown and its lowered states included (`Entry.also`); "no support" still counts only from the judged state. `test_support_read_while_a_lowering_is_checked_ends_the_demotion`.
+2. A result in `verify.json` dated ahead of the clock was never read again, so a demotion written while the clock was ahead could not end. Fixed: such a result is due at once (`verify._due`), and it says "no support" to the memory only once read again. `test_a_result_dated_ahead_of_the_clock_is_read_again`.
+3. `verify._settled` kept a whole old result when one product's refusal had to stay, discarding support just read for another product and storing its old "unsupported" under a new time. Fixed: only the refusing product's result is kept. `test_a_kept_refusal_keeps_only_its_own_product_s_result`.
+
+Same-model pass: two SUBSTANTIVE, four COSMETIC, all fixed.
+
+- SUBSTANTIVE: a thread posted later with the published state of an older one inherited the older "no support" read and never interrupted, although the source had come to support it. Fixed: the record keeps when this machine first saw each root (`first`), and "no support" counts only from a read made since. Such a thread interrupts once, unread, like any new alert. `test_a_thread_posted_with_the_state_of_an_older_one_does_not_inherit_its_read`.
+- SUBSTANTIVE: the whole-thread demotion had no test. `test_a_thread_no_product_of_which_was_ever_supported_leaves_the_list_of_criticals`.
+- COSMETIC: the 48-hour guard after a rebuilt record failed towards demoting when the clock was set back (now it holds whenever the rebuild is less than 48 hours behind the clock, or ahead of it); the test of "cut under the lock" passed without the lock (replaced by one that fails without it); a record damaged between the start of a command and its lock was saved clean with no guard (now nothing is saved and the next command mends it); a result dated ahead of the clock moved `seen` at every command (see 2).
+
+17 mutations of the change were run against the new tests; the result is in the run record.
 
 ## Assumes
 

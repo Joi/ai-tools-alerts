@@ -93,7 +93,7 @@ MAX_PRODUCT_NAME = 200
 
 def no_support() -> dict:
     """The empty memory of support (see _load_unverified)."""
-    return {"ruleset": None, "threads": {}}
+    return {"ruleset": None, "first": {}, "threads": {}}
 
 
 def _support_ok(v, when, ident) -> bool:
@@ -103,8 +103,10 @@ def _support_ok(v, when, ident) -> bool:
         last, gone, seen = e
         return (last is not None or gone is not None) and (seen is None) == (gone is None) \
             and (gone is None or seen >= gone)
-    return (isinstance(v, dict) and set(v) == {"ruleset", "threads"}
+    return (isinstance(v, dict) and set(v) == {"ruleset", "first", "threads"}
             and (v["ruleset"] is None or nostr._is_hex(v["ruleset"], 32))
+            and isinstance(v["first"], dict) and len(v["first"]) <= MAX_UNVERIFIED_ENTRIES
+            and all(ident(r) and when(t) for r, t in v["first"].items())
             and isinstance(v["threads"], dict) and len(v["threads"]) <= MAX_UNVERIFIED_ENTRIES
             and all(ident(r) and isinstance(names, dict) and len(names) <= MAX_UNVERIFIED_ENTRIES
                     and all(isinstance(n, str) and 1 <= len(n) <= MAX_PRODUCT_NAME and entry(e)
@@ -123,9 +125,10 @@ def _load_unverified(where: Path) -> dict | None:
     a hash of an advisory id and product. ``held``: {root event id: the local time the
     alert was first held for want of a slot}. ``reset_at``: None, or the local time the record was
     rebuilt after damage. ``supported`` (0z4e): {"ruleset": the digest the entries were judged
-    under or None, "threads": {root event id: {product name: [last, gone, seen]}}}, local
-    times: the last read that found a source supporting the product, the first read not
-    before it that found none, and the latest such read (``cli._support_step``). A record
+    under or None, "first": {root event id: when this machine first saw the thread},
+    "threads": {root event id: {product name: [last, gone, seen]}}}, local times: the last
+    read that found a source supporting the product, the first read not before it that
+    found none, and the latest such read (``cli._support_step``). A record
     written before 0z4e has no such key: it is read as holding none.
 
     Damage is not a StateError: nobody is there to mend the file, and the commands must
