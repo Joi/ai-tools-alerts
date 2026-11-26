@@ -1,11 +1,14 @@
 # Run: zmg2-recompute-by-name
 Instruction: ai-tools-alerts#zmg2 (starting rung floored at medium): the recompute resolves a thread's scope by its stored name, through one helper shared with the catalog; a thread whose product name is not a scope identity (Codex, Cursor, Hermes, git, Python, Go, mcp) is judged like any other
-Stage: verifying
+Stage: done
 Rung: medium (start-floor medium: constraint-lens, BR1 REV1 NOV1 INT1 FC1 = 5; the dispatch brief floors it at medium too)
 Lens: "no human in the loop; nothing you build may wait for a person to act"; "a thread whose product left the scope file is still not judged"
 Last reviewed: spec cba6a3701fb0d64f26ea1cd4954f3c86ab1d1795
 Last reviewed: plan c5ec01ee849b069a9fe2dbc139d0286cbdadebaa
 Last reviewed: code f06245bd5dd395964c977b324748cb45a7f8815b (the whole branch, `git diff origin/main...HEAD`, after the merge of main at 672437e)
+Gate: `scripts/test-gate.sh` exit 0 at f06245bd5dd395964c977b324748cb45a7f8815b and at 6acfe2216821ad5f089d18a50428304850a439de (the public scan, then 2909 passed), each run in a clone holding this branch alone.
+Unreviewed after the reviewed head: 6acfe2216821ad5f089d18a50428304850a439de (tests and prose: the same-model review's cosmetic points) and the commit that records this.
+Pull request: https://github.com/Joi/ai-tools-alerts/pull/45
 Follow-up filed: ai-tools-alerts#aabw (a thread under a product's former name is never recomputed nor confirmed by a member's check)
 Spec: docs/superpowers/specs/2026-11-26-zmg2-recompute-by-name-design.md   Plan: docs/superpowers/plans/2026-11-26-zmg2-recompute-by-name.md
 Agency project: 01a215a7-ac37-75e1-a523-09334512ccbc
