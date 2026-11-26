@@ -32,7 +32,7 @@ Almost all of it is in the member CLI (`aitools_alerts/cli.py`) and its state (`
 
 The rules, for one result read at `at`:
 
-- support: `last = max(last, at)`; when `gone` is set and `at >= gone`, `gone` and `seen` are cleared. A support read older than `gone` (a command that started earlier and reports late) clears nothing.
+- support: `last = max(last, at)`; when `gone` is set and `at >= gone`, `gone` and `seen` are cleared, provided the result is the judged state's own and is not `below-source` (a refusal can be an old result kept under a new time). A support read older than `gone` (a command that started earlier and reports late) clears nothing.
 - `unsupported`: ignored when `at < last`; else `gone = seen = at` when `gone` is None, and `seen = max(seen, at)` otherwise.
 - `confirmed` with nothing supported (a withdrawn advisory at notice, why `withdrawn`): `gone` and `seen` are cleared when `at >= gone`, as by support. The source and the alert as it stands agree, so an alert whose lowering to notice was accepted is not flagged for the level it had before.
 - anything else (`unread` with nothing read, `unauthoritative` with nothing supported, `no-source`, `off`): nothing. That is criterion 3: a failed read is `unread` at once in `verify.json`, and the memory does not move on it.
@@ -163,6 +163,14 @@ Same-model pass: two SUBSTANTIVE, four COSMETIC, all fixed.
 - COSMETIC: the 48-hour guard after a rebuilt record failed towards demoting when the clock was set back (now it holds whenever the rebuild is less than 48 hours behind the clock, or ahead of it); the test of "cut under the lock" passed without the lock (replaced by one that fails without it); a record damaged between the start of a command and its lock was saved clean with no guard (now nothing is saved and the next command mends it); a result dated ahead of the clock moved `seen` at every command (see 2).
 
 17 mutations of the change were run against the new tests; the result is in the run record.
+
+## Review dispositions (code, the delta `--since 34bf5f0` at 59ecdfd)
+
+Three findings rated major, all fixed in the commit after 59ecdfd, which no review saw. No further pass (one review, one delta).
+
+1. A refusal kept through a failed read is stored under a new time (`verify._settled`), and the memory, which now takes support from lowered states, read it as fresh support and erased since when none was read. Fixed: any support sets `last` (which ends a demotion: too high is the safe side), but only the judged state's own result clears `gone`, and never a `below-source` one. `test_support_through_a_lowered_state_sets_last_and_keeps_since_when_none_was_read`. What stays: after such a refusal the 48-hour line can outlast the return of support by up to a day, until the judged state is read again.
+2. A result dated ahead of the clock was due but still sorted behind threads that fail every run. Fixed: it sorts as never tried (`verify._tried`). `test_a_result_dated_ahead_of_the_clock_is_tried_first_not_behind_threads_that_always_fail`.
+3. A record found damaged under the lock left the command acting on what it had computed, with no 48-hour guard. Fixed: it is started again there, as `_mend` does (`_start_again`). `test_a_record_found_damaged_under_the_lock_is_started_again_on_the_safe_side`.
 
 ## Assumes
 

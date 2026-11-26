@@ -763,6 +763,13 @@ def _due(at: int, now: int) -> bool:
     return at > now or now - at >= RETRY_S
 
 
+def _tried(held, now: int) -> int:
+    """When a state was last tried, for the order of a run. Never, for one with no result
+    and for one dated after the clock (0z4e): it must not queue behind threads that fail
+    every run until its date comes."""
+    return 0 if held is None or held["at"] > now else held["at"]
+
+
 def _waits(t: _Target, results: dict, now: int) -> bool:
     """A thread is read when its published state has no result, when a read it
     needed failed, and, a day later, when its result is anything but
@@ -801,7 +808,7 @@ def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=
     again = {_Target(adv).key for adv in recheck}
     waiting = sorted((t for t in targets.values() if _waits(t, results, now)
                       or (t.key in again and _due(results[t.key]["at"], now))),
-                     key=lambda t: (results.get(t.key, {}).get("at", 0), -_RANK[t.level], t.key))
+                     key=lambda t: (_tried(results.get(t.key), now), -_RANK[t.level], t.key))
     known = {i for t in waiting for i in [t.first, *cache["sources"].get(t.first, {}).get("names", [])]
              if ruleset.source_of(i) == "kev"}
     job = _Run(cache, rs, fetch, now, clock, start)

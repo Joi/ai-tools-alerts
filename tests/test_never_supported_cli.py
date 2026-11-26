@@ -421,6 +421,11 @@ def test_the_reads_are_ordered_by_their_own_times():
     assert mem(late) == [200, None, None]
     assert mem(step(late, "contradicted", 150, "none")) == [200, None, None]  # "none" read before the support
     assert mem(step(late, "unknown", 500, "high")) == [500, None, None]  # what an incomplete read did read
+    # a refusal ("the source supports more") may be an old result kept under a new time: it is support,
+    # and it does not erase since when none was read
+    more = {"results": {verify.state_key(a): {"at": 400, "products": {
+        "Claude Code": {"result": "contradicted", "why": "below-source", "source": "critical"}}}}}
+    assert mem(cli._support_step(rec, [entry], more, digest, 1000, {root})) == [400, 100, 100]
     ahead = {"ruleset": digest, "first": {root: 9000}, "threads": {root: {"Claude Code": [None, 7000, 8000]}}}
     assert cli._support_step(ahead, [], {"results": {}}, digest, 1000, {root}) == {
         "ruleset": digest, "first": {root: 1000}, "threads": {root: {"Claude Code": [None, 1000, 1000]}}}  # cut
@@ -534,7 +539,7 @@ def test_support_read_while_a_lowering_is_checked_ends_the_demotion(feed, sent, 
     assert status == cli.EXIT_UNSEEN_CRITICAL and len(sent["texts"]) == 1
     (d,) = matches(capsys)
     assert (d["level"], d["published_level"], d["lowering_refused"]) == ("critical", None, "high")
-    assert memory()[0] is not None and memory()[1:] == [None, None]
+    assert memory()[0] is not None  # support is recorded; since when none was read is the judged state's to clear
 
 
 def test_a_result_dated_ahead_of_the_clock_is_read_again(feed, sent, monkeypatch, capsys):
@@ -619,3 +624,52 @@ def test_the_record_is_cut_to_the_stored_events_as_read_under_the_lock(feed, mon
     assert other not in stale.events and cli._note_support(a, stale, [entry], late) is True
     now = State.load().supported["threads"]
     assert now[other]["Claude Code"][0] is not None and now[mine]["Claude Code"][0] is not None
+
+
+# ---------------------------------------------------------------- what the delta review asked for
+
+def test_support_through_a_lowered_state_sets_last_and_keeps_since_when_none_was_read():
+    root, digest = "a" * 64, "c" * 64
+    a = bot(id=G1, level="critical")
+    low = verify.at_level(a, "high")
+    entry = cli.Entry(root, (root,), a, {}, judged=a, also=(low,))
+    rec = {"ruleset": digest, "first": {root: 0}, "threads": {root: {"Claude Code": [50, 100, 300]}}}
+    kept = {"results": {verify.state_key(low): {"at": 900, "products": {  # e.g. a refusal kept through a failed read
+        "Claude Code": {"result": "contradicted", "why": "below-source", "source": "critical"}}}}}
+    assert cli._support_step(rec, [entry], kept, digest, 1000, {root})["threads"][root]["Claude Code"] == [900, 100, 300]
+
+
+def test_a_result_dated_ahead_of_the_clock_is_tried_first_not_behind_threads_that_always_fail(tmp_path):
+    from test_verify import NOW, adv, go
+    ahead = adv(id=CVE, level="critical")
+    failing = [adv(id=f"GHSA-{i:04d}-aaaa-bbbb".replace("0", "c").replace("1", "d"), level="high") for i in range(2, 13)]
+    failing = [f for f in failing if verify.norm_id(f.id)][:10]
+    assert len(failing) == 10
+    n = Net().set(verify.KEV_URL, ELSEWHERE)
+    go(tmp_path, [ahead], n, now=NOW + 30 * DAY)  # read while the clock was ahead
+    go(tmp_path, [ahead, *failing], n, wanted=failing, now=NOW)  # ten threads whose reads fail (404)
+    n.calls.clear()
+    go(tmp_path, [ahead, *failing], n, now=NOW + DAY + 60)
+    assert n.urls[0] == verify.KEV_URL  # tried first; the ten use what is left of the budget
+
+
+def test_a_record_found_damaged_under_the_lock_is_started_again_on_the_safe_side(feed, monkeypatch, capsys):
+    import argparse
+    m, n = read_as_unsupported(feed, monkeypatch)
+    st = State.load()  # this command's view: a good record
+    (config.state_dir() / "unverified.json").write_text("{not json")  # damaged since
+    s = config.load()
+    a = argparse.Namespace(settings=s, raw=[])
+    a.root, _ = cli._root(s)
+    (root,) = st.supported["threads"]
+    adv = bot(id=CVE, level="critical")
+    entry = cli.Entry(root, (root,), adv, {}, judged=adv)
+    again = {"results": {verify.state_key(adv): {"at": int(verify.time.time()), "products": {
+        "Claude Code": {"result": "contradicted", "why": "unsupported", "source": "none"}}}}}
+    st.supported["threads"] = {}  # so that the result changes the memory
+    assert cli._note_support(a, st, [entry], again) is True
+    assert st.supported["threads"] == {} and st.reset_at is not None
+    assert not cli._never(a, st, entry, "Claude Code", int(verify.time.time()))
+    back = State.load()
+    assert not back.unverified_damaged and back.reset_at == st.reset_at
+    assert "has been started again" in capsys.readouterr().err

@@ -325,7 +325,10 @@ def _support_step(record: dict, entries: list, cache: dict, digest: str, now: in
     Support counts from every state the sources are asked about for the thread: the
     judged one, the alert as shown and its lowered states (``Entry.also``). Support does
     not depend on the level asked about, and a read made to check a lowering must end a
-    demotion like any other. "No support" counts only from the judged state, and only
+    demotion like any other. But only the judged state's own result clears ``gone``, and
+    not when it is "below-source": that result is kept through a failed read under a new
+    time (``verify._settled``), so it can set ``last`` (which ends a demotion: too high is
+    the safe side) and cannot erase since when no support was read. "No support" counts only from the judged state, and only
     from a read made since this machine first saw the root (``first``): results are kept
     per published state, and a thread posted with the state of an older one must not
     inherit what was read before it existed. Nor from a result dated after ``now``: it
@@ -363,10 +366,10 @@ def _support_step(record: dict, entries: list, cache: dict, digest: str, now: in
                     last, gone, seen = threads.get(root, {}).get(name, (None, None, None))
                     if up:
                         last = at if last is None else max(last, at)
-                    if up or agreed:
+                    if (up and whole and r["why"] != "below-source") or agreed:
                         if gone is not None and at >= gone:
                             gone = seen = None
-                    elif at >= first[root] and (last is None or at >= last):
+                    elif down and at >= first[root] and (last is None or at >= last):
                         gone, seen = (at, at) if gone is None else (gone, max(seen, at))
                     if last is None and gone is None:
                         threads.get(root, {}).pop(name, None)
@@ -405,8 +408,8 @@ def _note_support(a, st: State, entries: list, cache: dict | None = None) -> boo
         return False
     try:
         with st.locked():
-            if st.unverified_damaged:  # damaged since this command began: the next command mends it (``_mend``)
-                st.supported = want
+            if st.unverified_damaged:  # damaged since this command began: started again, on the safe side
+                _start_again(st)
                 return True
             st.supported = _support_step(st.supported, entries, cache or _results(a, st, s) or disk, digest,
                                          int(time.time()), set(st.events))
@@ -582,17 +585,22 @@ def _mend(st: State) -> None:
     unknown. When the directory cannot be written the same holds for this command."""
     if not st.unverified_damaged:
         return
-    fresh = ({}, set(), {}, {}, int(time.time()))
     try:
         with st.locked():
             if st.unverified_damaged:  # else a concurrent run has mended it
-                st.lowerings, st.refused, st.interrupts, st.held, st.reset_at = fresh
-                st.supported = no_support()  # 0z4e: and nothing shows at notice for SUPPORT_GAP_S
-                st.save_unverified()
+                _start_again(st)
     except OSError:
-        st.lowerings, st.refused, st.interrupts, st.held, st.reset_at = fresh
-        st.supported = no_support()
+        _start_again(st, save=False)
+
+
+def _start_again(st: State, save: bool = True) -> None:
+    """The record of ``_mend``, emptied and dated; saved when the caller holds the lock.
+    0z4e: the memory of support goes with it, and nothing shows at notice for SUPPORT_GAP_S."""
+    st.lowerings, st.refused, st.interrupts, st.held, st.reset_at = {}, set(), {}, {}, int(time.time())
+    st.supported = no_support()
     _err("the record of unverified alerts was unreadable and has been started again")
+    if save:
+        st.save_unverified()
 
 
 def _source(adv) -> tuple[str, bool]:
