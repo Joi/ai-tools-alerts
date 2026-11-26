@@ -28,6 +28,12 @@ code: passes 1 · reviewed f418801 (Stage 2 fresheyes, gpt-6.1-sol, high, REASON
 - SUBSTANTIVE (Stage 1): `test_a_retracted_thread_takes_no_narrowing` proved nothing of its name. Rewritten.
 - Cosmetic (Stage 1): two test names said more than the tests prove. Renamed.
 The BLOCKER fixes change behaviour, so the rung climbs medium to heavy (the review cycle's one delta): `fresheyes --since f418801`, no rebuttals file, nothing was left unfixed.
+Pass 2 [code:whole-branch]: 1B/1S/0C/0R · fixed 5/5 prior · velocity ↓ (7→2, escalation no)
+code: passes 2 · delta `fresheyes --since f418801` on 823eea5 (gpt-6.1-sol, high, REASON=-). Both fixed in edd4a2d, with a test each; no further pass (review cycle):
+- BLOCKER: names were grouped by `casefold()`, which merges a spelling `check.match` (`lower()`) keeps apart, so a list could be confirmed under a name no installation matches. Now grouped by the matcher's own rule.
+- SUBSTANTIVE: a failed save under the lock restored the pre-lock record beside the refreshed threads and check. Now the under-lock record stands for the command.
+Gate (`scripts/test-gate.sh`, single-branch clone): f418801 public scan clean, 2984 passed, 1 skipped; 823eea5 2997 passed, 1 skipped.
+Second merge of main (2mgd, 26f0) after edd4a2d: conflicts in `verify.py`, `cli.py`, `tests/test_curator_hold_cli.py`, the changelog. 2mgd keys results by ecosystem and name and judges a product as its scope product (`verify.scope_of`); the narrowing check now groups entries by that same rule, `ranges` are keyed by scope name, and the cache version is 5. Tests amended for it: an entry under an ecosystem where it is no scope product is a product of its own.
 
 ## Chunks
 - [x] reader: the published narrowing, the record, `standing` (968f3af)

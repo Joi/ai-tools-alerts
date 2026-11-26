@@ -138,14 +138,14 @@ class Thread:
     # bot's rules. ``held_until``: a curator's word (``adv``, ``retracted``) holds until then.
     # ``offered``: the level last published below ``wide``'s, "none" for a retraction; replay
     # never applies it. ``held_aliases``: every alias ``wide`` has held. ``held_fixed``:
-    # (product name, the first fixed version it stated). ``refused``: set by ``standing``
+    # ((ecosystem, product name), the first fixed version it stated). ``refused``: set by ``standing``
     # when the member's check contradicted a lowering: the level left unapplied.
     wide: Advisory | None = None
     held_until: int | None = None
     offered: str | None = None
     held_aliases: tuple = ()
     held_fixed: tuple = ()
-    held_products: tuple = ()  # entries whose exact product name ``wide`` no longer carries
+    held_products: tuple = ()  # entries whose exact product (ecosystem and name) ``wide`` no longer carries
     refused: str | None = None
     # tavj, a relay-bot thread only. ``offered_by``: the id of the relay-bot reply that
     # published ``offered`` (the first of them when the same level was offered again);
@@ -994,8 +994,8 @@ class _Hold:
     ``offered``, the level last published below ``wide``'s. And the history a check is
     asked with (``note``), from every state the thread has shown, the curator's held
     one included: ``aliases``, every alias, in the order they came; ``fixed``, per
-    product name the first fixed version stated for it; ``names``, per product name,
-    exactly as written, the first entry that carried it. A later reply may drop an
+    product (ecosystem and name) the first fixed version stated for it; ``names``, per
+    product, its name exactly as written, the first entry that carried it. A later reply may drop an
     alias, clear ``fixed`` or put a product in another spelling in an entry's place:
     each is a widening for matching, and none may weaken what a check is asked about."""
     __slots__ = ("wide", "until", "offered", "aliases", "fixed", "names", "_seen", "offered_by",
@@ -1014,9 +1014,9 @@ class _Hold:
                 self._seen.add(a)
                 self.aliases.append(a)
         for p in adv.products:
-            self.names.setdefault(p.name, p)
+            self.names.setdefault((p.ecosystem, p.name), p)
             if p.fixed is not None:
-                self.fixed.setdefault(p.name, p.fixed)
+                self.fixed.setdefault((p.ecosystem, p.name), p.fixed)
 
     def widen(self, adv: Advisory) -> None:
         self.wide = adv
@@ -1024,11 +1024,13 @@ class _Hold:
 
 
 def _missing(h: _Hold) -> tuple:
-    """The first entry of each product name the thread has carried and ``wide`` no
-    longer does. The join compares names without case, the source check by the scope
-    file's exact name: an entry spelled otherwise can stand in for the original."""
-    have = {p.name for p in h.wide.products}
-    return tuple(p for name, p in h.names.items() if name not in have)
+    """The first entry of each product (ecosystem and name, 2mgd: an entry of the same
+    name under another ecosystem is another product and stands for nothing) the thread
+    has carried and ``wide`` no longer does. The join compares names without case and
+    an entry spelled otherwise can stand in for the original: the original, with the
+    fixed version it stated, is still what a lowering is checked against."""
+    have = {(p.ecosystem, p.name) for p in h.wide.products}
+    return tuple(p for key, p in h.names.items() if key not in have)
 
 
 def _bot_patch(adv: Advisory, p: dict, dropped: Counter | None = None) -> tuple:
@@ -1303,7 +1305,8 @@ def widest(t: Thread) -> Advisory:
     must not be able to make the source read lower than it did, or not at all."""
     fixed = dict(t.held_fixed)
     return replace(t.wide, aliases=list(t.held_aliases),
-                   products=[replace(p, fixed=fixed[p.name]) if p.fixed is None and p.name in fixed else p
+                   products=[replace(p, fixed=fixed[p.ecosystem, p.name])
+                             if p.fixed is None and (p.ecosystem, p.name) in fixed else p
                              for p in (*t.wide.products, *t.held_products)])
 
 

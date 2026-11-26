@@ -54,7 +54,7 @@ def test_readme_names_the_pin_and_no_unpinned_install():
 NOT_SHIPPED = ("tests/", "docs/superpowers/")
 INSTALL = re.compile(r"\b(?:pipx? install|pipx inject|uv (?:pip|tool) install)\b", re.I)
 COMMAND_END = re.compile(r"`|&&|\|\||[;|,)]")
-NAME = re.compile(r"(?<![\w/+.:-])['\"]?aitools[-_.]alerts(?![\w./-])", re.I)
+NAME = re.compile(r"(?<![\w/+.:-])['\"]?ai[-_.]*tools[-_.]+alerts(?![\w./-])", re.I)  # both PyPI names (26f0)
 PROMISE = re.compile(r"\b(?:coming|upcoming|soon|will be)\b", re.I)
 
 
@@ -89,6 +89,8 @@ def _shipped_text():
     "pipx install --python python3.11 aitools-alerts", "pip install websockets aitools-alerts",
     "`pipx install aitools_alerts==0.2.1`", 'pip install "aitools-alerts>=0.2"', "uv tool install aitools-alerts",
     "pipx inject aitools-alerts websockets", "pip install --upgrade aitools.alerts",
+    "pipx install ai-tools-alerts", "pip install ai_tools.alerts", "uv tool install 'ai-tools-alerts[curator]'",
+    "pip install ai--tools-alerts", "pip install aitools__alerts", "pip install AI_Tools-.Alerts",
 ])
 def test_install_by_name_is_caught(line):
     assert installs_by_name(line)

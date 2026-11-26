@@ -908,7 +908,10 @@ def test_a_cli_the_pin_allows_says_nothing(tmp_path, monkeypatch, sent, capsys, 
     if over is not None and over.get("version") == 1 and _pin().version == 1:
         pytest.skip("this reader is on ruleset 1: no pin is behind it")
     _mirror_with_pin(tmp_path, monkeypatch, None if over is None else _pin(**over))
-    assert cli.main(["run", "--json"]) == 2
+    # 2mgd: the alert's id (AITA-TEST-0001) names no source. Where the pin is this reader's
+    # own ruleset, such a relay-bot alert is listed and does not interrupt.
+    exact = over is not None and "sha256" not in over
+    assert cli.main(["run", "--json"]) == (0 if exact else 2)
     io = capsys.readouterr()
     assert json.loads(io.out)["ruleset_outdated"] is None and "out of date" not in io.err
     for argv in (["check"], ["pull"], ["plan", "AITA-TEST-0001"]):

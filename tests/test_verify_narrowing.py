@@ -99,7 +99,7 @@ def test_a_result_written_without_ranges_still_loads(tmp_path):
     ([entry(), entry(affected="<50.0.0", fixed="50.0.0")], False),   # a correct entry carries no wrong one through
     ([entry(), entry(affected="<9.0.0", fixed="9.0.0")], False),
     ([entry(ecosystem="codex")], False),                       # moved to another ecosystem: it matches nobody it matched
-    ([entry(), entry(ecosystem="codex")], False),
+    ([entry(), entry(ecosystem="codex")], None),               # beside the right entry, a product no source states: not settled
     ([entry(), entry(name="claude code")], True),              # the advisory's entry under another spelling: it states the range
     ([entry(), entry(name="claude code", fixed="50.0.0")], False),   # and a wrong one under another spelling
     ([entry(), entry(name="Left Pad")], None),                 # a name the thread does not carry and no authority states
@@ -112,7 +112,7 @@ def test_the_list_is_compared_with_what_the_advisory_states(tmp_path, products, 
 
 def test_an_unchanged_product_needs_no_source_and_a_changed_one_without_ranges_is_not_settled(tmp_path):
     a = adv(products=("Claude Code", "git"))
-    git = Product("git", "claude-code", "<99.0.0", "99.0.0")
+    git = Product("git", "git", "<99.0.0", "99.0.0")  # as test_verify.adv posts it
     assert asked(tmp_path, [entry(), git], a) is True  # the advisory names no git package: git is as it was
     assert asked(tmp_path, [entry()], a) is None  # git dropped, and no authority states versions for it
     assert asked(tmp_path, [entry(fixed="50.0.0")], a) is False  # a contradiction counts whatever else is unsettled
@@ -123,8 +123,10 @@ def test_a_thread_holding_two_ecosystems_keeps_both(tmp_path):
     a = verify.at_level(a, a.level)  # an Advisory copy to extend
     a = type(a)(**{**{f: getattr(a, f) for f in a.__dataclass_fields__},
                    "products": [WIDE, Product("Claude Code", "npm", "<99.0.0", "99.0.0")]})
-    assert asked(tmp_path, [entry()], a) is False  # the npm entry is gone
-    assert asked(tmp_path, [entry(), entry(ecosystem="npm")], a) is True
+    # "Claude Code" under npm is no scope product (2mgd): a product of its own, which no source states
+    assert asked(tmp_path, [entry()], a) is None
+    assert asked(tmp_path, [entry(affected="<1.0.0", fixed="1.0.0")], a) is False
+    assert asked(tmp_path, [entry(), Product("Claude Code", "npm", "<99.0.0", "99.0.0")], a) is True
 
 
 def test_a_readable_range_still_contradicts_beside_one_this_reader_cannot_read(tmp_path):
@@ -165,8 +167,9 @@ def test_a_fixed_version_the_thread_s_signer_planted_is_not_what_the_thread_show
 
 
 def test_a_respelled_entry_is_still_held_to_the_advisory(tmp_path):
-    """A reply can put a wider entry under another spelling in the original's place (the join
-    compares names without case). Narrowing that entry is narrowing the product."""
+    """A reply can put a wider entry under another spelling in the original's place. It is
+    the same scope product by the matcher's rule (``verify.scope_of``): narrowing that
+    entry is narrowing the product, under any name of the tool."""
     a = adv()
     respelled = Product("claude code", "claude-code", "*", None)
     widest = type(a)(**{**{f: getattr(a, f) for f in a.__dataclass_fields__}, "products": [respelled, WIDE]})
@@ -175,6 +178,9 @@ def test_a_respelled_entry_is_still_held_to_the_advisory(tmp_path):
     short = Product("claude code", "claude-code", "<1.0.0", "1.0.0")
     assert verify.narrowing(widest, [short], cache, NOW, [respelled]) is False
     assert verify.narrowing(widest, [Product("claude code", "claude-code", "<9.9.9", "9.9.9")], cache, NOW, [respelled]) is True
+    package = Product("@anthropic-ai/claude-code", "claude-code", "*", None)  # the tool by its package name
+    assert verify.narrowing(widest, [short], cache, NOW, [package]) is False
+    assert verify.narrowing(widest, [Product("Claude Code", "claude-code", "<9.9.9", "9.9.9")], cache, NOW, [package]) is True
 
 
 def test_names_are_one_product_only_when_the_matcher_reads_them_as_one(tmp_path):
@@ -243,7 +249,7 @@ def test_a_kept_contradiction_of_the_level_does_not_keep_a_confirmation_fresh(tm
         at = NOW + day * verify.RETRY_S
         go(tmp_path, [a], Net(), recheck=[a], now=at)
         (r,) = verify.load(tmp_path)["results"].values()
-        assert (r["at"], r["whole"], r["products"]["Claude Code"]["why"]) == (at, False, "below-source")
+        assert (r["at"], r["whole"], r["products"]["claude-code\nClaude Code"]["why"]) == (at, False, "below-source")
         assert verify.narrowing(a, good, verify.load(tmp_path), at) is None
         assert verify.narrowing(a, bad, verify.load(tmp_path), at) is False  # what was read still contradicts
 
