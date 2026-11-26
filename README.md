@@ -144,6 +144,8 @@ Each product of each relay-bot alert gets one of three results:
 
 The check compares the product and the level. It does not compare the affected versions or the fixed version a post states with the source's.
 
+A product is judged as the product your installation was matched as. `claude code`, `claude-code` and `@anthropic-ai/claude-code` under ecosystem `claude-code` are all Claude Code, and get its result. A posted product that is no product of `spec/scope.json` under its ecosystem (`Claude Code` posted as a skill, say), or an alert whose id names no source, can never be confirmed or contradicted. When the trust root pins the ruleset your CLI has, such a match does not interrupt: `check` lists the alert and says `names a product or an id this check cannot judge`.
+
 The result is reported, and `check --json` and `run --json` carry it as `source_check` on each match. It changes what you are shown in two cases, a lowering and an interrupt:
 
 - The relay bot may publish a lower level for one of its alerts. Your CLI applies it at once when its own read of the source, no more than two days old, gives no more than that level. A lowering below `high` needs one thing more, because a `high` can rest on a reading of the advisory's text that no program can check: every higher level the alert has stated must carry a signed claim that names the source's own fields, which your CLI computes the same level from. Then a withdrawn advisory, or a CVE that CISA no longer lists, confirms a lowering to notice.
