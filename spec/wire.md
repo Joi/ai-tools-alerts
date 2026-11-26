@@ -9,6 +9,7 @@ Readers already installed cannot be changed. This file says what each released r
 | A new key in the `aitools-alert` block of a root | The root is never an advisory. No error is shown |
 | A new key in a reply's block | The reply is skipped. v0.1.7 still joins its `products`, `actions` and `sources` |
 | A relay-bot reply that lowers `level` or sets `expires_at` | The reply is skipped, with the same v0.1.7 exception. "Lowers" is judged against the level that reader holds |
+| A relay-bot reply whose block is `{"level":"withdrawn"}` | The reply is skipped (the word is no level), by v0.1.8 to v0.2.1 too. The alert stays at its level |
 | A finite `expires_at` in a root's block | The alert is no longer shown after that time. No relay-bot reply can move it |
 | A new key in the manifest's content, or a second tag on its event | The manifest is refused and the pull fails |
 | A new key in the checkpoint key certificate's content | Ignored by v0.1.6 and v0.1.7. v0.1.4 and v0.1.5 do not read the certificate |
@@ -73,6 +74,24 @@ From 0.2.0 (ai-tools-alerts#c1g2). No event differs; only what a reader does wit
 A relay-bot level-only lowering (rule 1 above) is no longer only skipped by this reader: it is kept as the thread's published level and applied when the member's own source check, read no more than two days ago, gives no more than that level. Below the ruleset's `reading_cap` that also needs every higher level the thread stated (the root, and each reply that names a level) to carry a claim whose id is the thread's first id and whose fields this reader's ruleset computes that level from (ai-tools-alerts#tavj, `verify.claimed`). A lowering the check cannot settle applies once checkpoints 72 hours apart have listed its reply; the reply's own date is not read. A lowering the check refuses does not apply. Until one of these the reader keeps the higher level, as a released reader does, so a released reader never shows less than this one.
 
 A released reader that has refused a lowering shows the alert at its earlier, higher level for as long as the thread lasts. That is intended: the reader cannot check the lowering, and too high is the safe side.
+
+## A withdrawal
+
+The relay bot has no retraction (`retract` is a curator's word and ends nothing here: a relay-bot reply whose first line is `retract` retracts nothing and its block is not read). When the source withdraws an advisory, the thread moves to the state `withdrawn`, and leaves it again (ai-tools-alerts#y484).
+
+- **On the wire** it is a relay-bot reply whose block is exactly `{"level":"withdrawn"}`, alone in its reply like every lowering (rule 1). `withdrawn` is not a level: the schema does not have it, a root that names it is no advisory, and a block that carries anything beside it is not a withdrawal. `aitools_alerts.wire.is_withdrawal(block)` reads it.
+- **Released readers**, v0.1.4 to v0.2.1, skip the reply and keep the alert at the level they hold, for as long as the thread lasts. Too high is the safe side.
+- **This reader** keeps it as the thread's published state and applies it only on the member's own evidence. The thread is shown nowhere, and nothing is matched against it, while the member's source check, read no more than two days ago, finds every source of the thread read whole, each an authority, none supporting the product and at least one stating the withdrawal, and every level the thread stated (the root, and each reply that names a level) carries a claim whose id is the thread's first id and whose fields this reader's ruleset computes that level from (`verify.claimed`). No time makes up for the check: a withdrawal never hides a thread unchecked.
+- **Not confirmed**, it is a lowering to notice from the same reply that the check has not settled: it applies once checkpoints 72 hours apart have listed the reply. When the check reads support for more than notice the withdrawal is refused, nothing applies, and the refusal is remembered as a refused lowering's is: through failed reads, until whole reads give no more than notice. A source that supports exactly notice hides nothing and refuses nothing.
+- **One question.** The reader asks its check one thing about a withdrawal, about one state of the sources (the thread's widest state at no level), and keeps one result for it. The hiding and the notice reading are both decided from that result, so no older answer can stand beside a newer one.
+- **Leaving.** A later relay-bot reply that names a level ends the withdrawal: a level at or above the thread's stands at once, a lower one is a lowering like any other. It is the same thread under the same root. Without any reply, a member whose check reads the advisory published again shows the alert again.
+- **A curator's hold** governs while it is in force: the thread is as the curator left it, and the withdrawal is judged when the hold has lapsed. A curator who retracts the thread or names a level after the withdrawal has the last word on the level: the withdrawal is no longer the thread's published state, and the thread is not hidden by it.
+- **Expiry** is not changed. The reply names no level, so it is no renewal, and a claim of level `none` renews nothing: a thread whose root carries a claim decays as before, shown or hidden.
+- The reply carries the claim of the withdrawn reading, level `none` (hh5s). Roots carry no claim yet (ai-tools-alerts#gtw9), so until they do no withdrawal is confirmed and each counts as a lowering to notice.
+
+The poster does not send it yet: ai-tools-alerts#kk2q builds that. Until then a withdrawn reviewed advisory lowers its thread to notice (ai-tools-alerts#3qyq).
+
+## Narrowings
 
 A narrowing of `products` travels in the block, as the poster has always sent it: a relay-bot reply whose `products` list does not stand for every entry the thread holds (a shorter range, a lower or a first `fixed`, a product left out). Nothing is added to the wire for it.
 

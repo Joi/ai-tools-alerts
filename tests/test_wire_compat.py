@@ -314,6 +314,38 @@ def test_what_the_format_does_not_avoid_a_reader_before_0_1_7_applies_a_narrowin
     assert released(tmp_path, tag, m, now)[str(now)] == {"AITA-TEST-0001": ["critical", ["1.0.0"], False]}
 
 
+@pytest.mark.parametrize("tag", RELEASED + CLAIM_READERS)
+def test_a_relay_bot_withdrawal_is_refused_by_every_released_reader(tmp_path, tag):
+    """The withdrawal (ai-tools-alerts#y484) is a reply whose block is exactly
+    ``{"level":"withdrawn"}``. The word is no level to any released reader: the reply is
+    refused and the alert stays at its level, matched as before. This reader shows the
+    same until its own source check confirms the withdrawal, and then shows the thread
+    nowhere; unchecked it is a lowering to notice after 72 hours, never a hiding."""
+    m, now = mirror_now()
+    root = m.root_post(m.bot_sec, advisory(posted_by="relay-bot"), created_at=now - 3600)
+    text = f"Withdrawn by its source.\n\n```{schema.INFO_STRING}\n" + '{"level":"withdrawn"}\n```\n'
+    # with the claim of the withdrawn reading, level "none", as a level change carries its claim (hh5s)
+    reply = m.post(m.bot_sec, text, created_at=now - 3000,
+                   tags=[["e", root["id"], "", "root"], claim("AITA-TEST-0001", "none", now - 3000)])
+    assert wire.claim_of(reply)["level"] == "none" and wire.is_withdrawal(json.loads(schema._last_block(text)))
+    live = {"AITA-TEST-0001": ["critical", ["99.0.0"], True]}
+    theirs = released(tmp_path, tag, m, now)
+    assert theirs[str(now)] == live and theirs[str(now + MONTH)] == live  # no claim on the root: nothing decays
+    assert this_reader(m, now, tmp_path) == {str(now): live, str(now + MONTH): live}
+    st = State.load(tmp_path / "this-reader")
+    (t,) = pull.advisories(st)
+    assert (t.offered, t.offered_by) == (pull.WITHDRAWN, reply["id"])
+    at, listed = pull.head_clock(st)
+    since = pull.offers([t], {}, at, listed)
+    assert since == {reply["id"]: at}
+    confirms = lambda adv, level, stated=(): True  # noqa: E731 - the member's own check, when it confirms
+    assert pull.active([t], at, listed, confirms, since=since) == []  # shown nowhere, matched by nothing
+    (later,) = pull.active([t], at + pull.UNCHECKED_LOWERING_S, None, None, since=since)
+    assert later.adv.level == "notice"  # unchecked: a lowering, as the poster of 3qyq sends for a withdrawn advisory
+    (never,) = pull.active([t], at + 10 * MONTH, None, None, since=since)
+    assert never.adv.level == "notice"
+
+
 # ---------------------------------------------------------------- the poster's own events (hh5s)
 
 CVE = "CVE-2026-0001"
