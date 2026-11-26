@@ -492,7 +492,7 @@ def test_support_read_before_the_request_budget_ran_out_still_refuses(tmp_path, 
     n = Net().set(verify.KEV_URL, KEV_CC).set(gurl(G1), ghsa(cve=CVE))
     assert lowering(tmp_path, a, "high", n) is False and n.urls == [verify.KEV_URL]
     ask = verify.at_level(a, "high")
-    assert verify.result_for(ask, verify.load(tmp_path))["Claude Code"]["why"] == "below-source"
+    assert verify.result_for(ask, verify.load(tmp_path))["claude-code\nClaude Code"]["why"] == "below-source"
 
 
 def test_a_command_that_started_earlier_does_not_write_over_a_newer_refusal(feed, monkeypatch, capsys, reader_clock):
@@ -677,3 +677,216 @@ def test_a_second_confirmed_product_s_slot_is_tried_when_the_first_is_taken(feed
     status, out = run_json(capsys)
     assert status == cli.EXIT_UNSEEN_CRITICAL and out["unseen_critical"] == [root["id"]] and out["held_critical"] == []
     assert "Affected: Codex" in sent["texts"][0]
+
+
+# ---------------------------------------------------------------- one product identity (ai-tools-alerts#2mgd)
+
+def exact_pin():
+    from aitools_alerts import ruleset
+    rs = ruleset.load()
+    return ruleset.Pin(rs.version, rs.digest, 1)
+
+
+def later_pin():
+    """A pin this ruleset is permitted under without being it: a later version, min_version met."""
+    from aitools_alerts import ruleset
+    return ruleset.Pin(ruleset.load().version + 1, "0" * 64, 1)
+
+
+def with_skill(monkeypatch):
+    """The tool, and an installed skill that carries the tool's name."""
+    from aitools_alerts import inventory
+    from aitools_alerts.inventory import Installed, Inventory
+    inv = Inventory(products={"claude-code": [Installed("Claude Code", "2.0.0", "/invented/bin/claude")],
+                              "skill": [Installed("Claude Code", "1.0.0", "/invented/skills/claude-code")]})
+    monkeypatch.setattr(inventory, "collect", lambda *a, **k: inv)
+
+
+def under(name, ecosystem, id=CVE, **kw):
+    from aitools_alerts.schema import Action, Product
+    from dataclasses import replace
+    return replace(bot(id=id, level="critical", **kw), products=[Product(name, ecosystem, "<99.0.0", "99.0.0")],
+                   actions=[Action("upgrade", name, "99.0.0")])
+
+
+def test_a_respelled_critical_the_catalog_lists_for_another_vendor_is_contradicted_by_its_scope_name(feed, sent, monkeypatch,
+                                                                                                    capsys):
+    feed([under("claude code", "claude-code")], ALL)
+    use(monkeypatch, Net().set(verify.KEV_URL, kev((CVE, "Cisco", "IOS XE"))))
+    cli.main(["pull"])
+    out = out_of(capsys, ["verify"])[1]
+    assert "source check: 0 confirmed, 1 contradicted, 0 not verified" in out
+    assert f"source check: the source does not support {CVE} for Claude Code" in out
+    (d,) = json.loads(out_of(capsys, ["check", "--json"])[1])
+    assert d["source_check"] == {"result": "contradicted", "why": "unsupported", "source_level": "none"}
+
+
+def test_a_match_that_cannot_be_judged_does_not_interrupt_under_the_pinned_ruleset(feed, sent, monkeypatch, capsys):
+    """``Claude Code`` under ``skill`` matches the installed skill and is no scope
+    product. Decided from the post, with nothing read and nothing cached."""
+    with_skill(monkeypatch)
+    feed([under("Claude Code", "skill")], ALL, ruleset_pin=exact_pin())
+    n = use(monkeypatch, Net())
+    status, data = run_json(capsys)
+    assert status == 0 and data["unseen_critical"] == [] and data["held_critical"] == [] and len(data["matches"]) == 1
+    assert out_of(capsys, ["notify"])[0] == 0
+    status, out, _ = out_of(capsys, ["run"])
+    assert status == 0 and sent["texts"] == [] and State.load().interrupts == {} and State.load().seen == set()
+    assert out.count("CRITICAL: ") >= 1 and cli.UNJUDGED_LINE.format(id=CVE) in out  # listed, and said why
+    assert "held, not notified" not in out
+    assert cli.UNJUDGED_LINE.format(id=CVE) in out_of(capsys, ["check"])[1]
+    assert n.urls in ([], [verify.KEV_URL])
+
+
+@pytest.mark.parametrize("extra, pin, min_cli", [
+    (ALL, None, None), (ALL, "later", None), ('verify = "off"\n', "exact", None),
+    (ALL, "digest", None),  # the pinned version with another digest: this CLI's scope file may be the wrong one
+    (ALL, "exact", "999.0.0"),  # a CLI the trust root calls too old
+])
+def test_without_the_pinned_ruleset_or_with_the_check_off_it_interrupts_as_unverified(feed, sent, monkeypatch, capsys,
+                                                                                    extra, pin, min_cli):
+    from aitools_alerts import ruleset
+    with_skill(monkeypatch)
+    pins = {"later": later_pin, "exact": exact_pin, "digest": lambda: ruleset.Pin(ruleset.load().version, "0" * 64, 1)}
+    m = feed([under("Claude Code", "skill")], extra, ruleset_pin=pins[pin]() if pin else None, min_cli=min_cli)
+    use(monkeypatch, Net())
+    status, out, _ = out_of(capsys, ["run"])
+    assert status == cli.EXIT_UNSEEN_CRITICAL and len(sent["texts"]) == 1 and sent["texts"][0].endswith(cli.NOT_VERIFIED)
+    assert {k: len(v) for k, v in State.load().interrupts.items()} == {m.bot: 1}
+    assert "cannot judge" not in out
+
+
+def test_with_no_scope_products_read_nothing_is_left_out(feed, sent, monkeypatch, capsys):
+    """A scope table that could not be built makes every product look like none: then no match is silenced."""
+    from aitools_alerts import check
+    feed([bot(id=CVE, level="critical")], ALL, ruleset_pin=exact_pin())
+    monkeypatch.setattr(check, "scope_products", lambda: {})
+    use(monkeypatch, Net())
+    assert out_of(capsys, ["run"])[0] == cli.EXIT_UNSEEN_CRITICAL and len(sent["texts"]) == 1
+
+
+@pytest.mark.parametrize("ident", ["https://evil.example/GHSA-aaaa-bbbb-cccc", "CVE-2099-0001"])  # the second: a synthetic check
+def test_an_id_that_names_no_source_does_not_interrupt_under_the_pinned_ruleset(feed, sent, monkeypatch, capsys, ident):
+    feed([bot(id=ident, level="critical")], ALL, ruleset_pin=exact_pin())
+    use(monkeypatch, Net())
+    status, out, _ = out_of(capsys, ["run"])
+    assert status == 0 and sent["texts"] == [] and State.load().interrupts == {}
+    assert "cannot judge: no interrupt" in out
+
+
+def test_an_added_entry_of_the_same_name_does_not_stop_the_tool_s_match(feed, sent, monkeypatch, capsys):
+    """The tool's match is judged and confirmed; the skill's is left out; one alert, one
+    notification, on the verified slot."""
+    from aitools_alerts.schema import Product
+    from dataclasses import replace
+    with_skill(monkeypatch)
+    a = bot(id=CVE, level="critical")
+    m = feed([replace(a, products=[*a.products, Product("Claude Code", "skill", "<99.0.0", "99.0.0")])], ALL,
+             ruleset_pin=exact_pin())
+    use(monkeypatch, Net().set(verify.KEV_URL, KEV_CC))
+    cli.main(["pull"])
+    cli.main(["verify"])
+    data = json.loads(out_of(capsys, ["check", "--json"])[1])
+    assert sorted((d["product"]["ecosystem"], d["source_check"]["why"]) for d in data) == \
+        [("claude-code", "match"), ("skill", "no-source")]
+    status, data = run_json(capsys)
+    assert status == cli.EXIT_UNSEEN_CRITICAL and len(data["unseen_critical"]) == 1
+    assert len(sent["texts"]) == 1 and cli.NOT_VERIFIED not in sent["texts"][0]
+    assert m.bot not in State.load().interrupts  # the verified slot, not one of the poster's two
+
+
+def test_a_skill_of_the_tool_s_name_never_borrows_the_tool_s_confirmation(feed, sent, monkeypatch, capsys):
+    """No pin: the unjudgeable match interrupts, but as unverified, whatever the tool's result is."""
+    from aitools_alerts import inventory
+    from aitools_alerts.inventory import Installed, Inventory
+    from aitools_alerts.schema import Product
+    from dataclasses import replace
+    inv = Inventory(products={"skill": [Installed("Claude Code", "1.0.0", "/invented/skills/claude-code")]})
+    monkeypatch.setattr(inventory, "collect", lambda *a, **k: inv)
+    a = bot(id=CVE, level="critical")
+    m = feed([replace(a, products=[*a.products, Product("Claude Code", "skill", "<99.0.0", "99.0.0")])], ALL)
+    use(monkeypatch, Net().set(verify.KEV_URL, KEV_CC))
+    cli.main(["pull"])
+    cli.main(["verify"])
+    status, data = run_json(capsys)
+    assert status == cli.EXIT_UNSEEN_CRITICAL and sent["texts"][0].endswith(cli.NOT_VERIFIED)
+    assert {k: len(v) for k, v in State.load().interrupts.items()} == {m.bot: 1}
+
+
+def test_respellings_of_one_confirmed_advisory_share_its_one_slot(feed, sent, monkeypatch, capsys):
+    m = feed([under(n, "claude-code") for n in ("Claude Code", "claude code", "claude-code", "CLAUDE CODE")], ALL)
+    use(monkeypatch, Net().set(verify.KEV_URL, KEV_CC))
+    cli.main(["pull"])
+    cli.main(["verify"])  # every copy is confirmed
+    data = json.loads(out_of(capsys, ["check", "--json"])[1])
+    assert [d["source_check"]["result"] for d in data] == ["confirmed"] * 4
+    _, data = run_json(capsys)
+    assert len(data["unseen_critical"]) == 3 and len(data["held_critical"]) == 1
+    buckets = State.load().interrupts
+    assert sorted(len(v) for v in buckets.values()) == [1, 2] and len(buckets[m.bot]) == 2  # one verified slot, two of the poster's
+
+
+def test_a_lowering_is_still_refused_after_an_entry_of_the_same_name_under_another_ecosystem(feed, monkeypatch, capsys,
+                                                                                           reader_clock):
+    """Through a signed thread: the signer adds ``Claude Code`` under ``skill``, puts
+    ``claude code`` with no fixed version in the tool entry's place, and offers high.
+    The catalog lists the CVE for Claude Code: the tool's first entry, with its fixed
+    version, is still asked about, and the lowering is refused, not left to the 72 hours."""
+    m = feed([bot(id=CVE, level="critical")], ALL)
+    root = m.events["feed.json"][0]
+    skill = {"name": "Claude Code", "ecosystem": "skill", "affected": None, "fixed": None}
+    low = {"name": "claude code", "ecosystem": "claude-code", "affected": "<99.0.0", "fixed": None}
+    m.reply(m.bot_sec, root, m.patch_text(products=[skill, low]), created_at=AT)
+    lower(m, root, "high", at=AT + 10)
+    serve(m, reader_clock, C0)
+    use(monkeypatch, Net().set(verify.KEV_URL, KEV_CC))
+    cli.main(["pull"])
+    assert refusal(CVE, "high") in out_of(capsys, ["verify"])[1]
+    serve(m, reader_clock, C0 + WAIT + 100)
+    assert levels(capsys) == {CVE: "critical"} and State.load().refused == {root["id"]}
+
+
+@pytest.mark.parametrize("first", ["my-git", "mcp-server-git"])
+def test_a_name_that_cannot_be_judged_does_not_hide_the_match_that_can(feed, sent, monkeypatch, capsys, first):
+    """An MCP server is matched by its package and by its configured key. An entry under
+    the key, listed beside the scope product with the same range, must not leave the
+    alert with only a match that cannot be judged: under the pinned ruleset it still interrupts."""
+    from aitools_alerts import inventory
+    from aitools_alerts.inventory import Installed, Inventory
+    from aitools_alerts.schema import Action, Product
+    from dataclasses import replace
+    inv = Inventory(products={"mcp": [Installed("mcp-server-git", "0.6.2", "/invented/m", package="pypi:mcp-server-git",
+                                                server="my-git")]})
+    monkeypatch.setattr(inventory, "collect", lambda *a, **k: inv)
+    names = [first] + [n for n in ("my-git", "mcp-server-git") if n != first]
+    a = replace(bot(id=CVE, level="critical"), products=[Product(n, "mcp", "*", "99.0.0") for n in names],
+                actions=[Action("upgrade", "mcp-server-git", "99.0.0")])
+    m = feed([a], ALL, ruleset_pin=exact_pin())
+    use(monkeypatch, Net())
+    status, data = run_json(capsys)
+    assert status == cli.EXIT_UNSEEN_CRITICAL and len(data["unseen_critical"]) == 1 and len(data["matches"]) == 2
+    assert len(sent["texts"]) == 1 and {k: len(v) for k, v in State.load().interrupts.items()} == {m.bot: 1}
+    assert "cannot judge" not in out_of(capsys, ["check"])[1]
+
+
+def test_a_widening_reply_under_a_name_that_cannot_be_judged_does_not_silence_a_thread(feed, sent, monkeypatch, capsys,
+                                                                                      reader_clock):
+    """A signed widening patch puts the configured key in front of the scope product,
+    both with a wider range. The thread still interrupts under the pinned ruleset."""
+    from aitools_alerts import inventory
+    from aitools_alerts.inventory import Installed, Inventory
+    from aitools_alerts.schema import Action, Product
+    from dataclasses import replace
+    inv = Inventory(products={"mcp": [Installed("mcp-server-git", "0.6.2", "/invented/m", package="pypi:mcp-server-git",
+                                                server="my-git")]})
+    monkeypatch.setattr(inventory, "collect", lambda *a, **k: inv)
+    a = replace(bot(id=CVE, level="critical"), products=[Product("mcp-server-git", "mcp", "<1.0.0", "1.0.0")],
+                actions=[Action("upgrade", "mcp-server-git", "1.0.0")])
+    m = feed([a], ALL, ruleset_pin=exact_pin())
+    wide = [{"name": n, "ecosystem": "mcp", "affected": "*", "fixed": "2.0.0"} for n in ("my-git", "mcp-server-git")]
+    m.reply(m.bot_sec, m.events["feed.json"][0], m.patch_text(products=wide), created_at=AT)
+    serve(m, reader_clock, C0)
+    use(monkeypatch, Net())
+    status, data = run_json(capsys)
+    assert status == cli.EXIT_UNSEEN_CRITICAL and len(data["unseen_critical"]) == 1
+    assert "mcp-server-git" in [d["product"]["name"] for d in data["matches"]]

@@ -21,6 +21,7 @@ ELSEWHERE = kev((CVE, "Cisco", "IOS XE"))  # the catalog lists the CVE, for anot
 FLAG = f"source check: the source does not support {CVE} for Claude Code"
 WITHDRAWN = "2026-11-01T00:00:00Z"
 DOWN = OSError("down")
+KEY = "claude-code\nClaude Code"  # a result's key: ecosystem and name (verify.pkey)
 
 
 def matches(capsys) -> list:
@@ -32,9 +33,9 @@ def level(capsys) -> str:
     return d["level"]
 
 
-def memory(product="Claude Code"):
+def memory(product="Claude Code", ecosystem="claude-code"):
     (names,) = State.load().supported["threads"].values() or [{}]
-    return names.get(product)
+    return names.get(f"{ecosystem}\n{product}")  # kept per result key (verify.pkey)
 
 
 def serve_again(m):
@@ -86,7 +87,7 @@ def test_the_memory_is_saved_and_read_back(tmp_path):
     {"ruleset": None, "first": {}, "threads": {"a" * 64: {"Claude Code": [-1, None, None]}}},
     {"ruleset": None, "first": {}, "threads": {"a" * 64: {"Claude Code": [True, None, None]}}},
     {"ruleset": None, "first": {}, "threads": {"a" * 64: {"": [5, None, None]}}},
-    {"ruleset": None, "first": {}, "threads": {"a" * 64: {"x" * 201: [5, None, None]}}},
+    {"ruleset": None, "first": {}, "threads": {"a" * 64: {"x" * 401: [5, None, None]}}},
     {"ruleset": None, "first": {}, "threads": {}, "more": 1},
 ])
 def test_a_malformed_memory_is_damage(tmp_path, bad):
@@ -468,7 +469,7 @@ def test_copies_with_one_content_and_another_history_are_each_judged_on_their_ow
     assert len(got) == 2 and got[held] == ("critical", None)
     assert [v for k, v in got.items() if k != held] == [("notice", "critical")]
     by_root = State.load().supported["threads"]
-    assert by_root[held]["Claude Code"][1] is None and len(by_root) == 2
+    assert by_root[held][KEY][1] is None and len(by_root) == 2
 
 
 def test_the_memory_of_a_thread_this_command_did_not_see_is_kept(feed, monkeypatch, capsys):
@@ -503,10 +504,10 @@ def test_an_old_unsupported_is_not_kept_as_found_again_when_the_budget_runs_out(
     a = adv(id=CVE, aliases=[G2], level="critical")
     n = Net().set(verify.KEV_URL, ELSEWHERE).set(gurl(G2), ghsa(G2))  # the alias does not name the CVE
     go(tmp_path, [a], n)
-    assert res(tmp_path, a)["Claude Code"]["why"] == "unsupported"
+    assert res(tmp_path, a)[KEY]["why"] == "unsupported"
     monkeypatch.setattr(verify, "MAX_FETCHES", 1)
     cache = go(tmp_path, [a], n, now=NOW + DAY + 60)
-    assert res(tmp_path, a)["Claude Code"] == {"result": "unknown", "why": "unread", "source": None}
+    assert res(tmp_path, a)[KEY] == {"result": "unknown", "why": "unread", "source": None}
     assert cache["results"][verify.state_key(a)]["at"] == NOW + DAY + 60
 
 
@@ -620,10 +621,10 @@ def test_the_record_is_cut_to_the_stored_events_as_read_under_the_lock(feed, mon
     adv = bot(id=CVE, level="critical")
     entry = cli.Entry(mine, (mine,), adv, {}, judged=adv)
     late = {"results": {verify.state_key(adv): {"at": int(verify.time.time()) + 5, "products": {
-        "Claude Code": {"result": "confirmed", "why": "match", "source": "critical"}}}}}
+        KEY: {"result": "confirmed", "why": "match", "source": "critical"}}}}}
     assert other not in stale.events and cli._note_support(a, stale, [entry], late) is True
     now = State.load().supported["threads"]
-    assert now[other]["Claude Code"][0] is not None and now[mine]["Claude Code"][0] is not None
+    assert now[other][KEY][0] is not None and now[mine][KEY][0] is not None
 
 
 # ---------------------------------------------------------------- what the delta review asked for
@@ -673,3 +674,16 @@ def test_a_record_found_damaged_under_the_lock_is_started_again_on_the_safe_side
     back = State.load()
     assert not back.unverified_damaged and back.reset_at == st.reset_at
     assert "has been started again" in capsys.readouterr().err
+
+
+def test_a_respelled_product_is_shown_at_notice_like_the_scope_name(feed, sent, monkeypatch, capsys):
+    """ai-tools-alerts#2mgd judges `claude code` as Claude Code; the memory is kept per
+    result key, so the respelled match is demoted the same way."""
+    feed([bot(id=CVE, level="critical", products=("claude code",))])
+    use(monkeypatch, Net().set(verify.KEV_URL, ELSEWHERE))
+    assert cli.main(["pull"]) == 0 and cli.main(["verify"]) == 0
+    (d,) = matches(capsys)
+    assert (d["level"], d["published_level"]) == ("notice", "critical")
+    status, out, _ = out_of(capsys, ["run"])
+    assert status == 0 and sent["texts"] == [] and FLAG in out
+    assert memory("claude code")[0] is None and memory("claude code")[1] is not None

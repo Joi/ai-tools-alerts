@@ -53,6 +53,7 @@ NOT_VERIFIED = "Not verified from this machine"
 UNVERIFIED_LINE_IDS = "not verified from this machine: {ids}"
 HELD_LINE = ("held, not notified (not verified from this machine; at most {n} unverified alerts from one poster "
              "interrupt in 24 hours): CRITICAL: {title} (id {id})")
+UNJUDGED_LINE = "source check: {id} names a product or an id this check cannot judge: no interrupt"
 WAITING_LINE = ("a lowering of {id} to {level} is published and not verified from this machine: "
                 "it applies once signed checkpoints 72 hours apart have listed it")
 # 0z4e (finding D8): a relay-bot match whose product this machine's reads never found a source to
@@ -420,7 +421,8 @@ def _note_support(a, st: State, entries: list, cache: dict | None = None) -> boo
 
 
 def _memory(st: State, t: Entry, name: str) -> tuple:
-    """(last, gone, seen) of a product of an entry over its roots (copies of one advisory):
+    """(last, gone, seen) of a product (``name``: its key, ``verify.pkey``, as the results
+    are kept) of an entry over its roots (copies of one advisory):
     the latest support any of them recorded; ``gone`` only when every root has one."""
     got = [st.supported["threads"].get(r, {}).get(name) for r in t.root_ids]
     last = max((e[0] for e in got if e is not None and e[0] is not None), default=None)
@@ -464,9 +466,9 @@ def _shown(a, st: State, threads: list, pairs: list) -> tuple[list, list]:
         return replace(t, adv=replace(t.adv, level=NOTICE), published=t.adv.level)
 
     whole = {t.root_id: low(t) for t in threads
-             if never(t, [p.name for p in t.judged.products] if t.judged is not None else [])}
+             if never(t, [verify.pkey(p) for p in t.judged.products] if t.judged is not None else [])}
     return ([whole.get(t.root_id, t) for t in threads],
-            [(whole.get(t.root_id) or (low(t) if m.product is not None and never(t, [m.product.name]) else t), m)
+            [(whole.get(t.root_id) or (low(t) if m.product is not None and never(t, [verify.pkey(m.product)]) else t), m)
              for t, m in pairs])
 
 
@@ -665,25 +667,33 @@ def _source_lines(a, st: State, s: config.Settings, threads: list) -> list[str]:
     if cache is None or _min_cli(a, st) is not None:
         return []
     scope, out, now = ruleset.load().products(), [], int(time.time())
+
+    def named(adv, found: dict) -> list:
+        """(the scope product a result is about, the result), by scope name. A product
+        that is no scope product has no line: its name is the signer's text."""
+        return sorted(((name, found[key]) for key, name in ((verify.pkey(p), verify.scope_of(p)) for p in adv.products)
+                       if key in found and name in scope), key=lambda x: x[0])
     for t in threads:
         ident = verify.norm_id(t.adv.id)
         found = {} if t.published else verify.result_for(t.adv, cache) or {}
-        for name in sorted(set(found) | ({p.name for p in t.judged.products} if t.judged is not None else set())):
-            if ident is None or name not in scope:
+        # 0z4e: every product of the judged state, with or without a result on disk now
+        both = {verify.pkey(p): verify.scope_of(p) for p in (*t.adv.products, *(t.judged.products if t.judged else ()))}
+        for name, key in sorted((name, key) for key, name in both.items() if name in scope):
+            if ident is None:
                 continue
             # 0z4e: from the memory, so a failed read neither brings nor ends either line
-            if _never(a, st, t, name, now):
+            if _never(a, st, t, key, now):
                 out.append(UNSUPPORTED_LINE.format(id=ident, name=name))
                 continue
-            if _lost(a, st, t, name):
+            if _lost(a, st, t, key):
                 out.append(LOST_LINE.format(id=ident, name=name))
                 continue
-            r = found.get(name)
+            r = found.get(key)
             if r is None or r["result"] != verify.CONTRADICTED:
                 continue
             if r["why"] == "unsupported":
                 # supported earlier: not fabrication; said only past SUPPORT_GAP_S (``_lost``)
-                if not (t.judged is not None and getattr(a, "judging", False) and _memory(st, t, name)[0] is not None):
+                if not (t.judged is not None and getattr(a, "judging", False) and _memory(st, t, key)[0] is not None):
                     out.append(UNSUPPORTED_LINE.format(id=ident, name=name))
             else:
                 out.append(f"source check: {ident} is published at {t.adv.level} for {name}; "
@@ -696,9 +706,9 @@ def _source_lines(a, st: State, s: config.Settings, threads: list) -> list[str]:
         if t.refused is None or ident is None or t.root_id not in shown:
             continue
         what = f"a retraction of {ident}" if t.refused == pull.NONE else f"a lowering of {ident} to {t.refused}"
-        found = verify.result_for(_asked(a, st, t, t.refused), cache) or {}
+        asked = _asked(a, st, t, t.refused)
         out += [f"source check: {what} is not applied: the source supports {r['source']} for {name}"
-                for name, r in sorted(found.items()) if r["why"] == "below-source" and name in scope]
+                for name, r in named(asked, verify.result_for(asked, cache) or {}) if r["why"] == "below-source"]
     return list(dict.fromkeys(out))
 
 
@@ -709,7 +719,7 @@ def _check_json(t, m, cache, judged: bool = True) -> dict | None:
         return None
     if t.published:  # 0z4e: from the memory of support, whatever a later failed read left in the cache
         return {"result": verify.CONTRADICTED, "why": "unsupported", "source_level": ruleset.NONE}
-    r = (verify.result_for(t.adv, cache) or {}).get(m.product.name) if m.product is not None else None
+    r = (verify.result_for(t.adv, cache) or {}).get(verify.pkey(m.product)) if m.product is not None else None
     return None if r is None else {"result": r["result"], "why": r["why"], "source_level": r["source"]}
 
 
@@ -835,6 +845,8 @@ def cmd_check(a, st: State, s: config.Settings, source_lines: bool = True) -> in
     once = {t.root_id: t for t, _ in pairs}  # an entry matched through two installations is said once
     for t in {t.root_id: t for t, _ in _interrupts(a, st, s, pairs)[1]}.values():
         print(HELD_LINE.format(n=MAX_UNVERIFIED, title=_title(t, s), id=t.adv.id))
+    for t in _unjudged(a, st, s, pairs):
+        print(UNJUDGED_LINE.format(id=t.adv.id))
     for t in once.values():
         if t.waiting:
             print(WAITING_LINE.format(id=t.adv.id, level=t.waiting))
@@ -873,14 +885,63 @@ def _results(a, st: State, s: config.Settings) -> dict | None:
 
 
 def _result(t: Entry, m, cache) -> str | None:
-    """The source-check result of the product a match rests on: None for an alert no
-    relay bot posted (it is not checked), unknown for a match with no product."""
+    """The source-check result of the product a match rests on (its ecosystem and name,
+    ``verify.pkey``): None for an alert no relay bot posted (it is not checked), unknown
+    for a match with no product and for one whose product is no scope product."""
     if t.adv.posted_by != verify.BOT:
         return None
     if t.published:
         return verify.CONTRADICTED
-    r = (verify.result_for(t.adv, cache) or {}).get(m.product.name) if m.product is not None else None
+    if m.product is None or verify.scope_of(m.product) is None:
+        return verify.UNKNOWN
+    r = (verify.result_for(t.adv, cache) or {}).get(verify.pkey(m.product))
     return r["result"] if r is not None else verify.UNKNOWN
+
+
+def _pinned_exactly(a, st: State) -> bool:
+    """The trust root pins a ruleset and this CLI's own is that one: the same version
+    and the same digest, which covers the scope file. Only then does "this product is
+    no scope product" say something about a post and not about this reader: a reader
+    the pin still permits below its version, one above it, and one with no pin may
+    hold another scope file. Never raises."""
+    try:
+        cert = st.cert_for(a.root)
+        pin = cert.ruleset if cert is not None and not cert.ruleset_unreadable else None
+        rs = ruleset.load() if pin is not None else None
+        return rs is not None and (rs.version, rs.digest) == (pin.version, pin.sha256)
+    except Exception:
+        return False
+
+
+def _unjudgeable(t: Entry, m) -> bool:
+    """A relay-bot match the source check cannot judge by construction (2mgd): its
+    product is no scope product (``verify.scope_of``), or the alert's first id names no
+    source. Read from the post alone, never from a result: it holds before any source
+    was read. Either is the signer's choice, and neither is a failed read."""
+    return t.adv.posted_by == verify.BOT and (
+        verify.norm_id(t.adv.id) is None or m.product is None or verify.scope_of(m.product) is None)
+
+
+def _judged_here(a, st: State, s: config.Settings) -> bool:
+    """This CLI may leave an unjudgeable match out of the interrupts: the check is on,
+    the trust root does not call this CLI too old, and its ruleset is the pinned one."""
+    try:
+        # and the scope products were read: with none, every product would look like no scope product
+        return (s.verify != "off" and _min_cli(a, st) is None and _pinned_exactly(a, st)
+                and bool(check.scope_products()))
+    except Exception:
+        return False
+
+
+def _unjudged(a, st: State, s: config.Settings, pairs: list | None = None) -> list:
+    """The unseen critical alerts that do not interrupt because no match of theirs can
+    be judged (``_interrupts``), each once."""
+    if not _judged_here(a, st, s):
+        return []
+    groups: dict = {}
+    for t, m in _unseen_critical(a, st, pairs):
+        groups.setdefault(t.root_id, (t, []))[1].append(m)
+    return [t for t, ms in groups.values() if all(_unjudgeable(t, m) for m in ms)]
 
 
 def _confirmed_now(t: Entry, m, cache, now: int) -> bool:
@@ -909,10 +970,11 @@ def _slots(st: State, bucket: str, now: int) -> dict:
 
 def _verified_bucket(t: Entry, m) -> str:
     """The bucket of the one slot a confirmed alert takes: the advisory's first id as the
-    source is asked for it and the matched product, and nothing else of the post. The
-    aliases, the level, the title and the root are the signer's to vary; what this
-    machine read and confirmed is that id for that product."""
-    name = m.product.name if m.product is not None else ""
+    source is asked for it and the scope product the match was judged as, and nothing
+    else of the post. The aliases, the level, the title, the root and the spelling of
+    the product are the signer's to vary; what this machine read and confirmed is that
+    id for that product."""
+    name = (verify.scope_of(m.product) or m.product.name) if m.product is not None else ""
     return hashlib.sha256(json.dumps([verify.norm_id(t.adv.id), name]).encode("utf-8")).hexdigest()
 
 
@@ -934,7 +996,12 @@ def _interrupts(a, st: State, s: config.Settings, pairs: list | None = None) -> 
     ``grants``: (bucket, capacity, root id) for ``_reserve`` to record. Nothing is
     written here: what a caller reports as an interrupt is what ``_reserve`` returns.
     While a record rebuilt after damage is younger than the window, no poster-key slot
-    is free (``State.reset_at``). A curator's alert needs no slot."""
+    is free (``State.reset_at``). A curator's alert needs no slot.
+
+    A relay-bot match that cannot be judged by construction (``_unjudgeable``) is left
+    out when this CLI's ruleset is the pinned one (``_judged_here``): an alert with no
+    other match is neither pending nor held and takes no slot (2mgd). Two unverified
+    interrupts a day, for good, is what a respelled product would otherwise buy."""
     cache, now, taken = _results(a, st, s), int(time.time()), Counter()
     pending, held, grants, loose = [], [], [], set()
     rebuilt = st.reset_at is not None and now - UNVERIFIED_WINDOW_S < st.reset_at <= now
@@ -950,8 +1017,10 @@ def _interrupts(a, st: State, s: config.Settings, pairs: list | None = None) -> 
         return True
 
     groups: dict = {}
+    strict = _judged_here(a, st, s)
     for t, m in _unseen_critical(a, st, pairs):
-        groups.setdefault(t.root_id, (t, []))[1].append(m)
+        if not (strict and _unjudgeable(t, m)):
+            groups.setdefault(t.root_id, (t, []))[1].append(m)
     never = float("inf")
     for t, ms in sorted(groups.values(), key=lambda g: min(st.held.get(r, never) for r in g[0].root_ids)):
         # the first confirmed match whose advisory-and-product slot this alert holds or can take

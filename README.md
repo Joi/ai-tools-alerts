@@ -94,7 +94,7 @@ When a command prints a line that starts `aitools-alerts: out of date:`, the rul
 
 Without pipx: `python3 -m venv ~/.local/share/aitools-alerts && ~/.local/share/aitools-alerts/bin/pip install .` from the verified checkout, then link the command where the schedules and the hook look for it: `mkdir -p ~/.local/bin && ln -s ~/.local/share/aitools-alerts/bin/aitools-alerts ~/.local/bin/`. The launchd and cron templates search `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and `/bin`; the hook searches the same directories and nothing else.
 
-Install a verified release commit, never a branch or a tag name alone: the trust root is pinned in the code you install, so the commit is what fixes it. `CHANGELOG.md` lists each release. No release of this project is published to PyPI, and none is planned. The name `aitools-alerts` there holds an empty placeholder, version 0.0.1, that installs nothing: do not install from PyPI.
+Install a verified release commit, never a branch or a tag name alone: the trust root is pinned in the code you install, so the commit is what fixes it. `CHANGELOG.md` lists each release. No release of this project is published to PyPI, and none is planned. The name `aitools-alerts` there holds an empty placeholder that installs nothing, and PyPI refuses `ai-tools-alerts` as too similar to it: do not install from PyPI.
 
 `init` writes `~/.config/aitools-alerts/config.toml` (mode 600). Reading alerts needs no Buzz account; `aitools-alerts keygen` makes a key only for ai-tools community members who want to post or discuss on the relay. The settings:
 
@@ -143,6 +143,8 @@ Each product of each relay-bot alert gets one of three results:
 - **unknown**: the source could not be read (a timeout, a rate limit, a 404, a damaged body), or it is one anyone can write (an advisory GitHub has not reviewed), or CISA simply does not list the CVE, or the level rests on a reading of prose that no program can check. Unknown says nothing in either direction.
 
 The check compares the product and the level. It does not compare the affected versions or the fixed version a post states with the source's.
+
+A product is judged as the product your installation was matched as. `claude code`, `claude-code` and `@anthropic-ai/claude-code` under ecosystem `claude-code` are all Claude Code, and get its result. A posted product that is no product of `spec/scope.json` under its ecosystem (`Claude Code` posted as a skill, say), or an alert whose id names no source, can never be confirmed or contradicted. When the trust root pins the ruleset your CLI has, such a match does not interrupt: `check` lists the alert and says `names a product or an id this check cannot judge`.
 
 The result is reported, and `check --json` and `run --json` carry it as `source_check` on each match. It changes what you are shown in three cases: a lowering, an interrupt, and an alert no source supports:
 

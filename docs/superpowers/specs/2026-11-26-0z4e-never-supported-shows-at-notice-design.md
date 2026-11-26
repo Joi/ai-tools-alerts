@@ -172,6 +172,14 @@ Three findings rated major, all fixed in the commit after 59ecdfd, which no revi
 2. A result dated ahead of the clock was due but still sorted behind threads that fail every run. Fixed: it sorts as never tried (`verify._tried`). `test_a_result_dated_ahead_of_the_clock_is_tried_first_not_behind_threads_that_always_fail`.
 3. A record found damaged under the lock left the command acting on what it had computed, with no 48-hour guard. Fixed: it is started again there, as `_mend` does (`_start_again`). `test_a_record_found_damaged_under_the_lock_is_started_again_on_the_safe_side`.
 
+## After ai-tools-alerts#2mgd landed (merge of main, not reviewed)
+
+ai-tools-alerts#2mgd, filed from this run's design review, merged before this branch. It keys a result by the product's ecosystem and posted name (`verify.pkey`) and judges a respelled product as the scope product it matches as. The merge adapts this change to it:
+
+- The memory is kept per result key, not per product name; `state.MAX_PRODUCT_NAME` is 400 for that. The lines print the scope name (`verify.scope_of`).
+- A respelled product (`claude code`) is therefore shown at notice like the scope name: `test_a_respelled_product_is_shown_at_notice_like_the_scope_name`. The second Known limit above no longer holds for respellings. The alias limits remain (ai-tools-alerts#nx25).
+- The cache version stays 4, which 2mgd also took: a cache main wrote differs only in an `unread` result carrying no level, and such a result is read again in any case.
+
 ## Assumes
 
 - "Shown at notice" applies to any published level above notice, not only critical.

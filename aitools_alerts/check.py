@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 
-from . import schema, versions
+from . import ruleset, schema, versions
 from .inventory import Installed, Inventory
 from .schema import Action, Advisory, Product
 
@@ -127,6 +127,39 @@ def _owns(ecosystem: str, installed: Installed) -> bool:
             or installed.name.lower() in IDENTITY.get(ecosystem, set()))
 
 
+@lru_cache(maxsize=1)
+def scope_products() -> dict[str, tuple]:
+    """ecosystem -> ((scope product name, its package in lowercase or None), ...) for
+    every product a reading can support (``Ruleset.products``: entries and components,
+    a component under its entry's ecosystem). A scope file that does not load: {}."""
+    try:
+        out: dict = {}
+        for e in {x.name: x for x in ruleset.index(schema.load_scope()).values()}.values():
+            out.setdefault(e.ecosystem, []).append((e.name, e.package.lower() if e.package else None))
+        return {k: tuple(v) for k, v in out.items()}
+    except Exception:
+        return {}
+
+
+def scope_name(name: str, ecosystem: str) -> str | None:
+    """The scope product a posted product is, or None (ai-tools-alerts#2mgd): the one
+    scope product of ``ecosystem`` that ``match`` cannot tell from it. ``match`` compares
+    names in lower case and, for a tool, treats every name of its IDENTITY as one; an
+    mcp installation is also known by its package. So ``claude code`` and
+    ``@anthropic-ai/claude-code`` under ``claude-code`` are ``Claude Code``, and
+    ``Claude Code`` under ``skill`` is not: what interrupts through an installation is
+    judged as the product that installation is. None when no scope product, or more
+    than one, fits. Never raises."""
+    try:
+        n = name.lower()
+        tool = IDENTITY.get(ecosystem, set()) | {ecosystem} if ecosystem not in _NAME_ECOSYSTEMS else set()
+        hits = {s for s, package in scope_products().get(ecosystem, ())
+                if s.lower() == n or (n in tool and s.lower() in tool) or (ecosystem == "mcp" and package == n)}
+        return hits.pop() if len(hits) == 1 else None
+    except Exception:
+        return None
+
+
 def _concerns(action: Action, ecosystem: str, aliases: set[str]) -> bool:
     if action.verb in _TARGETED:
         want = _TARGETED[action.verb]
@@ -138,9 +171,9 @@ def _concerns(action: Action, ecosystem: str, aliases: set[str]) -> bool:
 
 
 def match(advs: list[Advisory], inv: Inventory) -> list[Match]:
-    """One Match per (advisory, installation, range, reason): product entries
-    that repeat the same range and fixed version for one installation with
-    the same reason collapse; entries with different constraints, or one that
+    """One Match per (advisory, installation, range, reason, scope product): product
+    entries that repeat the same range and fixed version for one installation with
+    the same reason, and are the same scope product (``scope_name``) or none, collapse; entries with different constraints, or one that
     may apply beside one that is affected, each yield their own Match."""
     out = []
     for adv in advs:
@@ -165,7 +198,10 @@ def match(advs: list[Advisory], inv: Inventory) -> list[Match]:
                     reason = AFFECTED if hit else UNPARSABLE
                 # The reason is in the key: a may-apply product cannot hide
                 # an affected one for the same installation and range.
-                key = (product.ecosystem, inst, product.affected, product.fixed, reason)
+                # And the scope product (2mgd): an entry that is no scope product (an MCP
+                # server's configured key, say) cannot hide one the source check can judge.
+                key = (product.ecosystem, inst, product.affected, product.fixed, reason,
+                       scope_name(product.name, product.ecosystem))
                 if key in seen:
                     continue
                 seen.add(key)

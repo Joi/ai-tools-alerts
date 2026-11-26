@@ -88,7 +88,7 @@ EVENT_KEYS = ("id", "pubkey", "created_at", "kind", "tags", "content", "sig")
 # no record the CLI writes is one this loader refuses.
 MAX_UNVERIFIED_ENTRIES = 20000
 _UNVERIFIED_KEYS = {"lowerings", "refused", "interrupts", "held", "reset_at"}  # and, since 0z4e, "supported"
-MAX_PRODUCT_NAME = 200
+MAX_PRODUCT_NAME = 400  # a result's key: ecosystem and name (verify.pkey)
 
 
 def no_support() -> dict:
