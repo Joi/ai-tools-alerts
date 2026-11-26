@@ -798,8 +798,8 @@ def _claim(at, checked=None, cve="CVE-2026-0001"):
     return wire.claim_tag({**obj, "checked_at": checked or at})
 
 
-def _renewal(m, root, at, confirmed=None):
-    return m.post(m.bot_sec, "Sources checked. No change to this alert.", created_at=at,
+def _renewal(m, root, at, confirmed=None, text="Sources checked. No change to this alert."):
+    return m.post(m.bot_sec, text, created_at=at,
                   tags=[["e", root["id"], "", "root"], _claim(confirmed or at, at)])
 
 
@@ -865,11 +865,36 @@ def test_a_must_listed_thread_that_does_not_fit_whole_lists_the_renewals_that_ke
     for i in range(30):
         m.post(m.bot_sec, f"note {i}", created_at=T0 - 8000 + i, tags=[("e", root["id"], "", "root")])
     old = _renewal(m, root, T0 - 5000, confirmed=T0 - 9000)
-    twins = sorted([_renewal(m, root, T0 - 100, confirmed=T0 - 9000), _renewal(m, root, T0 - 100, confirmed=T0 - 9000)],
-                   key=lambda e: e["id"])
+    twins = sorted([_renewal(m, root, T0 - 100, confirmed=T0 - 9000),
+                    _renewal(m, root, T0 - 100, confirmed=T0 - 9000, text="Sources checked again.")], key=lambda e: e["id"])
+    assert twins[0]["id"] != twins[1]["id"] and signer.renewals_of(twins[0], m.man) == signer.renewals_of(twins[1], m.man)
     # a reply that names a level renews from its own date: later confirmed than the twins, earlier checked
     raised = m.post(m.bot_sec, m.patch_text(level="critical"), created_at=T0 - 6000, tags=[("e", root["id"], "", "root")])
     monkeypatch.setattr(signer, "MAX_LISTED", 10)
     owed = [{"id": "a" * 64, "bytes": 10, "since": T0, "root": root["id"]}]
     got = set(_win(m, owed))
     assert got == {"a" * 64, root["id"], twins[0]["id"], raised["id"]} and old["id"] not in got
+
+
+def test_a_root_a_reader_would_decay_unasked_is_left_out_whatever_the_poster_knows(signing):
+    """The signer's own rule, which asks nothing of the ledger: a claimed root whose
+    renewals, as the poster's copy of the mirror has them, no longer hold the level the
+    bot last named is not listed. So a renewal that was never sent (a failed send, a lost
+    ledger, a channel a step never reached) pins the alert instead of lowering it."""
+    m, DAYS = signing.mirror, 86400
+    adv = advisory(id="CVE-2026-0001", posted_by="relay-bot")
+    stale = m.root_post(m.bot_sec, adv, created_at=T0 - 15 * DAYS, tags=[_claim(T0 - 15 * DAYS)], files=("feed.json",))
+    kept = m.root_post(m.bot_sec, adv, created_at=T0 - 15 * DAYS, tags=[_claim(T0 - 15 * DAYS)], files=("critical.json",))
+    m.post(m.bot_sec, "Sources checked. No change to this alert.", created_at=T0 - 8 * DAYS, files=("critical.json",),
+           tags=[["e", kept["id"], "", "root"], _claim(T0 - 15 * DAYS, T0 - 8 * DAYS)])
+    plain = on_mirror(m, "No claim on its root", T0 - 300 * DAYS, sec=m.bot_sec)
+    stepped = m.root_post(m.bot_sec, replace(adv, id="CVE-2026-0002", level="high"), created_at=T0 - 80 * DAYS,
+                          tags=[_claim(T0 - 80 * DAYS, cve="CVE-2026-0002")], files=("feed.json",))
+    m.post(m.bot_sec, m.patch_text(level="notice"), created_at=T0 - 36 * DAYS, tags=[["e", stepped["id"], "", "root"]])
+    events = [e for evs in m.events.values() for e in evs]
+    assert signer.lapsed(events, m.man, T0) == {stale["id"]}
+    assert signer.lapsed(events, m.man, T0 - 2 * DAYS) == set()  # critical stood for 14 days
+    _, summary, ssh = signing.run(relay=PutRelay())
+    listed = ssh.last().events
+    assert "threads_suppressed=1" in summary and stale["id"] not in listed
+    assert {kept["id"], plain["id"], stepped["id"]} <= listed

@@ -41,7 +41,23 @@ Pass 1 [plan]: 7B/0S/0C/0R · fixed -/- · velocity = (—→7, escalation no)
 6. Chunk 2's verification needed chunk 3's signer interfaces. Fixed in the plan's order.
 7. Tests asked for days 7 and 44 while the predicates were strict. Fixed: inclusive comparisons.
 
+## Code review, whole branch at 9455f5a24c925ef28ef6f5a6a760f2de583fb4aa (fresheyes, gpt-6-astra, run 20261126-162331-453faa): 11 BLOCKER
+Findings 1 to 8 are one class: a checkpoint lists a root whose delivered renewals no longer hold its level, in a case the poster's own bookkeeping misses. One fix answers the class: `signer.lapsed` reads the poster's copy of the mirror as a reader would and leaves such a root out, per channel, whatever the ledger says.
+1. A mirror hides a root and its renewals, the root is given up, the renewals lose their protection, the root comes back alone. Fixed: `lapsed`; and `settle_gone` keeps the renewals of a root it no longer holds.
+2. A later copy renews the ledger's shared claim while the first root's channel got nothing. Fixed: `lapsed` (the first root is left out when its own renewals run out; the next renewal goes to both channels).
+3. A step down one channel refused twice leaves the journal, and the suppression with it. Fixed: `lapsed`.
+4. A blocked step judged whether listing was safe by the life a renewal would give, not by what was delivered. Fixed: `lapsed` judges delivered events only.
+5. A step whose send stops the pass leaves later due threads unlooked at. Fixed: `lapsed`.
+6. After a lost checkpoint state a hidden level reply is not replaced by the recovery renewal. Fixed: `lapsed` (the thread is left out once the events held no longer keep its level).
+7. A lost ledger knows no thread; checkpoints go on. Fixed: `lapsed`.
+8. A run that ends in a LedgerError skips the renewal pass and still signs. Fixed: `lapsed`.
+9. A confirming read between two renewals was kept nowhere, so the 45 days ran from the older confirmation. Fixed: a read that confirms a claim last sent unconfirmed is sent at once.
+10. The root-id test brought no later alias. Fixed: `test_a_claim_about_an_alias_a_later_reply_brought_never_becomes_the_standing_claim`.
+11. The equal-times test built the same event twice. Fixed: two events with different text, asserted distinct.
+Pass 1 [code:all]: 11B/0S/0C/0R · fixed -/- · velocity = (—→11, escalation no)
+
 ## Notes
+- The second, same-model reviewer (Stage 1) had not reported when the fixes above were committed; its findings, if any arrive, are listed below or in the kata comment.
 - The session stopped on a usage limit one minute after dispatch and resumed at 06:40Z with nothing on the branch.
 - Prior work read: ai-tools-alerts#r0ra, #ny5g, #hh5s close-outs and specs; #h29n D5.
 - The start-floor evaluator subagent was not run: the dispatch brief fixes the floor at medium and names the only two ways it climbs. No hard trigger is in the diff (no secrets, auth or credential handling, no deploy path); every BLOCKER of the spec and plan passes was fixed, so the rung stays medium.

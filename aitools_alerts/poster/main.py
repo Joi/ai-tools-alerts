@@ -1829,7 +1829,9 @@ class Run:
                         steps.append((best, e, old))
                 continue
             forced = lost is not None and old["checked_at"] < lost
-            if forced or (life - self.now <= rs.ttl_days[e.level] * 86400 // 2 and best > life):
+            # A read that confirms a claim sent unconfirmed is sent at once: kept only in a
+            # renewal, a confirmation between two renewals would be lost to the 45-day count.
+            if forced or (fresh and old["checked_at"] > old["confirmed_at"]) or (life - self.now <= rs.ttl_days[e.level] * 86400 // 2 and best > life):
                 due.append((life, e, text if fresh else self._checked(e), forced))
         due.sort(key=lambda x: x[1].root_event_id)
         k = (self.now // 3600) % len(due) if due else 0
@@ -2347,6 +2349,9 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                     code = 1
                 except LedgerError as e:
                     code, err = 1, str(e)
+                except Exception as e:  # noqa: BLE001 - the pass must not cost the run its state save below
+                    code = 1
+                    _say(f"renewal pass stopped: {type(e).__name__}: {e}")
             if merged is not None:
                 state["deferred"] = list(r.deferred.values())  # replaces last run's list only now
                 live = {f"{sc}|{i.casefold()}" for (sc, _), d in r.deferred.items() for i in [d["id"], *d["aliases"]]}

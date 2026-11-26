@@ -134,9 +134,9 @@ def test_a_source_that_states_the_stepped_level_confirms_it(env):
         relay = day(env, d)
         assert not steps(relay)
         sent.update({d: c for _, c in renewals(relay)})
-    # notice stands 90 days from the step: renewed when 45 are left, by a claim of notice confirmed then
-    assert sorted(sent) == [89, 134]
-    assert sent[89]["level"] == "notice" and sent[89]["confirmed_at"] == sent[89]["checked_at"] == T0 + 89 * DAY
+    # confirmed again: sent at once, by a claim of notice; then when 45 of notice's 90 days are left
+    assert sorted(sent) == [60, 105]
+    assert sent[60]["level"] == "notice" and sent[60]["confirmed_at"] == sent[60]["checked_at"] == T0 + 60 * DAY
     assert entries(env)[0]["level"] == "notice"
 
 
@@ -264,3 +264,33 @@ def test_a_renewal_names_only_an_id_the_first_root_stated(env):
         for _, c in renewals(day(env, d)):
             assert c["id"] == G
     assert json.loads(entries(env)[0]["claim"])["confirmed_at"] == T0 + 30 * DAY
+
+
+def test_a_claim_about_an_alias_a_later_reply_brought_never_becomes_the_standing_claim(env):
+    """The root states one id. A candidate later brings the CVE, which KEV lists: the
+    raise's claim is about the CVE. A reader that lacks that reply does not hold the
+    CVE, so the standing claim, and each renewal, stays about the root's own id."""
+    from test_advisory_recompute import CVE
+    post(env)
+    assert entries(env)[0]["root_ids"] == [G]
+    env.api.put(G, ghsa_json(G, cve=CVE))
+    env.kev.catalog = catalog("v1", CVE)
+    env.collector([finding(fid=CVE, fixed="2.1.0", aliases=(G,))], name="2026-11-07T000000Z")
+    relay = day(env, 1)
+    raised = [wire.claim_of({"tags": [c.claim]}) for c in relay.calls if c[1] and c.claim and c[2] != compose.RENEWAL]
+    (e,) = entries(env)
+    assert e["level"] == "critical" and raised and all(c["id"] == CVE for c in raised)
+    assert e["root_ids"] == [G] and json.loads(e["claim"])["id"] == G
+    seen = [c for d in range(2, 20) for _, c in renewals(day(env, d))]
+    assert seen and all(c["id"] == G for c in seen)
+
+
+def test_a_confirmation_between_two_renewals_is_sent_at_once(env):
+    root = critical(env)
+    for d in range(1, 37):
+        day(env, d, kev=BLOCKED)
+    relay = day(env, 37)  # eight days of life left: not due by time, but the source answers again
+    assert [c["confirmed_at"] for _, c in renewals(relay)] == [T0 + 37 * DAY] * 2
+    for d in range(38, 50):
+        assert not steps(day(env, d, kev=BLOCKED))  # 45 days count from day 37 now
+    assert root["confirmed_at"] == T0

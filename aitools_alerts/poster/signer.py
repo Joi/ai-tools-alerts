@@ -30,7 +30,7 @@ from aitools_alerts import checkpoint as cpt
 from aitools_alerts import manifest, nostr, pull
 from aitools_alerts.state import State, write_json
 
-__all__ = ["run_checkpoint", "KeyFileError", "read_key", "keygen", "init_owed", "load_owed", "save_owed", "record_sent", "settle_owed", "renewals_of",
+__all__ = ["run_checkpoint", "KeyFileError", "read_key", "keygen", "init_owed", "load_owed", "save_owed", "record_sent", "settle_owed", "renewals_of", "lapsed",
            "window", "next_seq", "MAX_LISTED", "MAX_LISTED_BYTES", "OWED_S", "MARGIN_S", "ENVELOPE"]
 
 # One checkpoint lists at most this much. The exporter must be able to serve
@@ -227,6 +227,49 @@ def _frontier(replies, m) -> list:
     return list({first[p]["id"]: first[p] for p in top}.values())
 
 
+def lapsed(events, m, now: int, channels=None) -> set:
+    """The roots, among ``events``, of relay-bot threads a reader of exactly these
+    events would decay at ``now`` although the poster never said so (gtw9): the
+    root carries a claim, no curator replied, and the renewals of the root and
+    its replies no longer keep standing the level the bot last named (the
+    root's, or the newest reply's that names one). They are left out of the
+    checkpoint, whatever the reason the renewal or the level reply is not there:
+    a send that failed, a channel one reply never reached, a lost ledger or
+    state file, a mirror that hid it. A thread the checkpoint does not list
+    keeps its level on a reader. At notice the thread is listed and leaves
+    readers: that is the one decay the poster intends (it posts every step
+    above it before the level's life ends)."""
+    from aitools_alerts import ruleset, schema
+    channels = pull.channel_ids() if channels is None else channels
+    try:
+        rs = ruleset.load()
+    except Exception:  # noqa: BLE001 - a reader with a damaged ruleset expires nothing either
+        return set()
+    threads: dict[str, list] = {}
+    for ev in events:
+        if manifest.role_of(m, ev["pubkey"]) is not None and pull._bound(ev, channels) and ev["created_at"] <= now:
+            threads.setdefault(pull._thread_ref(ev) or ev["id"], []).append(ev)
+    out = set()
+    for key, evs in threads.items():
+        root = next((e for e in evs if e["id"] == key), None)
+        if root is None or manifest.role_of(m, root["pubkey"]) != "relay-bot":
+            continue
+        first = pull._renewal(root, "relay-bot")
+        adv = schema.parse_post(root["content"])
+        replies = sorted((e for e in evs if e["id"] != key), key=lambda e: (e["created_at"], e["id"]))
+        if first is None or adv is None or any(manifest.role_of(m, e["pubkey"]) == "curator" for e in replies):
+            continue
+        level, pairs = adv.level, [(first[1], first[2])]
+        for e in replies:
+            pairs += renewals_of(e, m)
+            named = (pull._patch(e["content"]) or {}).get("level") if manifest.role_of(m, e["pubkey"]) == "relay-bot" else None
+            if isinstance(named, str) and named in pull._RANK:
+                level = named
+        if level in rs.levels[1:] and rs.level_at(level, pairs, now) != level:
+            out.add(key)
+    return out
+
+
 def settle_owed(owed: list, present, now: int, later: dict | None = None) -> tuple[list, int, set]:
     """The owed list after looking at the mirror, how many entries were
     given up, and the thread roots to leave out of checkpoints. An entry
@@ -273,9 +316,9 @@ def settle_gone(gone: dict, held: dict, served, now: int, m) -> tuple[dict, set,
     later = _later((held[i] for i in held if i in served), m)
 
     def enrolled(root) -> bool:  # its root carries a claim: readers compute its life (pull.threads_from)
-        ev = held.get(root)
-        return ev is not None and manifest.role_of(m, ev["pubkey"]) == "relay-bot" \
-            and pull._renewal(ev, "relay-bot") is not None
+        ev = held.get(root)  # a root given up for missing may come back: its renewals are kept for it
+        return ev is None or (manifest.role_of(m, ev["pubkey"]) == "relay-bot"
+                              and pull._renewal(ev, "relay-bot") is not None)
     fixes = {i for i in late if pull._thread_ref(held[i]) is not None
              and (manifest.role_of(m, held[i]["pubkey"]) == "curator"
                   or (enrolled(pull._thread_ref(held[i])) and (rn := renewals_of(held[i], m))
@@ -459,9 +502,11 @@ def run_checkpoint(config, now: int, *, ssh=None, fetch=None, root: str = TRUST_
     owed, dropped, hidden = settle_owed(rec["owed"], {i for i, e in st.events.items() if e["created_at"] <= now}, now,
                                         _later((e for e in st.events.values() if e["created_at"] <= now), m))
     suppress = suppress | hidden
+    listable = [o for o in owed if not ("renewal" in o and o["since"] <= now - OWED_S)]
+    # gtw9: and no root a reader of the poster's own copy would decay unasked (``lapsed``).
+    suppress = suppress | lapsed(st.events.values(), m, now)
     tail = ((f",owed_dropped={dropped}" if dropped else "") + (f",gone_dropped={len(give_up)}" if give_up else "")
             + (f",threads_suppressed={len(suppress)}" if suppress else ""))
-    listable = [o for o in owed if not ("renewal" in o and o["since"] <= now - OWED_S)]
     ids = window(st.events.values(), m, listable, now, suppress=suppress)
     if ids is None:
         save_owed(config.owed_state, {**rec, "owed": owed})

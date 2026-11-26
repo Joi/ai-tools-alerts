@@ -38,7 +38,7 @@ What the poster sends (ai-tools-alerts#hh5s):
 - **The step down.** A level that no read has confirmed for 45 days, less one day so that the reply is on the feed before readers reach the ceiling, is lowered one step by a level-only reply (rule 1 below) whose line gives the reason: `Level is now high. No source has confirmed the higher level for 44 days.` Its claim keeps the old `confirmed_at`. The reply's own date is what renews the new level on a reader (next section), so the next step comes when that level's TTL from the step runs out; at notice nothing more is sent, and the thread leaves readers 90 days later unless a source confirms it again.
 - A reply with no level change that is not a renewal, a Japanese reply, a digest and a catalog root carry none.
 
-The poster's checkpoint never lists a thread's root without the renewals that keep it standing (`poster.signer`): when the mirror has stopped serving one, when the poster could not deliver one that was due, or when a thread that must be listed does not fit whole, the thread is left out of the checkpoint, and a reader keeps a thread its checkpoint does not list at the level its events give.
+The poster's checkpoint never lists a thread's root without the renewals that keep it standing (`poster.signer`): before signing it reads its own verified copy of the mirror as a reader would (`signer.lapsed`), and a claimed root whose renewals no longer hold the level the bot last named above notice is left out of the checkpoint, as is the thread of a renewal the mirror stopped serving, and a reader keeps a thread its checkpoint does not list at the level its events give.
 
 A reader never refuses an event because of its claim tag: an event with a claim the reader cannot use is read as an event with none.
 
