@@ -223,7 +223,7 @@ def test_a_raise_needs_no_complete_read_and_ends_a_wait():
     assert recompute.judge(e, CLAUDE, None, RS, st, 0, reads(**{G: ghsa_json(G)})) == ("raise", "high")
     info = {}
     recompute.judge(thread(), CLAUDE, None, RS, st, 0, reads(**{G: 429}), info)
-    assert info == {"known": False, "listed": set()}
+    assert info == {"known": False, "listed": set(), "readings": []}  # hh5s: an unread source gives no reading
 
 
 def test_states_written_before_this_change_still_load(tmp_path):

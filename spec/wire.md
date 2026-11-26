@@ -26,7 +26,15 @@ The signed statement of what an alert's state rests on travels in one tag on the
 - The value is a JSON object, at most 2048 bytes of UTF-8, with no duplicate key and no `NaN` or `Infinity`.
 - `aitools_alerts.wire.claim_tag(obj)` writes it (sorted keys, no spaces); `wire.claim_of(event)` reads it and returns None for anything else.
 
-What the object holds, its canonical form and its test vectors are defined with the level function (ai-tools-alerts#s6mt). A reader never refuses an event because of its claim tag: an event with a claim the reader cannot use is read as an event with none.
+What the object holds, its canonical form and its test vectors are defined with the level function (ai-tools-alerts#s6mt).
+
+What the poster sends (ai-tools-alerts#hh5s):
+
+- **A level change carries a claim**: a raise that shares a reply, and every level-only reply. It is built from the readings the change rested on in that run (`poster.rules.claim_text`): of those whose id is one of the ids the thread has published, the one the ruleset gives the highest level for the product, the first id's on a tie. `confirmed_at` and `checked_at` are the time of the run that read the source; the event is dated when it is sent, at or after that.
+- A level change that no reading states carries none: a lowering that rests only on a CVE's absence from KEV, a level that rests on a reading of prose. A claim whose level is `none` (the source withdrew the advisory) is sent; it is no renewal.
+- A claim larger than 2048 bytes is not sent, and nothing is left out of it to make it fit: the event goes out with no claim tag. Readers 0.1.8 to 0.2.1 read a longer tag as no claim, so a larger limit would reach none of them.
+- **A root, and its copy in another channel, carries no claim yet.** A thread whose root carries one decays on readers 0.1.8 and later unless it is renewed (next section), and the poster sends no renewal yet. The root path is built and switched off (`poster.main.ROOT_CLAIMS`); ai-tools-alerts#gtw9 turns it on with renewals. `tests/test_wire_compat.py` shows both: the events as sent, and a claimed root decaying.
+- A reply with no level change, a Japanese reply, a digest and a catalog root carry none. A reader never refuses an event because of its claim tag: an event with a claim the reader cannot use is read as an event with none.
 
 ## Level changes and expiry
 

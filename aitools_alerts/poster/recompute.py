@@ -234,7 +234,7 @@ def published_aliases(entry) -> list:
     return [x for x in (lookup_id(a) for a in entry.advisory.get("aliases") or ()) if x is not None]
 
 
-def support(entry, scope, copy: Copy | None, rs, read=None) -> tuple[str, bool, set, set, bool]:
+def support(entry, scope, copy: Copy | None, rs, read=None, counted: list | None = None) -> tuple[str, bool, set, set, bool]:
     """(found, known, listed, gone, stop): the level the thread's sources state for its
     product by their fields (``ruleset.NONE`` when none does); whether every source
     was read whole; the CVEs the copy lists as this product, and those it does not
@@ -256,8 +256,14 @@ def support(entry, scope, copy: Copy | None, rs, read=None) -> tuple[str, bool, 
     tie (it is not counted either: neither a listing nor an absence of it says
     anything about this thread); a response whose class for this product cannot
     lower (3qyq: its support, a notice at most, is not counted); a first response
-    that names more ids than a member reads."""
+    that names more ids than a member reads.
+
+    ``counted``, when given, receives each reading counted, as ``(source, fields)``:
+    an advisory response that was read, is tied and may lower, whatever it supports
+    (a withdrawal too), and each KEV entry read as this product's. They are what a
+    level change of this run rests on (hh5s: its claim)."""
     ids = bare_ids(entry)
+    counted = [] if counted is None else counted
     read = read or (lambda i: None)
     found, listed, gone, stop = ruleset.NONE, set(), set(), False
     if ids is None:
@@ -276,10 +282,12 @@ def support(entry, scope, copy: Copy | None, rs, read=None) -> tuple[str, bool, 
             own = r.support.get(scope.name)
             if not (own[1] if own is not None else r.lowers):
                 known = False  # a source its subject's attacker can write justifies no lowering
-            elif own is not None and own[0] != ruleset.NONE:
-                if rs.rank(own[0]) > rs.rank(found):
-                    found, stop = own[0], False
-                stop = stop or (own[0] == found and own[2])
+            else:
+                counted.append((r.source, r.fields))
+                if own is not None and own[0] != ruleset.NONE:
+                    if rs.rank(own[0]) > rs.rank(found):
+                        found, stop = own[0], False
+                    stop = stop or (own[0] == found and own[2])
             continue
         if not first_kev and i not in picked:
             known = False  # a CVE the first id's response does not name, or names past what a member reads
@@ -292,12 +300,14 @@ def support(entry, scope, copy: Copy | None, rs, read=None) -> tuple[str, bool, 
             continue
         try:
             vendor, product = item.get("vendorProject"), item.get("product")
-            got = rs.read("kev", {"cve_id": i, "name": f"{vendor.strip()} {product.strip()}"}).get(scope.name)
+            fields = {"cve_id": i, "name": f"{vendor.strip()} {product.strip()}"}
+            got = rs.read("kev", fields).get(scope.name)
         except (ruleset.RulesetError, AttributeError):
             got = None
         if got is None or got.level == ruleset.NONE:
             known = False
         else:
+            counted.append(("kev", fields))
             if rs.rank(got.level) > rs.rank(found):
                 found, stop = got.level, False
             listed.add(i)
@@ -342,13 +352,15 @@ def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int, read=None, in
     The two rules about a CVE's absence from KEV (it must have been seen listed by a
     complete copy; the wait must end on a later catalog) govern a thread the ledger
     marks exploited, and one a copy, complete or not, has ever listed for this product
+    (``info["readings"]``: the readings counted, ``support``'s ``counted``.)
     (``st["exploited"]``: per thread the CVEs listed, recorded here whether or not a
     level changes; ``Run.recompute`` then marks the ledger). Such a thread is not
     known without a complete copy, while a CVE once listed is no longer among the ids
     judged (an advisory that stopped naming it says nothing about KEV), and when no
     CVE of it is judged at all. A thread KEV never listed does not rest on it: that
     absence is not what lowers it (3qyq)."""
-    found, known, listed, gone, stop = support(entry, scope, copy, rs, read)
+    counted: list = []
+    found, known, listed, gone, stop = support(entry, scope, copy, rs, read, counted)
     root, dwell = entry.root_event_id, st["dwell"]
     ever = set(st["exploited"].get(root, ()))
     if listed - ever:
@@ -358,7 +370,7 @@ def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int, read=None, in
     if kev and (copy is None or not copy.complete or ever - (listed | gone) or not (listed | gone)):
         known = False
     if info is not None:
-        info.update(known=known, listed=listed)
+        info.update(known=known, listed=listed, readings=counted)
     found = held(entry, scope, found, rs, stop, infer=not known)
     if rs.rank(found) > rs.rank(entry.level):
         dwell.pop(root, None)

@@ -57,6 +57,10 @@ unknown and moves nothing. A new candidate's ``ghsa`` reading is that API's answ
 too (``Run.admit``); one whose advisory could not be read is admitted again each
 run for RETRY_DAYS. At most 30 advisory requests a run, in three lanes.
 
+A reply that changes a thread's level carries the claim tag of the reading the change
+rests on (``Run._claim``, ``rules.claim_text``; ai-tools-alerts#hh5s, spec/wire.md); the
+journal item keeps its text. Roots carry none until the poster renews (``ROOT_CLAIMS``).
+
 With spec/catalog-channel.json present, every in-scope advisory (each ledger thread
 whose product starts at its level, and each held notice) is also posted, whole, as a
 root to the catalog channel when it differs from what was last posted there
@@ -84,7 +88,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from aitools_alerts import TRUST_ROOT_PUBKEY, check, manifest, pull, ruleset, schema, versions
+from aitools_alerts import TRUST_ROOT_PUBKEY, check, manifest, pull, ruleset, schema, versions, wire
 from aitools_alerts import config as _member_config
 from aitools_alerts.poster import (candidates, catalog, compose, inputs, ledger, recompute, rules, signer, sources,
                                    translate, wording,
@@ -114,6 +118,11 @@ SETTLE_SKEW = 600  # an event dated this long before the attempt is still its de
 MIRROR_FRESH = 3600  # a channel file generated longer ago proves no absence
 GIVE_UP = 72 * 3600  # an unknown send is sent again after this whatever the mirror says (signer.OWED_S)
 WITHHELD_SECONDS = 3 * 86400  # a refused item is dropped, and its advisory planned anew, after this
+# hh5s: whether a root and its copies carry a claim tag. Off until the poster renews
+# (ai-tools-alerts#gtw9, which turns it on): readers 0.1.8 and later decay a thread whose
+# root carries a claim (critical for 14 days) unless a later claim renews it, and a thread
+# whose root carries none never expires, whatever its replies carry (spec/wire.md).
+ROOT_CLAIMS = False
 _LEVEL_LINE = ("level: high", "level: notice")
 
 
@@ -189,10 +198,11 @@ class Run:
     # ------------------------------------------------------------ the journal
 
     def _item(self, kind, scope, ids, channel, text, *, key_id, adv=None, exploited=False, date=None,
-              root=None, ja=None, source_title=None, floor=None):
+              root=None, ja=None, source_title=None, floor=None, claim=None):
         """One journal item. ``root`` fixes a reply's or copy's thread at planning time, so a
-        later alias bridge cannot move it to another thread. Raises ValueError (withheld)
-        for a message the transport would refuse."""
+        later alias bridge cannot move it to another thread. ``claim``: the text of its
+        claim tag (``_claim``), kept so a replay signs the same one. Raises ValueError
+        (withheld) for a message the transport would refuse."""
         if not text or len(text) > transport.MAX_CONTENT or "\x00" in text:
             raise ValueError("message too large or not sendable")
         return {"key": f"{kind}:{scope}:{key_id}:{channel}", "kind": kind, "scope": scope,
@@ -200,7 +210,22 @@ class Run:
                 "exploited": exploited is True, "date": date, "sent": None, "root": root,
                 **({"ja": ja} if ja else {}),  # no key without a body: the poster before rd8t loads it
                 **({"source_title": source_title} if source_title else {}),
-                **({"floor": floor} if floor else {})}  # ny5g: a root's prose floor, for the ledger
+                **({"floor": floor} if floor else {}),  # ny5g: a root's prose floor, for the ledger
+                **({"claim": claim} if claim else {})}  # hh5s: no key without one, as above
+
+    @staticmethod
+    def _tag(it):
+        """The claim tag a journal item is sent with, or None."""
+        return [wire.CLAIM_TAG, it["claim"]] if it.get("claim") else None
+
+    def _claim(self, readings, ids, scope) -> str | None:
+        """The text of the claim tag for an event about the thread with ``ids`` (its
+        first id first), from the readings its level rested on (``rules.claim_text``)."""
+        readings = list(readings)
+        text = rules.claim_text(readings, ids, scope, self.now)
+        if text is None and rules.claim_text(readings, ids, scope, self.now, limit=False) is not None:
+            _say(f"{compose.public_form(ids[0])}: its claim is larger than {wire.MAX_CLAIM_BYTES} bytes; sent without one")
+        return text
 
     def _ja(self, fn, *a, **kw):
         """A Japanese body, or None: a Japanese failure never withholds the English post."""
@@ -255,7 +280,7 @@ class Run:
             if it["kind"] == "reply" and reply_to is None:
                 raise LedgerError(f"{it['key']}: no root in {it['channel']}")
             try:  # every check the transport makes, before anything is marked pending
-                transport.check_send(self.channels[it["channel"]], it["text"], reply_to)
+                transport.check_send(self.channels[it["channel"]], it["text"], reply_to, self._tag(it))
             except (ValueError, KeyError):
                 self._drop([it])
                 self.n["ja_failed" if ja else "withheld"] += 1
@@ -265,7 +290,8 @@ class Run:
                     return False
                 raise _Stop from None
             self.led.pending(it["key"], [] if ja else it["ids"], now=self.now)  # ja: matches no advisory
-            r = self.send(self.channels[it["channel"]], it["text"], reply_to)
+            # with no claim, exactly the call it was: a sender that knows none still serves
+            r = self.send(self.channels[it["channel"]], it["text"], reply_to, *([tag] if (tag := self._tag(it)) else []))
             if r.outcome == "refused":  # never sent again unchanged; the run goes on
                 self._withhold(it, r.message)  # saved before the mark clears: a crash between holds it
                 self.led.clear_pending(it["key"])
@@ -309,7 +335,9 @@ class Run:
             e = self.led.lookup(it["ids"], scope=it.get("scope"))
             root = (getattr(e, "channel_ids", {}).get(it["channel"]) if e is not None else None) or it.get("root")
         try:
-            signer.record_sent(self.config.owed_state, it["sent"], len(it["text"].encode("utf-8")), root, self.now)
+            tag = self._tag(it)  # hh5s: the claim tag is part of what a channel file holds
+            size = len(it["text"].encode("utf-8")) + (wire.tag_bytes(tag) if tag else 0)
+            signer.record_sent(self.config.owed_state, it["sent"], size, root, self.now)
         except OSError as e:  # a debt that cannot be written down must stop the run, not be forgotten
             self.owe_failed = True  # and this run signs no checkpoint: it would omit the post
             raise LedgerError(f"checkpoint state {self.config.owed_state}: {e.strerror or e}") from None
@@ -414,7 +442,8 @@ class Run:
         """The id of the mirror event that is this journal item's send, or None: the
         relay bot's, with the item's exact text, in its channel, replying to its thread
         root there (to nothing, for a root, a copy or a digest), dated from the item's
-        first unknown attempt on (``tried``; ``p`` is the attempt in flight), and recorded
+        first unknown attempt on (``tried``; ``p`` is the attempt in flight), with the
+        item's claim tag and no other (hh5s; none for an item without one), and recorded
         nowhere yet. The oldest that would record."""
         try:
             target = it["root"] if it["kind"] == "ja" else \
@@ -424,7 +453,9 @@ class Run:
         if target is None and it["kind"] in ("reply", "ja"):
             return None
         channel = self.channels[it["channel"]]
+        claim = [self._tag(it)] if self._tag(it) else []
         hits = [e for e in events if e["content"] == it["text"] and pull._thread_ref(e) == target
+                and [t for t in e["tags"] if isinstance(t, list) and t and t[0] == wire.CLAIM_TAG] == claim
                 and [t[1] for t in e["tags"] if len(t) >= 2 and t[0] == "h"] == [channel]
                 and e["created_at"] >= min(p["at"], it.get("tried", p["at"])) - SETTLE_SKEW]
         return next((e["id"] for e in sorted(hits, key=lambda e: (e["created_at"], e["id"]))
@@ -1177,12 +1208,13 @@ class Run:
             self.hold(scope.name, adv, title)
             return []
         chans = CHANNELS_FOR[level]
+        claim = self._claim(rules._readings(c), [adv.id, *adv.aliases], scope.name) if ROOT_CLAIMS else None
         ja = self._ja(compose.root_post_ja, adv, reason, compose.fix_unexpressed(c), title,
                       exploited=c.exploited is True, range_unexpressed=compose.range_unexpressed(c),
                       package=compose.package_of(scope), wording=w)
         return [self._item("root" if i == 0 else "copy", scope.name, ids, ch, text, key_id=c.id,
                            adv=asdict(adv), exploited=c.exploited, ja=ja,
-                           source_title=title if i == 0 else None, floor=floor if i == 0 else None)
+                           source_title=title if i == 0 else None, floor=floor if i == 0 else None, claim=claim)
                 for i, ch in enumerate(chans)]
 
     def _posted(self, h) -> bool:
@@ -1325,6 +1357,12 @@ class Run:
         if changes and new.advisory_severity not in (None, prev.advisory_severity):
             changes["advisory_severity"] = new.advisory_severity  # 0dvh: never a reply on its own
         copies = [ch for ch in CHANNELS_FOR[level] if ch not in entry.channel_ids]
+        # hh5s: what this candidate's readings say of the thread, for a level change and
+        # (ROOT_CLAIMS) for a copy, a root in its channel. Each is chosen among the ids its
+        # own event leaves the thread with: a copy states them all, a level-only reply none new.
+        def claim_for(adv):
+            return self._claim(rules._readings(c), [adv.id, *adv.aliases], scope.name)
+        claim = claim_for(new) if copies and ROOT_CLAIMS else None
         w = self.wording(k, scope, level, reason) if copies else None  # c6ak: a copy is a post
         if w is not None:
             text = compose.root_post(k, (level, reason), scope, posted_at=prev.posted_at, wording=w)[0]
@@ -1332,12 +1370,12 @@ class Run:
                       exploited=k.exploited is True, range_unexpressed=compose.range_unexpressed(k),
                       package=compose.package_of(scope), wording=w) if copies else None
         items = [self._item("copy", scope.name, ids, ch, text, key_id=prev.id, exploited=c.exploited,
-                            root=entry.root_event_id, ja=ja)
+                            root=entry.root_event_id, ja=ja, claim=claim)
                  for ch in copies]
         if changes and entry.lowered and "level" in changes:
             # ny5g, spec/wire.md rule 2: on a thread that has had a lowering a level change
             # travels alone; whatever else this run learned follows in a reply without it.
-            items += self._level_items(entry, changes.pop("level"))
+            items += self._level_items(entry, changes.pop("level"), claim_for(prev))
             prev = replace(prev, level=level)
             if changes.get("title") == prev.title:  # it came with the level; unchanged, it is no reply
                 del changes["title"]
@@ -1358,19 +1396,22 @@ class Run:
                                                           exploited=k.exploited is True,
                                                           range_unexpressed=compose.range_unexpressed(k),
                                                           package=compose.package_of(scope)))
+            said = claim_for(merged) if "level" in changes else None  # a reply with no level change carries none
             items += [self._item("reply", scope.name, ids, ch, reply, key_id=prev.id,
-                                 adv=asdict(merged), exploited=c.exploited, root=entry.root_event_id, ja=ja)
+                                 adv=asdict(merged), exploited=c.exploited, root=entry.root_event_id, ja=ja,
+                                 claim=said)
                       for ch in entry.channel_ids]
         return items
 
-    def _level_items(self, entry, level):
+    def _level_items(self, entry, level, claim=None):
         """A level change and nothing else (``compose.level_post``), one reply for each
-        channel the thread has a root in. No Japanese copy: the digest reports it."""
+        channel the thread has a root in, each with the claim the change rests on
+        (``_claim``; None: no reading states it). No Japanese copy: the digest reports it."""
         prev = schema.validate(entry.advisory)
         text = compose.level_post(prev, level)
         return [self._item("reply", entry.scope, entry.aliases, ch, text, key_id=f"{prev.id}#level",
                            adv=asdict(replace(prev, level=level)), exploited=entry.exploited,
-                           root=entry.root_event_id) for ch in entry.channel_ids]
+                           root=entry.root_event_id, claim=claim) for ch in entry.channel_ids]
 
     def drop_unsent_lowerings(self):
         """Before the journal drains: a lowering no channel has yet is not sent on the
@@ -1419,6 +1460,7 @@ class Run:
             st[k] = {r: v for r, v in st[k].items() if r in self.observed}
         st["exploited"] = {r: v for r, v in st["exploited"].items() if r in self.observed}
         self.verdicts, self.judged, self.known = {}, set(), set()
+        self.readings: dict[str, list] = {}  # hh5s: root -> the readings its verdict rested on
         self._judge(self._in_turn(entries), rs)
         if self.api.unread:
             _say(f"advisory reads: {len(self.api.unread)} id(s) not read this run (the lane's share was spent); "
@@ -1436,6 +1478,7 @@ class Run:
         for e in entries:  # with no copy every read is unknown, and judge says so to each wait
             root = e.root_event_id
             self.verdicts.pop(root, None)
+            self.readings.pop(root, None)
             self.known.discard(root)
             scope = rules.scope_of(e.scope) if recompute.judged(e) else None
             if scope is None or scope.name != e.scope or (
@@ -1452,6 +1495,7 @@ class Run:
             verdict = recompute.judge(e, scope, self.copy, rs, st, self.now, read, info)
             if info.get("known"):
                 self.known.add(root)
+            self.readings[root] = info.get("readings") or []
             if verdict is not None:
                 self.verdicts[root] = (e, *verdict)
 
@@ -1510,7 +1554,8 @@ class Run:
                 self.led.mark_exploited(root)
         for e, level in raises + due:
             try:
-                items = self._level_items(e, level)
+                ids = [e.advisory.get("id"), *(e.advisory.get("aliases") or [])]
+                items = self._level_items(e, level, self._claim(self.readings.get(e.root_event_id, ()), ids, e.scope))
             except ValueError:  # compose refused it: this thread's change is withheld
                 self.n["withheld"] += 1
                 continue

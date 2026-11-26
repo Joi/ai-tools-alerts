@@ -38,10 +38,12 @@ def run(env, now, **kw):
     return env.run(now=now, mirror_fetch=served(env, now - 300), **kw)
 
 
-def show(env, call, when=T0 + 5, sec=None, **kw):
-    """Put a send the relay took (a FakeRelay call) on the mirror, under the bot's key."""
+def show(env, call, when=T0 + 5, sec=None, claim=None, **kw):
+    """Put a send the relay took (a FakeRelay call) on the mirror, under the bot's key,
+    with the claim tag it was sent with (hh5s; ``relay.claims``)."""
     ch, reply_to, text = call
     tags = [["e", reply_to, "", "reply"]] if reply_to else []
+    tags += [claim] if claim else []
     return env.mirror.post(sec or env.mirror.bot_sec, text, created_at=when, tags=tags, files=(f"{ch}.json",), **kw)
 
 
@@ -527,3 +529,41 @@ def test_resolve_not_delivered_remembers_the_attempt_too(env):
     key = env.state()["outbox"][0]["key"]
     assert main.resolve(T0 + 24 * HOUR, env.config, key, reason="not in the channel")[0] == 0
     assert env.state()["outbox"][0]["tried"] == T0
+
+
+# ---------------------------------------------------------------- the claim tag is part of the send (hh5s)
+
+
+def claimed_unknown_root(env, monkeypatch):
+    monkeypatch.setattr(main, "ROOT_CLAIMS", True)
+    env.collector([finding()])
+    code, summary, relay = env.run(relay=FakeRelay("unknown"))
+    assert code == 1 and relay.claims[0] is not None and env.state()["outbox"][0]["claim"] == relay.claims[0][1]
+    return relay
+
+
+def test_a_mirror_event_with_the_items_claim_settles_it(env, monkeypatch):
+    relay = claimed_unknown_root(env, monkeypatch)
+    ev = show(env, relay.calls[0], claim=relay.claims[0])
+    code, summary, again = env.run(now=T0 + HOUR)
+    assert code == 0 and "settled=delivered:1" in summary and again.calls == []
+    assert env.ledger()[0][0]["root_event_id"] == ev["id"]
+
+
+@pytest.mark.parametrize("other", ["none", "another"])
+def test_a_mirror_event_with_another_claim_is_not_the_items_send(env, monkeypatch, other):
+    relay = claimed_unknown_root(env, monkeypatch)
+    tag = relay.claims[0]
+    show(env, relay.calls[0], claim=None if other == "none" else [tag[0], tag[1].replace('"checked_at":', '"checked_at":1')])
+    code, summary, again = env.run(now=T0 + HOUR)
+    assert "settled" not in summary and again.calls == [] and env.ledger()[0] == []  # still unknown: not recorded
+    code, summary, again = run(env, T0 + 25 * HOUR)  # a fresh mirror does not show the item's event: sent again
+    assert "resent:1" in summary and again.claims[0] == tag
+
+
+def test_an_unclaimed_item_is_not_settled_by_an_event_that_carries_a_claim(env):
+    call = unknown_root(env)
+    from aitools_alerts import wire
+    show(env, call, claim=wire.claim_tag({"a": 1}))
+    code, summary, again = env.run(now=T0 + HOUR)
+    assert "settled" not in summary and env.ledger()[0] == []

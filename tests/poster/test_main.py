@@ -42,12 +42,15 @@ class FakeRelay:
     def __init__(self, *outcomes, ja=()):
         self.queue, self.ja_queue = list(outcomes), list(ja)
         self.calls, self.ja = [], []
+        self.claims = []  # hh5s: the claim tag each English send was given (None: none), as ``calls``
 
-    def __call__(self, channel_id, text, reply_to=None):
-        transport.check_send(channel_id, text, reply_to)  # what the real sender checks first
+    def __call__(self, channel_id, text, reply_to=None, claim=None):
+        transport.check_send(channel_id, text, reply_to, claim)  # what the real sender checks first
         ch = NAME[channel_id]
         is_ja = text.startswith("lang: ja\n")
         (self.ja if is_ja else self.calls).append((ch, reply_to, text))
+        if not is_ja:
+            self.claims.append(claim)
         queue = self.ja_queue if is_ja else self.queue
         outcome = queue.pop(0) if queue else "ok"
         if outcome == "unknown":
