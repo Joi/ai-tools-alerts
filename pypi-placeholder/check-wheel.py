@@ -25,11 +25,14 @@ raw = z.read(f"{info}/METADATA").decode()
 meta = email.parser.Parser().parsestr(raw)
 assert (meta["Name"], meta["Version"]) == (name, version), (meta["Name"], meta["Version"])
 assert meta["Summary"] == SUMMARY, meta["Summary"]
-for h in ("Requires-Dist", "Author", "Author-email", "Maintainer", "Maintainer-email", "Provides-Extra",
-          "Requires-Python"):
-    assert h not in meta, f"header {h} present"
+headers = sorted(meta.keys())
+assert headers == sorted(["Metadata-Version", "Name", "Version", "Summary", "Project-URL",
+                          "Description-Content-Type"]), headers  # no author, maintainer or dependency
+assert meta["Project-URL"] == "Homepage, https://github.com/Joi/ai-tools-alerts", meta["Project-URL"]
 assert "@" not in raw, "an @ in METADATA (an email address?)"
 body = meta.get_payload()
+readme = open(f"{root}/pypi-placeholder/{name}/README.md").read()
+assert body.strip() == readme.strip(), "the description is not the reviewed README"
 assert "No release of ai-tools-alerts is published on PyPI" in " ".join(body.split())
 for line in body.splitlines():
     assert not INSTALL.search(line), line

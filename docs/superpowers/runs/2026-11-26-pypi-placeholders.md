@@ -17,9 +17,11 @@ Pass 1 [plan]: 1B/4S/1C/1R · fixed -/- · velocity = (—→7, escalation no)  
 Pass 2 [plan]: 1B/0S/0C/0R · fixed 6/6 prior · velocity ↓ (7→1, escalation no)   (delta 04b8b41..a510809, run 20261126-114212-f3d38b)
   B: the revised Chunk 3 lost "open the PR" → restored in Chunk 1's review step; no further pass (one delta).
 spec passes: 2 · plan passes: 2 · plan pass 1 first launch (first launch FRESHEYES_STALLED REASON=CHILD_EXIT: "Selected model is at capacity", an environment failure; relaunched once).
+Pass 1 [code:branch]: 1B/5S/2C/0R · fixed -/- · velocity = (—→8, escalation no)   (Stage 1 subagent ∥ fresheyes run 20261126-115452-776f96, reviewed head 7a8afd9)
+  B: upload.sh under shell tracing prints the token → `set +x` first. S: get_secret writes a plaintext cache entry → KURA_NO_CACHE_KEYS=PYPI_TOKEN (the entry my scope check left was dropped); CHANGELOG contingency → both sentences in one commit; checker accepted an unapproved description → body equals README, negative tests; text test missed shell installers → whole-text equality; plan's checker invocation → full command. C: upload not tied to the reviewed commit → clean tree + UPLOAD_EXPECT_HEAD; header blocklist → allowlist.
+Delta: scope `git diff 7a8afd9..HEAD` given as text plus the uncommitted upload.sh path, not `--since`, because --since refuses scope text and the script that changed is outside the repo.
 
-## Chunks
-- [ ] placeholder source + test + README/CHANGELOG
+- [x] placeholder source + test + README/CHANGELOG — ec04507, fixes after review in the next commit
 - [ ] publish (aitools-alerts 0.0.2; ai-tools-alerts 0.0.1 attempt), verify, yank hand action
 
 ## Notes
