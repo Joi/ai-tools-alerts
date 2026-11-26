@@ -29,9 +29,9 @@ def check(narrowing=None, level=None, asked=None):
     """A ``check`` of pull.standing that answers a narrowing with ``narrowing``."""
     c = says(level)
 
-    def ask(adv, products):
+    def ask(adv, products, shown):
         if asked is not None:
-            asked.append((adv, products))
+            asked.append((adv, products, shown))
         return narrowing
     c.narrowing = ask
     return c
@@ -131,6 +131,12 @@ def test_every_list_the_thread_published_keeps_its_key(mirror):
     assert len(key) == 64 and int(key, 16) >= 0
 
 
+def test_a_key_is_of_the_entries_a_list_holds_not_of_how_it_writes_them():
+    a, b = Product(**FIX), Product(**CODEX)
+    assert pull.narrow_key("r", [a, b]) == pull.narrow_key("r", [b, a]) == pull.narrow_key("r", (a, b, a, a))
+    assert len({pull.narrow_key("r", [a]), pull.narrow_key("r", [a, b]), pull.narrow_key("r"), pull.narrow_key("s", [a])}) == 4
+
+
 # ---------------------------------------------------------------- what stands
 
 def test_confirmed_applies_at_once_and_only_the_products_change(mirror):
@@ -140,7 +146,8 @@ def test_confirmed_applies_at_once_and_only_the_products_change(mirror):
     (t,) = pull.active([thread(mirror)], AT + 1, None, check(True, asked=asked))
     assert [asdict(p) for p in t.adv.products] == [FIX] and not t.narrow_waiting and not t.narrow_refused
     assert t.adv.level == "critical" and t.adv.actions == thread(mirror).wide.actions
-    assert asked == [(pull.widest(thread(mirror)), (Product(**FIX),))]  # asked about the widest state
+    # asked about the widest state, and compared with what the thread shows
+    assert asked == [(pull.widest(thread(mirror)), (Product(**FIX),), thread(mirror).wide.products)]
 
 
 def test_contradicted_never_applies(mirror):
@@ -198,7 +205,28 @@ def test_a_retracted_thread_takes_no_narrowing(mirror):
     root = bot_root(mirror)
     narrow(mirror, root, FIX)
     mirror.reply(mirror.cur_sec, root, "retract", created_at=AT + 10)
-    assert pull.standing(thread(mirror), AT + 20, check(True)).retracted
+    assert pull.standing(thread(mirror), AT + 20, check(True)).retracted  # held
+    # the hold has lapsed and the check confirms the retraction: retracted, and its products as they were
+    t = pull.standing(thread(mirror), AT + 11 + HOLD, check(True, level=True))
+    assert t.retracted and t.adv.products == WIDE and not t.narrow_refused and not t.narrow_waiting
+    assert pull.standing(thread(mirror), AT + 11 + HOLD, check(True)).adv.products == [Product(**FIX)]  # not retracted: narrowed
+
+
+def test_the_check_is_asked_about_the_widest_state_and_given_what_the_thread_shows(mirror):
+    """``widest`` fills an entry that states no fixed version with the first one the thread
+    stated. The comparison must not take that for what the thread shows."""
+    bare = dict(CC, affected=">=2.0.0,<99.0.0", fixed=None)
+    root = bot_root(mirror, products=[Product(**bare)])
+    planted = dict(CC, affected="<1.0.0", fixed="1.0.0")
+    narrow(mirror, root, planted)  # joined beside the root's entry: the name's first fixed version is now 1.0.0
+    filled = dict(bare, fixed="1.0.0")
+    narrow(mirror, root, filled, planted, at=AT + 10)
+    t = thread(mirror)
+    assert [asdict(p) for p in pull.widest(t).products] == [filled, planted] == [asdict(p) for p in t.narrowed]
+    assert [asdict(p) for p in t.wide.products] == [bare, planted]
+    asked = []
+    pull.standing(t, AT + 20, check(None, asked=asked))
+    assert asked[0][2] == t.wide.products != pull.widest(t).products
 
 
 # ---------------------------------------------------------------- the record

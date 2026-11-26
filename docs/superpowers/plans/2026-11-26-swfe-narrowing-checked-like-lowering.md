@@ -115,6 +115,18 @@ Acceptance: `python3 -m pytest -q tests/test_narrowing_cli.py tests/test_unverif
 
 Acceptance: `python3 -m pytest -q tests/test_wire_compat.py`, then `scripts/test-gate.sh` in a single-branch clone of this branch.
 
+## Chunk 5: what the code review changed
+
+One commit after the whole-branch review at f418801, covered by one delta pass.
+
+- [ ] `pull.narrow_key(root_id, products=())`: over the sorted set of entries; with no products, the thread's mark.
+- [ ] `verify.narrowing(adv, products, cache, now, shown=None, *, whole=False)`: compared with `shown` (the thread's `wide` entries), grouped by case-folded name; rule 4 folds into rule 2; `whole=True` answers True on a fresh whole read that does not contradict.
+- [ ] `pull.standing` and the CLI pass `t.wide.products` as `shown`.
+- [ ] `cli._note_offers`: a False adds the key and the mark; on a marked thread a list's time stays at the newest checkpoint until its check is True or `whole`; under the lock the threads, the checkpoint and the check are rebuilt from the refreshed state and left in `a.raw`, `a.clock`, `a.check`, which `_matches` then uses.
+- [ ] Tests: the key of a list twice over and reordered; a refused list twice over, with a respelled copy and respelled, behind a lost cache and failing reads; a marked thread's other list waits only behind whole reads and then applies with nobody acting; the planted `fixed`, in `verify`, in the reader and end to end; a respelled entry held to the advisory; the older command that keeps a newer refusal; the older confirmation that does not apply over one; a retracted thread whose hold lapsed keeps its products.
+
+Acceptance: the three narrowing test files and the suites of chunks 1 to 3; then the gate in a single-branch clone.
+
 ## After the chunks
 
 - Merge `origin/main` before the whole-branch review and again before the merge (sibling sessions touch `pull.py`, `verify.py`, `cli.py`).

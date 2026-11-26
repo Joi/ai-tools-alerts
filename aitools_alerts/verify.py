@@ -540,30 +540,40 @@ def _states(q, rng, first_patched) -> bool:
         q.fixed is None or (first_patched is not None and versions.parse(q.fixed) == versions.parse(first_patched)))
 
 
-def narrowing(adv, products, cache: dict | None, now: float) -> bool | None:
-    """What the cached results say about showing ``products`` in place of the products
-    of ``adv`` (swfe; ``check.narrowing`` of ``pull.standing``). ``adv`` is
-    ``pull.widest`` of the thread and ``products`` its ``narrowed``.
+def narrowing(adv, products, cache: dict | None, now: float, shown=None, *, whole: bool = False) -> bool | None:
+    """What the cached results say about showing ``products`` in place of the products a
+    thread shows (swfe; ``check.narrowing`` of ``pull.standing``). ``adv`` is
+    ``pull.widest`` of the thread, the state the sources were asked about; ``products`` its
+    ``narrowed``; ``shown`` the entries it shows now (``Thread.wide``'s; default: those of
+    ``adv``). Never ``adv``'s where they differ: ``widest`` fills an entry that states no
+    ``fixed`` with the first one the thread stated, which the thread's own signer chose,
+    and a list equal to that filled state is not "nothing changed".
 
-    Per exact product name of ``adv``. A product whose entries are the same in both lists
-    is not asked about. For any other, with the version ranges the thread's authorities
-    state for it (``ranges`` of the result; a None item is one this reader cannot compare):
+    Per product, the entries taken together whatever the case of their name (as
+    ``check.match`` and the join compare names). A product whose entries are the same in
+    ``shown`` and ``products``, spelling included, is not asked about. For any other, with
+    the version ranges the thread's authorities state for the scope products of that
+    name (``ranges`` of the result; a None item is one this reader cannot compare):
 
-    1. Every readable range must be stated (``_states``), in every ecosystem ``adv`` holds
-       for the product, by an entry of ``products`` with that name and ecosystem. If one
+    1. Every readable range must be stated (``_states``), in every ecosystem ``shown``
+       holds for the product, by an entry of ``products`` for it in that ecosystem. If one
        is not: False. A shorter range, another ``fixed``, a product dropped that the source
        states versions for, an entry moved to another ecosystem. It rests on bodies that
        arrived whole, so it holds on a partial read and at any age.
-    2. Every entry of ``products`` under that name that ``adv`` does not hold must be in
-       an ecosystem ``adv`` holds for the product and state one of the ranges: a correct
-       entry never carries a wrong one through. If one does not: False when the reads
-       were whole and every range of the product was readable; else not settled.
+    2. Every entry of ``products`` for it that ``shown`` does not hold must be in an
+       ecosystem ``shown`` holds for the product and state one of the ranges: a correct
+       entry never carries a wrong one through, and neither does a new name. If one
+       does not: False when the reads were whole and every range of the product was
+       readable; else not settled.
     3. No range, or one that cannot be compared: not settled.
-    4. An entry under a name ``adv`` does not carry: not settled.
 
     True: every changed product is settled, the thread's reads were whole, and they were
     made no more than FRESH_S ago by this machine's clock. None: anything else, a failed
-    read and ``verify = "off"`` among them."""
+    read and ``verify = "off"`` among them.
+
+    ``whole`` asks a weaker question, for a thread one of whose narrowings this machine
+    has refused (``cli._note_offers``): True whenever fresh whole reads do not contradict
+    the list, settled or not."""
     if cache is None or adv.posted_by != BOT:
         return None
     t = _Target(adv)
@@ -572,16 +582,19 @@ def narrowing(adv, products, cache: dict | None, now: float) -> bool | None:
         return None
     mine: dict = {}
     theirs: dict = {}
-    for p in adv.products:
-        mine.setdefault(p.name, []).append(p)
+    stated: dict = {}
+    for p in adv.products if shown is None else shown:
+        mine.setdefault(p.name.casefold(), []).append(p)
     for q in products:
-        theirs.setdefault(q.name, []).append(q)
-    settled = set(theirs) <= set(mine)  # rule 4
-    for name, own in mine.items():
-        new = theirs.get(name, [])
-        if {(p.ecosystem, p.affected, p.fixed) for p in own} == {(q.ecosystem, q.affected, q.fixed) for q in new}:
+        theirs.setdefault(q.name.casefold(), []).append(q)
+    for name, items in held["ranges"].items():
+        stated.setdefault(name.casefold(), []).extend(items)
+    settled = True
+    for name in {*mine, *theirs}:
+        own, new = mine.get(name, []), theirs.get(name, [])
+        if set(own) == set(new):
             continue
-        items = held["ranges"].get(name, [])
+        items = stated.get(name, [])
         pairs = [x for x in items if x is not None]
         ecosystems = {p.ecosystem for p in own}
         if not all(any(q.ecosystem == e and _states(q, r, f) for q in new) for e in ecosystems for r, f in pairs):
@@ -592,7 +605,7 @@ def narrowing(adv, products, cache: dict | None, now: float) -> bool | None:
                 return False  # rule 2
             settled = False
         settled = settled and comparable  # rule 3
-    return True if settled and held["whole"] and 0 <= now - held["at"] <= FRESH_S else None
+    return True if (settled or whole) and held["whole"] and 0 <= now - held["at"] <= FRESH_S else None
 
 
 def state_key(adv) -> str:

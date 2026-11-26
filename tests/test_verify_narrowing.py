@@ -100,7 +100,9 @@ def test_a_result_written_without_ranges_still_loads(tmp_path):
     ([entry(), entry(affected="<9.0.0", fixed="9.0.0")], False),
     ([entry(ecosystem="codex")], False),                       # moved to another ecosystem: it matches nobody it matched
     ([entry(), entry(ecosystem="codex")], False),
-    ([entry(), entry(name="claude code")], None),              # a name the thread does not carry
+    ([entry(), entry(name="claude code")], True),              # the advisory's entry under another spelling: it states the range
+    ([entry(), entry(name="claude code", fixed="50.0.0")], False),   # and a wrong one under another spelling
+    ([entry(), entry(name="Left Pad")], None),                 # a name the thread does not carry and no authority states
     ([entry(), WIDE], True),                                   # the thread's own entry beside the advisory's
     ([WIDE], True),                                            # nothing changed (the reader never offers such a list)
 ])
@@ -130,6 +132,49 @@ def test_a_readable_range_still_contradicts_beside_one_this_reader_cannot_read(t
     assert asked(tmp_path, [entry(affected="<1.0.0", fixed="1.0.0")], fetch=fetch) is False
     assert asked(tmp_path, [entry()], fetch=fetch) is None  # and nothing is confirmed over it
     assert asked(tmp_path, [entry(), entry(affected="<50.0.0", fixed="50.0.0")], fetch=fetch) is None  # rule 2 needs every range
+
+
+def test_whole_asks_only_whether_fresh_whole_reads_contradict(tmp_path):
+    a = adv(products=("Claude Code", "git"))
+    drop_git = [entry(affected="<99.0.0", fixed="99.0.0")]  # git left out; no authority states versions for it
+    go(tmp_path, [a], net((gurl(G1), ghsa())))
+    cache = verify.load(tmp_path)
+    assert verify.narrowing(a, drop_git, cache, NOW) is None and verify.narrowing(a, drop_git, cache, NOW, whole=True) is True
+    assert verify.narrowing(a, [entry(affected="<1.0.0", fixed="1.0.0")], cache, NOW, whole=True) is False
+    assert verify.narrowing(a, drop_git, cache, NOW + verify.FRESH_S + 1, whole=True) is None  # not fresh
+    go(tmp_path, [a], Net(), now=NOW + verify.RETRY_S)  # a failed read
+    assert verify.narrowing(a, drop_git, verify.load(tmp_path), NOW + verify.RETRY_S, whole=True) is None
+    assert verify.narrowing(a, drop_git, None, NOW, whole=True) is None  # verify = "off"
+
+
+def test_a_fixed_version_the_thread_s_signer_planted_is_not_what_the_thread_shows(tmp_path):
+    """``pull.widest`` fills an entry with no fixed version with the first one the thread
+    stated: the state the sources are asked about. A list equal to that filled state is a
+    change of what the thread shows, and the advisory contradicts it."""
+    bare = entry(affected=">=2.0.0,<99.0.0", fixed=None)
+    planted = entry(affected="<1.0.0", fixed="1.0.0")
+    filled = entry(affected=">=2.0.0,<99.0.0", fixed="1.0.0")
+    a = adv()
+    widest = type(a)(**{**{f: getattr(a, f) for f in a.__dataclass_fields__}, "products": [filled, planted]})
+    go(tmp_path, [widest], net((gurl(G1), ghsa())))
+    cache = verify.load(tmp_path)
+    assert verify.narrowing(widest, [filled, planted], cache, NOW, [bare, planted]) is False
+    assert verify.narrowing(widest, [filled, planted], cache, NOW, [bare, planted], whole=True) is False
+    other = Product("Claude Code", "npm", "<1.0.0", "1.0.0")  # the same, planted in another ecosystem
+    assert verify.narrowing(widest, [filled, other], cache, NOW, [bare, other]) is False
+
+
+def test_a_respelled_entry_is_still_held_to_the_advisory(tmp_path):
+    """A reply can put a wider entry under another spelling in the original's place (the join
+    compares names without case). Narrowing that entry is narrowing the product."""
+    a = adv()
+    respelled = Product("claude code", "claude-code", "*", None)
+    widest = type(a)(**{**{f: getattr(a, f) for f in a.__dataclass_fields__}, "products": [respelled, WIDE]})
+    go(tmp_path, [widest], net((gurl(G1), ghsa())))
+    cache = verify.load(tmp_path)
+    short = Product("claude code", "claude-code", "<1.0.0", "1.0.0")
+    assert verify.narrowing(widest, [short], cache, NOW, [respelled]) is False
+    assert verify.narrowing(widest, [Product("claude code", "claude-code", "<9.9.9", "9.9.9")], cache, NOW, [respelled]) is True
 
 
 def test_two_ranges_need_an_entry_each(tmp_path):
@@ -203,7 +248,7 @@ def test_a_run_cut_short_keeps_what_it_read_to_refuse_and_confirms_nothing(tmp_p
     assert verify.narrowing(a, [entry()], verify.load(tmp_path), at) is None
 
 
-def test_no_range_a_thread_can_have_is_ever_cut():
+def test_max_pairs_is_the_product_of_the_two_limits():
     from aitools_alerts import ruleset
     assert verify.MAX_PAIRS == (verify.MAX_ALIASES + 1) * ruleset.MAX_PACKAGES
 
@@ -216,7 +261,7 @@ def test_off_a_failed_read_and_a_curator_s_thread_give_none(tmp_path):
     assert verify.narrowing(replace(adv(), posted_by="curator"), [entry()], verify.load(tmp_path), NOW) is None
 
 
-def test_a_flooded_list_is_compared_in_one_pass(tmp_path):
+def test_a_list_of_five_thousand_products_is_answered(tmp_path):
     a = adv()
     many = [Product(f"Product {i}", "claude-code", "<1.0.0", "1.0.0") for i in range(5000)]
     a = type(a)(**{**{f: getattr(a, f) for f in a.__dataclass_fields__}, "products": [WIDE, *many]})

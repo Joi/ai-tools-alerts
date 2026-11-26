@@ -259,9 +259,11 @@ def _matches(a, st: State) -> tuple[list, list]:
         return [], []
     a.raw = pull.advisories(st)
     now, listed = pull.head_clock(st)
-    said = _lowering_check(a, st)
-    active = pull.active(a.raw, now, listed, said, decay=_ruleset_outdated(a, st) is None,
-                         since=_note_offers(a, st, now, listed, said))
+    since = _note_offers(a, st, now, listed, _lowering_check(a, st))
+    # the threads, the checkpoint and the check the record was brought up to date with: when
+    # another command had saved since this one began, they are the newer ones (``_note_offers``)
+    (now, listed), said = a.clock, a.check
+    active = pull.active(a.raw, now, listed, said, decay=_ruleset_outdated(a, st) is None, since=since)
     # swfe: a list this machine's check refused stays reported, whatever the check reads today
     active = [replace(t, narrow_refused=True) if _narrow_refused(t, st) else t for t in active]
     threads = _entries(active, a.__dict__.setdefault("warned", set()))
@@ -323,19 +325,27 @@ def _note_offers(a, st: State, now, listed, check):
     forgotten only when the check confirms that same list, or when no stored thread has
     published it (``Thread.narrowings``). So it outlives the offer: the list sent again
     after another was confirmed, after the cache was lost, with every read failing, is
-    still refused. It stops no other list and no lowering of the thread, and a refused
-    lowering stops no narrowing.
+    still refused, in whatever order and however often its entries are written. With it
+    the thread is marked (``pull.narrow_key`` of the root alone), for as long as it is
+    stored: from then on no other list of that thread waits either until fresh whole
+    reads of its authorities do not contradict it (``verify.narrowing(whole=True)``), so
+    a refused list respelled does not run out 72 hours behind failing reads. A refused
+    narrowing stops no lowering of the thread, and a refused lowering stops no narrowing.
 
-    The record is rewritten under the state lock from the record and the source-check
-    results as they are on disk then, never from what this command read before it had
-    the lock: a command that started earlier must not write its older view over a
-    refusal, or a later start of a wait, that another command has saved since."""
-    def step(check) -> tuple[dict, set]:
-        want = pull.offers(a.raw, st.lowerings, now, listed)
+    The record is rewritten under the state lock from the events, the checkpoint, the
+    record and the source-check results as they are on disk then, never from what this
+    command read before it had the lock: a command that started earlier must not write
+    its older view over a refusal, or a later start of a wait, that another command has
+    saved since, nor drop the memory of a list it has not yet seen published. What it
+    decided on is left in ``a.raw``, ``a.clock`` and ``a.check`` for ``_matches``, which
+    shows the threads by the same threads, checkpoint and check."""
+    def step(check, raw, now, listed) -> tuple[dict, set]:
+        want = pull.offers(raw, st.lowerings, now, listed)
         refused = set(st.refused)
         if now is not None and listed is not None:
-            refused &= {t.root_id for t in a.raw} | {k for t in a.raw for k in t.narrowings}
-            for t in a.raw:
+            refused &= ({t.root_id for t in raw} | {k for t in raw for k in t.narrowings}
+                        | {pull.narrow_key(t.root_id) for t in raw if t.narrowings})
+            for t in raw:
                 if t.offered_by in want:
                     said = check(pull.widest(t), t.offered, t.stated) if check is not None else None
                     if said is False:
@@ -345,24 +355,31 @@ def _note_offers(a, st: State, now, listed, check):
                     if t.root_id in refused:
                         want[t.offered_by] = int(now)  # the 72 hours start when the refusal ends
                 if t.narrowed_by in want:
-                    key = pull.narrow_key(t.root_id, t.narrowed)
-                    said = check.narrowing(pull.widest(t), t.narrowed) if check is not None else None
+                    key, mark, wide = pull.narrow_key(t.root_id, t.narrowed), pull.narrow_key(t.root_id), pull.widest(t)
+                    said = check.narrowing(wide, t.narrowed, t.wide.products) if check is not None else None
                     if said is False:
-                        refused.add(key)
+                        refused |= {key, mark}
                     elif said is True:
                         refused.discard(key)
-                    if key in refused:
+                    if key in refused or (mark in refused and said is not True and not (
+                            check is not None and check.narrowing(wide, t.narrowed, t.wide.products, whole=True))):
                         want[t.narrowed_by] = int(now)
         return want, refused
 
-    want, refused = step(check)
+    want, refused = step(check, a.raw, now, listed)
     if (want, refused) != (st.lowerings, st.refused):
         try:
             with st.locked():
-                st.lowerings, st.refused = step(_lowering_check(a, st))
-                st.save_unverified()
+                if st.manifest is None or st.manifest_root == a.root:  # else another root's state: not this command's
+                    # the events, the checkpoint, the record and the results as they are on disk now
+                    a.raw = pull.advisories(st)
+                    now, listed = pull.head_clock(st)
+                    check = _lowering_check(a, st)
+                    st.lowerings, st.refused = step(check, a.raw, now, listed)
+                    st.save_unverified()
         except OSError:
             st.lowerings, st.refused = want, refused  # for this command; nothing applies sooner for it
+    a.clock, a.check = (now, listed), check  # what was decided on: ``_matches`` shows the threads by the same
     if _min_cli(a, st) is not None or _ruleset_outdated(a, st) is not None:
         return None
     held = {t.offered_by for t in a.raw if t.root_id in st.refused}
@@ -382,8 +399,8 @@ class _Check:
     def whole(self, adv, level, stated=()) -> bool:
         return verify.lowering(adv, level, self.cache, time.time(), self.rs, stated, self.pin, whole=True) is True
 
-    def narrowing(self, adv, products):
-        return verify.narrowing(adv, products, self.cache, time.time())
+    def narrowing(self, adv, products, shown=None, whole: bool = False):
+        return verify.narrowing(adv, products, self.cache, time.time(), shown, whole=whole)
 
 
 def _lowering_check(a, st: State):
@@ -533,7 +550,7 @@ def cmd_verify(a, st: State, s: config.Settings) -> int:
         if said:
             print(f"source check: {len(said)} lowerings or retractions asked about: {said.count(True)} confirmed, "
                   f"{said.count(False)} contradicted, {said.count(None)} not settled")
-        said = [False if _narrow_refused(t, st) else check.narrowing(pull.widest(t), t.narrowed)
+        said = [False if _narrow_refused(t, st) else check.narrowing(pull.widest(t), t.narrowed, t.wide.products)
                 for t in a.raw if t.narrowed is not None]
         if said:
             print(f"source check: {len(said)} narrowings asked about: {said.count(True)} confirmed, "

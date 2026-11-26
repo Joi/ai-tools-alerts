@@ -43,12 +43,15 @@ For a thread, `_Run.thread` joins these lists over the records it counted (the f
 
 `whole` is true only for an entry whose products this run computed from whole reads. An entry kept with a new time (a level contradiction `_settled` holds over a failed read) and one written by a run the request budget cut short carry the ranges that were read and `whole` false: they still refuse, and they confirm nothing however new their time is.
 
-The comparison, per exact product name of `adv`. A product whose entries are the same set in `adv` and in `products` is not asked about. For any other, with `pairs` the readable pairs of that product:
+The comparison is with the entries the thread shows (`Thread.wide`'s, passed as `shown`), never with `adv`'s where they differ. The sources are asked about `pull.widest`, and `widest` fills an entry that states no `fixed` with the first one the thread stated, which the thread's signer chose: a list equal to that filled state is not "nothing changed" (found by the code review; a reply could plant a `fixed` and then publish the list the filled state gives).
 
-1. Every source pair is stated, in every ecosystem the thread holds for the product. For each ecosystem among the product's entries in `adv` and each pair `(r, f)` there must be an entry `q` of `products` with that exact name and that ecosystem for which `versions.covers(r, f, q.affected, q.fixed)` holds and `q.fixed` is absent or equal to `f` as versions. If not: **False**. This rests on bodies that arrived whole, so it holds on a partial read and at any age.
-2. Every new entry states a source pair. Each entry of `products` with that name that is not an entry of `adv` must be in an ecosystem `adv` holds for the product and must state, in the sense of 1, at least one pair. If one does not, the answer is **False** when the reads were whole, the product has pairs and none of its items is `null`; otherwise that product is not settled.
+It goes per product, the entries taken together whatever the case of their name, as `check.match` and the join compare names: a wider entry a reply put in under another spelling is the product's entry too. A product whose entries are the same set in `shown` and in `products`, spelling included, is not asked about. For any other, with `pairs` the readable pairs the authorities state for the scope products of that name:
+
+1. Every source pair is stated, in every ecosystem the thread shows for the product. For each ecosystem among the product's entries in `shown` and each pair `(r, f)` there must be an entry `q` of `products` for that product in that ecosystem for which `versions.covers(r, f, q.affected, q.fixed)` holds and `q.fixed` is absent or equal to `f` as versions. If not: **False**. This rests on bodies that arrived whole, so it holds on a partial read and at any age.
+2. Every new entry states a source pair. Each entry of `products` for that product that is not an entry of `shown` must be in an ecosystem `shown` holds for the product and must state, in the sense of 1, at least one pair. If one does not, the answer is **False** when the reads were whole, the product has pairs and none of its items is `null`; otherwise that product is not settled. An entry under a name the thread does not show falls here: it has no ecosystem to be in.
 3. A product with no pairs, or with a `null` item, is not settled.
-4. An entry of `products` under a name `adv` does not carry is not settled.
+
+`whole=True` asks a weaker question, for a thread one of whose narrowings this machine has refused: True whenever fresh whole reads do not contradict the list, settled or not.
 
 **True** needs every changed product settled, the entry `whole`, and read no more than `FRESH_S` (48 hours) ago by this machine's clock. Anything else is None.
 
@@ -78,14 +81,16 @@ Only `products` change. Actions and sources stay the widest: removing an action 
 
 ## The refusal memory
 
-A refused narrowing is remembered by its content, in `State.refused` beside the root ids of refused lowerings: `pull.narrow_key(root id, list)`. Both are 64 hexadecimal characters, so `unverified.json` keeps its shape.
+A refused narrowing is remembered by its content, in `State.refused` beside the root ids of refused lowerings: `pull.narrow_key(root id, list)`, a hash of the root's id and the set of entries the list holds, so the same entries in another order or written twice are the same refusal. With it the thread is marked: `pull.narrow_key(root id)` with no list. All are 64 hexadecimal characters, so `unverified.json` keeps its shape.
 
+- The mark stays while the thread is stored. On a marked thread no list waits until fresh whole reads of its authorities do not contradict it (`verify.narrowing(whole=True)`): its recorded time is kept at the newest checkpoint until then. So a refused list respelled (`<1.0` for `<1.0.0`) does not run out 72 hours behind failing reads. It needs nobody: once the reads succeed the 72 hours run, and a list the source confirms applies at once, marked or not.
+- The record is brought up to date under the state lock from the events, the checkpoint, the record and the results as they are on disk then, and the command goes on with those threads and that check: a command that started before a narrowing arrived neither drops its refusal nor applies it on an older confirmation.
 - Added when the check says False about the thread's standing narrowing.
 - While a list's key is there, no wait of that list runs (its reply is left out of `since`, and its recorded time is kept at the newest checkpoint, so the 72 hours start when the refusal ends), and the CLI reports it as refused, whatever the check can read today.
 - Removed only when the check says True about that same list, or when no stored thread has published that list any more (`Thread.narrowings`). So the memory outlives the offer: a refused list sent again later, after another list was confirmed, after the cache was lost, with every read failing, is still refused.
 - A refusal is only ever recorded on a False, and a False needs an authority that states versions for the product. The same authority can confirm the list later, so no refusal needs a person to end it.
-- A refused list does not stop another list of the thread: that one has its own key, its own check and its own 72 hours. A refused narrowing does not stop the thread's lowering, and a refused lowering (the root's id, as today) does not stop its narrowing.
-- Bound: every key belongs to a stored reply and every root id to a stored root, so the set never passes the store's own limit (`MAX_UNVERIFIED_ENTRIES` equals `pull.MAX_STORED_EVENTS`).
+- A refused list does not stop another list of the thread for good: that one has its own key and its own check, and its 72 hours run once whole reads do not contradict it. A refused narrowing does not stop the thread's lowering, and a refused lowering (the root's id, as today) does not stop its narrowing.
+- Bound: every key belongs to a stored narrowing reply, every mark to a thread with at least one, and every root id to a stored root with a lowering reply, so the set never passes the number of stored events (`MAX_UNVERIFIED_ENTRIES` equals `pull.MAX_STORED_EVENTS`).
 
 ## CLI
 
@@ -110,9 +115,10 @@ No rollout here. The release session installs it; a note goes on ai-tools-alerts
 ## Known limits
 
 - v0.1.4 to v0.1.6 apply a relay-bot `products` list whole, unchecked, and nothing on the feed tells their members to upgrade.
-- A relay-bot reply that widens an entry past the source (a higher `fixed` on a thread that already stated one) is joined at once, as today: a widening is a raise. Only a narrowing is checked. Follow-up issue filed.
+- A relay-bot reply that widens an entry past the source (a higher `fixed` on a thread that already stated one) is joined at once, as today: a widening is a raise. Only a narrowing is checked. Follow-up: ai-tools-alerts#53fy.
 - A removed action is not checked or applied.
-- A list never seen by this machine's check is unknown, not refused: with reads failing it applies after 72 hours, as a lowering does. The memory stops known refusals, not new lists.
+- On a thread with no refusal yet, a list never seen by this machine's check is unknown, not refused: with reads failing it applies after 72 hours, as a lowering does (the issue's third acceptance case).
+- A command acts on the state as it read it: one that started a moment before another command saved a refusal, and has nothing of its own to write, shows the thread as it was then. The next command shows the refusal.
 - Dropping an ecosystem from a product an authority states versions for never confirms and never waits: it stays refused.
 - A version outside this reader's grammar (a semver pre-release with a dotted tag) is not comparable: that product is settled only by the 72 hours, unless a readable range already contradicts the list.
 - A CVE thread listing more than three advisory aliases is not read whole (ai-tools-alerts#tavj): its narrowing is refused on what was read or waits 72 hours, never confirmed.
@@ -123,6 +129,8 @@ No rollout here. The release session installs it; a note goes on ai-tools-alerts
 One independent pass (fresheyes, 2026-11-26, on 77cb1c0): four BLOCKER, three SUBSTANTIVE, one cosmetic, all taken. Ecosystem binding (criterion 7, rule 1); every new entry must state a pair (rule 2); readable pairs survive an unreadable one; the refusal is remembered by content and outlives the offer; a refusal stops only its own list; a flooded thread still takes an offer; `run` shows a changed product list; the false sentence about `min_cli` is gone.
 
 The plan's review (fresheyes, 2026-11-26, on 2795f02): seven SUBSTANTIVE, one cosmetic, all taken; the two that change this text are the `whole` paragraph above and the CLI lines.
+
+The code's review, on the whole branch at f418801 (fresheyes, and a same-model pass in parallel): two BLOCKER, three SUBSTANTIVE, two cosmetic, all taken. A refused list written another way had another key (now a key of the entry set, and the thread's mark); a `fixed` planted through `widest` made a wrong list read as unchanged (now compared with what the thread shows, per case-folded name); an older command pruned a newer refusal and could apply on an older confirmation (now the refreshed view under the lock); a test that did not prove its name.
 
 ## Open questions
 

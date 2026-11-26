@@ -1054,11 +1054,13 @@ def _bot_patch(adv: Advisory, p: dict, dropped: Counter | None = None) -> tuple:
     return new, p
 
 
-def narrow_key(root_id: str, products) -> str:
+def narrow_key(root_id: str, products=()) -> str:
     """What a member's refusal of a published narrowing is remembered by (swfe): the
-    thread's root and the list itself, so the same list sent again in another reply is
-    the same refusal, and another list is not."""
-    text = json.dumps([root_id, [asdict(p) for p in products]], sort_keys=True, separators=(",", ":"))
+    thread's root and the set of entries the list holds, so the same entries sent again
+    in another reply, in another order or twice over, are the same refusal. With no
+    products: the mark that some narrowing of this thread has been refused."""
+    entries = sorted({json.dumps(asdict(p), sort_keys=True, separators=(",", ":")) for p in products})
+    text = json.dumps([root_id, entries], separators=(",", ":"))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
@@ -1357,7 +1359,9 @@ def standing(t: Thread, now: float | None = None, check=None, since=None) -> Thr
 
     A narrowing is decided only on a relay-bot thread that is not retracted and that no
     curator's hold governs at ``now``. ``check.narrowing(widest state, the published
-    list)`` is the member's own source check of it: True when the source states it, False
+    list, the entries the thread shows)`` is the member's own source check of it: the
+    sources are asked about the widest state, and the list is compared with what the
+    thread shows, never with what ``widest`` filled in. True when the source states it, False
     when the source states otherwise, None when it does not settle it (and for a
     ``check`` without that attribute). True: the thread's products are the published
     list. None: the same once the reply has stood UNCHECKED_LOWERING_S in ``since`` by
@@ -1368,7 +1372,7 @@ def standing(t: Thread, now: float | None = None, check=None, since=None) -> Thr
     if t.wide is None or t.narrowed is None or out.retracted or _held(t, now):
         return out
     ask = getattr(check, "narrowing", None)
-    said = ask(widest(t), t.narrowed) if ask is not None else None
+    said = ask(widest(t), t.narrowed, t.wide.products) if ask is not None else None
     if said is True or (said is None and _stood(t.narrowed_by, now, since)):
         return replace(out, adv=replace(out.adv, products=list(t.narrowed)))
     return replace(out, narrow_refused=said is False,
