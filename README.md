@@ -94,7 +94,7 @@ When a command prints a line that starts `aitools-alerts: out of date:`, the rul
 
 Without pipx: `python3 -m venv ~/.local/share/aitools-alerts && ~/.local/share/aitools-alerts/bin/pip install .` from the verified checkout, then link the command where the schedules and the hook look for it: `mkdir -p ~/.local/bin && ln -s ~/.local/share/aitools-alerts/bin/aitools-alerts ~/.local/bin/`. The launchd and cron templates search `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and `/bin`; the hook searches the same directories and nothing else.
 
-Install a verified release commit, never a branch or a tag name alone: the trust root is pinned in the code you install, so the commit is what fixes it. `CHANGELOG.md` lists each release. There is no package on PyPI; install only as above.
+Install a verified release commit, never a branch or a tag name alone: the trust root is pinned in the code you install, so the commit is what fixes it. `CHANGELOG.md` lists each release. No release of this project is published to PyPI, and none is planned. The name `aitools-alerts` there holds an empty placeholder, version 0.0.1, that installs nothing: do not install from PyPI.
 
 `init` writes `~/.config/aitools-alerts/config.toml` (mode 600). Reading alerts needs no Buzz account; `aitools-alerts keygen` makes a key only for ai-tools community members who want to post or discuss on the relay. The settings:
 

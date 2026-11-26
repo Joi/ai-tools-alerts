@@ -65,6 +65,9 @@ refuses locally what they would skip.
 6. `websockets` is the optional extra `curator = ["websockets>=12"]`, imported
    only inside `relay.send`'s connect path. Without it the curator command prints
    `install the curator extra: pip install 'aitools-alerts[curator]'` and exits 1.
+   (Superseded by ai-tools-alerts#4fkh, 2026-11-26: that line resolves the name on
+   PyPI; the hint now installs the extra from the verified checkout,
+   `pipx install --force '.[curator]'`.)
    The member package keeps `dependencies = []`.
 7. `--dry-run` prints the signed event JSON and sends nothing (E3 can inspect an
    event before the live post). Without it the command prints the relay's OK and

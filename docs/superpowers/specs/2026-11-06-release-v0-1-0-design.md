@@ -25,6 +25,7 @@ repository.
    mirror index prints in both its English and Japanese subscribe blocks.
    The existing test keeps `PIPX_LINE` equal to the README's.
 3. The README names PyPI (`aitools-alerts`) as coming, with no install line.
+   (Superseded by ai-tools-alerts#4fkh, 2026-11-26: no release goes to PyPI.)
 4. The exporter writes `root.pub` into `--out` beside `manifest.json`: the
    bytes of the checkout's `trust/root.pub`. It refuses (exit 1, nothing
    written) when that file is unreadable or its stripped text is not
