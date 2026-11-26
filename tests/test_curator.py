@@ -262,7 +262,8 @@ def test_missing_websockets_prints_install_hint(mirror, capsys, monkeypatch):
     write_key(nostr.nsec(mirror.cur_sec))
     monkeypatch.setitem(sys.modules, "websockets.sync.client", None)
     assert cli.main(POST_ARGV + ["--relay-url", "ws://127.0.0.1:1"]) == 1
-    assert "pip install 'aitools-alerts[curator]'" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "pipx install --force '.[curator]'" in err and "install 'aitools-alerts" not in err  # never by name: PyPI
 
 
 class FakeWs:
