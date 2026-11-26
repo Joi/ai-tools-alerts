@@ -616,14 +616,19 @@ def test_nothing_a_source_says_is_stored(tmp_path):
     go(tmp_path, [a, b], n)
     text = (tmp_path / verify.FILE).read_text()
     assert SENTINEL not in text
-    assert "9.9.9" not in text and "CVSS" not in text and "anthropic" not in text.lower()
+    assert "CVSS" not in text and "anthropic" not in text.lower()
     cache = json.loads(text)
+    # swfe: the versions an advisory states are kept, in the version grammar and nothing else
+    assert cache["sources"][G1]["ranges"] == {"Claude Code": [["<9.9.9", "9.9.9"]]}
+    stated = [x for r in (*cache["sources"].values(), *cache["results"].values())
+              for pairs in r.get("ranges", {}).values() for x in pairs if x is not None]
+    assert stated and all(x == ["<9.9.9", "9.9.9"] for x in stated)
     assert set(cache) == {"version", "ruleset", "kev", "sources", "results"}
     # ids the threads carried, and one an authoritative response named, in the exact form of an id
     assert set(cache["sources"]) == {CVE, G1, "MAL-2026-1", G2, "CVE-2026-8888"}
     scope, levels = ruleset.load().products(), {"none", "notice", "high", "critical"}
     for r in cache["sources"].values():
-        assert set(r) == {"etag", "at", "lowers", "support", "names"}
+        assert set(r) == {"etag", "at", "lowers", "support", "names", "ranges"}
         assert r["etag"] in (None, 'W/"kev-1"', '"g-1"') and type(r["lowers"]) is bool and type(r["at"]) is int
         assert all(k in scope and v[0] in levels and type(v[1]) is bool for k, v in r["support"].items())
         assert all(verify.norm_id(d) == d for d in r["names"])
@@ -1041,7 +1046,7 @@ def test_a_cache_of_the_version_before_is_an_empty_one(tmp_path):
     a = adv()
     go(tmp_path, [a], net((gurl(G1), ghsa())))
     old = json.loads((tmp_path / verify.FILE).read_text())
-    assert old["version"] == 4
-    old["version"] = 3
+    assert old["version"] == 5
+    old["version"] = 4
     (tmp_path / verify.FILE).write_text(json.dumps(old))
     assert verify.load(tmp_path) == verify._empty(ruleset.load().digest)

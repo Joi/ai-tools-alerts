@@ -274,6 +274,46 @@ def test_the_exception_a_curator_s_lowering_of_a_bot_thread_lasts_for_good_on_a_
     assert (level(mine, now), level(mine, now + MONTH)) == ("notice", "critical")
 
 
+NARROWER = [asdict(Product("Claude Code", "claude-code", "<1.0.0", "1.0.0"))]  # the installed 2.0.0 is outside it
+
+
+def narrowed_feed():
+    """A relay-bot critical, then a relay-bot reply whose products are narrower (ai-tools-alerts#swfe)."""
+    m, now = mirror_now()
+    root = m.root_post(m.bot_sec, advisory(posted_by="relay-bot"), created_at=now - 3600)
+    reply = m.post(m.bot_sec, m.patch_text(products=NARROWER), created_at=now - 3000, tags=[["e", root["id"], "", "root"]])
+    return m, now, reply
+
+
+@pytest.mark.parametrize("tag", ("v0.1.7", "v0.1.8", "v0.2.0", "v0.2.1"))
+def test_a_relay_bot_narrowing_leaves_the_wider_entry_on_a_released_reader(tmp_path, tag):
+    """The narrowing travels in the block, as the poster has always sent it. A reader from
+    0.1.7 on joins the list, so it keeps the wider entry and the member is still told.
+    This reader shows the same until its own source check confirms the narrowing or the
+    reply has stood 72 hours in checkpoints: never less than a released reader before then."""
+    m, now, reply = narrowed_feed()
+    wide = {"AITA-TEST-0001": ["critical", ["99.0.0"], True]}
+    assert released(tmp_path, tag, m, now)[str(now)] == wide
+    assert this_reader(m, now, tmp_path)[str(now)] == wide
+    st = State.load(tmp_path / "this-reader")
+    (t,) = pull.advisories(st)
+    assert t.narrowed_by == reply["id"] and [asdict(p) for p in t.narrowed] == NARROWER
+    at, listed = pull.head_clock(st)
+    since = pull.offers([t], {}, at, listed)
+    assert since == {reply["id"]: at}
+    assert shown([t], at + pull.UNCHECKED_LOWERING_S - 1) == wide  # no record given: nothing applies
+    (later,) = pull.active([t], at + pull.UNCHECKED_LOWERING_S, None, None, since=since)
+    assert [asdict(p) for p in later.adv.products] == NARROWER  # here, after the 72 hours, and on no released reader
+
+
+@pytest.mark.parametrize("tag", ("v0.1.4", "v0.1.6"))
+def test_what_the_format_does_not_avoid_a_reader_before_0_1_7_applies_a_narrowing_whole(tmp_path, tag):
+    """Why 0.1.7 joined (ai-tools-alerts#tyje): these readers take any relay-bot products
+    list whole, at once and unchecked, and nothing on the feed reaches them to say so."""
+    m, now, _ = narrowed_feed()
+    assert released(tmp_path, tag, m, now)[str(now)] == {"AITA-TEST-0001": ["critical", ["1.0.0"], False]}
+
+
 # ---------------------------------------------------------------- the poster's own events (hh5s)
 
 CVE = "CVE-2026-0001"
