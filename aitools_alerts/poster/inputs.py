@@ -25,7 +25,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from aitools_alerts import config as _member_config, schema
+from aitools_alerts import config as _member_config, schema, wire
 from aitools_alerts.poster import rules
 from aitools_alerts.poster.compose import SYNTHETIC, SYNTHETIC_ID
 from aitools_alerts.poster.candidates import Candidate
@@ -441,10 +441,21 @@ def _adv_ok(v) -> bool:
     return True
 
 
+def _claim_ok(text) -> bool:
+    """The text of a claim tag exactly as ``wire.claim_tag`` writes it (hh5s): what a
+    send will sign, so nothing else may wait in the journal."""
+    try:
+        obj = wire.claim_of({"tags": [[wire.CLAIM_TAG, text]]}) if isinstance(text, str) and text else None
+        return obj is not None and wire.claim_tag(obj)[1] == text
+    except ValueError:
+        return False
+
+
 def _item_ok(it) -> bool:
     """A journal item that a later run can finish: every field its kind needs is there
     and well formed, so nothing fails after the post is public."""
-    if not (isinstance(it, dict) and _ITEM_KEYS <= set(it) <= _ITEM_KEYS | {"ja", "source_title", "floor", "tried", "retried"}  # rd8t, r7hr, ny5g, jsje
+    if not (isinstance(it, dict) and _ITEM_KEYS <= set(it) <= _ITEM_KEYS | {"ja", "source_title", "floor", "tried", "retried", "claim"}  # rd8t, r7hr, ny5g, jsje, hh5s
+            and ("claim" not in it or (it.get("kind") in ("root", "copy", "reply") and _claim_ok(it["claim"])))
             and ("tried" not in it or type(it["tried"]) is int)  # its first attempt with an unknown outcome, expired
             and ("retried" not in it or (it["retried"] is True and it["kind"] == "reply"))  # refused once, sent once more
             and ("floor" not in it or (it["kind"] == "root" and it["floor"] in schema.LEVELS))

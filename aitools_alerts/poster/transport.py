@@ -1,7 +1,8 @@
 """Send one post to the relay: sign it here and POST it over HTTPS.
 
 The poster holds jibot's key (read from the secrets helper on the poster machine)
-and signs two events per post: the kind 9 channel message, and a NIP-98 kind
+and signs two events per post: the kind 9 channel message (with the claim tag of
+the state it gives its thread, when the caller has one: spec/wire.md), and a NIP-98 kind
 27235 event that authorises the HTTP request. The relay requires the message's
 author to be the NIP-98 signer, and the signer to be a relay member. The relay
 machine never holds the key.
@@ -40,7 +41,7 @@ import time
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from aitools_alerts import nostr, schema
+from aitools_alerts import nostr, schema, wire
 
 MAX_CONTENT = schema.MAX_POST_CHARS
 DEADLINE = 90.0  # the whole send: connect, write, response (the ssh route allowed 120 s)
@@ -73,8 +74,13 @@ class SendResult:
     message: str = ""  # a refusal's reason, from the relay's error
 
 
-def check_send(channel_id, content, reply_to=None) -> None:
-    """Every shape check a send makes, before anything is marked pending; ValueError if not."""
+def check_send(channel_id, content, reply_to=None, claim=None) -> None:
+    """Every shape check a send makes, before anything is marked pending; ValueError if not.
+    ``claim``: None, or the event tag exactly as ``wire.claim_tag`` writes it."""
+    if claim is not None:
+        obj = wire.claim_of({"tags": [claim]}) if isinstance(claim, list) else None
+        if obj is None or wire.claim_tag(obj) != claim:
+            raise ValueError("claim must be the tag wire.claim_tag writes")
     if not isinstance(channel_id, str) or not _UUID.fullmatch(channel_id):
         raise ValueError("channel_id must be a lowercase UUID")
     if reply_to is not None and (not isinstance(reply_to, str) or not _HEX64.fullmatch(reply_to)):
@@ -94,13 +100,18 @@ def check_url(url) -> str:
     return host
 
 
-def message_event(channel_id: str, content: str, reply_to: str | None, *, created_at: int) -> dict:
+def message_event(channel_id: str, content: str, reply_to: str | None, *, created_at: int,
+                  claim: list | None = None) -> dict:
     """The unsigned channel message (buzz-sdk ``build_message``). The poster replies
-    only to a thread root, so a reply is always a direct one: one ``e`` tag, ``reply``."""
-    check_send(channel_id, content, reply_to)
+    only to a thread root, so a reply is always a direct one: one ``e`` tag, ``reply``.
+    ``claim``: the claim tag of the state this event gives its thread (spec/wire.md),
+    signed with the event, last among its tags."""
+    check_send(channel_id, content, reply_to, claim)
     tags = [["h", channel_id]]
     if reply_to is not None:
         tags.append(["e", reply_to, "", "reply"])
+    if claim is not None:
+        tags.append(list(claim))
     return {"created_at": int(created_at), "kind": MESSAGE_KIND, "tags": tags, "content": content}
 
 
@@ -162,7 +173,7 @@ def _connect(host: str, timeout: float):
 
 
 class Relay:
-    """``send(channel_id, content, reply_to) -> SendResult`` against one relay.
+    """``send(channel_id, content, reply_to, claim) -> SendResult`` against one relay.
 
     ``key_source()`` returns the signing key as 64 hex, or raises KeyUnavailable; it
     runs on the first send and its result is kept for this object's life. A key whose
@@ -206,13 +217,14 @@ class Relay:
                 self._key = k
         return self._key
 
-    def send(self, channel_id: str, content: str, reply_to: str | None = None) -> SendResult:
-        check_send(channel_id, content, reply_to)
+    def send(self, channel_id: str, content: str, reply_to: str | None = None,
+             claim: list | None = None) -> SendResult:
+        check_send(channel_id, content, reply_to, claim)
         key = self._signing_key()
         if key is None:
             return SendResult(False, None, None, self._key_error or "relay key unavailable", "failed")
         now = int(self._clock())
-        event = nostr.sign_event(key, message_event(channel_id, content, reply_to, created_at=now))
+        event = nostr.sign_event(key, message_event(channel_id, content, reply_to, created_at=now, claim=claim))
         body = json.dumps(event, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         headers = {"Authorization": auth_header(key, self.url, body, created_at=now,
                                                 nonce=secrets.token_hex(16)),

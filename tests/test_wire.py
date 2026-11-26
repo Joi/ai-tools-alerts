@@ -126,3 +126,15 @@ def test_this_reader_keeps_the_higher_level_and_ignores_the_claim_tag():
     assert got["AITA-TEST-0002"].adv == replace(got["AITA-TEST-0001"].adv, id="AITA-TEST-0002")
     assert got["AITA-TEST-0002"].adv.level == "critical" and dropped == {}
     assert (got["AITA-TEST-0002"].offered, got["AITA-TEST-0001"].offered) == ("notice", None)
+
+
+def test_tag_bytes_is_what_the_tag_adds_to_an_event_in_a_channel_file():
+    """hh5s: the poster's checkpoint counts a sent event's claim tag by this."""
+    from aitools_alerts.poster import signer
+    ev = {"id": "0" * 64, "pubkey": "1" * 64, "sig": "2" * 128, "kind": 9, "created_at": 1, "content": "x",
+          "tags": [["h", "c"]]}
+    for obj in ({"a": 1}, {"a": 'quote " and \\ backslash', "b": "é"},
+                {"a": "x" * (wire.MAX_CLAIM_BYTES - len('{"a":""}'))}):
+        tag = wire.claim_tag(obj)
+        with_tag = {**ev, "tags": [*ev["tags"], tag]}
+        assert signer._size(with_tag) - signer._size(ev) == wire.tag_bytes(tag) > len(tag[1].encode())

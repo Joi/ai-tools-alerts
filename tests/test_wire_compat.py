@@ -20,12 +20,13 @@ import pytest
 
 from aitools_alerts import check, nostr, pull, ruleset, schema, wire
 from aitools_alerts.inventory import Installed, Inventory
-from aitools_alerts.poster import compose, rules
+from aitools_alerts.poster import compose, rules, transport
 from aitools_alerts.schema import Action, Product
 from aitools_alerts.state import State
-from mirror_helpers import advisory, mirror_now, released_reader
+from mirror_helpers import CHANNELS, advisory, mirror_now, released_reader
 
 RELEASED = ("v0.1.4", "v0.1.5", "v0.1.6", "v0.1.7")
+CLAIM_READERS = ("v0.1.8", "v0.2.0", "v0.2.1")  # they compute expiry from the claim tag (r0ra)
 REPO = Path(__file__).resolve().parents[1]
 MONTH = 30 * 86400
 # What a member is shown: the active threads at a given time, and which of them match
@@ -311,3 +312,64 @@ def test_what_the_format_does_not_avoid_a_reader_before_0_1_7_applies_a_narrowin
     list whole, at once and unchecked, and nothing on the feed reaches them to say so."""
     m, now, _ = narrowed_feed()
     assert released(tmp_path, tag, m, now)[str(now)] == {"AITA-TEST-0001": ["critical", ["1.0.0"], False]}
+
+
+# ---------------------------------------------------------------- the poster's own events (hh5s)
+
+CVE = "CVE-2026-0001"
+
+
+def poster_event(m, text, at, reply_to=None, claim=None, files=("feed.json",)):
+    """An event exactly as the poster signs it (``transport.message_event``), on the mirror."""
+    ev = transport.message_event(CHANNELS["feed"], text, reply_to, created_at=at, claim=claim)
+    got = m.post(m.bot_sec, text, created_at=at, tags=ev["tags"], files=files)
+    assert got["tags"] == ev["tags"] and got["content"] == ev["content"] and nostr.verify_event(got)
+    return got
+
+
+def kev_claim(at):
+    """The claim tag the poster's own builder makes for the thread's KEV reading."""
+    text = rules.claim_text([("kev", {"cve_id": CVE, "name": "Anthropic Claude Code"})], [CVE], "Claude Code", at)
+    obj = json.loads(text)
+    assert ruleset.check_claim(obj, "Claude Code") == "ok" and obj["level"] == "critical"
+    return [wire.CLAIM_TAG, text]
+
+
+@pytest.mark.parametrize("tag", RELEASED + CLAIM_READERS)
+def test_the_posters_events_as_shipped_show_at_the_same_level_on_every_reader(tmp_path, tag):
+    """What the poster sends from hh5s on: a root with no claim, and a level change with
+    its claim (here a raise that shares a reply with the fix). Every released reader
+    and this one show the alert at critical, now and a month on: a claim in a reply
+    never starts an expiry, because the root carries none."""
+    m, now = mirror_now()
+    t = now - 3600
+    root = poster_event(m, schema.render_post(advisory(id=CVE, level="high", posted_by="relay-bot"), "Body line."), t)
+    raised = poster_event(m, m.patch_text(level="critical", products=[asdict(p) for p in FIX]), t + 100,
+                          reply_to=root["id"], claim=kev_claim(t + 100))
+    assert wire.claim_of(root) is None and wire.claim_of(raised)["id"] == CVE
+    mine, theirs = this_reader(m, now, tmp_path), released(tmp_path, tag, m, now)
+    live = {CVE: ["critical", ["99.1.0"], True]}
+    for at in (str(now), str(now + MONTH)):
+        assert mine[at] == live and theirs[at] == live, (at, mine[at], theirs[at])
+
+
+@pytest.mark.parametrize("tag", RELEASED + CLAIM_READERS)
+def test_why_root_claims_are_off_a_claimed_root_decays_where_claims_are_read(tmp_path, tag):
+    """The same tag on a root (``poster.main.ROOT_CLAIMS``, off). Every reader shows the
+    alert now. A month on with no renewal, the readers that compute expiry from claims
+    (0.1.8 and later, and this one) have stepped a true critical down; the older ones
+    keep it. So the poster sends no root claim before it can renew (ai-tools-alerts#gtw9)."""
+    m, now = mirror_now()
+    t = now - 3600
+    root = poster_event(m, schema.render_post(advisory(id=CVE, posted_by="relay-bot"), "Body line."), t,
+                        claim=kev_claim(t))
+    assert wire.claim_of(root)["level"] == "critical"
+    mine, theirs = this_reader(m, now, tmp_path), released(tmp_path, tag, m, now)
+    live = {CVE: ["critical", ["99.0.0"], True]}
+    assert mine[str(now)] == live and theirs[str(now)] == live
+    later = str(now + MONTH)
+    assert pull._RANK[mine[later][CVE][0]] < pull._RANK["critical"]
+    if tag in CLAIM_READERS:
+        assert pull._RANK[theirs[later][CVE][0]] < pull._RANK["critical"], theirs[later]
+    else:
+        assert theirs[later] == live
