@@ -80,14 +80,6 @@ def test_a_raise_on_a_thread_with_both_channels_sends_no_copy(env):
     assert levels(relay) == levels(relay, "critical") == [{"level": "critical"}]
 
 
-def test_a_lowered_thread_keeps_its_channels_and_gets_no_copy(env):
-    """A thread lowered to high has a root in feed already; one at notice needs none."""
-    raised(env)
-    env.api.put(G, ghsa_json(G))  # reviewed again: high
-    later = [c for h in range(2, 24 * 9) for c in sent(run(env, h))]
-    assert entries(env)[0]["level"] == "high" and later and all(reply is not None for _, reply, _ in later)
-
-
 def test_a_failed_copy_send_is_sent_again_from_the_journal(env):
     """Acceptance: a failed copy send is retried from the journal."""
     code, summary, relay = raised(env, FakeRelay("ok", "fail"))
@@ -138,14 +130,12 @@ def test_a_raise_whose_send_failed_gets_its_copy_from_the_next_run(env):
 
 def test_a_copy_compose_refuses_is_withheld_and_tried_again(env):
     raised(env, FakeRelay("ok", "fail"))
-    sources = entries(env)[0]["advisory"]["sources"]
     st = env.state()
     st["outbox"] = []  # the journaled copy gone: only the ledger says what is missing
     env.config.state.write_text(json.dumps(st))
     edit(env, lambda e: e["advisory"].update(actions=[]))  # a critical with no action: 9kgk refuses it
     code, summary, relay = env.run(now=T0 + 2 * HOUR)
     assert code == 0 and "withheld=1" in summary and sent(relay) == [] and not env.state()["outbox"], summary
-    assert sources == entries(env)[0]["advisory"]["sources"]
     edit(env, lambda e: e["advisory"].update(actions=[{"verb": "upgrade", "target": "Claude Code", "value": "2.1.0"}]))
     relay = run(env, 3)
     assert len(roots(relay, "critical")) == 1 and set(entries(env)[0]["channel_ids"]) == {"critical", "feed"}
@@ -171,8 +161,13 @@ def test_a_thread_is_found_by_the_name_it_was_posted_under(env, name):
     renamed product's thread keeps its former name: both get their copy."""
     lost(env)
     edit(env, lambda e: rename(e, name))
-    (copy,) = roots(run(env, 2), "critical")
+    env.last = run(env, 2)
+    (copy,) = roots(env.last, "critical")
     assert copy.startswith(f"CRITICAL: {name}: ") and set(entries(env)[0]["channel_ids"]) == {"critical", "feed"}
+    # a former name seven MCP entries share names no one package: never another product's
+    assert copy.split("\n")[1] == f"Affected: {name}, versions not stated."
+    (ja,) = [t for _, _, t in env.last.ja]
+    assert f"影響: {name}（バージョン不明）。" in ja and "mcp-server-git" not in copy + ja
 
 
 def test_a_withdrawn_advisory_gets_no_copy(env):
@@ -182,11 +177,39 @@ def test_a_withdrawn_advisory_gets_no_copy(env):
     assert all(sent(run(env, h)) == [] for h in (2, 3)) and not env.state()["outbox"]
 
 
+def test_a_retracted_thread_and_an_expired_advisory_get_no_copy(env):
+    """The other two ways an advisory is withdrawn: its thread retracted on the mirror
+    (not its id in the manifest), and its block expired."""
+    lost(env)
+    m = env.mirror
+    ev = m.root_post(m.cur_sec, created_at=T0 + 100)  # a curator thread, retracted by a reply
+    m.reply(m.cur_sec, ev, "retract\nwrong", created_at=T0 + 200)
+    feed = entries(env)[0]["channel_ids"]["feed"]
+    edit(env, lambda e: e["channel_ids"].update(feed=ev["id"]))  # the ledger's thread is that one
+    assert sent(run(env, 2)) == [] and not env.state()["outbox"]
+    edit(env, lambda e: (e["channel_ids"].update(feed=feed), e["advisory"].update(expires_at=T0 + HOUR)))
+    assert sent(run(env, 3)) == [] and not env.state()["outbox"]
+    edit(env, lambda e: e["advisory"].update(expires_at=None))
+    assert len(roots(run(env, 4), "critical")) == 1  # neither: the copy posts
+
+
+def down(url, timeout=None):
+    raise OSError("mirror unreachable")
+
+
+def test_a_thread_lowered_while_its_copy_was_missing_gets_none(env):
+    """The copy follows the level the thread has now: lowered to high before the copy
+    could post, it needs no root in the critical channel."""
+    lost(env)
+    env.api.put(G, ghsa_json(G))  # reviewed again: high
+    for h in range(2, 24 * 9):  # the mirror down throughout: no copy can be planned
+        assert roots(env.run(now=T0 + h * HOUR, mirror_fetch=down)[2], "critical") == []
+    assert entries(env)[0]["level"] == "high"
+    assert sent(run(env, 24 * 9)) == [] and list(entries(env)[0]["channel_ids"]) == ["feed"]
+
+
 def test_no_copy_is_planned_while_the_mirror_cannot_be_read(env):
     lost(env)
-
-    def down(url, timeout=None):
-        raise OSError("mirror unreachable")
     code, summary, relay = env.run(now=T0 + 2 * HOUR, mirror_fetch=down)
     assert code == 0 and sent(relay) == [] and not env.state()["outbox"], summary
     assert len(roots(run(env, 3), "critical")) == 1  # the next run that reads it

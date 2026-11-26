@@ -1525,6 +1525,20 @@ class Run:
             self.enqueue(items, self.passed.pop(e.root_event_id, None) if (e, level) in raises else None)
         self.copies(trust_root, fetch)
 
+    @staticmethod
+    def _scope_named(name):
+        """The scope entry a thread is filed under, by its stored name or a former one
+        (``catalog._scope``; a display name is not always an identity, so not
+        ``scope_of``). A former name several entries share (the MCP servers were one
+        entry once) does not say which of them the thread is about: the scope then keeps
+        the name and names no package, so a copy never states another product's."""
+        scope = catalog._scope(name)
+        entries = rules._default_index().values()
+        if scope is not None and not any(s.name == name for s in entries) \
+                and len({s.name for s in entries if name in getattr(s, "formerly", ())}) > 1:
+            scope = replace(scope, package=None)
+        return scope
+
     def copies(self, trust_root=TRUST_ROOT_PUBKEY, fetch=None):
         """Post the copy a thread's level lacks (ai-tools-alerts#3t4p): for every thread
         with a channel of its level (``CHANNELS_FOR``) it has no root in, a root there,
@@ -1537,8 +1551,7 @@ class Run:
         in an earlier run.
 
         Not for a synthetic thread (it takes no update), a thread whose product the scope
-        file no longer has under its name or a former one (``catalog._scope``; a display
-        name is not always an identity, so not ``scope_of``), or a thread with work in
+        file no longer has under its name or a former one (``_scope_named``), or a thread with work in
         flight (``busy``): a journaled, withheld or unknown copy is never planned twice.
         Nor for a withdrawn advisory, which is never announced again: the mirror is
         pulled, only when some thread lacks a copy, and a retracted id, a retracted
@@ -1548,7 +1561,7 @@ class Run:
         want = []
         for e in self.led.entries():
             missing = [ch for ch in CHANNELS_FOR.get(e.level, ()) if ch not in e.channel_ids]
-            scope = catalog._scope(e.scope) if missing and not compose.is_synthetic(e.advisory.get("id")) else None
+            scope = self._scope_named(e.scope) if missing and not compose.is_synthetic(e.advisory.get("id")) else None
             if scope is not None and not self.busy(e.aliases, e.scope):
                 want.append((e, scope, missing))
         if not want:

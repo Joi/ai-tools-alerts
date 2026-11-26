@@ -28,7 +28,7 @@ One rule, applied at the end of `Run.recompute`, after the raises and lowerings 
 `Run.recompute` ends by calling a new `Run.copies()`:
 
 - It reads the ledger's entries as they are then. A raise sent earlier in the run is recorded, so the thread is critical in the ledger and lacks `critical`.
-- It skips a synthetic thread (a synthetic thread takes no update from any input), a thread whose product the scope file no longer has under its name or a former name (`catalog._scope`, which resolves the stored display name; `rules.scope_of` matches identities and returns nothing for Codex, Cursor or Hermes), and a thread that is busy (`Run.busy`: journaled or withheld work, or a send with an unknown outcome).
+- It skips a synthetic thread (a synthetic thread takes no update from any input), a thread whose product the scope file no longer has under its name or a former name (`Run._scope_named`, over `catalog._scope`, which resolves the stored display name; a former name several entries share yields a scope with no package; `rules.scope_of` matches identities and returns nothing for Codex, Cursor or Hermes), and a thread that is busy (`Run.busy`: journaled or withheld work, or a send with an unknown outcome).
 - When some thread is left, it pulls the mirror once (`Run._withdrawn`, as the digest does) and skips a thread whose id the manifest retracts, whose thread is retracted, or that has expired: a withdrawn advisory is never announced again. When the pull fails it plans no copy in this run and says so on stderr; the next run tries again.
 - For each other thread with `missing = [ch for ch in CHANNELS_FOR[e.level] if ch not in e.channel_ids]`, it composes one text and journals one `copy` item per missing channel through `Run.enqueue`, with `root` set to the thread's root. The item's key is `copy:<scope>:<advisory id>:<channel>`, the key `plan_known` gives a copy.
 - A `ValueError` from compose withholds that thread's copy for this run (`withheld` is counted) and the loop goes on. The next run tries again.
@@ -46,7 +46,7 @@ A new `compose.copy_post(adv, scope, *, title=None, exploited=False)` renders a 
 - Refused with `ValueError`: an unresolved scope entry; an id that is not a CVE or GHSA id; no product, or a product named otherwise than the scope; no source; a critical with no complete action (no fixed version and no `stop_using` for the product, the rule of ai-tools-alerts#9kgk that `deliver` also applies).
 - `_guard` checks the text as for every post.
 
-The ledger keeps the schema's form of the range and the fix, not the raw text of a range or fix the schema cannot express. So where the root said "affected versions: see the source", the copy says "versions not stated". The block is the same.
+The ledger keeps the schema's form of the range and the fix, not the raw text of a range or fix the schema cannot express. So where the root said "affected versions: see the source", the copy says "versions not stated", and where a high's root said "upgrade to the fixed release the source names", the copy gives the workaround line. No critical is affected: a critical has a schema fix or stop_using. The block is the same.
 
 No model wording (ai-tools-alerts#c6ak) for this copy: the ledger keeps no source prose to word from. The headline is the source title.
 
@@ -65,7 +65,7 @@ Nothing new. A copy is a root in a second channel, which `plan_new` and `plan_kn
 
 ## Blast radius and rollback
 
-Poster only: `aitools_alerts/poster/compose.py` (one function added, `root_post`'s body lines moved to a helper with no change in output) and `aitools_alerts/poster/main.py` (`Run.copies`, one call). No state file gains a key. A copy item has the shape `plan_known`'s has, so an older poster drains it.
+Poster only: `aitools_alerts/poster/compose.py` (`copy_post` and `title_reason` added, `root_post`'s body lines moved to `_root_lines` with no change in output) and `aitools_alerts/poster/main.py` (`Run.copies`, one call). No state file gains a key. A copy item has the shape `plan_known`'s has, so an older poster drains it.
 
 On the first run after an update, any thread already standing at critical with no root in `critical` gets its copy. On main that state arises only from a recompute raise or a dropped copy, both unreleased, so none is expected on the live ledger. If one exists, the copy is what `plan_known` would post at the next sighting.
 
@@ -92,3 +92,16 @@ None.
 4. SUBSTANTIVE, rebutted: the message of the review snapshot commit. The snapshot is a dangling commit made for the reviewer and never lands; the branch's commits name the behaviour and the issue.
 
 Medium takes no delta pass on the spec; the whole-branch review sees the fixes.
+
+## Review dispositions (code, whole branch at e5984e7)
+
+Independent pass (gpt-6.1-sol, high): 0 BLOCKER, 1 SUBSTANTIVE. Same-model pass beside it: 1 BLOCKER (the same finding), 3 SUBSTANTIVE, 3 COSMETIC.
+
+1. SUBSTANTIVE (the same-model pass: BLOCKER), fixed: `catalog._scope` resolves a former name to the first entry that lists it, and seven MCP entries share "MCP servers and clients", so a copy for a thread under that name said `Affected: mcp-server-git ... (PyPI)` whatever server it was about. `Run._scope_named` drops the package when more than one entry carries the former name; the copy then names the thread's own name and no registry. Test: `test_a_thread_is_found_by_the_name_it_was_posted_under` now holds the English and the Japanese affected line. A text change in a post, not a change in which threads get a copy.
+2. SUBSTANTIVE, fixed: only the manifest's retracted id was tested. Added `test_a_retracted_thread_and_an_expired_advisory_get_no_copy`.
+3. SUBSTANTIVE, fixed: the lowered-thread test could not fail (its thread had both channels). Replaced by `test_a_thread_lowered_while_its_copy_was_missing_gets_none`.
+4. SUBSTANTIVE, rebutted: a thread posted as unverified and later raised on the advisory's fields gets a critical copy whose head says unverified. The level-only reply leaves the thread's title as it is, so every channel and every reader already shows this thread under the unverified title; a copy whose head dropped the mark would disagree with its own block. Changing the title on a recompute raise is a change to the raise (and on a lowered thread spec/wire.md rule 2 forbids it), not to the copy.
+5. COSMETIC, not changed: `root_post` no longer writes a `Who:` line for a wording with an empty `who`; `wording.parse` never returns one. The same-model pass compared 45,360 inputs of `root_post` on main and on the branch and found no other difference.
+6. COSMETIC, fixed: a leftover assertion in the compose-refusal test; the plan's test names and signature; "one function added"; the changelog's headline sentence; the `Do:` line's wording loss, now stated above.
+
+No BLOCKER fix changed behaviour after the independent pass, so no delta pass runs (Review Cycle). The rung stays medium.

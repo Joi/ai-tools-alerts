@@ -1,6 +1,6 @@
 # Run: 3t4p-copy-on-recompute-raise
 Instruction: Read TASK-ai-tools-alerts#3t4p.md in this worktree root, then run `kata show ai-tools-alerts#3t4p` and follow the brief and the dispatch rules (do-it, start rung floored at medium; PR landing; one independent review).
-Stage: spec-review
+Stage: verifying (gate on the final head, then the pull request)
 Rung: medium (start-floor medium: dispatch floor; no hard trigger in scope)
 Spec: docs/superpowers/specs/2026-11-26-3t4p-copy-on-recompute-raise-design.md   Plan: docs/superpowers/plans/2026-11-26-3t4p-copy-on-recompute-raise.md
 Agency project: — (no agency MCP tools in this session; executed directly)
@@ -8,13 +8,17 @@ Kata: ai-tools-alerts#3t4p
 Limits: wall clock 5 hours from the 2026-11-26T01:47Z dispatch; review shape one independent pass per artifact, one delta only after a behaviour-changing BLOCKER fix; completion check: `scripts/test-gate.sh` green and the pull request merged with the no-reply author.
 
 Last reviewed: spec+plan b8cd08106ac0d81a124afd454201d5fcb0fbd88d
+Last reviewed: code e5984e70ef965bcd638c6edf22c6f7277f9032c9 (whole branch, both stages); the review fixes follow it unreviewed by a further pass: a SUBSTANTIVE fix and tests, no BLOCKER from the independent pass
 
 ## Scorecards
 Pass 1 [spec+plan]: 3B/1S/0C/0R · fixed -/- · velocity = (—→4, escalation no)   # fresheyes, gpt-6.1-sol high, REASON=-; 2 fixed, 1 fixed in part and rebutted in part, 1 rebutted (the spec's "Review dispositions")
 spec: passes: 1 · elapsed: ~15 min
+Pass 1 [code:branch]: 0B/1S/0C/0R · fixed -/- · velocity = (—→1, escalation no)   # fresheyes whole branch at e5984e7, gpt-6.1-sol high, REASON=-; fixed
+Pass 1 [code:branch, Stage 1]: 1B/3S/3C/0R · fixed -/- · velocity = (—→7, escalation no)   # same-model subagent at e5984e7; its blocker is the independent pass's finding; 2 more fixed, 1 rebutted (the spec's second "Review dispositions")
+code: passes: 1 · elapsed: ~20 min
 
 ## Chunks
-- [ ] the recompute posts the copy a thread's level lacks
+- [x] the recompute posts the copy a thread's level lacks — committed 4ff62df; origin/main merged at e5984e7 (4fkh; one conflict, in the changelog, both entries kept)
 
 ## Notes
 - Start-floor evaluator not dispatched: the dispatch floors the run at medium and no hard trigger is in scope (no secret, credential or deploy path in the diff); as jsje, faxq, 9kgk and qwpw.
@@ -29,4 +33,5 @@ spec: passes: 1 · elapsed: ~15 min
 - Found by that test, before any review: `Run.recompute` has a loop variable named `root` (the threads KEV listed), which shadowed the trust-root argument first given the same name, so `copies` pulled the mirror with a thread id whenever a thread was KEV-listed and planned nothing. The argument is `trust_root`; the test above and the mutation "pulls the mirror with another root" pin it.
 - Mutations, each failing a named test: `copies` not called, `copies` pulls with another root, and `copies` posts to every channel of the level (`test_a_feed_only_thread_raised_to_critical_gets_its_copy_in_the_critical_channel`); `copies` ignores `busy` (`test_a_copy_whose_outcome_is_unknown_is_not_planned_twice`); the scope by `rules.scope_of` (`test_a_thread_is_found_by_the_name_it_was_posted_under[Cursor]`); no withdrawal check (`test_a_withdrawn_advisory_gets_no_copy`); a failed pull plans anyway (`test_no_copy_is_planned_while_the_mirror_cannot_be_read`); `copy_post` without the 9kgk check, and without the product check (`test_copy_post_refuses_what_must_not_post`). One survives and is equivalent: without the explicit synthetic test in `copies`, `compose.withdrawn` still skips a synthetic id; the explicit test only saves the mirror pull.
 - `compose.copy_post` adds no parse-back check of its own: `schema.render_post` raises when the text does not parse back to the advisory, and the compose test holds it to that.
+- Mutations for the review fixes, each failing a named test: no retracted-thread check and no expiry check (`test_a_retracted_thread_and_an_expired_advisory_get_no_copy`); an ambiguous former name keeps a package (`test_a_thread_is_found_by_the_name_it_was_posted_under[MCP servers and clients]`).
 - Prior work: `kata search "recompute raise critical channel copy"` (3t4p itself, jsje, h29n, ny5g, 3qyq; no other hit). jsje: a refused copy is dropped after three days and "its advisory planned anew", which for a copy with no candidate only the recompute can do. 3qyq's close-out names this issue as the gap.
