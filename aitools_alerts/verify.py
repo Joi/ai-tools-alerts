@@ -35,12 +35,12 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
-from . import ruleset, schema
+from . import check, ruleset, schema
 from .state import write_json
 
 __all__ = ["KEV_URL", "HOSTS", "LIMITS", "TIMEOUT", "MAX_FETCHES", "RUN_SECONDS", "FILE", "BOT",
            "norm_id", "url_of", "default_fetch", "state_key", "judge", "summary", "load", "run",
-           "result_for", "at_level", "lowering", "claimed", "Asked"]
+           "result_for", "at_level", "lowering", "claimed", "Asked", "pkey", "scope_of"]
 
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 _GHSA_URL = "https://api.github.com/advisories/"
@@ -54,7 +54,7 @@ MAX_ALIASES = 3  # aliases of one thread that are read
 MAX_NAMES = 50  # ids one response may name; more is a failed read
 MAX_CACHE_BYTES = 16 << 20
 FILE = "verify.json"
-VERSION = 3  # of the cache: raised whenever a stored value changes meaning, so nothing older is reused
+VERSION = 4  # of the cache: raised whenever a stored value changes meaning, so nothing older is reused
 BOT = "relay-bot"
 CONFIRMED, CONTRADICTED, UNKNOWN = "confirmed", "contradicted", "unknown"
 _WHYS = {CONFIRMED: ("match", "withdrawn"), CONTRADICTED: ("unsupported", "above-source", "below-source"),
@@ -317,8 +317,9 @@ def _record(rs, source: str, readings: list, named, etag, now: int) -> dict:
 
 # ------------------------------------------------------------------ results
 
-def judge(level: str, product: str, records, complete: bool, rs, actions=(), fixed=None) -> dict:
-    """One product's result. ``records``: what was kept of each counted id.
+def judge(level: str, product: str | None, records, complete: bool, rs, actions=(), fixed=None) -> dict:
+    """One product's result. ``product``: its scope name, None for a posted product that
+    is none (``scope_of``). ``records``: what was kept of each counted id.
     Support from a source its subject's attacker can write (``lowers`` false)
     confirms nothing and contradicts nothing: it only makes the result unknown.
     The source's level is what a post with the thread's ``actions`` and ``fixed``
@@ -375,8 +376,22 @@ def summary(products: dict) -> tuple[str, str]:
     return UNKNOWN, "unread"
 
 
+def pkey(product) -> str:
+    """The key of one product's result: its ecosystem and its name as posted (2mgd).
+    Two entries with one name under two ecosystems are two products: neither's result
+    stands for the other's. A line feed is in neither field (``schema.validate``)."""
+    return f"{product.ecosystem}\n{product.name}"
+
+
+def scope_of(product) -> str | None:
+    """The scope product a posted product is judged as (``check.scope_name``), or None."""
+    return check.scope_name(product.name, product.ecosystem)
+
+
 class _Target:
-    """What a thread's published state asks of the sources."""
+    """What a thread's published state asks of the sources. ``products``: the keys
+    (``pkey``) of its products; ``scope``: per key the scope product it is judged as,
+    None for one that is no scope product by the rule an installation is matched with."""
 
     def __init__(self, adv):
         self.first = norm_id(adv.id)
@@ -384,9 +399,11 @@ class _Target:
         self.aliases = [a for a in (norm_id(x) for x in adv.aliases) if a is not None
                         and not (a in seen or seen.add(a))]
         self.level = adv.level
-        self.products = sorted({p.name for p in adv.products})
+        self.products = sorted({pkey(p) for p in adv.products})
+        self.scope = {pkey(p): scope_of(p) for p in adv.products}
+        self.eco = {pkey(p): p.ecosystem for p in adv.products}
         # 9kgk: what the post can be acted on with; the source's level is held to it
-        self.fixed = {p.name: p.fixed for p in adv.products}
+        self.fixed = {pkey(p): p.fixed for p in adv.products}
         self.actions = [(a.verb, a.target, a.value) for a in adv.actions]
         # tavj: an asked state whose higher levels are all claimed from the first id's fields
         self.claimed = getattr(adv, "claimed", False) is True
@@ -399,8 +416,13 @@ class _Target:
     def ids(self) -> list:
         return [self.first, *self.aliases]
 
-    def judge(self, product, records, complete, rs) -> dict:
-        return judge(self.level, product, records, complete, rs, self.actions, self.fixed.get(product))
+    def judge(self, key, records, complete, rs) -> dict:
+        """The result of the product with this key, judged as its scope product. An
+        action whose target is that product in another spelling counts as naming it."""
+        name = self.scope[key]
+        actions = [(v, name if name is not None and check.scope_name(t, self.eco[key]) == name else t, x)
+                   if type(t) is str else (v, t, x) for v, t, x in self.actions]
+        return judge(self.level, name, records, complete, rs, actions, self.fixed.get(key))
 
 
 @dataclass(frozen=True)
@@ -499,7 +521,7 @@ def lowering(adv, level: str, cache: dict | None, now: float, rs=None, stated=No
 
 def state_key(adv) -> str:
     """The published state a result was computed for: the first id, the
-    aliases, the level and the product names."""
+    aliases, the level and the products (ecosystem and name)."""
     return _Target(adv).key
 
 
@@ -567,7 +589,7 @@ def load(state_dir, rs=None) -> dict:
 
 
 def result_for(adv, cache: dict | None) -> dict | None:
-    """{product name: {result, why, source}} for a thread, from the cache
+    """{product key (``pkey``): {result, why, source}} for a thread, from the cache
     only. None for a thread no relay bot posted. ``cache`` None is
     ``verify = "off"``: every product is unknown, and no file was read."""
     if adv.posted_by != BOT:
@@ -682,7 +704,7 @@ class _Run:
         return rec
 
     def thread(self, t: _Target, known_cves) -> dict:
-        """{product: result} for one thread.
+        """{product key: result} for one thread.
 
         Which other ids are the same advisory is the source's word, never the
         bot's. When the first id is a GHSA or MAL id and its response is an
@@ -713,7 +735,7 @@ class _Run:
             r = held.get(alias)
             if r is None or not r["lowers"] or t.first not in r["names"]:
                 return 0
-            return max((_RANK[r["support"][p][0]] for p in t.products
+            return max((_RANK[r["support"][p][0]] for p in t.scope.values()
                         if p in r["support"] and r["support"][p][1]), default=0)
         if from_kev:
             related = sorted((a for a in t.aliases if ruleset.source_of(a) != "kev"), key=lambda a: -weight(a))
@@ -804,7 +826,7 @@ def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=
                 # unless it was a contradiction (``_settled``).
                 keep = held is not None and set(held["products"]) == set(t.products) and t.key not in again
                 results[t.key] = {"at": now, "products": held["products"] if keep else _settled(
-                    results.get(t.key), {p: judge(t.level, p, [], False, rs) for p in t.products}, t.key in again)}
+                    results.get(t.key), {p: t.judge(p, [], False, rs) for p in t.products}, t.key in again)}
             break
         results[t.key] = {"at": now, "products": _settled(results.get(t.key), products, t.key in again)}
     live = [_Target(adv) for adv in current if adv.posted_by == BOT and norm_id(adv.id) is not None]

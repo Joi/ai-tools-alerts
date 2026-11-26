@@ -332,3 +332,18 @@ def test_asks(mirror):
     mirror.reply(mirror.bot_sec, root, mirror.patch_text(level="notice"), created_at=AT + 10)
     t = thread(mirror)
     assert pull.asks(t) == ["high", "notice"] and pull.asks(t, AT + HOLD + 1) == ["notice"]
+
+
+def test_an_entry_of_the_same_name_under_another_ecosystem_does_not_stand_for_the_original(mirror):
+    """ai-tools-alerts#2mgd: the history is kept per ecosystem and name. A reply adds
+    ``Claude Code`` under ``skill`` and puts ``claude code`` with no fixed version in
+    the tool entry's place. The skill entry is another product: what is asked about
+    still holds the tool's first entry, with its fixed version."""
+    root = bot_root(mirror)
+    skill = {"name": "Claude Code", "ecosystem": "skill", "affected": None, "fixed": None}
+    low = {"name": "claude code", "ecosystem": "claude-code", "affected": "<99.0.0", "fixed": None}
+    mirror.reply(mirror.bot_sec, root, mirror.patch_text(products=[skill, low]), created_at=AT)
+    t = thread(mirror)
+    assert sorted((p.ecosystem, p.name) for p in t.wide.products) == [("claude-code", "claude code"), ("skill", "Claude Code")]
+    asked = [(p.ecosystem, p.name, p.fixed) for p in pull.widest(t).products]
+    assert ("claude-code", "Claude Code", "99.0.0") in asked and ("skill", "Claude Code", None) in asked
