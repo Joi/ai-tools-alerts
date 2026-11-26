@@ -866,3 +866,55 @@ def test_a_title_change_without_the_level_still_says_something():
     assert out.split("\n")[0] == "Now: Claude Code: known exploited vulnerability."
     ja = compose.reply_post_ja(compose.parse_reply(out, prev), c, {"title": new_title})
     assert ja.split("\n")[0] == "件名: Claude Code: 悪用が確認された脆弱性"
+
+
+# ---------------------------------------------------------------- copy_post (ai-tools-alerts#3t4p)
+
+
+@pytest.mark.parametrize("c, level", [
+    (cand(), ("critical", "injection-exec-fixed")),
+    (cand(), "high"),
+    (cand(fixed=None, affected=None), ("critical", "stop-using")),
+    (cand(injection_exec=False, exploited=True), ("high", "unverified")),
+    (cand(id="GHSA-abcd-efgh-ijkl:claude-code", aliases=("CVE-2026-0001",), source_title="Shell escape in hooks"),
+     "high"),
+])
+def test_copy_post_is_the_root_composed_again_from_its_block(c, level):
+    """A copy of a thread states what its root stated: the same text, from the block,
+    the ledger's source title and its exploited mark, with no candidate."""
+    text, adv = root(c, level)
+    copy = compose.copy_post(adv, scope(c), title=compose.source_title(c), exploited=c.exploited)
+    assert copy == text and schema.parse_post(copy) == adv
+
+
+def test_copy_post_states_the_block_at_the_level_it_holds():
+    """After a level-only raise the block keeps its title; the copy's head takes the level."""
+    text, adv = root(cand(), "high")
+    up = dataclasses.replace(adv, level="critical")
+    copy = compose.copy_post(up, scope(cand()))
+    assert copy.split("\n")[0] == "CRITICAL: Claude Code: injection to code execution"
+    assert schema.parse_post(copy) == up and copy.split("\n")[1:5] == text.split("\n")[1:5]
+
+
+def test_copy_post_refuses_what_must_not_post(monkeypatch):
+    sc = scope(cand())
+    _, adv = root(cand(), "high")
+    _, bare = root(cand(fixed=None), "high")
+    for bad in (dataclasses.replace(bare, level="critical"),  # 9kgk: no fix and no stop_using
+                dataclasses.replace(adv, level="critical", actions=[]),
+                dataclasses.replace(adv, products=[dataclasses.replace(adv.products[0], name="Cursor")],
+                                    actions=[]),
+                dataclasses.replace(adv, id="LEAD-162d5e0f15f7")):
+        with pytest.raises(ValueError):
+            compose.copy_post(bad, sc)
+    with pytest.raises(ValueError):
+        compose.copy_post(adv, dataclasses.replace(sc, components=(sc,)))
+    # a title the publication guard refuses is dropped, as a root's is: never the copy
+    assert compose.copy_post(adv, sc, title="Crash on /Users/someone/project") == root(cand(), "high")[0]
+    monkeypatch.setattr(compose, "_guard", lambda text: (_ for _ in ()).throw(ValueError("names a host")))
+    with pytest.raises(ValueError, match="names a host"):  # the guard reads a copy as it reads every post
+        compose.copy_post(adv, sc)
+    monkeypatch.undo()
+    monkeypatch.setattr(compose.schema, "parse_post", lambda text: None)
+    with pytest.raises(ValueError, match="parse back"):
+        compose.copy_post(adv, sc)

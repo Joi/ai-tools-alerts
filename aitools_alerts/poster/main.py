@@ -57,6 +57,11 @@ unknown and moves nothing. A new candidate's ``ghsa`` reading is that API's answ
 too (``Run.admit``); one whose advisory could not be read is admitted again each
 run for RETRY_DAYS. At most 30 advisory requests a run, in three lanes.
 
+The recompute ends by posting the copy a thread's level lacks (``Run.copies``,
+ai-tools-alerts#3t4p): a thread it raised to critical that has a root in ``feed``
+alone gets its root in ``critical`` in that run, composed from the ledger with no
+candidate (``compose.copy_post``), and so does a thread whose copy was dropped.
+
 With spec/catalog-channel.json present, every in-scope advisory (each ledger thread
 whose product starts at its level, and each held notice) is also posted, whole, as a
 root to the catalog channel when it differs from what was last posted there
@@ -1365,7 +1370,8 @@ class Run:
 
     def _level_items(self, entry, level):
         """A level change and nothing else (``compose.level_post``), one reply for each
-        channel the thread has a root in. No Japanese copy: the digest reports it."""
+        channel the thread has a root in. No Japanese copy: the digest reports it. A
+        channel of the new level the thread has no root in gets its copy from ``copies``."""
         prev = schema.validate(entry.advisory)
         text = compose.level_post(prev, level)
         return [self._item("reply", entry.scope, entry.aliases, ch, text, key_id=f"{prev.id}#level",
@@ -1478,7 +1484,7 @@ class Run:
         level = recompute.raised(e, scope, self.copy, rs, lambda i: self.api.read(i, lane))
         return level is not None and self.yields(e, level) and not self.busy(e.aliases, e.scope, passing=True)
 
-    def recompute(self):
+    def recompute(self, trust_root=TRUST_ROOT_PUBKEY, fetch=None):
         """Send what the verdicts say (ny5g): a raise now; a lowering when the thread
         has had seven quiet days and the circuit breaker lets it through. The run has
         drained the journal and planned its candidates since ``observe``, so every
@@ -1488,7 +1494,8 @@ class Run:
         no verdict outlives the entry it was reached on, and the reply is composed from
         the current advisory. The breaker's share is of the threads judged, the only
         ones that can be lowered: a ledger full of other threads must not make a mass
-        lowering look small."""
+        lowering look small. Last, ``copies`` posts the copy a thread's level lacks
+        (3t4p); ``trust_root`` and ``fetch`` are its mirror pull's, as ``digest``'s."""
         st = self.rc
         now = [e for e in self.led.entries() if not compose.is_synthetic(e.advisory.get("id"))]
         self._judge([e for e in now if e.root_event_id not in self.judged
@@ -1518,6 +1525,69 @@ class Run:
                 continue
             # its wait stays until the ledger shows the level: see drop_unsent_lowerings
             self.enqueue(items, self.passed.pop(e.root_event_id, None) if (e, level) in raises else None)
+        self.copies(trust_root, fetch)
+
+    @staticmethod
+    def _scope_named(name):
+        """The scope entry a thread is filed under, by its stored name or a former one
+        (``catalog._scope``; a display name is not always an identity, so not
+        ``scope_of``). A former name several entries share (the MCP servers were one
+        entry once) does not say which of them the thread is about: the scope then keeps
+        the name and names no package, so a copy never states another product's."""
+        scope = catalog._scope(name)
+        entries = rules._default_index().values()
+        if scope is not None and not any(s.name == name for s in entries) \
+                and len({s.name for s in entries if name in getattr(s, "formerly", ())}) > 1:
+            scope = replace(scope, package=None)
+        return scope
+
+    def copies(self, trust_root=TRUST_ROOT_PUBKEY, fetch=None):
+        """Post the copy a thread's level lacks (ai-tools-alerts#3t4p): for every thread
+        with a channel of its level (``CHANNELS_FOR``) it has no root in, a root there,
+        composed from the ledger's advisory as it stands (``compose.copy_post``), with the
+        Japanese reply a copy has. Last in ``recompute``, from the ledger as the run's
+        sends left it: a feed-only thread the recompute has just raised to critical is
+        critical there and gets its copy in this run; a raise the relay refused left it
+        at high and it gets none. No candidate is needed, so this also plans again a
+        copy the relay refused and ``expire_withheld`` dropped, and one compose refused
+        in an earlier run.
+
+        Not for a synthetic thread (it takes no update), a thread whose product the scope
+        file no longer has under its name or a former one (``_scope_named``), or a thread with work in
+        flight (``busy``): a journaled, withheld or unknown copy is never planned twice.
+        Nor for a withdrawn advisory, which is never announced again: the mirror is
+        pulled, only when some thread lacks a copy, and a retracted id, a retracted
+        thread and an expired one get none (``_withdrawn``, as the digest). When the
+        pull fails no copy is planned this run. A copy compose refuses is withheld for
+        this run. Either is tried again by the next run."""
+        want = []
+        for e in self.led.entries():
+            missing = [ch for ch in CHANNELS_FOR.get(e.level, ()) if ch not in e.channel_ids]
+            scope = self._scope_named(e.scope) if missing and not compose.is_synthetic(e.advisory.get("id")) else None
+            if scope is not None and not self.busy(e.aliases, e.scope):
+                want.append((e, scope, missing))
+        if not want:
+            return
+        try:
+            gone, gone_roots = self._withdrawn(trust_root, fetch)
+        except (translate.CallError, OSError, ValueError) as err:  # StateError is a ValueError
+            _say(f"copies held: {err}")
+            return
+        for e, scope, missing in want:
+            try:
+                adv = schema.validate(e.advisory)
+                if compose.withdrawn(adv, gone, self.now) or not gone_roots.isdisjoint(
+                        {e.root_event_id, *e.channel_ids.values()}):
+                    continue
+                text = compose.copy_post(adv, scope, title=e.source_title, exploited=e.exploited)
+                ja = self._ja(compose.root_post_ja, adv, compose.title_reason(adv), False, e.source_title,
+                              exploited=e.exploited is True, package=compose.package_of(scope))
+                items = [self._item("copy", e.scope, e.aliases, ch, text, key_id=adv.id, exploited=e.exploited,
+                                    root=e.root_event_id, ja=ja) for ch in missing]
+            except ValueError:
+                self.n["withheld"] += 1
+                continue
+            self.enqueue(items)
 
     def _withdrawn(self, root, fetch=None) -> tuple[set, set]:
         """(case-folded advisory ids, root event ids) withdrawn under ``root`` as of a
@@ -1964,7 +2034,7 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                 for i, (c, scope) in enumerate(merged):
                     r.one(c, scope)
                     merged[i] = None  # planned (or deferred by one() itself)
-                r.recompute()
+                r.recompute(translate_kw.get("root", TRUST_ROOT_PUBKEY), mirror_fetch)
                 if cat_id:  # q03f: before the digest, which drops the notices it lists from held.
                     try:  # In memory only: no catalog file is touched under the ledger lock.
                         cat_snap, cat_at = catalog.snapshot(led, state["held"]), catalog.stamp()
