@@ -288,7 +288,8 @@ def test_a_refresh_the_budget_cut_short_does_not_pass_for_a_fresh_confirmation(t
     cache = verify.load(tmp_path)
     assert n.urls == [verify.KEV_URL]
     assert cache["results"][verify.state_key(ask)] == {"at": later, "products": {
-        "Claude Code": {"result": "unknown", "why": "unread", "source": None}}}
+        "Claude Code": {"result": "unknown", "why": "unread", "source": None}},
+        "ranges": {"Claude Code": []}, "whole": False}  # swfe: what the cut-short run read, confirming nothing
     assert verify.lowering(a, "high", cache, later) is None
     # a contradiction held before the budget ran out stays one
     monkeypatch.setattr(verify, "MAX_FETCHES", 10)
