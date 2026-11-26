@@ -39,7 +39,7 @@ scripts/test-gate.sh            # public scan + the whole suite (the repo's own 
 
 Acceptance: the gate passes on the committed HEAD. The new test fails if a dependency, a script or an author is added, or if an install command is added to either README (checked by temporarily adding one).
 
-Review, blocking, before any upload: push the branch and run the whole-branch review (`git diff origin/main...HEAD`, Stage 1 ∥ fresheyes). The review covers the placeholder source, `check-wheel.py` and the scratchpad upload script, whose full text goes into the review prompt (it names home paths, so it is not committed). Fix every BLOCKER, and fix or rebut every SUBSTANTIVE finding. A behaviour-changing BLOCKER fix gets its one delta pass before Chunk 2 starts.
+Review, blocking, before any upload: push the branch, open the PR (`gh pr create`, record its number `<n>`), and run the whole-branch review (`git diff origin/main...HEAD`, Stage 1 ∥ fresheyes). The review covers the placeholder source, `check-wheel.py` and the scratchpad upload script, whose full text goes into the review prompt (it names home paths, so it is not committed). Fix every BLOCKER, and fix or rebut every SUBSTANTIVE finding. A behaviour-changing BLOCKER fix gets its one delta pass before Chunk 2 starts.
 
 ## Chunk 2: publish and verify (only after the Chunk 1 review)
 

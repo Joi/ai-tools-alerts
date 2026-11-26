@@ -12,7 +12,11 @@ Last reviewed: spec 0b75c2ac5cd64c3d1d1d3594d47bff5bb77c52c7
 Pass 1 [spec]: 2B/5S/2C/0R · fixed -/- · velocity = (—→9, escalation no)   (fresheyes gpt-6.1-sol, run 20261126-112902-dca666, snapshot 0b75c2a)
   B: sdist runs install-time code → wheel only; install guard NAME misses ai-tools-alerts → extended. S: artifact selection, artifact/metadata inspection, only the similarity refusal counts, PEP 541 caveat → fixed; "vague snapshot commit message" → rebutted (dangling review object, never pushed). C: filename-reuse wording, 403 diagnosis → fixed.
 Pass 2 [spec]: 0B/0S/0C/0R · fixed 7/7 prior · velocity ↓ (9→0, escalation no)   (delta 0b75c2a..7fc9804, run 20261126-113600-a1c79b, rebuttal stood)
-spec passes: 2 · plan pass 1: snapshot 04b8b41 (first launch FRESHEYES_STALLED REASON=CHILD_EXIT: "Selected model is at capacity", an environment failure; relaunched once).
+Pass 1 [plan]: 1B/4S/1C/1R · fixed -/- · velocity = (—→7, escalation no)   (run 20261126-113700-d9d9a1, snapshot 04b8b41)
+  B: whole-branch review came after the irreversible upload → blocking review before upload, checker committed, upload script quoted in the prompt. S: files must be committed before the scan; only the similarity 400 triggers the README form; NAME separator runs; verification compares description, HTTP status, post-yank evidence → fixed. C: top_level.txt newline → strip(). R: snapshot commit message → rebutted again.
+Pass 2 [plan]: 1B/0S/0C/0R · fixed 6/6 prior · velocity ↓ (7→1, escalation no)   (delta 04b8b41..a510809, run 20261126-114212-f3d38b)
+  B: the revised Chunk 3 lost "open the PR" → restored in Chunk 1's review step; no further pass (one delta).
+spec passes: 2 · plan passes: 2 · plan pass 1 first launch (first launch FRESHEYES_STALLED REASON=CHILD_EXIT: "Selected model is at capacity", an environment failure; relaunched once).
 
 ## Chunks
 - [ ] placeholder source + test + README/CHANGELOG
