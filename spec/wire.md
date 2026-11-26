@@ -60,7 +60,13 @@ A relay-bot level-only lowering (rule 1 above) is no longer only skipped by this
 
 A released reader that has refused a lowering shows the alert at its earlier, higher level for as long as the thread lasts. That is intended: the reader cannot check the lowering, and too high is the safe side.
 
-A narrowing of `products` is not covered here. v0.1.4 to v0.1.6 apply any relay-bot `products` list whole; v0.1.7 and later join it to what the thread held. That is true of the replies the poster sends today.
+A narrowing of `products` travels in the block, as the poster has always sent it: a relay-bot reply whose `products` list does not stand for every entry the thread holds (a shorter range, a lower or a first `fixed`, a product left out). Nothing is added to the wire for it.
+
+- v0.1.4 to v0.1.6 apply any relay-bot `products` list whole, at once and unchecked. Nothing on the feed reaches those readers to say so: they do not read `min_cli`.
+- v0.1.7 to v0.2.1 join the list to what the thread held and keep the wider entry for the life of the thread.
+- This reader joins it too, and keeps the list as the thread's published narrowing (ai-tools-alerts#swfe). The member's own source check compares it with the version ranges and first patched versions the GitHub advisory states for the product. Confirmed (every range the advisory states is stated by an entry in each ecosystem the thread holds for the product, every new entry states one of them, and `fixed` is absent or exactly the advisory's first patched version): the thread shows the published list. Contradicted: it does not, and the list is remembered as refused by its content, so sending it again changes nothing. Not settled (the source cannot be read, states no versions, or `verify = "off"`): it applies once checkpoints 72 hours apart have listed its reply. Until one of these the reader shows the wider entry, as a released reader does.
+
+So after a narrowing applies here, a released reader shows more than this one: the wider entry. It never shows less. Only `products` are narrowed; actions and sources stay joined.
 
 ## `min_cli`
 
