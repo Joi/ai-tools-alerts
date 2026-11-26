@@ -1,14 +1,15 @@
 # Run: swfe-narrowing-checked-like-lowering
 Instruction: ai-tools-alerts#swfe (starting rung floored at medium; repoman-lane ending). Brief: `TASK-ai-tools-alerts#swfe.md`: a relay-bot narrowing of products, range or fixed version is checked by the member like a lowering (revised design rule 6).
-Stage: code-review:whole-branch
-Rung: medium (start-floor medium: constraint-lens, BR1 REV1 NOV1 INT1 FC1 = 5; no hard trigger; the dispatch brief floors it at medium too)
+Stage: done (pull request 48; the merge commit and the close are on the issue)
+Rung: heavy (climbed from medium at the code review: BLOCKER fixes changed behaviour, one delta pass) (start-floor medium: constraint-lens, BR1 REV1 NOV1 INT1 FC1 = 5; no hard trigger; the dispatch brief floors it at medium too)
 Lens (every review pass carries both): "a released reader still shows the wider entry (tests/test_wire_compat.py)"; "the service runs with no human in the loop; nothing built may wait for a person to act"
 Spec: docs/superpowers/specs/2026-11-26-swfe-narrowing-checked-like-lowering-design.md   Plan: docs/superpowers/plans/2026-11-26-swfe-narrowing-checked-like-lowering.md
 Agency project: —
 Kata: ai-tools-alerts#swfe
 Last reviewed: spec 77cb1c0446bf7f9f587345e196a152829d982076
 Last reviewed: plan 2795f02baa457b4d0b69de4a166783e657200526
-Last reviewed: code (whole branch) f418801675898c32e7c5a37d762e28d919a1f43f
+Last reviewed: code (whole branch) f418801675898c32e7c5a37d762e28d919a1f43f; delta to 823eea5f476d9878d9b12f4186739be97d723664
+Unreviewed after the delta: edd4a2d (its two fixes), 0942973 (merge of main with the adaptation to 2mgd's product identity), f2cdd46 (merge of main, changelog conflict only)
 
 Limits: wall clock 5 hours from 2026-11-26T01:49Z; one independent review per artifact (spec, plan, code), one delta only after a behaviour-changing BLOCKER fix; completion check: the four acceptance cases pass in `scripts/test-gate.sh`.
 
@@ -34,6 +35,7 @@ code: passes 2 · delta `fresheyes --since f418801` on 823eea5 (gpt-6.1-sol, hig
 - SUBSTANTIVE: a failed save under the lock restored the pre-lock record beside the refreshed threads and check. Now the under-lock record stands for the command.
 Gate (`scripts/test-gate.sh`, single-branch clone): f418801 public scan clean, 2984 passed, 1 skipped; 823eea5 2997 passed, 1 skipped.
 Second merge of main (2mgd, 26f0) after edd4a2d: conflicts in `verify.py`, `cli.py`, `tests/test_curator_hold_cli.py`, the changelog. 2mgd keys results by ecosystem and name and judges a product as its scope product (`verify.scope_of`); the narrowing check now groups entries by that same rule, `ranges` are keyed by scope name, and the cache version is 5. Tests amended for it: an entry under an ecosystem where it is no scope product is a product of its own.
+Gate on 0942973: public scan clean, 3112 passed, 1 skipped. Third merge of main (3t4p, poster only) at f2cdd46: one changelog conflict, both entries kept.
 
 ## Chunks
 - [x] reader: the published narrowing, the record, `standing` (968f3af)
@@ -41,11 +43,14 @@ Second merge of main (2mgd, 26f0) after edd4a2d: conflicts in `verify.py`, `cli.
 - [x] CLI: the check wired in, the lines and JSON keys (69de9d9)
 - [x] wire test, wire.md, README, changelog (6a03b1b)
 - main merged at f418801 (4fkh; one changelog conflict, both entries kept). The whole suite on the working tree before the merge: 2964 passed, 1 skipped.
+- [x] review fixes (823eea5), delta fixes (edd4a2d)
 - One code review for the four chunks together, on the whole branch at f418801: the chunks do not change what a member sees one by one, and the brief asks for one independent whole-branch review.
 
 ## Notes
 - Prior work read: the design review and revised design on ai-tools-alerts#h29n (finding D1, rule 6), the close-out and notes of ai-tools-alerts#tavj, ai-tools-alerts#2wa6, `docs/superpowers/specs/2026-11-24-tyje-bot-patch-never-narrows-design.md` by its code, `spec/wire.md`.
+- The session was interrupted by a seat's usage limit after the delta review was launched and resumed on another seat and model (Fable 5.2); the delta's findings were read and fixed after the resume.
+- Follow-up filed: ai-tools-alerts#53fy (a relay-bot widening of `fixed` past the advisory). Notes left on ai-tools-alerts#fa5a (release) and ai-tools-alerts#2wa6 (what remains of it).
 - Agency execution: the agency tools are not available in this session; the plan is executed directly, chunk by chunk, with the tests of each chunk as its evaluator.
 - The chunks were drafted in the working tree while the spec and plan reviews ran, and changed to follow each review before they were committed. Nothing was committed before the plan's review was disposed of.
 - The first edit of the plan after the spec's review was made by a script that asserts each needle occurs once (it fails on a stale one); every later edit of a run document uses the Edit tool.
-- Size: about 330 changed lines of code, about 1,450 with tests and documents. Not split: see the `decided:` comment on the issue.
+- Size at the end: about 390 changed lines of code, about 1,800 with tests and documents. Not split: see the `decided:` comment on the issue.
