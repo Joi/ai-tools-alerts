@@ -32,7 +32,7 @@ import hashlib
 import json
 import sys
 import time
-from dataclasses import asdict, replace
+from dataclasses import asdict
 
 from aitools_alerts import schema
 from aitools_alerts.poster import compose, inputs, rules
@@ -74,16 +74,8 @@ def _scope(name):
     """The scope entry (or resolved component) a thread or held notice is filed under,
     by its name, or by an earlier name in an entry's ``formerly`` (wa6n: a thread keeps
     the name it was posted under, as ``Run._former`` does); None when the scope file has
-    neither. A name is not always an identity (the entry Cursor matches "cursor ide"),
-    so this is not ``scope_of``."""
-    if not isinstance(name, str):
-        return None
-    entries = list(rules._default_index().values())
-    hit = next((s for s in entries if s.name == name), None)
-    if hit is None:
-        old = next((s for s in entries if name in getattr(s, "formerly", ())), None)
-        hit = replace(old, name=name, formerly=()) if old is not None else None
-    return hit
+    neither. ``rules.scope_named``, the one lookup by name (zmg2)."""
+    return rules.scope_named(name, former=True)
 
 
 def _in_scope(name) -> bool:
