@@ -1,13 +1,15 @@
 # Run: gtw9-renewals-and-step-down
 Instruction: Read TASK-ai-tools-alerts#gtw9.md in this worktree root, then run `kata show ai-tools-alerts#gtw9` and follow the brief and the dispatch rules (run as /do-it, starting rung floored at medium).
-Stage: code-review:all
+Stage: done
 Rung: medium (start-floor medium: dispatch brief)
 Spec: docs/superpowers/specs/2026-11-26-gtw9-renewals-and-step-down-design.md   Plan: docs/superpowers/plans/2026-11-26-gtw9-renewals-and-step-down.md
 Agency project: none (the agency tools are not available in this session; the plan was executed directly)
 Kata: ai-tools-alerts#gtw9
 Limits: wall clock 5 hours from the 05:12Z dispatch; one independent pass per artifact, one delta only after a behaviour-changing BLOCKER fix; done when scripts/test-gate.sh is green and the pull request is merged with the no-reply author.
 Last reviewed: spec c2683882c54863f9576168f89b5ae3c510de2a84
-Last reviewed: plan (see plan.snap in Notes)
+Last reviewed: plan (snapshot of the spec and plan, a dangling commit)
+Last reviewed: code 9455f5a24c925ef28ef6f5a6a760f2de583fb4aa (whole branch), 2515bff487933eddde0db704f3c96bd6c0b28461 (delta)
+Review: 9455f5a24c925ef28ef6f5a6a760f2de583fb4aa fixed+delta 2515bff487933eddde0db704f3c96bd6c0b28461 +fix dd51a5c5491130a720b37dfa588ed3a1b2f473d0
 
 ## Scorecards
 Pass 1 [spec]: 10B/1S/0C/0R · fixed -/- · velocity = (—→11, escalation no)
@@ -67,7 +69,9 @@ These fixes are not reviewed again: the review cycle allows one delta. They are 
 
 ## Notes
 - The rung: the whole-branch pass left no finding unfixed, so the run stayed at medium; the one delta was run because BLOCKER fixes changed behaviour, as the review cycle asks at any rung.
-- The second, same-model reviewer (Stage 1) had not reported when the fixes above were committed; its findings, if any arrive, are listed below or in the kata comment.
+- The second, same-model reviewer (Stage 1) had not reported when the branch was merged: it ended its turns waiting on its own test runs. Nothing of its is counted.
+- Main was merged in twice (swfe and 0z4e at 9455f5a; y484 at 31ef49ad8c597147907ff0b5da0978d2dc940290), each with one conflict, in the changelog. The gate ran in a clone holding this branch alone: at 9455f5a (3284 passed, 1 skipped) and at 31ef49a (see the close-out comment on the issue).
+- Follow-ups filed: ai-tools-alerts#p93w, #byzq, #65xv.
 - The session stopped on a usage limit one minute after dispatch and resumed at 06:40Z with nothing on the branch.
 - Prior work read: ai-tools-alerts#r0ra, #ny5g, #hh5s close-outs and specs; #h29n D5.
 - The start-floor evaluator subagent was not run: the dispatch brief fixes the floor at medium and names the only two ways it climbs. No hard trigger is in the diff (no secrets, auth or credential handling, no deploy path); every BLOCKER of the spec and plan passes was fixed, so the rung stays medium.
