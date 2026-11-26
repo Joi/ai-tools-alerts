@@ -898,3 +898,75 @@ def test_a_root_a_reader_would_decay_unasked_is_left_out_whatever_the_poster_kno
     listed = ssh.last().events
     assert "threads_suppressed=1" in summary and stale["id"] not in listed
     assert {kept["id"], plain["id"], stepped["id"]} <= listed
+
+
+def _stale_root(m, cve="CVE-2026-0001", days=20):
+    return m.root_post(m.bot_sec, advisory(id=cve, posted_by="relay-bot"), created_at=T0 - days * 86400,
+                       tags=[_claim(T0 - days * 86400, cve=cve)], files=("feed.json",))
+
+
+def _lapsed(m, now=T0):
+    return signer.lapsed([e for evs in m.events.values() for e in evs], m.man, now)
+
+
+def test_the_signers_rule_is_the_readers_a_curator_hold_another_ids_claim_and_a_refused_block():
+    """What may not excuse a stale root: a curator's discussion or a hold that has run
+    out, a recent claim about an id the thread never held, and a block the reader
+    refuses that names a lower level."""
+    m = Mirror()
+    root = _stale_root(m)
+    assert _lapsed(m) == {root["id"]}
+    m.reply(m.cur_sec, root, "A curator's note, no block.", created_at=T0 - 1000)
+    assert _lapsed(m) == {root["id"]}
+    m = Mirror()
+    root = _stale_root(m, days=40)
+    m.reply(m.cur_sec, root, m.patch_text(title="A better title"), created_at=T0 - 30 * 86400)  # its hold ran out 16 days ago
+    assert _lapsed(m) == {root["id"]}
+    m = Mirror()
+    root = _stale_root(m)
+    m.reply(m.cur_sec, root, m.patch_text(title="A better title"), created_at=T0 - 86400)  # a hold in force: no decay
+    assert _lapsed(m) == set()
+    m = Mirror()
+    root = _stale_root(m)
+    m.post(m.bot_sec, "Sources checked. No change to this alert.", created_at=T0 - 100,
+           tags=[["e", root["id"], "", "root"], _claim(T0 - 100, cve="CVE-2026-9999")])
+    assert _lapsed(m) == {root["id"]}
+    m = Mirror()
+    root = _stale_root(m)
+    m.post(m.bot_sec, m.patch_text(level="notice", unexpected=True), created_at=T0 - 16 * 86400,
+           tags=[["e", root["id"], "", "root"]])
+    assert _lapsed(m) == {root["id"]}
+    m = Mirror()
+    plain = m.root_post(m.bot_sec, advisory(id="CVE-2026-0001", posted_by="relay-bot"), created_at=T0 - 20 * 86400,
+                        tags=[_claim(T0 - 20 * 86400, cve="CVE-2026-9999")], files=("feed.json",))
+    assert _lapsed(m) == set() and plain  # a root whose claim names another id is not enrolled on a reader
+
+
+def test_a_signer_that_cannot_load_its_ruleset_signs_nothing(signing, monkeypatch):
+    """Members with a sound ruleset would expire what this signer could not judge."""
+    from aitools_alerts import ruleset
+    signing.run(relay=PutRelay())
+    real, load = signer.run_checkpoint, ruleset.load
+
+    def broken():
+        raise ruleset.RulesetError("damaged")
+
+    def at_signing(*a, **k):  # the ruleset fails for the signer only: the run before it is whole
+        ruleset.load = broken
+        try:
+            return real(*a, **k)
+        finally:
+            ruleset.load = load
+    monkeypatch.setattr(signer, "run_checkpoint", at_signing)
+    relay = PutRelay()
+    _, summary, ssh = signing.run(relay=relay, now=T0 + 3600)
+    assert "checkpoint=error" in summary and relay.puts == []
+
+
+def test_the_renewals_of_a_root_the_poster_no_longer_holds_are_kept_for_its_return():
+    m = Mirror()
+    root = _stale_root(m, days=10)
+    renewal = _renewal(m, root, T0 - 5 * 86400, confirmed=T0 - 10 * 86400)
+    held = {renewal["id"]: renewal}  # the root was given up for missing; its renewal is still held and missing
+    gone, drop, suppress = signer.settle_gone({renewal["id"]: T0 - signer.OWED_S}, held, set(), T0, m.man)
+    assert drop == set() and suppress == {root["id"]} and renewal["id"] in gone

@@ -56,7 +56,17 @@ Findings 1 to 8 are one class: a checkpoint lists a root whose delivered renewal
 11. The equal-times test built the same event twice. Fixed: two events with different text, asserted distinct.
 Pass 1 [code:all]: 11B/0S/0C/0R · fixed -/- · velocity = (—→11, escalation no)
 
+## Delta review, `--since 9455f5a` at 2515bff487933eddde0db704f3c96bd6c0b28461 (fresheyes, gpt-6-astra, run 20261126-165114-7f1911): 5 BLOCKER, all in `signer.lapsed` and its tests
+1. Any curator reply exempted a thread for good; a reader decays again once a hold runs out, and a note is no hold. Fixed: the rule takes each thread as `pull.standing` gives it at the checkpoint's time.
+2. A claim about an id the thread never held counted as a renewal, and a root whose claim names another id counted as enrolled. Fixed: the threads are built by `pull.threads_from`, which filters both.
+3. A block the reader refuses that names a lower level set the level the rule judged. Fixed: the level is the reader's, or the lower one it holds as the bot's offer.
+4. A ruleset that could not be loaded turned the rule off and signing went on. Fixed: it raises, and the run signs nothing (`checkpoint=error`).
+5. No test for the renewal pass raising, nor for `settle_gone` keeping the renewals of a root no longer held. Fixed: both added, with one for each of 1 to 4.
+Pass 2 [code:all]: 5B/0S/0C/0R · fixed 11/11 prior · velocity ↓ (11→5, escalation no)
+These fixes are not reviewed again: the review cycle allows one delta. They are in the commit after 2515bff.
+
 ## Notes
+- The rung: the whole-branch pass left no finding unfixed, so the run stayed at medium; the one delta was run because BLOCKER fixes changed behaviour, as the review cycle asks at any rung.
 - The second, same-model reviewer (Stage 1) had not reported when the fixes above were committed; its findings, if any arrive, are listed below or in the kata comment.
 - The session stopped on a usage limit one minute after dispatch and resumed at 06:40Z with nothing on the branch.
 - Prior work read: ai-tools-alerts#r0ra, #ny5g, #hh5s close-outs and specs; #h29n D5.

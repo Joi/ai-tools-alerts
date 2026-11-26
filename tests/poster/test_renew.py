@@ -294,3 +294,14 @@ def test_a_confirmation_between_two_renewals_is_sent_at_once(env):
     for d in range(38, 50):
         assert not steps(day(env, d, kev=BLOCKED))  # 45 days count from day 37 now
     assert root["confirmed_at"] == T0
+
+
+def test_a_renewal_pass_that_raises_costs_the_run_its_exit_code_and_nothing_else(env, monkeypatch):
+    env.collector([finding()])
+    monkeypatch.setattr(main.Run, "_renew", lambda self: (_ for _ in ()).throw(RuntimeError("boom")))
+    code, summary, relay = env.run()
+    assert code == 1 and "error=" not in summary and len(relay.calls) == 1
+    assert env.state()["outbox"] == [] and len(entries(env)) == 1  # the root is recorded and the state saved
+    monkeypatch.undo()
+    code, summary, relay = env.run(now=T0 + HOUR)
+    assert code == 0 and relay.calls == []  # nothing is sent again

@@ -228,45 +228,38 @@ def _frontier(replies, m) -> list:
 
 
 def lapsed(events, m, now: int, channels=None) -> set:
-    """The roots, among ``events``, of relay-bot threads a reader of exactly these
-    events would decay at ``now`` although the poster never said so (gtw9): the
-    root carries a claim, no curator replied, and the renewals of the root and
-    its replies no longer keep standing the level the bot last named (the
-    root's, or the newest reply's that names one). They are left out of the
-    checkpoint, whatever the reason the renewal or the level reply is not there:
-    a send that failed, a channel one reply never reached, a lost ledger or
-    state file, a mirror that hid it. A thread the checkpoint does not list
-    keeps its level on a reader. At notice the thread is listed and leaves
-    readers: that is the one decay the poster intends (it posts every step
-    above it before the level's life ends)."""
-    from aitools_alerts import ruleset, schema
+    """The roots, among ``events``, of threads a reader of exactly these events
+    would decay at ``now`` although the poster never said so (gtw9). The
+    threads are built and taken as they stand by the reader's own code
+    (``pull.threads_from``, ``pull.standing``), so what counts as a renewal (a
+    claim that names an id the thread has held, a level reply the reader
+    accepts), and whether a curator's hold is in force, are the reader's
+    answers. A thread is lapsed when it can decay (its root carries a claim,
+    no hold, not retracted) and its renewals no longer keep standing the level
+    the bot last published: the reader's level, or the lower one the bot has
+    offered since. They are left out of the checkpoint, whatever the reason
+    the renewal or the level reply is not there: a send that failed, a channel
+    one reply never reached, a lost ledger or state file, a mirror that hid
+    it. A thread the checkpoint does not list keeps its level on a reader. At
+    notice the thread is listed and leaves readers: that is the one decay the
+    poster intends (it posts every step above it before the level's life
+    ends). Raises when the ruleset cannot be loaded: readers with a sound one
+    would expire what this could not judge, so nothing is signed."""
+    from aitools_alerts import ruleset
     channels = pull.channel_ids() if channels is None else channels
-    try:
-        rs = ruleset.load()
-    except Exception:  # noqa: BLE001 - a reader with a damaged ruleset expires nothing either
-        return set()
-    threads: dict[str, list] = {}
-    for ev in events:
-        if manifest.role_of(m, ev["pubkey"]) is not None and pull._bound(ev, channels) and ev["created_at"] <= now:
-            threads.setdefault(pull._thread_ref(ev) or ev["id"], []).append(ev)
+    rs = ruleset.load()
+    usable = [ev for ev in events if manifest.role_of(m, ev["pubkey"]) is not None
+              and pull._bound(ev, channels) and ev["created_at"] <= now]
     out = set()
-    for key, evs in threads.items():
-        root = next((e for e in evs if e["id"] == key), None)
-        if root is None or manifest.role_of(m, root["pubkey"]) != "relay-bot":
+    for t in pull.threads_from(usable, m):
+        t = pull.standing(t, now)
+        if t.retracted or t.enrolled_at is None or t.curated or t.adv.expires_at is not None:
             continue
-        first = pull._renewal(root, "relay-bot")
-        adv = schema.parse_post(root["content"])
-        replies = sorted((e for e in evs if e["id"] != key), key=lambda e: (e["created_at"], e["id"]))
-        if first is None or adv is None or any(manifest.role_of(m, e["pubkey"]) == "curator" for e in replies):
-            continue
-        level, pairs = adv.level, [(first[1], first[2])]
-        for e in replies:
-            pairs += renewals_of(e, m)
-            named = (pull._patch(e["content"]) or {}).get("level") if manifest.role_of(m, e["pubkey"]) == "relay-bot" else None
-            if isinstance(named, str) and named in pull._RANK:
-                level = named
-        if level in rs.levels[1:] and rs.level_at(level, pairs, now) != level:
-            out.add(key)
+        level = t.adv.level
+        if t.offered in pull._RANK and pull._RANK[t.offered] < pull._RANK[level]:
+            level = t.offered
+        if level != rs.levels[0] and rs.level_at(level, [(c, k) for c, k, _ in t.renewals], now) != level:
+            out.add(t.root_id)
     return out
 
 
