@@ -1,9 +1,11 @@
 # Run: hh5s-claim-tag
 Instruction: Read TASK-ai-tools-alerts#hh5s.md in this worktree root, then run `kata show ai-tools-alerts#hh5s` and follow the brief and the dispatch rules (run as /do-it, starting rung floored at medium).
-Stage: code-review:all
+Stage: committing
 Rung: medium (start-floor medium: FC=2 and constraint-lens; hard trigger none; BR2 REV2 NOV1 INT2 FC2 = 9; the dispatch floors it at medium too)
 Lens (carried in every review prompt): "Nothing you build may wait for a person to act"; "Stay inside this issue"; "No rollout"; "No host, tailnet, VM or home-path names and no personal email in any commit, PR text or run record"; "A state file written before this change loads; an item without the key sends as before"; "the poster must not run this code for 14 days without gtw9".
 Last reviewed: spec f89c75aa4f6305b0af8ab7e420b23273404b37ea
+Last reviewed: plan 50fca8529924d9317c60a0d1b189f12064ddba49
+Last reviewed: code 72ac8ba5ba46080b6028c8c994b39aea89d2dc95 (whole branch) +fix 01f511486b01898ba7d66f33eea4383136b9708d, then merges of origin/main 353de3461c5b69a03832c7655626fdce2073ba49 and 35d732b3fb41182ec76b0ca762b6a32496f92999 (a changelog conflict in each, both entries kept; no other conflict)
 Spec: docs/superpowers/specs/2026-11-26-hh5s-claim-tag-design.md   Plan: docs/superpowers/plans/2026-11-26-hh5s-claim-tag.md
 Agency project: — (no agency tools in this session; the plan is executed directly)
 Kata: ai-tools-alerts#hh5s
@@ -38,6 +40,9 @@ passes: 1 (code). Whole branch `git diff origin/main...HEAD` at 72ac8ba5ba46080b
 - [x] wire compat test, spec/wire.md, changelog
 
 ## Notes
+- Size: the branch is about 1,050 added lines, past the brief's 600. The code under `aitools_alerts/` is about 150 of them; the spec, plan and this record are about 330, and tests the rest. It is one deliverable and was not split.
+- The session moved seats at a usage limit after the first merge of main; the model changed from Mythos 5.2 to Fable 5.2. Main had moved again (24 commits, ai-tools-alerts#zmg2 in `poster/recompute.py` and `main.py` among them); the second merge and its gate were run after.
+- Gate: `scripts/test-gate.sh` in a clone holding this branch alone, exit 0 at 353de34 (2951 passed, 1 skipped) and again at 35d732b (3064 passed, 1 skipped).
 - The spec review was launched before the evaluator's lens arrived and did not carry it; every later pass does.
 - A `--help` probe of the review script started a review of the text "--help" (run 20261126-105207-e31b41); it was stopped within a minute and is not a pass.
 - The spec and plan were revised once each with a script that asserts every needle occurs exactly once, not with the Edit tool; every later artifact edit uses Edit.
