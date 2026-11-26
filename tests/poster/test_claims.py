@@ -352,3 +352,55 @@ def test_support_hands_back_the_readings_it_counted():
     info = {}
     recompute.judge(thread(), CLAUDE, None, RS, recompute.new_state(), 0, reads(**{G: ghsa_json(G)}), info)
     assert info["readings"] == [reading()]
+
+
+def test_a_claim_names_only_ids_every_channel_of_the_thread_was_sent():
+    """The ledger keeps one advisory for a thread in two channels. A reply one channel
+    took and the other refused for good, or a copy added after a reply, leaves the
+    channels apart: an alias may then be unknown to one of them, and a level reply,
+    which states no alias, is sent to both. Only the first id is claimed then."""
+    from test_advisory_recompute import thread
+    adv = schema.validate(thread((G, CVE)).advisory)
+    both = {"feed": "a" * 64, "critical": "b" * 64}
+    from dataclasses import replace
+    even = replace(thread((G, CVE)), channel_ids=both, replies=[{"critical": "c" * 64}, {"feed": "d" * 64}])
+    apart = replace(thread((G, CVE)), channel_ids=both, replies=[{"critical": "c" * 64}])
+    assert main.Run._stated(thread((G, CVE)), adv) == [G, CVE] == main.Run._stated(even, adv)
+    assert main.Run._stated(apart, adv) == [G]
+    assert main.Run._stated(apart, adv, [CVE]) == [G, CVE]  # an alias this very reply states
+    assert text_of([KEV, reading()], main.Run._stated(apart, adv))["id"] == G  # KEV's reading is not claimed
+    assert text_of([KEV], main.Run._stated(apart, adv)) is None
+
+
+def test_the_recomputes_claim_names_no_id_the_ledger_knows_and_no_reply_published(env):
+    """The ledger's identity set can hold an id no post has stated (``add_ids``), and
+    the recompute reads it. Its claim is still chosen among the published ids."""
+    import test_recompute as tr
+    from aitools_alerts.poster.ledger import Ledger
+    post(env)
+    root = entries(env)[0]["root_event_id"]
+    with Ledger(env.config.ledger) as led:
+        led.add_ids(root, [CVE])
+    env.api.put(G, ghsa_json(G, cve=CVE))  # the advisory now names the CVE; no reply has said so
+    old = {**kev_item(CVE), "dateAdded": "2026-09-01"}  # before the watermark: no candidate, only the recompute
+    relay = tr.one(env, 1, (old,))
+    assert levels(relay) == [{"level": "critical"}] and CVE not in entries(env)[0]["advisory"]["aliases"]
+    (tag,) = level_claims(relay)
+    assert claim(tag, T0 + HOUR, "high", "ghsa")["id"] == G  # not KEV's reading of the unpublished CVE
+
+
+def test_an_unknown_claimed_level_reply_is_settled_only_by_an_event_with_its_claim(env):
+    from test_settle import show
+    post(env)
+    env.api.put(G, ghsa_json(G, **WEAK))
+    for h in range(1, 25):
+        run(env, h)
+    code, summary, relay = env.run(now=T0 + 25 * HOUR, relay=FakeRelay("unknown"))
+    assert code == 1 and relay.claims[0] is not None and relay.calls[0][1] is not None
+    show(env, relay.calls[0], when=T0 + 25 * HOUR + 5)  # the same text in the thread, with no claim: another event
+    code, summary, again = env.run(now=T0 + 26 * HOUR)
+    assert "settled" not in summary and again.calls == [] and entries(env)[0]["level"] == "high"
+    ev = show(env, relay.calls[0], when=T0 + 25 * HOUR + 6, claim=relay.claims[0])
+    code, summary, again = env.run(now=T0 + 27 * HOUR)
+    assert "settled=delivered:1" in summary and entries(env)[0]["level"] == "notice"
+    assert ev["id"] in [i for r in entries(env)[0]["replies"] for i in r.values()]

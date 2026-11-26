@@ -218,6 +218,19 @@ class Run:
         """The claim tag a journal item is sent with, or None."""
         return [wire.CLAIM_TAG, it["claim"]] if it.get("claim") else None
 
+    @staticmethod
+    def _stated(entry, adv, also=()) -> list:
+        """The ids every channel of the thread has been sent, its first id first: what a
+        claim on a reply may name. The first id is in every root. The ledger keeps one
+        advisory for the thread, and an alias in it was sent to every channel only when
+        each channel was sent as many replies as the others: a reply that one channel
+        took and another refused for good (``_withhold``) leaves them apart, and so
+        does a copy added after a reply. Then only the first id counts, with ``also``:
+        the aliases this very reply states, in every channel."""
+        sent = [sum(1 for r in entry.replies or () if ch in r) for ch in entry.channel_ids]
+        level = len(set(sent)) <= 1
+        return [adv.id, *(adv.aliases if level else also)]
+
     def _claim(self, readings, ids, scope) -> str | None:
         """The text of the claim tag for an event about the thread with ``ids`` (its
         first id first), from the readings its level rested on (``rules.claim_text``)."""
@@ -1360,9 +1373,9 @@ class Run:
         # hh5s: what this candidate's readings say of the thread, for a level change and
         # (ROOT_CLAIMS) for a copy, a root in its channel. Each is chosen among the ids its
         # own event leaves the thread with: a copy states them all, a level-only reply none new.
-        def claim_for(adv):
-            return self._claim(rules._readings(c), [adv.id, *adv.aliases], scope.name)
-        claim = claim_for(new) if copies and ROOT_CLAIMS else None
+        def claim_for(ids):
+            return self._claim(rules._readings(c), ids, scope.name)
+        claim = claim_for([new.id, *new.aliases]) if copies and ROOT_CLAIMS else None
         w = self.wording(k, scope, level, reason) if copies else None  # c6ak: a copy is a post
         if w is not None:
             text = compose.root_post(k, (level, reason), scope, posted_at=prev.posted_at, wording=w)[0]
@@ -1375,7 +1388,7 @@ class Run:
         if changes and entry.lowered and "level" in changes:
             # ny5g, spec/wire.md rule 2: on a thread that has had a lowering a level change
             # travels alone; whatever else this run learned follows in a reply without it.
-            items += self._level_items(entry, changes.pop("level"), claim_for(prev))
+            items += self._level_items(entry, changes.pop("level"), claim_for(self._stated(entry, prev)))
             prev = replace(prev, level=level)
             if changes.get("title") == prev.title:  # it came with the level; unchanged, it is no reply
                 del changes["title"]
@@ -1396,7 +1409,8 @@ class Run:
                                                           exploited=k.exploited is True,
                                                           range_unexpressed=compose.range_unexpressed(k),
                                                           package=compose.package_of(scope)))
-            said = claim_for(merged) if "level" in changes else None  # a reply with no level change carries none
+            # a reply with no level change carries none
+            said = claim_for(self._stated(entry, merged, changes.get("aliases", ()))) if "level" in changes else None
             items += [self._item("reply", scope.name, ids, ch, reply, key_id=prev.id,
                                  adv=asdict(merged), exploited=c.exploited, root=entry.root_event_id, ja=ja,
                                  claim=said)
@@ -1554,7 +1568,7 @@ class Run:
                 self.led.mark_exploited(root)
         for e, level in raises + due:
             try:
-                ids = [e.advisory.get("id"), *(e.advisory.get("aliases") or [])]
+                ids = self._stated(e, schema.validate(e.advisory))
                 items = self._level_items(e, level, self._claim(self.readings.get(e.root_event_id, ()), ids, e.scope))
             except ValueError:  # compose refused it: this thread's change is withheld
                 self.n["withheld"] += 1

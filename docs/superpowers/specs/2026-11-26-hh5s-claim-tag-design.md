@@ -39,7 +39,7 @@
 
 One rule, `rules.claim_text(readings, ids, product, now) -> str | None`:
 
-1. Of the readings this run holds, keep those whose id (`ruleset._id_of`, read by `verify.norm_id`) is one of the post's ids (the thread's first id and its published aliases, read the same way). A claim about an id the thread does not carry renews nothing on a reader and is not sent.
+1. Of the readings this run holds, keep those whose id (`ruleset._id_of`, read by `verify.norm_id`) is one of the post's ids (the thread's first id and its published aliases, read the same way). For a reply these are the ids every channel of the thread was sent (`Run._stated`, added in the code review): the ledger keeps one advisory for a thread in two channels, so when the channels were not sent the same number of replies (one refused a reply for good, or a copy came after a reply) only the first id counts, with any alias the reply itself states. A claim about an id the thread does not carry renews nothing on a reader and is not sent.
 2. Take the one the ruleset gives the highest level for the product; on a tie the first id's; then the first in order of (source, id).
 3. Build it with `Ruleset.claim(source, fields, product, now, now)` and write it with `wire.claim_tag`. A `RulesetError` or a `ValueError` (too large, not a reading) gives None: no claim. Nothing is trimmed and no smaller reading is substituted: the claim says what the level rests on or the post says nothing.
 

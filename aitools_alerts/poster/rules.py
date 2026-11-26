@@ -312,7 +312,7 @@ def claim_text(readings, ids, product: str, now: int, limit: bool = True) -> str
         _, _, source, _, fields = min(found, key=lambda f: f[:4])
         claim = rs.claim(source, fields, product, int(now), int(now))
         return wire.claim_tag(claim)[1] if limit else ruleset.canonical(claim).decode("utf-8")
-    except (ruleset.RulesetError, ValueError, TypeError, KeyError, AttributeError, RecursionError):
+    except Exception:  # noqa: BLE001 - whatever a reading holds, the post goes out, without a claim
         return None
 
 

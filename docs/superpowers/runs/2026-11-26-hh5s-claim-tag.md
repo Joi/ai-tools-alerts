@@ -24,6 +24,13 @@ Pass 1 [plan]: 2B/0S/0C/0R · fixed -/- · velocity = (—→2, escalation no)
 passes: 1 (plan). Reviewer gpt-6-astra through fresheyes, run 20261126-110016-9fb5fa, REASON=-. Both fixed; the rung stays medium.
 - BLOCKER, one claim chosen for `plan_known` could name an alias the level-only reply never publishes: fixed. Each event's claim is chosen among the ids that event leaves the thread with; a regression test covers the lowered thread.
 - BLOCKER, an existing assertion compares the recompute's `info` whole: fixed, the plan names the assertion and its new value.
+Pass 1 [code:all]: 0B/4S/5C/0R · fixed -/- · velocity = (—→9, escalation no)
+passes: 1 (code). Whole branch `git diff origin/main...HEAD` at 72ac8ba5ba46080b6028c8c994b39aea89d2dc95. Stage 2: gpt-6-astra through fresheyes, run 20261126-112603-fce9ec, REASON=- (1 SUBSTANTIVE). Stage 1: a same-model reviewer with no shared context (4 SUBSTANTIVE, one of them the same; 5 COSMETIC). Three fixed, one rebutted; no BLOCKER, so no delta pass. The rung stays medium.
+- SUBSTANTIVE (both reviewers), a claim could name an alias one channel of the thread never received (a reply one channel took and the other refused for good): fixed. `Run._stated` gives the ids every channel was sent; when the channels were not sent the same number of replies only the first id counts.
+- SUBSTANTIVE, the id filter was tested on one of three paths: fixed for the recompute (a ledger id no reply published) and by the unit test of `_stated`. For the shared reply, `new` and `merged` hold the same ids except at the 50-alias cap; not tested apart.
+- SUBSTANTIVE, settle was tested only for a claimed root: fixed, a claimed level reply is settled only by an event with its claim.
+- SUBSTANTIVE, nothing in the repository shows the relay takes a kind 9 event with this tag: rebutted. ai-tools-alerts#yw7r posted a 2048-byte claim tag to the live relay and read it back byte for byte from the relay and from the mirror (its note on ai-tools-alerts#3qyq); this seat may not reach the relay. A relay that refused the tag would withhold a level change for three days, send it once more and drop it, each said on stderr; resending without the claim is not built.
+- COSMETIC: `claim_text` now catches every exception, as its docstring says; the reader rule in spec/wire.md is its own paragraph again. Not done: a test that `deliver` checks the tag before marking pending (the fake relay's own check covers it); the size in the too-large line; the plan's test of a copy added with no level change (the copy switch is covered by the raise test, on and off); the plan's clock test became an assertion that the event is dated by the sender's clock.
 
 ## Chunks
 - [x] carrier: transport, journal item, byte count, settle
