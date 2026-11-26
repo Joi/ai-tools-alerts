@@ -33,6 +33,11 @@ def at(day, hour, minute=20):
 T0 = at(5, 6)  # 06:20 Tokyo: runs a few hours later stay before the digest hour
 
 
+class Call(tuple):
+    """One English or Japanese send as (channel, reply_to, text); ``claim`` is the tag it was given."""
+    claim = None
+
+
 class FakeRelay:
     """``send(channel_id, text, reply_to)`` answering from a queue: ok, fail (certainly
     not stored), unknown (may be stored), refuse (the relay rejected the event itself,
@@ -48,7 +53,9 @@ class FakeRelay:
         transport.check_send(channel_id, text, reply_to, claim)  # what the real sender checks first
         ch = NAME[channel_id]
         is_ja = text.startswith("lang: ja\n")
-        (self.ja if is_ja else self.calls).append((ch, reply_to, text))
+        call = Call((ch, reply_to, text))
+        call.claim = claim
+        (self.ja if is_ja else self.calls).append(call)
         if not is_ja:
             self.claims.append(claim)
         queue = self.ja_queue if is_ja else self.queue

@@ -79,6 +79,14 @@ class Entry:
     # ny5g: the highest level readings of prose alone gave the thread when it was planned.
     # The recompute never lowers below it; absent on entries written before (recompute.floor).
     floor: str | None = None
+    # gtw9: the standing claim, the text of the newest claim of a level sent for the thread
+    # (a root's, a level change's or a renewal's). Only a thread whose root or copy was
+    # sent with a claim has one; the poster renews it (``Run.renew``).
+    claim: str | None = None
+    # gtw9: the ids the thread's first root stated, its first id first. A renewal names one
+    # of them only, so a reader that holds the root and the renewal counts it, whatever
+    # replies it lacks (an alias a later reply brought is not one a renewal may rest on).
+    root_ids: list | None = None
 
     @property
     def listed(self) -> int:
@@ -118,7 +126,9 @@ def _entry_ok(e) -> bool:
             and ("lowered" not in e or type(e["lowered"]) is bool)
             and ("floor" not in e or (isinstance(e["floor"], str) and e["floor"] in schema.LEVELS))
             and ("changed" not in e or (isinstance(e["changed"], list) and len(e["changed"]) <= 50
-                                        and all(type(t) is int for t in e["changed"]))))
+                                        and all(type(t) is int for t in e["changed"])))
+            and ("claim" not in e or (isinstance(e["claim"], str) and bool(e["claim"])))
+            and ("root_ids" not in e or (_strs(e["root_ids"]) and bool(e["root_ids"]) and "claim" in e)))
 
 
 def _pending_ok(p) -> bool:
@@ -284,6 +294,20 @@ class Ledger:
         self._save()
         return Entry(**e)
 
+    def set_claim(self, root_event_id: str, text: str, root_ids=None) -> Entry:
+        """Keep ``text`` as the thread's standing claim (gtw9). ``root_ids``: given once,
+        when the thread's first root is recorded with its claim; never replaced."""
+        if not isinstance(text, str) or not text or (root_ids is not None and not (_strs(root_ids) and root_ids)):
+            raise LedgerError("a standing claim is the text of a claim tag")
+        e = self._entry(root_event_id)
+        if root_ids is not None and "root_ids" not in e:
+            e["root_ids"] = list(root_ids)
+            e.pop("claim", None)  # saved below with the claim
+        if e.get("claim") != text:
+            e["claim"] = text
+            self._save()
+        return Entry(**e)
+
     def add_ids(self, root_event_id: str, ids) -> Entry:
         """Learn more ids for a thread without a post (identity is not capped)."""
         e = self._entry(root_event_id)
@@ -353,7 +377,7 @@ class Ledger:
             self._save()
 
     def record_reply(self, root_event_id: str, adv: schema.Advisory, reply_ids: dict, *,
-                     now: int, exploited: bool = False, ids=()) -> Entry:
+                     now: int, exploited: bool = False, ids=(), changed_at: int | None = None) -> Entry:
         if not _ids_map(reply_ids):
             raise LedgerError("reply_ids must map channel to event id")
         e = self._entry(root_event_id)
@@ -361,7 +385,9 @@ class Ledger:
         if "root_fixed" not in e and not e["replies"]:  # 9kgk: a legacy entry's root, kept before it changes
             e["root_fixed"] = Entry(**e).fix_at_root or ""
         if adv.level != e["level"]:  # ny5g: counted once; a second channel's copy finds it equal
-            e["changed"] = [t for t in e.get("changed", []) if now - t < QUIET][-49:] + [now]
+            # gtw9: ``changed_at``, no later than the reply is dated: a reader counts the level
+            # from that date, and a replay after a stopped run records in a later run.
+            e["changed"] = [t for t in e.get("changed", []) if now - t < QUIET][-49:] + [min(now, changed_at or now)]
             if wire.is_lowering({"level": adv.level}, e["level"]):
                 e["lowered"] = True
         if _listed_fields(was) != _listed_fields(new):

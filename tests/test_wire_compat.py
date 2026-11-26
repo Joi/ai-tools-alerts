@@ -386,11 +386,12 @@ def test_the_posters_events_as_shipped_show_at_the_same_level_on_every_reader(tm
 
 
 @pytest.mark.parametrize("tag", RELEASED + CLAIM_READERS)
-def test_why_root_claims_are_off_a_claimed_root_decays_where_claims_are_read(tmp_path, tag):
-    """The same tag on a root (``poster.main.ROOT_CLAIMS``, off). Every reader shows the
-    alert now. A month on with no renewal, the readers that compute expiry from claims
-    (0.1.8 and later, and this one) have stepped a true critical down; the older ones
-    keep it. So the poster sends no root claim before it can renew (ai-tools-alerts#gtw9)."""
+def test_why_the_poster_renews_a_claimed_root_decays_where_claims_are_read(tmp_path, tag):
+    """The same tag on a root (``poster.main.ROOT_CLAIMS``, on since ai-tools-alerts#gtw9).
+    Every reader shows the alert now. A month on with no renewal, the readers that compute
+    expiry from claims (0.1.8 and later, and this one) have stepped a true critical down;
+    the older ones keep it. So the poster renews every thread whose root carries a claim
+    (``Run.renew``; the next test)."""
     m, now = mirror_now()
     t = now - 3600
     root = poster_event(m, schema.render_post(advisory(id=CVE, posted_by="relay-bot"), "Body line."), t,
@@ -405,3 +406,40 @@ def test_why_root_claims_are_off_a_claimed_root_decays_where_claims_are_read(tmp
         assert pull._RANK[theirs[later][CVE][0]] < pull._RANK["critical"], theirs[later]
     else:
         assert theirs[later] == live
+
+
+DAY = 86400
+
+
+@pytest.mark.parametrize("tag", RELEASED + CLAIM_READERS)
+def test_a_renewed_thread_and_its_step_down_never_show_lower_on_a_released_reader(tmp_path, tag):
+    """What the poster sends from ai-tools-alerts#gtw9 on, for a critical whose source it
+    could not read for 44 days: a claimed root, a renewal every seven days (a reply with
+    no block, the first confirmation and a new check time), then the step down with its
+    reason. This reader shows critical on day 30 (the renewals hold it); no released
+    reader shows less than this one, now or a month on."""
+    m, now = mirror_now()
+    t0 = now - 44 * DAY - 3600
+    root = poster_event(m, schema.render_post(advisory(id=CVE, posted_by="relay-bot"), "Body line."), t0, claim=kev_claim(t0))
+    first = json.loads(kev_claim(t0)[1])
+
+    def checked(at):
+        return wire.claim_tag({**first, "checked_at": at})
+    renewals = [poster_event(m, compose.renewal_post(), t0 + d * DAY, reply_to=root["id"], claim=checked(t0 + d * DAY))
+                for d in (7, 14, 21, 28, 35)]
+    assert all(pull._renewal(e, "relay-bot")[1:3] == (t0, e["created_at"]) for e in renewals)
+    rs = ruleset.load()
+    held = [(t0, t0)] + [(t0, e["created_at"]) for e in renewals]
+    assert rs.level_at("critical", held[:5], t0 + 30 * DAY) == "critical"  # day 30, by the renewals to day 28
+    assert rs.level_at("critical", held[:1], t0 + 30 * DAY) == "high"  # and without them: decayed
+    text = compose.level_post(advisory(id=CVE, posted_by="relay-bot"), "high", compose.UNCONFIRMED.format(days=44))
+    assert text.startswith("Level is now high. No source has confirmed the higher level for 44 days.")
+    poster_event(m, text, now - 3600, reply_to=root["id"], claim=checked(now - 3600))
+    mine, theirs = this_reader(m, now, tmp_path), released(tmp_path, tag, m, now)
+    for at in (str(now), str(now + MONTH)):
+        assert CVE in theirs[at], (at, theirs[at])
+        if CVE in mine[at]:
+            assert pull._RANK[theirs[at][CVE][0]] >= pull._RANK[mine[at][CVE][0]], (at, mine[at], theirs[at])
+    assert mine[str(now)][CVE][0] == "critical"  # the step is an offer this reader has not applied yet
+    if tag in RELEASED:
+        assert theirs[str(now + MONTH)][CVE][0] == "critical"  # they refuse a relay-bot lowering for good
