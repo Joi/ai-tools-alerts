@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+The CLI reads a relay-bot withdrawal (design review of 2026-11-23, findings D4 and D13, ai-tools-alerts#y484; `spec/wire.md` "A withdrawal"). The relay bot cannot retract an alert, so an advisory its source withdrew has stayed shown at notice for good. A withdrawal is a relay-bot reply whose block is exactly `{"level":"withdrawn"}`. Nothing sends it yet: the poster's half is ai-tools-alerts#kk2q.
+
+- **Hidden only on your own evidence.** The alert is shown nowhere and matched against nothing while your CLI's own read of the source, no more than two days old, says the advisory is withdrawn, and every level the alert has stated carries a signed claim your CLI computes that level from. It is never hidden unchecked, however long the reply has stood.
+- **Otherwise a lowering to notice.** A withdrawal your CLI cannot confirm counts as a lowering to notice from the same reply, applied after 72 hours of signed checkpoints (`lowering_waits` is `notice`). When the source supports more than notice, it is refused and stays refused: `source check: a withdrawal of <id> is not applied: the source supports <level> for <product>`, and `lowering_refused` is `withdrawn`.
+- **It comes back.** A relay-bot reply that names a level ends the withdrawal in the same thread. A source that publishes the advisory again brings the alert back on your machine as soon as your CLI reads it.
+- `verify` now prints `source check: N lowerings, withdrawals or retractions asked about: ...`.
+- Released CLIs (0.1.4 to 0.2.1) skip the reply and keep the alert at its level. No schema, manifest, ruleset or state file changes.
+
 A relay-bot reply that narrows an alert's products now reaches the member, checked like a lowering (revised design rule 6, ai-tools-alerts#swfe). Since 0.1.7 the CLI has joined a relay-bot `products` list to what the alert held, so a stolen relay-bot key could not hide an alert by shortening its range. That also meant a correct narrowing never arrived: when a vendor published a fixed version after the alert, a member on the fixed version was told they were affected for as long as the alert lasted.
 
 - **The reply is kept and compared with the advisory.** A relay-bot `products` list that does not stand for everything the alert holds is its published narrowing. `run` and `verify` compare it with the version ranges and first patched versions the GitHub advisory states for the product. When every range the advisory states is stated by the reply, and `fixed` is absent or exactly the advisory's first patched version, the alert shows the reply's products, in that command.

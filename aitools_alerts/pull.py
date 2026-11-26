@@ -80,7 +80,7 @@ __all__ = ["FILES", "FetchError", "PULL_ERRORS", "MAX_FETCH_BYTES", "MAX_EVENTS"
            "STALE_EVENT_S", "STALE_MANIFEST_S", "freshness", "stale_since",
            "MAX_AHEAD_S", "CHAT_KIND", "ChannelSpecError", "channel_ids", "unverified",
            "bundled_cert", "SECOND_TIMEOUT", "head_clock", "CURATOR_HOLD_S", "NONE", "standing", "asks",
-           "widest", "UNCHECKED_LOWERING_S", "offers", "narrow_key"]
+           "widest", "UNCHECKED_LOWERING_S", "offers", "narrow_key", "WITHDRAWN", "unchecked_level"]
 
 FILES = ("feed.json", "critical.json")
 MAX_FETCH_BYTES = 8 << 20
@@ -99,6 +99,7 @@ SECOND_TIMEOUT = 5  # the second origin must not hold up a session-start hook
 _RANK = {"notice": 1, "high": 2, "critical": 3}
 CURATOR_HOLD_S = 14 * 86400  # c1g2: a curator's word on a relay-bot thread holds this long unchecked
 NONE = ruleset.NONE  # the level a retraction publishes
+WITHDRAWN = wire.WITHDRAWN  # y484: what a relay-bot withdrawal publishes; no level, and never a curator's word
 # tavj: a relay-bot lowering this machine's check cannot settle applies once checkpoints
 # this far apart have listed it
 UNCHECKED_LOWERING_S = 72 * 3600
@@ -136,8 +137,8 @@ class Thread:
     # c1g2, a relay-bot thread only (None, None, None, () for a curator's own thread and for
     # one the manifest retracts). ``wide``: the widest state, every reply under the relay
     # bot's rules. ``held_until``: a curator's word (``adv``, ``retracted``) holds until then.
-    # ``offered``: the level last published below ``wide``'s, "none" for a retraction; replay
-    # never applies it. ``held_aliases``: every alias ``wide`` has held. ``held_fixed``:
+    # ``offered``: the level last published below ``wide``'s, "none" for a curator's retraction,
+    # "withdrawn" for a relay bot's withdrawal (y484); replay never applies it. ``held_aliases``: every alias ``wide`` has held. ``held_fixed``:
     # ((ecosystem, product name), the first fixed version it stated). ``refused``: set by ``standing``
     # when the member's check contradicted a lowering: the level left unapplied.
     wide: Advisory | None = None
@@ -1089,7 +1090,17 @@ def _bot_reply(t: list, h: _Hold, ev: dict, p: dict, dropped: Counter) -> None:
     (spec/wire.md rule 1) is published, not applied: ``standing`` applies it when the
     member's own check confirms it. Anything else goes to the widest state. With no
     curator's hold in force that is the thread. With one, only a higher level reaches
-    the thread now, and never a retracted one; the rest shows when the hold lapses."""
+    the thread now, and never a retracted one; the rest shows when the hold lapses.
+
+    A withdrawal (y484, ``wire.is_withdrawal``) is published the same way, as the offer
+    ``WITHDRAWN``: ``standing`` hides the thread while the member's own check confirms it
+    and reads it as a lowering to notice otherwise. A later block that names a level
+    replaces it like any offer."""
+    if wire.is_withdrawal(p):
+        if h.offered != WITHDRAWN or h.offered_by is None:
+            h.offered_by = ev["id"]  # sent again, it keeps the first reply: its wait goes on
+        h.offered = WITHDRAWN
+        return
     if set(p) == {"level"} and wire.is_lowering(p, h.wide.level):
         if h.offered != p["level"] or h.offered_by is None:
             h.offered_by = ev["id"]  # the same level offered again keeps the first reply: its wait goes on
@@ -1313,7 +1324,9 @@ def widest(t: Thread) -> Advisory:
 def asks(t: Thread, now: float | None = None) -> list:
     """The levels ``standing`` asks the check about for this thread: what a curator's
     hold lowered it to ("none" for a retraction) while the hold is in force, and the
-    published lower level. [] for a thread with neither."""
+    published lower level. [] for a thread with neither. A relay bot's withdrawal
+    (y484) asks one thing, ``WITHDRAWN``: one state of the sources, one result, which
+    settles the hiding and the notice it is read as alike."""
     out = []
     if t.wide is None:
         return out
@@ -1325,6 +1338,16 @@ def asks(t: Thread, now: float | None = None) -> list:
     if t.offered is not None and t.offered not in out:
         out.append(t.offered)
     return out
+
+
+def unchecked_level(t: Thread) -> str | None:
+    """The level a thread's published offer brings it to when it applies unchecked: the
+    offer itself, and for a relay bot's withdrawal (y484) notice, the lowest level a post
+    carries; None when that is no lowering (the thread stands at notice) and for a thread
+    with no offer. A withdrawal never hides a thread unchecked."""
+    if t.offered != WITHDRAWN:
+        return t.offered
+    return "notice" if t.wide is not None and _RANK[t.wide.level] > _RANK["notice"] else None
 
 
 def offers(threads, held: dict, now, listed) -> dict:
@@ -1402,7 +1425,16 @@ def _level_standing(t: Thread, now: float | None = None, check=None, since=None)
     it has stood UNCHECKED_LOWERING_S in ``since`` by ``now`` (tavj); until then the
     thread is the widest state and ``waiting`` names the level when ``since`` holds its reply. So a lowering nobody can
     check lasts a curator's 14 days and no longer, a relay bot's applies after 72 hours of
-    signed checkpoints, and one the member's source contradicts never applies at all."""
+    signed checkpoints, and one the member's source contradicts never applies at all.
+
+    A relay bot's withdrawal (y484, ``offered`` is ``WITHDRAWN``) is judged when no
+    curator's hold is in force, by one answer, ``check(advisory, "withdrawn", stated)``.
+    True: the thread is retracted, so ``active`` shows it nowhere. False (the source
+    supports more than notice): nothing applies and ``refused`` is ``WITHDRAWN``. None:
+    it is a lowering to notice that the check does not settle, applied once it has stood
+    UNCHECKED_LOWERING_S, with ``waiting`` notice until then. It never hides a thread
+    unchecked, however long it has stood. One question and one result on purpose: two
+    results read by different runs could disagree, and the older would win somewhere."""
     if t.wide is None or (t.held_until is None and t.offered is None):
         return t
 
@@ -1418,15 +1450,21 @@ def _level_standing(t: Thread, now: float | None = None, check=None, since=None)
     if _held(t, now):
         ask = next(iter(asks(replace(t, offered=None), now)), None)
         return t if ask is None or says(ask) is not False else base(ask)
-    said = says(t.offered) if t.offered is not None else None
-    if said is True or (said is None and t.offered not in (None, NONE) and _stood(t.offered_by, now, since)):
-        return replace(base(), retracted=True) if t.offered == NONE else replace(
-            base(), adv=replace(t.wide, level=t.offered))
+    # y484: ``low`` is the level the offer lowers the thread to. For a relay bot's
+    # withdrawal that is notice, and only unchecked: confirmed, the thread is hidden.
+    low, said = unchecked_level(t), says(t.offered) if t.offered is not None else None
+    if t.offered == WITHDRAWN:
+        if said is True:
+            return replace(base(), retracted=True)
+        if low is None:  # it stands at notice: nothing to lower
+            return base(WITHDRAWN if said is False else None)
+    if said is True or (said is None and low not in (None, NONE) and _stood(t.offered_by, now, since)):
+        return replace(base(), retracted=True) if low == NONE else replace(base(), adv=replace(t.wide, level=low))
     # waiting: only where the wait can run out (a record is kept, and it holds this reply:
     # not for a CLI that applies nothing unchecked, not for a thread whose refusal stands)
-    unsettled = (said is None and t.offered not in (None, NONE) and since is not None
+    unsettled = (said is None and low not in (None, NONE) and since is not None
                  and t.offered_by is not None and t.offered_by in since)
-    return base(t.offered if said is False else None, t.offered if unsettled else None)
+    return base(t.offered if said is False else None, low if unsettled else None)
 
 
 def active(threads: list[Thread], now: float | None = None, listed=None, check=None, *,

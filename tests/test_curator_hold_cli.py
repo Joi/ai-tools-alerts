@@ -116,7 +116,7 @@ def test_verify_counts_the_alert_a_refused_retraction_brought_back(feed, monkeyp
     _, out, _ = out_of(capsys, ["verify"])
     # the alert is back and counted; its own state is read on the next run
     assert out == ("source check: 0 confirmed, 0 contradicted, 1 not verified\n"
-                   "source check: 1 lowerings or retractions asked about: 0 confirmed, 1 contradicted, 0 not settled\n"
+                   "source check: 1 lowerings, withdrawals or retractions asked about: 0 confirmed, 1 contradicted, 0 not settled\n"
                    f"source check: a retraction of {CVE} is not applied: the source supports critical for Claude Code\n")
     assert levels(capsys) == {CVE: "critical"}
     status, out, _ = out_of(capsys, ["run"])

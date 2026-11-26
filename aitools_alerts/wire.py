@@ -20,6 +20,10 @@ A lowering is its own reply: its block is exactly ``{"level": "<lower>"}``
 (poster.compose.level_post). A reader that refuses it loses nothing else. So
 is every later level change on that thread: a reader that kept the higher
 level may refuse a raise too.
+
+A withdrawal (ai-tools-alerts#y484) is a reply of the same kind whose block is
+exactly ``{"level": "withdrawn"}``. The word is no level: every released reader
+refuses the reply and keeps the alert.
 """
 
 from __future__ import annotations
@@ -28,12 +32,16 @@ import json
 
 from . import schema
 
-__all__ = ["CLAIM_TAG", "MAX_CLAIM_BYTES", "LEVELS", "claim_tag", "claim_of", "tag_bytes", "is_lowering"]
+__all__ = ["CLAIM_TAG", "MAX_CLAIM_BYTES", "LEVELS", "claim_tag", "claim_of", "tag_bytes", "is_lowering",
+           "WITHDRAWN", "is_withdrawal"]
 
 CLAIM_TAG = "claim"
 MAX_CLAIM_BYTES = 2048
 _RANK = {"notice": 1, "high": 2, "critical": 3}  # pull._RANK; tests/test_wire.py checks the two are equal
 LEVELS = frozenset(_RANK)
+# y484: the state a relay-bot reply moves its thread to when the source withdrew the
+# advisory. Not a level: no root may name it, and it is in no rank table.
+WITHDRAWN = "withdrawn"
 
 
 def claim_tag(obj) -> list:
@@ -90,3 +98,10 @@ def is_lowering(patch, level: str) -> bool:
     """``patch`` names a level below ``level``."""
     new = patch.get("level") if isinstance(patch, dict) else None
     return isinstance(new, str) and new in _RANK and level in _RANK and _RANK[new] < _RANK[level]
+
+
+def is_withdrawal(patch) -> bool:
+    """``patch`` is the withdrawal block, exactly ``{"level": "withdrawn"}`` (spec/wire.md).
+    Released readers refuse a reply that carries it: to them it names no level."""
+    return isinstance(patch, dict) and len(patch) == 1 and patch.get("level") == WITHDRAWN \
+        and type(patch["level"]) is str

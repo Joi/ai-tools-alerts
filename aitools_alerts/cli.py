@@ -776,7 +776,8 @@ def _source_lines(a, st: State, s: config.Settings, threads: list) -> list[str]:
         ident = verify.norm_id(t.adv.id)
         if t.refused is None or ident is None or t.root_id not in shown:
             continue
-        what = f"a retraction of {ident}" if t.refused == pull.NONE else f"a lowering of {ident} to {t.refused}"
+        what = f"a retraction of {ident}" if t.refused == pull.NONE else f"a withdrawal of {ident}" \
+            if t.refused == pull.WITHDRAWN else f"a lowering of {ident} to {t.refused}"
         asked = _asked(a, st, t, t.refused)
         out += [f"source check: {what} is not applied: the source supports {r['source']} for {name}"
                 for name, r in named(asked, verify.result_for(asked, cache) or {}) if r["why"] == "below-source"]
@@ -811,8 +812,8 @@ def cmd_verify(a, st: State, s: config.Settings) -> int:
     if a.asked and (check := _lowering_check(a, st)) is not None:
         said = [check(pull.widest(t), level, t.stated) for t in a.raw for level in pull.asks(t)]
         if said:
-            print(f"source check: {len(said)} lowerings or retractions asked about: {said.count(True)} confirmed, "
-                  f"{said.count(False)} contradicted, {said.count(None)} not settled")
+            print(f"source check: {len(said)} lowerings, withdrawals or retractions asked about: "
+                  f"{said.count(True)} confirmed, {said.count(False)} contradicted, {said.count(None)} not settled")
         said = [False if _narrow_refused(t, st) else check.narrowing(pull.widest(t), t.narrowed, t.wide.products)
                 for t in a.raw if t.narrowed is not None]
         if said:

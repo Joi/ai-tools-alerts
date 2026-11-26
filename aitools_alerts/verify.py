@@ -38,7 +38,7 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
-from . import check, ruleset, schema, versions
+from . import check, ruleset, schema, versions, wire
 from .state import write_json
 
 __all__ = ["KEV_URL", "HOSTS", "LIMITS", "TIMEOUT", "MAX_FETCHES", "RUN_SECONDS", "FILE", "BOT",
@@ -481,7 +481,9 @@ class Asked(schema.Advisory):
 
 def at_level(adv, level: str, claimed: bool = False):
     """``adv`` as a published lowering or retraction would leave it: what the sources
-    are asked about (c1g2). ``level`` may be ``none`` (retracted), which no post carries."""
+    are asked about (c1g2). ``level`` may be ``none`` (retracted), which no post carries,
+    or ``withdrawn`` (y484, a relay bot's withdrawal), which asks about the same state."""
+    level = ruleset.NONE if level == wire.WITHDRAWN else level
     return Asked(**{**{f.name: getattr(adv, f.name) for f in fields(schema.Advisory)}, "level": level},
                  claimed=claimed is True)
 
@@ -506,12 +508,13 @@ def claimed(adv, level: str, stated, rs=None, pin=None) -> bool:
         rs = rs or ruleset.load()
         first = norm_id(adv.id)
         names = [p.name for p in adv.products]
-        if first is None or not stated or not names or level not in rs.levels:
+        gone = level == wire.WITHDRAWN  # y484: below every level, so every statement needs its claim
+        if first is None or not stated or not names or not (gone or level in rs.levels):
             return False  # and never for a retraction ("none"), which no result confirms
         for said, claim in stated:
             if said not in rs.levels:
                 return False
-            if rs.rank(said) <= rs.rank(level):
+            if not gone and rs.rank(said) <= rs.rank(level):
                 continue
             if claim is None or norm_id(ruleset.parse_claim(claim)["id"]) != first \
                     or rs.rank(claim["level"]) < rs.rank(said) \
@@ -541,6 +544,16 @@ def lowering(adv, level: str, cache: dict | None, now: float, rs=None, stated=No
     thread's signed claims say every higher level rested on those fields. A retraction
     (``none``) is never True.
 
+    ``level`` may be ``withdrawn`` (y484, a relay bot's withdrawal): one question, asked
+    of the state at ``none``, that also settles the notice an unconfirmed withdrawal is
+    read as. False when a source supports more than notice for some product, at any age.
+    True only when the state is claimed (every level the thread stated), was read no
+    more than FRESH_S ago, and every product's result is ``confirmed`` at ``none``: whole
+    reads of authorities that name the product and support nothing for it. None for
+    anything else, a source that supports exactly notice among them: the reader then
+    takes the withdrawal as a lowering to notice nobody has checked. ``whole``, for
+    ending a refusal: True when fresh whole reads give no product more than notice.
+
     None: anything else, and ``verify = "off"`` (``cache`` None).
 
     ``whole`` asks a weaker question, for ending a refusal this machine remembers
@@ -555,9 +568,23 @@ def lowering(adv, level: str, cache: dict | None, now: float, rs=None, stated=No
     if not products:
         return None
     whys = {p["why"] for p in products.values()}
+    held = cache["results"].get(_Target(asked).key)
+    if level == wire.WITHDRAWN:
+        # y484: asked at "none", where ``judge`` confirms only whole reads of authorities
+        # that name the product and support nothing for it, which only a withdrawn
+        # advisory gives. Support of exactly notice contradicts the hiding and not the
+        # notice the withdrawal is read as, so it settles nothing; more than notice refuses.
+        over = [p for p in products.values() if p["why"] == "below-source"]
+        if any(p["source"] != "notice" for p in over):
+            return False
+        fresh = held is not None and 0 <= now - held["at"] <= FRESH_S
+        done = all(p["result"] == CONFIRMED and p["why"] == "match" for p in products.values())
+        if whole:
+            return True if fresh and held.get("whole") is True and all(
+                p in over or (p["result"] == CONFIRMED and p["why"] == "match") for p in products.values()) else None
+        return True if said and fresh and done else None
     if "below-source" in whys:
         return False
-    held = cache["results"].get(_Target(asked).key)
     if not whys <= {"match", "withdrawn", "reading", "unsupported"} or level not in rs.levels \
             or held is None or not 0 <= now - held["at"] <= FRESH_S:
         return None
