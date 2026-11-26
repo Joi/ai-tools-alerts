@@ -55,6 +55,9 @@ HELD_LINE = ("held, not notified (not verified from this machine; at most {n} un
              "interrupt in 24 hours): CRITICAL: {title} (id {id})")
 WAITING_LINE = ("a lowering of {id} to {level} is published and not verified from this machine: "
                 "it applies once signed checkpoints 72 hours apart have listed it")
+NARROW_WAITING_LINE = ("a narrowing of {id} is published and not verified from this machine: "
+                       "it applies once signed checkpoints 72 hours apart have listed it")
+NARROW_REFUSED_LINE = "source check: a narrowing of {id} is not applied: its products are not what the source states"
 OUTDATED_TAIL = ("It judges no level until it is upgraded: no source check, no computed expiry; "
                  "alerts are shown as posted. See the README to upgrade.")
 
@@ -186,6 +189,8 @@ class Entry:
     translations: dict  # lang -> text, of the first root
     refused: str | None = None  # c1g2: a lowering to this level was not applied (pull.standing)
     waiting: str | None = None  # tavj: a relay-bot lowering to this level waits its 72 hours
+    narrow_refused: bool = False  # swfe: a published narrowing of its products was not applied
+    narrow_waiting: bool = False  # swfe: one waits its 72 hours
 
 
 def _entries(threads: list, warned: set) -> list[Entry]:
@@ -208,7 +213,8 @@ def _entries(threads: list, warned: set) -> list[Entry]:
             _err(f"copies of {copies[0][0].adv.id} differ; listing each")
         out += [Entry(c[0].root_id, tuple(t.root_id for t in c), c[0].adv, _merged(c),
                       next((t.refused for t in c if t.refused), None),
-                      next((t.waiting for t in c if t.waiting), None)) for c in copies]
+                      next((t.waiting for t in c if t.waiting), None),
+                      any(t.narrow_refused for t in c), any(t.narrow_waiting for t in c)) for c in copies]
     return out
 
 
@@ -254,17 +260,24 @@ def _matches(a, st: State) -> tuple[list, list]:
     a.raw = pull.advisories(st)
     now, listed = pull.head_clock(st)
     said = _lowering_check(a, st)
-    threads = _entries(pull.active(a.raw, now, listed, said, decay=_ruleset_outdated(a, st) is None,
-                                   since=_note_offers(a, st, now, listed, said)),
-                       a.__dict__.setdefault("warned", set()))
+    active = pull.active(a.raw, now, listed, said, decay=_ruleset_outdated(a, st) is None,
+                         since=_note_offers(a, st, now, listed, said))
+    # swfe: a list this machine's check refused stays reported, whatever the check reads today
+    active = [replace(t, narrow_refused=True) if _narrow_refused(t, st) else t for t in active]
+    threads = _entries(active, a.__dict__.setdefault("warned", set()))
     inv = inventory.collect()
     ms = check.match([t.adv for t in threads], inv)
     by_adv = {id(t.adv): t for t in threads}
     # c1g2: the states a published lowering or a curator's hold asks the sources about,
     # each with whether its widest state matches this machine (``verify = "matched"``).
-    wide = [(t, pull.widest(t)) for t in a.raw if pull.asks(t)]
+    wide = [(t, pull.widest(t)) for t in a.raw if pull.asks(t) or t.narrowed is not None]
     here = {id(m.adv) for m in check.match([w for _, w in wide], inv)}
     a.asked = [(_asked(a, st, t, level, w), id(w) in here) for t, w in wide for level in pull.asks(t)]
+    # swfe: a published narrowing asks about the widest state as it is, and the state it would
+    # leave is read in the same run (the same ids: no request more), so the alert is not
+    # "not verified" for an hour after the narrowing applied
+    a.asked += [(x, id(w) in here) for t, w in wide if t.narrowed is not None
+                for x in (w, replace(t.wide, products=list(t.narrowed)))]
     return threads, [(by_adv[id(m.adv)], m) for m in ms]
 
 
@@ -279,6 +292,13 @@ def _asked(a, st: State, t, level: str, wide=None):
     level rested on the first id's fields (``verify.claimed``)."""
     wide = wide if wide is not None else pull.widest(t)
     return verify.at_level(wide, level, verify.claimed(wide, level, t.stated, None, _pin(a, st)))
+
+
+def _narrow_refused(t, st: State) -> bool:
+    """The thread's standing narrowing is one this machine's check has refused, and it
+    is not applied (the check can confirm a list before the record is brought up to date)."""
+    return (t.narrowed is not None and tuple(t.adv.products) != t.narrowed
+            and pull.narrow_key(t.root_id, t.narrowed) in st.refused)
 
 
 def _note_offers(a, st: State, now, listed, check):
@@ -297,6 +317,15 @@ def _note_offers(a, st: State, now, listed, check):
     known refusal into an unchecked lowering. A state directory that cannot be written
     records nothing.
 
+    A refused narrowing (swfe) is remembered by its content, ``pull.narrow_key`` of the
+    root and the list, beside the root ids: added when the check contradicts the
+    thread's standing list, and while it is remembered no wait of that list runs. It is
+    forgotten only when the check confirms that same list, or when no stored thread has
+    published it (``Thread.narrowings``). So it outlives the offer: the list sent again
+    after another was confirmed, after the cache was lost, with every read failing, is
+    still refused. It stops no other list and no lowering of the thread, and a refused
+    lowering stops no narrowing.
+
     The record is rewritten under the state lock from the record and the source-check
     results as they are on disk then, never from what this command read before it had
     the lock: a command that started earlier must not write its older view over a
@@ -305,17 +334,25 @@ def _note_offers(a, st: State, now, listed, check):
         want = pull.offers(a.raw, st.lowerings, now, listed)
         refused = set(st.refused)
         if now is not None and listed is not None:
-            refused &= {t.root_id for t in a.raw}
+            refused &= {t.root_id for t in a.raw} | {k for t in a.raw for k in t.narrowings}
             for t in a.raw:
-                if t.offered_by not in want:
-                    continue
-                said = check(pull.widest(t), t.offered, t.stated) if check is not None else None
-                if said is False:
-                    refused.add(t.root_id)
-                elif said is True or (check is not None and check.whole(pull.widest(t), t.offered, t.stated)):
-                    refused.discard(t.root_id)
-                if t.root_id in refused:
-                    want[t.offered_by] = int(now)  # the 72 hours start when the refusal ends
+                if t.offered_by in want:
+                    said = check(pull.widest(t), t.offered, t.stated) if check is not None else None
+                    if said is False:
+                        refused.add(t.root_id)
+                    elif said is True or (check is not None and check.whole(pull.widest(t), t.offered, t.stated)):
+                        refused.discard(t.root_id)
+                    if t.root_id in refused:
+                        want[t.offered_by] = int(now)  # the 72 hours start when the refusal ends
+                if t.narrowed_by in want:
+                    key = pull.narrow_key(t.root_id, t.narrowed)
+                    said = check.narrowing(pull.widest(t), t.narrowed) if check is not None else None
+                    if said is False:
+                        refused.add(key)
+                    elif said is True:
+                        refused.discard(key)
+                    if key in refused:
+                        want[t.narrowed_by] = int(now)
         return want, refused
 
     want, refused = step(check)
@@ -329,6 +366,7 @@ def _note_offers(a, st: State, now, listed, check):
     if _min_cli(a, st) is not None or _ruleset_outdated(a, st) is not None:
         return None
     held = {t.offered_by for t in a.raw if t.root_id in st.refused}
+    held |= {t.narrowed_by for t in a.raw if _narrow_refused(t, st)}
     return {i: at for i, at in st.lowerings.items() if i not in held}
 
 
@@ -344,6 +382,9 @@ class _Check:
     def whole(self, adv, level, stated=()) -> bool:
         return verify.lowering(adv, level, self.cache, time.time(), self.rs, stated, self.pin, whole=True) is True
 
+    def narrowing(self, adv, products):
+        return verify.narrowing(adv, products, self.cache, time.time())
+
 
 def _lowering_check(a, st: State):
     """The ``check`` of pull.standing from the source-check results on disk, or None:
@@ -353,8 +394,8 @@ def _lowering_check(a, st: State):
     lowering is not applied and a curator's holds its 14 days."""
     s = getattr(a, "settings", None)
     if s is None or s.verify == "off" or _min_cli(a, st) is not None or _ruleset_outdated(a, st) is not None \
-            or not any(pull.asks(t) for t in getattr(a, "raw", ())):
-        return None  # and with no lowering to judge, no cache and no ruleset is loaded
+            or not any(pull.asks(t) or t.narrowed is not None for t in getattr(a, "raw", ())):
+        return None  # and with no lowering or narrowing to judge, no cache and no ruleset is loaded
     try:
         cache, rs = _cache(a, st, s), ruleset.load()
     except Exception:  # a damaged ruleset: nothing is settled, and every alert is still shown and notified
@@ -432,9 +473,15 @@ def _source_lines(a, st: State, s: config.Settings, threads: list) -> list[str]:
     level words. A CLI the trust root calls too old prints none: its ruleset
     and scope file may be the ones that are wrong."""
     cache = _cache(a, st, s)
-    if cache is None or _min_cli(a, st) is not None:
+    if _min_cli(a, st) is not None or _ruleset_outdated(a, st) is not None:
         return []
-    scope, out = ruleset.load().products(), []
+    # swfe: a narrowing this machine's check refused, now or earlier (``_matches`` marks a
+    # remembered one): said whatever the check can read today, with ``verify = "off"`` too
+    out = list(dict.fromkeys(NARROW_REFUSED_LINE.format(id=i) for t in threads
+                             if t.narrow_refused and (i := verify.norm_id(t.adv.id)) is not None))
+    if cache is None:
+        return out
+    scope = ruleset.load().products()
     for t in threads:
         for name, r in sorted((verify.result_for(t.adv, cache) or {}).items()):
             ident = verify.norm_id(t.adv.id)
@@ -483,8 +530,14 @@ def cmd_verify(a, st: State, s: config.Settings) -> int:
           f"contradicted, {found.count(verify.UNKNOWN)} not verified")
     if a.asked and (check := _lowering_check(a, st)) is not None:
         said = [check(pull.widest(t), level, t.stated) for t in a.raw for level in pull.asks(t)]
-        print(f"source check: {len(said)} lowerings or retractions asked about: {said.count(True)} confirmed, "
-              f"{said.count(False)} contradicted, {said.count(None)} not settled")
+        if said:
+            print(f"source check: {len(said)} lowerings or retractions asked about: {said.count(True)} confirmed, "
+                  f"{said.count(False)} contradicted, {said.count(None)} not settled")
+        said = [False if _narrow_refused(t, st) else check.narrowing(pull.widest(t), t.narrowed)
+                for t in a.raw if t.narrowed is not None]
+        if said:
+            print(f"source check: {len(said)} narrowings asked about: {said.count(True)} confirmed, "
+                  f"{said.count(False)} contradicted, {said.count(None)} not settled")
     for line in _source_lines(a, st, s, threads):
         print(line)
     return 0
@@ -498,7 +551,8 @@ def _match_json(t, m, cache=None, judged: bool = True) -> dict:
             "installed": asdict(m.installed), "product": asdict(m.product) if m.product else None,
             "actions": [asdict(x) for x in m.actions_allowed],
             "translations": dict(t.translations), "source_check": _check_json(t, m, cache, judged),
-            "lowering_refused": t.refused, "lowering_waits": t.waiting}
+            "lowering_refused": t.refused, "lowering_waits": t.waiting,
+            "narrowing_refused": t.narrow_refused, "narrowing_waits": t.narrow_waiting}
 
 
 def _unverified(a, st: State) -> str | None:
@@ -592,6 +646,8 @@ def cmd_check(a, st: State, s: config.Settings, source_lines: bool = True) -> in
     for t in once.values():
         if t.waiting:
             print(WAITING_LINE.format(id=t.adv.id, level=t.waiting))
+        if t.narrow_waiting:
+            print(NARROW_WAITING_LINE.format(id=t.adv.id))
     matched = {t.root_id for t, _ in pairs}
     other = [t for t in threads if t.adv.level == "critical" and t.root_id not in matched]
     if other:
@@ -873,7 +929,9 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
             # c1g2: what the sources just said about a lowering counts in this run. A
             # critical that a contradicted lowering had hidden is notified now, and so is
             # one that was held unverified and that its source has just confirmed (tavj).
-            before = sorted((t.root_id, t.adv.level) for t in threads)
+            def stands(ts):  # swfe: a confirmed narrowing changes the products, and may end this machine's match
+                return sorted((t.root_id, t.adv.level, repr(t.adv.products)) for t in ts)
+            before = stands(threads)
             if a.asked:
                 threads, pairs = _matches(a, st)
             tried = {r for t, _ in pending for r in t.root_ids}
@@ -882,7 +940,7 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
             late = [x for x in again if tried.isdisjoint(x[0].root_ids)]
             status = send(late, loose) or status
             pending = pending + late
-            if not a.quiet and before != sorted((t.root_id, t.adv.level) for t in threads):
+            if not a.quiet and before != stands(threads):
                 print("After the source check:")  # what was listed above is no longer what stands
                 cmd_check(a, st, s, source_lines=False)
         for line in () if a.quiet else _source_lines(a, st, s, threads):
