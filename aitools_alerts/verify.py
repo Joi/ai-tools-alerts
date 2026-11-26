@@ -549,8 +549,10 @@ def narrowing(adv, products, cache: dict | None, now: float, shown=None, *, whol
     ``fixed`` with the first one the thread stated, which the thread's own signer chose,
     and a list equal to that filled state is not "nothing changed".
 
-    Per product, the entries taken together whatever the case of their name (as
-    ``check.match`` and the join compare names). A product whose entries are the same in
+    Per product, the entries taken together when their names are equal under ``lower()``,
+    exactly as ``check.match`` and the join compare names: two names the matcher tells
+    apart are two products here, so no confirmed list names an installation otherwise
+    than the matcher will read it. A product whose entries are the same in
     ``shown`` and ``products``, spelling included, is not asked about. For any other, with
     the version ranges the thread's authorities state for the scope products of that
     name (``ranges`` of the result; a None item is one this reader cannot compare):
@@ -584,11 +586,11 @@ def narrowing(adv, products, cache: dict | None, now: float, shown=None, *, whol
     theirs: dict = {}
     stated: dict = {}
     for p in adv.products if shown is None else shown:
-        mine.setdefault(p.name.casefold(), []).append(p)
+        mine.setdefault(p.name.lower(), []).append(p)  # lower(), as check.match and pull._covered: never casefold()
     for q in products:
-        theirs.setdefault(q.name.casefold(), []).append(q)
+        theirs.setdefault(q.name.lower(), []).append(q)
     for name, items in held["ranges"].items():
-        stated.setdefault(name.casefold(), []).extend(items)
+        stated.setdefault(name.lower(), []).extend(items)
     settled = True
     for name in {*mine, *theirs}:
         own, new = mine.get(name, []), theirs.get(name, [])

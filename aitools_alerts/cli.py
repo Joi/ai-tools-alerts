@@ -368,6 +368,7 @@ def _note_offers(a, st: State, now, listed, check):
 
     want, refused = step(check, a.raw, now, listed)
     if (want, refused) != (st.lowerings, st.refused):
+        fresh = False  # the record was computed again from the refreshed state
         try:
             with st.locked():
                 if st.manifest is None or st.manifest_root == a.root:  # else another root's state: not this command's
@@ -376,9 +377,15 @@ def _note_offers(a, st: State, now, listed, check):
                     now, listed = pull.head_clock(st)
                     check = _lowering_check(a, st)
                     st.lowerings, st.refused = step(check, a.raw, now, listed)
+                    fresh = True
                     st.save_unverified()
         except OSError:
-            st.lowerings, st.refused = want, refused  # for this command; nothing applies sooner for it
+            # Not saved. What was computed under the lock stands for this command: it goes
+            # on with the refreshed threads and check, and must not put its older record,
+            # without a refusal another command saved, beside them. Before the refresh
+            # (the lock itself failed) its own view is all it has.
+            if not fresh:
+                st.lowerings, st.refused = want, refused
     a.clock, a.check = (now, listed), check  # what was decided on: ``_matches`` shows the threads by the same
     if _min_cli(a, st) is not None or _ruleset_outdated(a, st) is not None:
         return None

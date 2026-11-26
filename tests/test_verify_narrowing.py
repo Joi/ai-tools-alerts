@@ -177,6 +177,23 @@ def test_a_respelled_entry_is_still_held_to_the_advisory(tmp_path):
     assert verify.narrowing(widest, [Product("claude code", "claude-code", "<9.9.9", "9.9.9")], cache, NOW, [respelled]) is True
 
 
+def test_names_are_one_product_only_when_the_matcher_reads_them_as_one(tmp_path):
+    """``str.casefold`` makes U+017F an s; ``str.lower``, which check.match compares names
+    by, does not. A list that puts such a spelling in the product's place states the
+    advisory's range under a name no installation matches: never confirmed. Found by the
+    delta review of this change."""
+    long_s = "Herme\u017f"
+    assert long_s.casefold() == "hermes" != long_s.lower()
+    a = adv()
+    hermes = Product("Hermes", "hermes", "<99.0.0", "99.0.0")
+    wide = type(a)(**{**{f: getattr(a, f) for f in a.__dataclass_fields__}, "products": [hermes]})
+    cache = go(tmp_path, [wide], net((gurl(G1), ghsa())))
+    key = verify.state_key(wide)
+    cache["results"][key] = {**cache["results"][key], "ranges": {"Hermes": [SOURCE]}, "whole": True}
+    assert verify.narrowing(wide, [Product(long_s, "hermes", "<9.9.9", "9.9.9")], cache, NOW) is False
+    assert verify.narrowing(wide, [Product("HERMES", "hermes", "<9.9.9", "9.9.9")], cache, NOW) is True  # the matcher's same name
+
+
 def test_two_ranges_need_an_entry_each(tmp_path):
     fetch = net((gurl(G1), ghsa(vulnerabilities=[vuln("< 9.9.9", "9.9.9"), vuln(">= 10.0.0, < 10.2.0", "10.2.0")])))
     assert asked(tmp_path, [entry()], fetch=fetch) is False

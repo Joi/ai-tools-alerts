@@ -444,3 +444,30 @@ def test_a_fixed_version_planted_by_an_earlier_reply_does_not_make_a_wrong_list_
     assert "1 narrowings asked about: 0 confirmed, 1 contradicted" in out_of(capsys, ["verify"])[1]
     serve(m, reader_clock, C0 + 30 * DAY)
     assert fixed(capsys) == {G1: None}  # the installed 2.0.0 still matches the entry the root posted
+
+
+def test_a_save_that_fails_under_the_lock_does_not_put_the_older_record_beside_the_newer_threads(
+        feed, monkeypatch, capsys, reader_clock):
+    """An older command holds a wait that has run out. Another command refuses the list. The
+    older one refreshes under the lock, cannot save, and must still go by the refusal.
+    Found by the delta review of this change."""
+    m, root = start(feed)
+    reply = narrow(m, root, SHORT)
+    serve(m, reader_clock, C0)
+    n = use(monkeypatch, Net().set(gurl(G1), OSError("down")))
+    cli.main(["pull"])
+    a, early = early_command(m)
+    a.raw = pull.advisories(early)
+    # its own record: the 72 hours are over; and an entry to drop, so it has a change to write
+    early.lowerings = {reply["id"]: C0 - WAIT, "ab" * 32: C0}
+    n.set(gurl(G1), ghsa())
+    cli.main(["verify"])  # meanwhile another command reads the source: the list is refused
+    assert State.load().refused == memory(root, [SHORT])
+    (State.load().dir / verify.FILE).unlink()  # and the results are lost, so no check says False again
+
+    def full(self):
+        raise OSError("disk full")
+    monkeypatch.setattr(State, "save_unverified", full)
+    threads, _ = cli._matches(a, early)
+    assert [(t.adv.products[0].fixed, t.narrow_refused) for t in threads] == [("99.0.0", True)]
+    assert early.refused == memory(root, [SHORT])
