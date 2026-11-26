@@ -6,18 +6,28 @@ from pathlib import Path
 
 import pytest
 
+import home_env
 from aitools_alerts import config, inventory
 
-PW_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
-REAL_HOME = config.home  # captured before conftest's autouse patch
+REAL_HOME = home_env.PASSWD_HOME  # the shipped resolver; tests/home_env.py guards config.home
 
 
 @pytest.fixture(autouse=True)
-def _real_resolver(monkeypatch):
+def _real_resolver(monkeypatch, tmp_path):
+    """The shipped resolver, over a password database whose entry for this uid
+    names a temporary home: the member's real home is never resolved."""
+    global PW_HOME
+    PW_HOME = (tmp_path / "pw").resolve()
+    PW_HOME.mkdir()
+    e = pwd.getpwuid(os.getuid())
+    fake = pwd.struct_passwd((e.pw_name, e.pw_passwd, e.pw_uid, e.pw_gid, e.pw_gecos, str(PW_HOME), e.pw_shell))
+    monkeypatch.setattr(config.pwd, "getpwuid", lambda uid: fake)
     monkeypatch.setattr(config, "home", REAL_HOME)
 
 
 def test_paths_ignore_home(tmp_path, monkeypatch):
+    tmp_path = tmp_path / "env"
+    tmp_path.mkdir()
     monkeypatch.setenv("HOME", str(tmp_path))
     assert config.home() == PW_HOME
     assert config.config_dir() == PW_HOME / ".config" / "aitools-alerts"
