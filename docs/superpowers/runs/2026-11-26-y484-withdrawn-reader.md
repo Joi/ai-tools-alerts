@@ -1,6 +1,6 @@
 # Run: y484-withdrawn-reader
 Instruction: Read TASK-ai-tools-alerts#y484.md in this worktree root, then run `kata show ai-tools-alerts#y484` and follow the brief and the dispatch rules pasted after this sentence. (The brief: ai-tools-alerts#y484, the reversible withdrawn state, D4 and D13; run as /do-it, starting rung medium.)
-Stage: spec
+Stage: committing
 Rung: medium (start-floor medium: constraint-lens, BR1 REV2 NOV1 INT2 FC1 = 7; no hard trigger; the dispatch floors it at medium too)
 Lens: "Released readers must still show the alert." (in every review pass)
 Spec: docs/superpowers/specs/2026-11-26-y484-withdrawn-reader-design.md   Plan: docs/superpowers/plans/2026-11-26-y484-withdrawn-reader.md
@@ -52,7 +52,10 @@ Delta finding and what was done:
 1. SUBSTANTIVE (the reviewer called it major and blocking; taken as SUBSTANTIVE because it errs high: a refusal that never ends keeps the alert at its level): with one question asked at `none`, a refused withdrawal no longer ended when the advisory was corrected to stop naming the product, since that read is `unauthoritative` at `none`. Fixed in the commit after a3318b6: `judge` at `none` calls whole reads of authorities that do not name the product `silent`, and `lowering(whole=True)` takes it; a CLI test ends a refusal that way and runs the 72 hours. Not reviewed again: the review cycle allows one delta. `git diff a3318b6..HEAD` shows it.
 
 ## Chunks
-- [ ] reader: the withdrawal on the wire, in `pull.py`, in the source check and in the CLI, with its tests and documents
+- [x] reader: the withdrawal on the wire, in `pull.py`, in the source check and in the CLI, with its tests and documents — a3318b6 (reviewed by the delta), 4babbe7 (the delta's finding fixed; not reviewed again), 2 code passes
+
+## Gate
+`scripts/test-gate.sh` exit 0 at 4babbe73504a59e1c2c2220ef61e61c0bec7aaed (the public scan, then 3312 passed, 1 skipped), in a clone holding this branch alone; also exit 0 at a3318b6. The commit after 4babbe7 is this record, documents only. Main did not move during the run: the branch is on 5506dd4.
 
 ## Notes
 - Landing lane: this repository has no `.repoman-managed` marker, so the brief's lane applies: `scripts/test-gate.sh`, one independent review, a pull request this session merges. The dispatch text's repoman steps do not apply.
