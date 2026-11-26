@@ -63,7 +63,9 @@ The placeholder exists, so no "someone else holds it" warning is needed.
 - Rewrite the historical specs and plans under `docs/superpowers/` that record
   the 2026-11-06 plan to name PyPI as coming: they are dated records of a past
   decision, not instructions to a reader installing the tool; the README is
-  what a reader follows. Left as written.
+  what a reader follows. Their text stays; after the independent review each
+  instruction that prescribes the PyPI sentence or the by-name hint carries a
+  "Superseded by ai-tools-alerts#4fkh" line.
 - Say nothing about the placeholder: a reader who searches PyPI finds 0.0.1 and
   cannot tell whether it is ours. One sentence settles it.
 
