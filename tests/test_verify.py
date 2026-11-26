@@ -258,7 +258,8 @@ def rec(support=None, lowers=True):
 
 @pytest.mark.parametrize("level, records, complete, want", [
     ("high", [rec({"Claude Code": ["critical", True]})], False, ("contradicted", "below-source", "critical")),  # read bodies say more
-    ("high", [rec({"Claude Code": ["high", True]})], False, ("unknown", "unread", None)),  # a missing read could say more
+    # a missing read could say more: unread, and what was read is reported as a lower bound (0z4e)
+    ("high", [rec({"Claude Code": ["high", True]})], False, ("unknown", "unread", "high")),
     ("critical", [rec()], False, ("unknown", "unread", None)),
     ("high", [rec({"Claude Code": ["critical", True]})], True, ("contradicted", "below-source", "critical")),
     ("high", [rec({"Claude Code": ["high", True]})], True, ("confirmed", "match", "high")),

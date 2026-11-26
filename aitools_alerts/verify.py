@@ -40,7 +40,7 @@ from .state import write_json
 
 __all__ = ["KEV_URL", "HOSTS", "LIMITS", "TIMEOUT", "MAX_FETCHES", "RUN_SECONDS", "FILE", "BOT",
            "norm_id", "url_of", "default_fetch", "state_key", "judge", "summary", "load", "run",
-           "result_for", "at_level", "lowering", "claimed", "Asked"]
+           "result_for", "at_level", "lowering", "claimed", "Asked", "Unsaved"]
 
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 _GHSA_URL = "https://api.github.com/advisories/"
@@ -54,7 +54,7 @@ MAX_ALIASES = 3  # aliases of one thread that are read
 MAX_NAMES = 50  # ids one response may name; more is a failed read
 MAX_CACHE_BYTES = 16 << 20
 FILE = "verify.json"
-VERSION = 3  # of the cache: raised whenever a stored value changes meaning, so nothing older is reused
+VERSION = 4  # of the cache: raised whenever a stored value changes meaning, so nothing older is reused
 BOT = "relay-bot"
 CONFIRMED, CONTRADICTED, UNKNOWN = "confirmed", "contradicted", "unknown"
 _WHYS = {CONFIRMED: ("match", "withdrawn"), CONTRADICTED: ("unsupported", "above-source", "below-source"),
@@ -205,6 +205,16 @@ def default_fetch(url: str, etag: str | None, limit: int, timeout: float):
 
 # ------------------------------------------------------------------ typed fields
 
+class Unsaved(OSError):
+    """``run`` read the sources and could not write the cache. ``cache``: what it read, so
+    the caller can still act on it (0z4e: a read that ends a demotion is not lost to a
+    full disk)."""
+
+    def __init__(self, cache: dict):
+        super().__init__("the source check's cache could not be written")
+        self.cache = cache
+
+
 class _Bad(ValueError):
     """A response that is not what the endpoint's format says."""
 
@@ -351,7 +361,9 @@ def judge(level: str, product: str, records, complete: bool, rs, actions=(), fix
     if _RANK[s] > _RANK[level]:
         return out(CONTRADICTED, "below-source", s)  # rests on bodies that were read: a missing one could only add
     if not complete:
-        return out(UNKNOWN, "unread", None)  # one read missing: the source's level is only a lower bound
+        # One read missing: the source's level is only a lower bound. It is reported as one
+        # (0z4e): support that arrived whole is support, whatever else could not be read.
+        return out(UNKNOWN, "unread", s if s != ruleset.NONE else None)
     if s == level and (level != ruleset.NONE or (named and may_lower)):
         return out(CONFIRMED, "match", s)
     if not may_lower or level == ruleset.NONE:
@@ -763,7 +775,8 @@ def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=
     RETRY_S old, a confirmed one too, so a source that changed is seen. Threads waiting (``_waits``) are taken
     longest untried first, then highest level, so no thread that keeps failing
     holds the others back. The 30 seconds run from this call. The state lock
-    is not held: a pull must not wait."""
+    is not held: a pull must not wait. Raises ``Unsaved``, which carries the results,
+    when the cache cannot be written."""
     start = clock()
     rs = rs or ruleset.load()
     fetch = fetch or default_fetch
@@ -802,9 +815,15 @@ def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=
                 # time, an old ``match`` would read as confirmed today, and would stand in
                 # for what the requests this run did make had found. It is unread instead,
                 # unless it was a contradiction (``_settled``).
-                keep = held is not None and set(held["products"]) == set(t.products) and t.key not in again
+                # 0z4e: nor is an old "unsupported" kept with a new time (it would read as
+                # found again today, with no whole read behind it), nor anything when the
+                # requests this run did make read support: that is stored, as the lower
+                # bound an incomplete read reports (``judge``).
+                keep = (held is not None and set(held["products"]) == set(t.products) and t.key not in again
+                        and not any(p["why"] == "unsupported" for p in held["products"].values())
+                        and not any(p["source"] not in (None, ruleset.NONE) for p in products.values()))
                 results[t.key] = {"at": now, "products": held["products"] if keep else _settled(
-                    results.get(t.key), {p: judge(t.level, p, [], False, rs) for p in t.products}, t.key in again)}
+                    results.get(t.key), products, t.key in again)}
             break
         results[t.key] = {"at": now, "products": _settled(results.get(t.key), products, t.key in again)}
     live = [_Target(adv) for adv in current if adv.posted_by == BOT and norm_id(adv.id) is not None]
@@ -813,5 +832,8 @@ def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=
     ids |= {n for i in list(ids) for n in cache["sources"].get(i, {}).get("names", [])}
     cache["results"] = {k: v for k, v in results.items() if k in keys}
     cache["sources"] = {i: r for i, r in cache["sources"].items() if i in ids}
-    write_json(Path(state_dir) / FILE, cache)
+    try:
+        write_json(Path(state_dir) / FILE, cache)
+    except OSError:
+        raise Unsaved(cache) from None
     return cache
