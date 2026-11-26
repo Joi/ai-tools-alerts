@@ -272,7 +272,7 @@ def test_a_damaged_cache_never_stops_the_hook_s_command(feed, monkeypatch, capsy
     path = config.state_dir() / verify.FILE
     if damage == "RESULT-LIST":
         good = json.loads(path.read_text())
-        next(iter(good["results"].values()))["products"]["Claude Code"]["result"] = []
+        next(iter(good["results"].values()))["products"]["claude-code\nClaude Code"]["result"] = []
         damage = json.dumps(good)
     path.write_text(damage)
     status, out, err = out_of(capsys, ["run", "--json"])

@@ -408,3 +408,51 @@ def test_a_scoped_plugin_name_matches_unqualified():
     b = adv([Product("@scope/x@market", "skill", "*", None)], [])
     [m] = check.match([b], inv(skill=[plugin]))
     assert m.reason == check.AFFECTED
+
+
+# ------------------------------------------------------------------ one product identity (ai-tools-alerts#2mgd)
+
+def _scope():
+    from aitools_alerts import ruleset, schema
+    return {e.name: e for e in ruleset.index(schema.load_scope()).values()}
+
+
+def test_every_scope_product_is_itself_under_its_ecosystem():
+    scope = _scope()
+    assert scope and all(check.scope_name(n, e.ecosystem) == n for n, e in scope.items())
+
+
+@pytest.mark.parametrize("name, ecosystem, want", [
+    ("claude code", "claude-code", "Claude Code"), ("claude-code", "claude-code", "Claude Code"),
+    ("@anthropic-ai/claude-code", "claude-code", "Claude Code"), ("CLAUDE CODE", "claude-code", "Claude Code"),
+    ("codex", "codex", "Codex"), ("rustc", "rust", "Rust"), ("rustup", "rust", "rustup"),
+    ("containerd", "docker", "containerd"), ("docker", "docker", "Docker"),
+    ("pypi:mcp-server-git", "mcp", "mcp-server-git"), ("MCP-Server-Git", "mcp", "mcp-server-git"),
+    ("Claude Code", "skill", None),  # an installed skill of that name is not the tool
+    ("Claude Code", "codex", None), ("claude-code-router", "claude-code", None), ("claude", "claude-code", None),
+    ("MCP servers and clients", "mcp", None),  # a former name stands for several entries
+    ("Claude Code", "no-such-ecosystem", None), ("", "claude-code", None),
+])
+def test_a_posted_product_is_the_scope_product_match_cannot_tell_it_from(name, ecosystem, want):
+    assert check.scope_name(name, ecosystem) == want
+
+
+def test_scope_name_never_raises():
+    assert check.scope_name(None, "claude-code") is None and check.scope_name("Claude Code", None) is None
+
+
+def test_a_name_resolves_to_a_tool_exactly_when_match_takes_it_for_the_tool_s_installation():
+    """The rule is match's own: for every tool, every name of its identity set, and a
+    name outside it, the tool's installation matches the posted name if and only if it
+    matches the scope product the name resolves to."""
+    scope = _scope()
+    for ecosystem, names in check.IDENTITY.items():
+        tool = next(n for n, e in scope.items() if e.ecosystem == ecosystem and n.lower() in names | {ecosystem})
+        there = Inventory(products={ecosystem: [Installed(tool, "1.0.0", "/invented")]})
+
+        def hit(name):
+            return bool(check.match([adv([Product(name, ecosystem, "*", None)], [])], there))
+        for name in sorted(names | {ecosystem, tool, tool.upper(), "no such product"}):
+            got = check.scope_name(name, ecosystem)
+            assert hit(name) == (got is not None and hit(got)), (ecosystem, name)
+            assert got in (None, tool), (ecosystem, name)

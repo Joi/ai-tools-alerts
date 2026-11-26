@@ -197,7 +197,7 @@ def test_fields_that_give_notice_do_not_confirm_a_lowering_below_what_a_reading_
     cli.main(["verify"])
     assert levels(capsys) == {G1: "high"}
     a = adv(level="high")
-    assert verify.result_for(verify.at_level(a, "notice"), verify.load(config.state_dir()))["Claude Code"]["why"] == "match"
+    assert verify.result_for(verify.at_level(a, "notice"), verify.load(config.state_dir()))["claude-code\nClaude Code"]["why"] == "match"
 
 
 @pytest.mark.parametrize("extra, min_cli", [('verify = "off"\n', None), (ALL, "99.0.0")])
@@ -288,7 +288,7 @@ def test_a_refresh_the_budget_cut_short_does_not_pass_for_a_fresh_confirmation(t
     cache = verify.load(tmp_path)
     assert n.urls == [verify.KEV_URL]
     assert cache["results"][verify.state_key(ask)] == {"at": later, "products": {
-        "Claude Code": {"result": "unknown", "why": "unread", "source": None}}}
+        "claude-code\nClaude Code": {"result": "unknown", "why": "unread", "source": None}}}
     assert verify.lowering(a, "high", cache, later) is None
     # a contradiction held before the budget ran out stays one
     monkeypatch.setattr(verify, "MAX_FETCHES", 10)
@@ -344,5 +344,5 @@ def test_a_retraction_is_contradicted_by_support_and_never_confirmed(tmp_path, f
     url = verify.KEV_URL if first == CVE else gurl(first)
     go(tmp_path, [a, ask], Net().set(url, source), wanted=[ask])
     cache = verify.load(tmp_path)
-    assert verify.result_for(ask, cache)["Claude Code"]["why"] == why
+    assert verify.result_for(ask, cache)["claude-code\nClaude Code"]["why"] == why
     assert verify.lowering(a, pull.NONE, cache, NOW) is (False if why == "below-source" else None)

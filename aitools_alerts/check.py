@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 
-from . import schema, versions
+from . import ruleset, schema, versions
 from .inventory import Installed, Inventory
 from .schema import Action, Advisory, Product
 
@@ -125,6 +125,39 @@ def _owns(ecosystem: str, installed: Installed) -> bool:
     the scope entry, which IDENTITY lists); skill and mcp names are free."""
     return (ecosystem in _NAME_ECOSYSTEMS
             or installed.name.lower() in IDENTITY.get(ecosystem, set()))
+
+
+@lru_cache(maxsize=1)
+def _scope_products() -> dict[str, tuple]:
+    """ecosystem -> ((scope product name, its package in lowercase or None), ...) for
+    every product a reading can support (``Ruleset.products``: entries and components,
+    a component under its entry's ecosystem). A scope file that does not load: {}."""
+    try:
+        out: dict = {}
+        for e in {x.name: x for x in ruleset.index(schema.load_scope()).values()}.values():
+            out.setdefault(e.ecosystem, []).append((e.name, e.package.lower() if e.package else None))
+        return {k: tuple(v) for k, v in out.items()}
+    except Exception:
+        return {}
+
+
+def scope_name(name: str, ecosystem: str) -> str | None:
+    """The scope product a posted product is, or None (ai-tools-alerts#2mgd): the one
+    scope product of ``ecosystem`` that ``match`` cannot tell from it. ``match`` compares
+    names in lower case and, for a tool, treats every name of its IDENTITY as one; an
+    mcp installation is also known by its package. So ``claude code`` and
+    ``@anthropic-ai/claude-code`` under ``claude-code`` are ``Claude Code``, and
+    ``Claude Code`` under ``skill`` is not: what interrupts through an installation is
+    judged as the product that installation is. None when no scope product, or more
+    than one, fits. Never raises."""
+    try:
+        n = name.lower()
+        tool = IDENTITY.get(ecosystem, set()) | {ecosystem} if ecosystem not in _NAME_ECOSYSTEMS else set()
+        hits = {s for s, package in _scope_products().get(ecosystem, ())
+                if s.lower() == n or (n in tool and s.lower() in tool) or (ecosystem == "mcp" and package == n)}
+        return hits.pop() if len(hits) == 1 else None
+    except Exception:
+        return None
 
 
 def _concerns(action: Action, ecosystem: str, aliases: set[str]) -> bool:
