@@ -543,7 +543,7 @@ def test_a_fix_group_posts_under_its_loudest_member_and_at_that_members_level(en
     run(env, 0)
     (e,) = entries(env)
     assert e["level"] == "critical" and e["advisory"]["id"].upper() == G2.upper()
-    assert member(env, e)["Claude Code"]["result"] == "confirmed"
+    assert member(env, e)["claude-code\nClaude Code"]["result"] == "confirmed"
 
 
 def test_a_kev_listed_member_is_the_fix_groups_first_id(env):
@@ -565,7 +565,7 @@ def test_a_kev_listed_member_is_the_fix_groups_first_id(env):
         return env.api(url, etag, limit, timeout)
     adv = schema.validate(e["advisory"])
     got = verify.result_for(adv, verify.run([adv], [adv], env.config.ledger.parent, fetch=fetch, now=T0))
-    assert got["Claude Code"]["result"] == "confirmed"
+    assert got["claude-code\nClaude Code"]["result"] == "confirmed"
 
 
 def test_a_fix_group_is_as_new_as_its_newest_member(env):
@@ -618,11 +618,11 @@ def test_a_fix_groups_other_member_lends_no_level(env):
     run(env, 0)
     (e,) = entries(env)
     assert e["level"] == "high" and e["advisory"]["id"].upper() == G.upper() and len(e["aliases"]) == 2
-    assert member(env, e)["Claude Code"]["result"] == "confirmed"
+    assert member(env, e)["claude-code\nClaude Code"]["result"] == "confirmed"
     env.api.put(G2, ghsa_json(G2, type="malware"))
     env.collector([finding(fid=G2, severity="moderate", affected="<2.1.0")])  # the second, alone, with something new
     relay = run(env, 1)
     assert levels(relay) == [] and entries(env)[0]["level"] == "high"
-    assert hours(env, 2, 30) == [] and member(env, entries(env)[0])["Claude Code"]["result"] == "confirmed"
+    assert hours(env, 2, 30) == [] and member(env, entries(env)[0])["claude-code\nClaude Code"]["result"] == "confirmed"
     alone = Api(default=plain, **{G2: ghsa_json(G2, type="malware")})  # the same advisory as its own thread: critical
     assert sources.Reader(alone).read(G2).support["Claude Code"][0] == "critical"

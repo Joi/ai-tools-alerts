@@ -28,10 +28,20 @@ def ourl(i):
     return "https://api.osv.dev/v1/vulns/" + i
 
 
+ECO = {e.name: e.ecosystem for e in ruleset.index(schema.load_scope()).values()}  # scope product -> its ecosystem
+
+
+def K(name="Claude Code", ecosystem=None):
+    """The key of a product's result (``verify.pkey``); a scope product is under its own ecosystem."""
+    return verify.pkey(Product(name, ecosystem or ECO.get(name, "claude-code"), None, None))
+
+
 def adv(id=G1, aliases=(), level="high", products=("Claude Code",), **kw):
-    kw.setdefault("actions", [schema.Action("upgrade", n, "99.0.0") for n in products])  # as the poster writes it
+    """``products``: names, or (name, ecosystem) for a product posted another way."""
+    pairs = [p if isinstance(p, tuple) else (p, ECO.get(p, "claude-code")) for p in products]
+    kw.setdefault("actions", [schema.Action("upgrade", n, "99.0.0") for n, _ in pairs])  # as the poster writes it
     return advisory(posted_by="relay-bot", id=id, aliases=list(aliases), level=level,
-                    products=[Product(n, "claude-code", "<99.0.0", "99.0.0") for n in products], **kw)
+                    products=[Product(n, e, "<99.0.0", "99.0.0") for n, e in pairs], **kw)
 
 
 def ghsa(i=G1, pkgs=(CC,), type="reviewed", cve=None, high=True, **over):
@@ -111,7 +121,7 @@ def res(tmp_path, a):
 
 
 def one(tmp_path, a, product="Claude Code"):
-    r = res(tmp_path, a)[product]
+    r = res(tmp_path, a)[K(product)]
     return r["result"], r["why"]
 
 
@@ -327,7 +337,7 @@ def test_one_supported_product_does_not_confirm_another(tmp_path):
     a = adv(id=CVE, level="critical", products=("Codex", "Claude Code"))
     go(tmp_path, [a], net((verify.KEV_URL, kev((CVE, "OpenAI", "Codex")))))
     r = res(tmp_path, a)
-    assert (r["Codex"]["result"], r["Claude Code"]["result"], r["Claude Code"]["why"]) == \
+    assert (r[K("Codex")]["result"], r[K()]["result"], r[K()]["why"]) == \
         ("confirmed", "contradicted", "unsupported")
     assert verify.summary(r) == ("contradicted", "unsupported")
 
@@ -484,7 +494,7 @@ def test_no_url_of_an_event_is_requested(tmp_path):
     n = net((gurl(G1), ghsa(cve=CVE)), (verify.KEV_URL, KEV_CC))
     go(tmp_path, [a, b], n)
     assert set(n.urls) == {gurl(G1), verify.KEV_URL}
-    assert res(tmp_path, b)["Claude Code"]["why"] == "no-source"
+    assert res(tmp_path, b)[K()]["why"] == "no-source"
     assert all(u == verify.KEV_URL or u.startswith(("https://api.github.com/advisories/GHSA-", "https://api.osv.dev/v1/vulns/"))
                for u in n.urls)
 
@@ -570,7 +580,7 @@ def test_state_changes_are_read_again_over_what_is_stored(tmp_path):
     wider = adv(id=CVE, level="critical", products=("Claude Code", "git"))  # a bot patch added a product
     go(tmp_path, [wider], n)
     r = res(tmp_path, wider)
-    assert (r["Claude Code"]["result"], r["git"]["result"], r["git"]["why"]) == ("confirmed", "contradicted", "unsupported")
+    assert (r[K()]["result"], r[K("git")]["result"], r[K("git")]["why"]) == ("confirmed", "contradicted", "unsupported")
     aliased = adv(id=CVE, aliases=[G2], level="critical")  # a bot patch added an alias, and its read fails
     n.set(gurl(G2), 500)
     go(tmp_path, [aliased], n)
@@ -618,7 +628,7 @@ def test_nothing_a_source_says_is_stored(tmp_path):
         assert all(verify.norm_id(d) == d for d in r["names"])
     for r in cache["results"].values():
         for name, p in r["products"].items():
-            assert name in ("Claude Code", "git") and set(p) == {"result", "why", "source"}
+            assert name in (K(), K("git")) and set(p) == {"result", "why", "source"}
             assert p["source"] in levels | {None}
 
 
@@ -632,8 +642,8 @@ def test_a_cache_from_another_ruleset_is_not_used(tmp_path):
     assert other.digest != ruleset.load().digest
     go(tmp_path, [a], n, rs=other)
     assert len(n.calls) == 2 and n.calls[-1][1] is None  # no ETag: the body is read again under the new rules
-    assert verify.result_for(a, verify.load(tmp_path, other))["Claude Code"]["result"] == "confirmed"
-    assert verify.result_for(a, verify.load(tmp_path))["Claude Code"]["why"] == "unread"
+    assert verify.result_for(a, verify.load(tmp_path, other))[K()]["result"] == "confirmed"
+    assert verify.result_for(a, verify.load(tmp_path))[K()]["why"] == "unread"
 
 
 @pytest.mark.parametrize("text", ["", "{", "[]", '{"version": 2}', '{"version": 1, "version": 1}'])
@@ -678,13 +688,13 @@ def test_only_wanted_relay_bot_threads_are_read(tmp_path):
     go(tmp_path, [a, b, cur], n, wanted=[a, cur])
     assert n.urls == [gurl(G1)]
     assert verify.result_for(cur, verify.load(tmp_path)) is None
-    assert res(tmp_path, b)["Claude Code"]["why"] == "unread"
+    assert res(tmp_path, b)[K()]["why"] == "unread"
 
 
 def test_off_shows_unknown_and_touches_no_file(tmp_path):
     a = adv()
     go(tmp_path, [a], net((gurl(G1), ghsa())))
-    assert verify.result_for(a, None) == {"Claude Code": {"result": "unknown", "why": "off", "source": None}}
+    assert verify.result_for(a, None) == {K(): {"result": "unknown", "why": "off", "source": None}}
     assert one(tmp_path, a) == ("confirmed", "match")  # still there when the check is turned back on
 
 
@@ -898,8 +908,8 @@ def test_a_result_that_is_not_confirmed_is_read_again_after_a_day(tmp_path):
 
 
 @pytest.mark.parametrize("path, value", [
-    (("results", "KEY", "products", "Claude Code", "result"), []), (("results", "KEY", "products", "Claude Code", "why"), {}),
-    (("results", "KEY", "products", "Claude Code", "source"), []), (("sources", G1, "support", "Claude Code"), [[], True]),
+    (("results", "KEY", "products", K(), "result"), []), (("results", "KEY", "products", K(), "why"), {}),
+    (("results", "KEY", "products", K(), "source"), []), (("sources", G1, "support", "Claude Code"), [[], True]),
     (("sources", G1, "names"), [[]]), (("sources", G1, "names"), [None]), (("version",), 1), (("sources", G1, "etag"), []), (("kev",), []), (("ruleset",), []), (("version",), []),
     (("results", "KEY", "products"), [["Claude Code"]]), (("sources", G1), None), (("results",), None),
 ])
@@ -913,7 +923,7 @@ def test_a_cache_with_a_value_of_the_wrong_kind_is_an_empty_one_not_a_crash(tmp_
     node[path[-1]] = value
     (tmp_path / verify.FILE).write_text(json.dumps(bad))
     assert verify.load(tmp_path) == verify._empty(ruleset.load().digest)
-    assert verify.result_for(a, verify.load(tmp_path))["Claude Code"]["why"] == "unread"
+    assert verify.result_for(a, verify.load(tmp_path))[K()]["why"] == "unread"
 
 
 def test_a_thread_key_of_the_poster_s_is_read_by_its_public_id(tmp_path):
@@ -924,7 +934,7 @@ def test_a_thread_key_of_the_poster_s_is_read_by_its_public_id(tmp_path):
     internal = adv(id="LEAD-9a4d0dc65b79:docker", aliases=["AITA-TEST-0001", "PYSEC-2026-1"], level="high")
     n2 = Net()
     go(tmp_path, [internal], n2)
-    assert n2.calls == [] and res(tmp_path, internal)["Claude Code"]["why"] == "no-source"
+    assert n2.calls == [] and res(tmp_path, internal)[K()]["why"] == "no-source"
 
 
 def test_the_socket_is_still_reached_after_the_response_took_it_over(monkeypatch):
@@ -953,8 +963,84 @@ def test_a_thread_cut_off_by_the_budget_has_had_its_turn(tmp_path):
         raise OSError("slow")
     cache = go(tmp_path, [greedy, other], slow, clock=clock)  # KEV, one alias, and the 30 seconds are gone
     assert asked == [verify.KEV_URL, gurl(G2)]
-    assert res(tmp_path, greedy)["Claude Code"]["why"] == "unread"
+    assert res(tmp_path, greedy)[K()]["why"] == "unread"
     assert verify.state_key(other) not in cache["results"]
     n = net((gurl(G1), ghsa(high=False)))
     go(tmp_path, [greedy, other], n, now=NOW + 3600)
     assert n.urls[0] == gurl(G1)  # the thread that was cut off no longer comes first
+
+
+# ------------------------------------------------------------------ one product identity (ai-tools-alerts#2mgd)
+
+OTHER_VENDOR = kev((CVE, "Cisco", "IOS XE"))
+
+
+@pytest.mark.parametrize("name", ["Claude Code", "claude code", "claude-code", "CLAUDE CODE", "@anthropic-ai/claude-code"])
+def test_a_respelled_product_is_judged_as_the_scope_product_it_is(tmp_path, name):
+    """The acceptance case: a critical for ``claude code`` that the catalog lists for
+    another vendor is contradicted like one for ``Claude Code``; listed for the product,
+    it is confirmed, its upgrade action naming it in the same spelling."""
+    a = adv(id=CVE, level="critical", products=[(name, "claude-code")])
+    go(tmp_path, [a], net((verify.KEV_URL, OTHER_VENDOR)))
+    assert res(tmp_path, a) == {K(name, "claude-code"): {"result": "contradicted", "why": "unsupported", "source": "none"}}
+    go(tmp_path / "listed", [a], net((verify.KEV_URL, KEV_CC)))
+    assert res(tmp_path / "listed", a)[K(name, "claude-code")] == {"result": "confirmed", "why": "match", "source": "critical"}
+
+
+@pytest.mark.parametrize("name, ecosystem", [("claude-code-router", "claude-code"), ("Claude Code", "skill"),
+                                             ("Claude Code", "codex"), ("MCP servers and clients", "mcp")])
+def test_a_product_that_is_no_scope_product_is_not_judged(tmp_path, name, ecosystem):
+    a = adv(id=CVE, level="critical", products=[(name, ecosystem)])
+    go(tmp_path, [a], net((verify.KEV_URL, KEV_CC)))
+    assert res(tmp_path, a) == {K(name, ecosystem): {"result": "unknown", "why": "no-source", "source": None}}
+
+
+def test_an_entry_of_the_same_name_under_another_ecosystem_is_another_product(tmp_path):
+    """Results are per ecosystem and name. A signer who adds ``Claude Code`` under
+    ``skill`` gets a second result and changes nothing of the tool's: not its
+    confirmation, and not the refusal of a lowering."""
+    plain = adv(id=CVE, level="critical")
+    both = adv(id=CVE, level="critical", products=["Claude Code", ("Claude Code", "skill")],
+               actions=[schema.Action("upgrade", "Claude Code", "99.0.0")])
+    n = net((verify.KEV_URL, KEV_CC))
+    go(tmp_path, [plain, both], n)
+    r = res(tmp_path, both)
+    assert r[K()] == res(tmp_path, plain)[K()] == {"result": "confirmed", "why": "match", "source": "critical"}
+    assert r[K("Claude Code", "skill")]["why"] == "no-source" and len(r) == 2
+    assert verify.state_key(plain) != verify.state_key(both)
+    ask = verify.at_level(both, "high")
+    go(tmp_path, [both, ask], n)
+    assert verify.lowering(both, "high", verify.load(tmp_path), NOW) is False
+
+
+def test_the_product_key_cannot_be_forged_by_a_post():
+    """``pkey`` joins ecosystem and name with a line feed: the schema refuses one in either."""
+    block = {"id": CVE, "aliases": [], "level": "high", "advisory_severity": None, "title": "t",
+             "products": [{"name": "Claude Code", "ecosystem": "claude-code", "affected": None, "fixed": None}],
+             "actions": [], "sources": [{"url": "https://example.invalid/a", "published_at": None}],
+             "posted_by": "relay-bot", "posted_at": NOW, "expires_at": None}
+    schema.validate(block)
+    for field, value in (("name", "skill\nClaude Code"), ("ecosystem", "skill\nx")):
+        with pytest.raises(ValueError):
+            schema.validate({**block, "products": [{**block["products"][0], field: value}]})
+
+
+def test_a_run_cut_off_by_the_request_budget_leaves_a_product_unread_and_the_next_run_judges_it(tmp_path, monkeypatch):
+    a = adv(id=G1, level="high")
+    monkeypatch.setattr(verify, "MAX_FETCHES", 1)
+    n = net((gurl(G1), ghsa(cve=CVE)), (verify.KEV_URL, kev()))
+    go(tmp_path, [a], n)  # the advisory is read; the CVE it names is not
+    assert n.urls == [gurl(G1)] and one(tmp_path, a) == ("unknown", "unread")
+    monkeypatch.setattr(verify, "MAX_FETCHES", 10)
+    go(tmp_path, [a], n, now=NOW + 3600)
+    assert one(tmp_path, a) == ("confirmed", "match")
+
+
+def test_a_cache_of_the_version_before_is_an_empty_one(tmp_path):
+    a = adv()
+    go(tmp_path, [a], net((gurl(G1), ghsa())))
+    old = json.loads((tmp_path / verify.FILE).read_text())
+    assert old["version"] == 4
+    old["version"] = 3
+    (tmp_path / verify.FILE).write_text(json.dumps(old))
+    assert verify.load(tmp_path) == verify._empty(ruleset.load().digest)

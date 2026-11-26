@@ -31,7 +31,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import urljoin, urlsplit
 
 from aitools_alerts import ruleset, schema, verify, versions, wire
@@ -125,6 +125,24 @@ def scope_of(product_text, log: list[str] | None = None, entries=None) -> schema
         words = _default_vendor_words() if default else vendor_words(entries)
         if _tokens(text) & words:
             log.append(product_text)
+    return hit
+
+
+def scope_named(name, former: bool = False) -> schema.ScopeEntry | None:
+    """The scope entry, or the entry resolved to a component, whose NAME is ``name``:
+    how a posted thread or a held notice finds its product (the ledger keeps the name
+    a post states). Exact, and not ``scope_of``: a name is not always an identity (the
+    entry Cursor matches "cursor ide", never "cursor"; zmg2), and an identity is not a
+    name. ``former``: also a name an entry lists in ``formerly`` (wa6n: a thread keeps
+    the name it was posted under), as that entry carrying the former name. None when
+    the scope file has neither."""
+    if not isinstance(name, str):
+        return None
+    entries = list(_default_index().values())
+    hit = next((s for s in entries if s.name == name), None)
+    if hit is None and former:
+        old = next((s for s in entries if name in getattr(s, "formerly", ())), None)
+        hit = replace(old, name=name, formerly=()) if old is not None else None
     return hit
 
 
