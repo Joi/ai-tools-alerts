@@ -22,7 +22,8 @@ Pass 1 [code:branch]: 1B/5S/2C/0R · fixed -/- · velocity = (—→8, escalatio
 Delta: scope `git diff 7a8afd9..HEAD` given as text plus the uncommitted upload.sh path, not `--since`, because --since refuses scope text and the script that changed is outside the repo.
 
 - [x] placeholder source + test + README/CHANGELOG — ec04507, fixes after review in the next commit
-- [ ] publish (aitools-alerts 0.0.2; ai-tools-alerts 0.0.1 attempt), verify, yank hand action
+- [x] publish: aitools-alerts 0.0.2 uploaded from reviewed head a9bdde3 (wheel sha256 9ad5c0e856c48b3c2df4d8b043c142272a4dee6ef3a4cf9229956b593e4d6266). ai-tools-alerts 0.0.1 refused: "400 The name 'ai-tools-alerts' is too similar to an existing project." JSON API: aitools-alerts 200, version 0.0.2, summary as approved, description == README, author/author_email/maintainer_email None, requires_dist None; ai-tools-alerts 404. Source and test entry for ai-tools-alerts removed (nothing published from it).
+- [ ] yank 0.0.1: hand action for Joi (no PyPI API)
 
 ## Notes
 - Prior work: ai-tools-alerts#4fkh (README says nothing ships to PyPI; install guard test), ai-tools-alerts#fzr2 (PyPI reservation named as Joi's hand action). Session search: the 0.0.1 upload (2026-11-06T00:09Z) is not in any transcript on this host; its metadata gives author "Joichi Ito", no email.

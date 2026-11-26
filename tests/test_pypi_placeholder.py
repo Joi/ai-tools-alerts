@@ -11,7 +11,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 HOME = ROOT / "pypi-placeholder"
-NAMES = {"aitools-alerts": "0.0.2", "ai-tools-alerts": "0.0.1"}
+# ai-tools-alerts is not here: PyPI refused it as too similar to aitools-alerts (400, 2026-11-26).
+NAMES = {"aitools-alerts": "0.0.2"}
 URL = "https://github.com/Joi/ai-tools-alerts"
 SUMMARY = ("Empty placeholder. No release of ai-tools-alerts is published on PyPI; the only supported "
            f"install is the verified signed release described in the README at {URL}")
