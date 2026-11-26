@@ -106,6 +106,9 @@ def test_an_in_process_read_or_write_is_refused_before_it_happens(tmp_path):
     bait = _bait(tmp_path)
     link = tmp_path.parent / f"{tmp_path.name}-link"
     link.symlink_to(bait)
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.toml"
+    outside.write_text("a = 1\n")
+    (bait / "out.toml").symlink_to(outside)
     r = _inner(tmp_path, f"""
 import os, pytest
 from pathlib import Path
@@ -119,13 +122,27 @@ def test_state_dir():
     state.State.load(dir=BAIT)
 def test_listing():
     os.listdir(BAIT)
+def test_dir_fd_relative_open():
+    parent = os.open(BAIT.parent, os.O_RDONLY)
+    try:
+        os.open(BAIT.name + "/config.toml", os.O_RDONLY, dir_fd=parent)
+    finally:
+        os.close(parent)
+def test_dir_fd_open_of_the_directory_itself():
+    fd = os.open(BAIT.parent, os.O_RDONLY)
+    try:
+        sub = os.open(BAIT.name, os.O_RDONLY, dir_fd=fd)
+    finally:
+        os.close(fd)
+def test_a_link_inside_pointing_out():
+    (BAIT / "out.toml").read_text()
 def test_elsewhere(tmp_path):
     (tmp_path / "x").write_text("ok")
 """, extra=bait)
-    assert "4 failed, 1 passed" in r.stdout, r.stdout + r.stderr
-    assert r.stdout.count("tests never read or write the real reader") >= 4
+    assert "7 failed, 1 passed" in r.stdout, r.stdout + r.stderr
+    assert r.stdout.count("tests never read or write the real reader") >= 7
     assert (bait / "config.toml").read_text() == "mirror_url = 'https://example.invalid/'\n"
-    assert sorted(p.name for p in bait.iterdir()) == ["config.toml"]
+    assert sorted(p.name for p in bait.iterdir()) == ["config.toml", "out.toml"]
 
 
 @needs_real_home

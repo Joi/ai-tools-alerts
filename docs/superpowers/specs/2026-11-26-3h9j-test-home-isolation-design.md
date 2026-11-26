@@ -63,7 +63,9 @@ test.
    password entry that names a temporary home; it never resolves the real one.
 8. (Added after the code review.) An audit hook in the pytest process refuses
    any open, listing, create, remove, rename, chmod or utime of a path inside a
-   guarded real directory, symlinks resolved, before the I/O happens; the
+   guarded real directory before the I/O happens, judged by the path as written
+   and by where it resolves (a link either way), relative to its dir_fd when
+   one is given, and by the path an open descriptor names; the
    refusal is recorded on the running test's guard, or the session's during
    collection. This covers explicit paths (`config.load(path)`,
    `State.load(dir=...)`) that never call `config.home`.

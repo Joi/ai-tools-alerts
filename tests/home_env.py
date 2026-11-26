@@ -270,39 +270,93 @@ def watching(dirs=None):
                     "machine wrote them while it ran): " + "; ".join(moved), pytrace=False)
 
 
+_GUARDED_ABS = tuple(os.path.abspath(g) for g in GUARDED)
 _GUARDED_REAL = tuple(os.path.realpath(g) for g in GUARDED)
-_FILE_EVENTS = {"open": 1, "os.listdir": 1, "os.scandir": 1, "os.mkdir": 1, "os.rmdir": 1,
-                "os.remove": 1, "os.rename": 2, "os.replace": 2, "os.chmod": 1, "os.chown": 1,
-                "os.utime": 1, "os.truncate": 1, "os.link": 2, "os.symlink": 2, "shutil.rmtree": 1,
-                "shutil.copyfile": 2, "shutil.move": 2, "os.chdir": 1}
+# event -> (path index, dir_fd index or None) for each path argument. Every
+# "os.*" event carries its dir_fd; "open" does not, so os.open is wrapped below.
+_FILE_EVENTS = {
+    "open": ((0, None),), "os.listdir": ((0, None),), "os.scandir": ((0, None),),
+    "os.mkdir": ((0, 2),), "os.rmdir": ((0, 1),), "os.remove": ((0, 1),),
+    "os.rename": ((0, 2), (1, 3)), "os.replace": ((0, 2), (1, 3)), "os.chmod": ((0, 2),),
+    "os.chown": ((0, 3),), "os.utime": ((0, 3),), "os.truncate": ((0, None),),
+    "os.link": ((0, 2), (1, 3)), "os.symlink": ((1, 2),), "os.chdir": ((0, None),),
+    "shutil.rmtree": ((0, 1),), "shutil.copyfile": ((0, None), (1, None)),
+    "shutil.move": ((0, None), (1, None)),
+}
 _auditing = [True]  # off only while fingerprint() looks at the guarded directories
 
 
-def _guarded_path(p) -> str | None:
+def _fd_path(fd: int) -> str | None:
+    """The path an open descriptor names, where the platform says."""
+    try:
+        import fcntl
+        if hasattr(fcntl, "F_GETPATH"):  # macOS
+            return os.fsdecode(fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024))).rstrip("\0")
+        return os.readlink(f"/proc/self/fd/{fd}")  # Linux
+    except (OSError, ValueError, ImportError):
+        return None
+
+
+def _in(p: str, roots) -> bool:
+    return any(p == g or p.startswith(g + os.sep) for g in roots)
+
+
+def _guarded_path(p, dir_fd=None) -> str | None:
+    """The guarded path ``p`` names (relative to ``dir_fd`` when given), by the
+    path as written or by where it resolves; None if neither is guarded."""
     if isinstance(p, bytes):
         p = os.fsdecode(p)
-    if not isinstance(p, (str, os.PathLike)):
-        return None  # a file descriptor
-    r = os.path.realpath(p)
-    for g in _GUARDED_REAL:
-        if r == g or r.startswith(g + os.sep):
-            return r
+    if isinstance(p, int) and not isinstance(p, bool):
+        p = _fd_path(p)  # a descriptor: the file or directory it is open on
+        if p is None:
+            return None
+    elif not isinstance(p, (str, os.PathLike)):
+        return None
+    p = os.fspath(p)
+    if isinstance(dir_fd, int) and not os.path.isabs(p):
+        base = _fd_path(dir_fd)
+        if base is None:
+            return None
+        p = os.path.join(base, p)
+    a, r = os.path.abspath(p), os.path.realpath(p)
+    # Both: a link inside a guarded directory pointing out, and one outside pointing in.
+    if _in(a, _GUARDED_ABS) or _in(a, _GUARDED_REAL):
+        return a
+    if _in(r, _GUARDED_REAL) or _in(r, _GUARDED_ABS):
+        return r
     return None
 
 
+def _refuse(event, hit):
+    _auditing[0] = False  # pytest.fail's own reporting must not re-enter
+    try:
+        CURRENT[0].violations.append(f"{event} {hit}")
+        pytest.fail(f"{event} on {hit}: tests never read or write the real reader or "
+                    "poster files (tests/home_env.py)", pytrace=False)
+    finally:
+        _auditing[0] = True
+
+
 def _audit(event, args):
-    n = _FILE_EVENTS.get(event)
-    if n is None or not _auditing[0]:
+    spec = _FILE_EVENTS.get(event)
+    if spec is None or not _auditing[0]:
         return
-    for a in args[:n]:
-        if (hit := _guarded_path(a)) is not None:
-            _auditing[0] = False  # pytest.fail's own reporting must not re-enter
-            try:
-                CURRENT[0].violations.append(f"{event} {hit}")
-                pytest.fail(f"{event} on {hit}: tests never read or write the real reader or "
-                            "poster files (tests/home_env.py)", pytrace=False)
-            finally:
-                _auditing[0] = True
+    for i, j in spec:
+        if i >= len(args):
+            continue
+        fd = args[j] if j is not None and j < len(args) else None
+        if (hit := _guarded_path(args[i], fd)) is not None:
+            _refuse(event, hit)
+
+
+_os_open = os.open
+
+
+def _guarded_open(path, flags, mode=0o777, *, dir_fd=None):
+    """os.open, whose audit event leaves out dir_fd."""
+    if dir_fd is not None and _auditing[0] and (hit := _guarded_path(path, dir_fd)) is not None:
+        _refuse("os.open", hit)
+    return _os_open(path, flags, mode, dir_fd=dir_fd)
 
 
 from aitools_alerts import config  # noqa: E402 - after HOME is redirected
@@ -313,6 +367,7 @@ CURRENT = [SESSION]  # the guard a refused file operation is recorded on
 config.home = SESSION.home
 BASELINE = fingerprint()
 sys.addaudithook(_audit)  # Python offers no removal: _auditing turns it off
+os.open = _guarded_open
 
 __all__ = ["BASELINE", "ENV", "GUARDED", "Guard", "PASSWD_HOME", "REAL_HOME", "SESSION",
            "SESSION_HOME", "TEMP_EXEMPT", "exempt", "overlaps_guarded", "changed", "fingerprint", "under_real_home", "watching"]
