@@ -335,7 +335,7 @@ def test_lowering_without_results_or_a_cache_settles_nothing(tmp_path):
 @pytest.mark.parametrize("first, source, why", [
     (CVE, kev(), "unauthoritative"),  # the catalog does not list it: silence is no authority
     (G1, ghsa(type="unreviewed"), "unauthoritative"),  # a source anyone can write
-    (G1, ghsa(pkgs=(("npm", "another-package"),)), "unauthoritative"),  # an authority that does not name the product
+    (G1, ghsa(pkgs=(("npm", "another-package"),)), "silent"),  # an authority that does not name the product (y484)
     (G1, ghsa(withdrawn_at="2026-11-01T00:00:00Z"), "match"),  # withdrawn by a source that names it
     (G1, ghsa(), "below-source"),
 ])

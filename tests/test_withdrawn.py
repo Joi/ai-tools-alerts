@@ -322,7 +322,11 @@ def test_whole_ends_a_refusal_only_on_fresh_whole_reads(tmp_path):
     down = Net().set(gurl(G1), OSError("down"))
     assert lowering(tmp_path, a, GONE, down, whole=True, now=NOW + verify.RETRY_S) is None
     silent = Net().set(gurl(G1), ghsa(pkgs=(("npm", "another-package"),)))
-    assert lowering(tmp_path, a, GONE, silent, whole=True, now=NOW + 2 * verify.RETRY_S) is None  # no authority for it
+    # an authority that no longer names the product: no support, so a refusal ends; and no withdrawal
+    assert lowering(tmp_path, a, GONE, silent, whole=True, now=NOW + 2 * verify.RETRY_S) is True
+    assert lowering(tmp_path, a, GONE, silent, SAID, now=NOW + 3 * verify.RETRY_S) is None
+    anyone = Net().set(gurl(G1), ghsa(type="unreviewed", withdrawn_at="2026-11-01T00:00:00Z"))
+    assert lowering(tmp_path, a, GONE, anyone, whole=True, now=NOW + 4 * verify.RETRY_S) is None  # no authority at all
 
 
 def test_a_source_silent_about_the_product_confirms_no_withdrawal(tmp_path):
@@ -478,11 +482,15 @@ def test_a_contradicted_withdrawal_is_remembered_through_failed_reads(feed, monk
     assert levels(capsys) == {G1: "critical"}
 
 
+@pytest.mark.parametrize("now_says", [
+    ghsa(high=False),  # the advisory now gives notice: published, not withdrawn
+    ghsa(type="malware", pkgs=(("npm", "another-package"),)),  # corrected: it no longer names the product
+])
 def test_a_refusal_ends_on_whole_reads_of_no_more_than_notice_and_the_wait_starts_then(feed, monkeypatch, capsys,
-                                                                                        reader_clock):
+                                                                                        reader_clock, now_says):
     m, root = refused_thread(feed, monkeypatch, capsys, reader_clock)
     later(monkeypatch, verify.RETRY_S + 60)
-    n = use(monkeypatch, Net().set(gurl(G1), ghsa(high=False)))  # the advisory now gives notice: published, not withdrawn
+    n = use(monkeypatch, Net().set(gurl(G1), now_says))
     serve(m, reader_clock, C0 + DAY)
     cli.main(["pull"])
     cli.main(["verify"])

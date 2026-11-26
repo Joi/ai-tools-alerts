@@ -7,6 +7,7 @@ The CLI reads a relay-bot withdrawal (design review of 2026-11-23, findings D4 a
 - **Hidden only on your own evidence.** The alert is shown nowhere and matched against nothing while your CLI's own read of the source, no more than two days old, says the advisory is withdrawn, and every level the alert has stated carries a signed claim your CLI computes that level from. It is never hidden unchecked, however long the reply has stood.
 - **Otherwise a lowering to notice.** A withdrawal your CLI cannot confirm counts as a lowering to notice from the same reply, applied after 72 hours of signed checkpoints (`lowering_waits` is `notice`). When the source supports more than notice, it is refused and stays refused: `source check: a withdrawal of <id> is not applied: the source supports <level> for <product>`, and `lowering_refused` is `withdrawn`.
 - **It comes back.** A relay-bot reply that names a level ends the withdrawal in the same thread. A source that publishes the advisory again brings the alert back on your machine as soon as your CLI reads it.
+- A refused withdrawal stops being refused when your CLI reads the sources whole and they give no more than notice: the advisory withdrawn, supported at exactly notice, or corrected so that it no longer names the product. Its 72 hours start then.
 - `verify` now prints `source check: N lowerings, withdrawals or retractions asked about: ...`.
 - Released CLIs (0.1.4 to 0.2.1) skip the reply and keep the alert at its level. No schema, manifest, ruleset or state file changes.
 

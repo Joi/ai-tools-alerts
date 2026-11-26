@@ -65,7 +65,7 @@ VERSION = 5  # of the cache: raised whenever a stored value changes meaning, so 
 BOT = "relay-bot"
 CONFIRMED, CONTRADICTED, UNKNOWN = "confirmed", "contradicted", "unknown"
 _WHYS = {CONFIRMED: ("match", "withdrawn"), CONTRADICTED: ("unsupported", "above-source", "below-source"),
-         UNKNOWN: ("unread", "unauthoritative", "reading", "no-source", "off")}
+         UNKNOWN: ("unread", "unauthoritative", "silent", "reading", "no-source", "off")}
 _LEVELS = (ruleset.NONE, "notice", "high", "critical")
 _RANK = {name: i for i, name in enumerate(_LEVELS)}
 _ETAG = re.compile(r'(?:W/)?"[\x21\x23-\x7e]{1,128}"')
@@ -401,7 +401,10 @@ def judge(level: str, product: str | None, records, complete: bool, rs, actions=
     if s == level and (level != ruleset.NONE or (named and may_lower)):
         return out(CONFIRMED, "match", s)
     if not may_lower or level == ruleset.NONE:
-        return out(UNKNOWN, "unauthoritative", s)
+        # y484: asked at "none", whole reads of authorities that do not name the product are
+        # ``silent``: no withdrawal (nothing is confirmed), and no support either, which is
+        # what ends a remembered refusal of a withdrawal (``lowering(whole=True)``).
+        return out(UNKNOWN, "silent" if may_lower and s == ruleset.NONE else "unauthoritative", s)
     if s == ruleset.NONE and named and level == _LEVELS[1]:
         return out(CONFIRMED, "withdrawn", s)
     if s == ruleset.NONE:
@@ -552,7 +555,8 @@ def lowering(adv, level: str, cache: dict | None, now: float, rs=None, stated=No
     reads of authorities that name the product and support nothing for it. None for
     anything else, a source that supports exactly notice among them: the reader then
     takes the withdrawal as a lowering to notice nobody has checked. ``whole``, for
-    ending a refusal: True when fresh whole reads give no product more than notice.
+    ending a refusal: True when fresh whole reads of authorities give no product more than
+    notice (withdrawn, supported at exactly notice, or no longer named: ``silent``).
 
     None: anything else, and ``verify = "off"`` (``cache`` None).
 
@@ -581,7 +585,7 @@ def lowering(adv, level: str, cache: dict | None, now: float, rs=None, stated=No
         done = all(p["result"] == CONFIRMED and p["why"] == "match" for p in products.values())
         if whole:
             return True if fresh and held.get("whole") is True and all(
-                p in over or (p["result"] == CONFIRMED and p["why"] == "match") for p in products.values()) else None
+                p in over or p["why"] in ("match", "silent") for p in products.values()) else None
         return True if said and fresh and done else None
     if "below-source" in whys:
         return False

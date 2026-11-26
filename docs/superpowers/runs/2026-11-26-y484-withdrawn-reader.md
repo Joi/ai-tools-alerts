@@ -45,6 +45,12 @@ Code findings and what was done (both reviewers; the same defect counted once):
 7. COSMETIC (Stage 1 F5): the released-reader test sent the reply without its claim. Fixed: the reply carries a claim of level `none`.
 Rung after the pass: medium. No BLOCKER or SUBSTANTIVE finding is left unfixed. The BLOCKER fix changed behaviour, so it is committed and gets the one delta pass (`fresheyes --since 435516a`), as the review cycle rules.
 
+Pass 2 [code:reader]: 0B/1S/0C/0R · fixed 8/8 prior · velocity ↓ (8→1, escalation no)
+code:reader: passes 2 · the delta, gpt-6-astra through `fresheyes --since 435516a` at head a3318b6ac9344e3e4916ee8594559ab20214d228
+
+Delta finding and what was done:
+1. SUBSTANTIVE (the reviewer called it major and blocking; taken as SUBSTANTIVE because it errs high: a refusal that never ends keeps the alert at its level): with one question asked at `none`, a refused withdrawal no longer ended when the advisory was corrected to stop naming the product, since that read is `unauthoritative` at `none`. Fixed in the commit after a3318b6: `judge` at `none` calls whole reads of authorities that do not name the product `silent`, and `lowering(whole=True)` takes it; a CLI test ends a refusal that way and runs the 72 hours. Not reviewed again: the review cycle allows one delta. `git diff a3318b6..HEAD` shows it.
+
 ## Chunks
 - [ ] reader: the withdrawal on the wire, in `pull.py`, in the source check and in the CLI, with its tests and documents
 
@@ -52,3 +58,8 @@ Rung after the pass: medium. No BLOCKER or SUBSTANTIVE finding is left unfixed. 
 - Landing lane: this repository has no `.repoman-managed` marker, so the brief's lane applies: `scripts/test-gate.sh`, one independent review, a pull request this session merges. The dispatch text's repoman steps do not apply.
 - Split before building (kata comment on y484, 2026-11-26): the poster half is ai-tools-alerts#kk2q.
 - The session started at main 5506dd4 (hh5s, 3t4p, 0z4e, swfe merged).
+- Execution: the Agency tools the pipeline names are not available in this session; the one chunk was built in the session itself, test first, and reviewed by both stages.
+- A stray review: the fresheyes script was called once with `--help`, which it read as scope text and started a detached review of nothing. Stopped by pid within a minute; it counts for no pass.
+- Watchdog: four fresheyes runs (spec, plan, code, delta), each `FRESHEYES_DONE REASON=-`. No stall, no fallback.
+- Skip-temptations: none acted on. The plan's CLI test of "the withdrawal contradicted and notice unread" could not be built as written (one run reads both states of one thread); the redesign to one question removed the case.
+- The source check's cache keeps version 5: `silent` is a new reason, and a result stored before it reads as not settled, which is the safe reading.
