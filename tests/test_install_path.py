@@ -48,6 +48,33 @@ def test_readme_names_the_pin_and_no_unpinned_install():
             assert em.RELEASE_COMMIT in line
 
 
+SHIPPED_DIRS = ("aitools_alerts", "skills", "snippets", "hooks", "templates", "mirror")
+SHIPPED_TOP = ("README.md", "SECURITY.md", "CHANGELOG.md")
+BY_NAME = re.compile(r"\bpipx? install +(?:--\S+ +)*['\"]?aitools[-_.]alerts\b", re.I)
+PYPI_PROMISE = re.compile(r"pypi.*\b(?:coming|will be (?:published|released|on))\b"
+                          r"|\b(?:coming|will be (?:published|released))\b.*pypi", re.I)
+
+
+def _shipped_text():
+    paths = [ROOT / p for p in SHIPPED_TOP]
+    for d in SHIPPED_DIRS:
+        paths += [p for p in sorted((ROOT / d).rglob("*")) if p.is_file() and "__pycache__" not in p.parts]
+    for p in paths:
+        try:
+            yield p.relative_to(ROOT), p.read_text()
+        except UnicodeDecodeError:
+            continue
+
+
+def test_no_install_by_the_package_name():
+    # 4fkh: a bare name resolves on PyPI, where the name holds only an empty placeholder.
+    for rel, text in _shipped_text():
+        for n, line in enumerate(text.splitlines(), 1):
+            assert not BY_NAME.search(line), f"{rel}:{n}: install by the package name"
+            assert not PYPI_PROMISE.search(line), f"{rel}:{n}: says the package is coming to PyPI"
+    assert "do not install from PyPI" in section(README, "### Install")
+
+
 def test_checks_come_before_any_install():
     first_check = README.index("tag -v")
     assert README.index("rev-parse") > first_check
