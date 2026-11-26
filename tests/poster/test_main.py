@@ -519,11 +519,15 @@ def test_compose_value_error_sends_nothing(env, monkeypatch):
 
     monkeypatch.setattr(main.compose, "reply_post", refuse)
     code, summary, relay = env.run(now=T0 + 3600)
-    assert code == 0 and "withheld=1" in summary and "copies=0" in summary  # not even the critical copy
+    assert code == 0 and "withheld=1" in summary and "replies=1" in summary
     # 3qyq: nothing of the candidate's plan is sent. The recompute, which now judges a thread
-    # that carries a GHSA id, sees KEV list its CVE and raises the level, alone.
-    assert [(ch, text.splitlines()[0]) for ch, _, text in relay.calls] == [("feed", "Level is now critical.")]
-    assert env.state()["outbox"] == []
+    # that carries a GHSA id, sees KEV list its CVE and raises the level, alone. 3t4p: the
+    # thread is then critical with no root in the critical channel, and the recompute
+    # posts that copy from the ledger (compose.copy_post, which has its own guard).
+    assert [(ch, reply is None, text.splitlines()[0]) for ch, reply, text in relay.calls] == [
+        ("feed", False, "Level is now critical."),
+        ("critical", True, "CRITICAL: Claude Code: remote code execution")]
+    assert "copies=1" in summary and env.state()["outbox"] == []
 
 
 def test_notice_dedup_is_per_scope(env):

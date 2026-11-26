@@ -399,15 +399,62 @@ def root_post(c, level, scope, *, posted_at: int | None = None, wording=None) ->
     wording = wording if worded(head, p.name, wording) else None
     # No version is not no fix: a KEV entry carries no version data at all (4yr1). A fix
     # the schema cannot express is named by the source, never by a version here (h340).
-    pkg, registry = package_of(scope)
-    body = [headline(head, p.name, wording.headline if wording else source_title(c),
-                     f"{p.name}: {_kind(c, None)}"),  # the head marks unverified
-            *([f"Who: {wording.who}"] if wording else []),
-            f"Affected: {pkg}{_words(p.affected, range_unexpressed(c))}" + (f" ({registry})." if registry else "."),
-            _do(p.name, fixed, stop=stop, unexpressed=fix_unexpressed(c),
-                exploited=c.exploited is True or _exploited(adv)),
-            *_covers_line(adv), f"Source: {_primary(adv.sources)}"]
+    body = _root_lines(adv, head, wording.headline if wording else source_title(c),
+                       f"{p.name}: {_kind(c, None)}", scope,  # the head marks unverified
+                       who=wording.who if wording else None, stop=stop, unexpressed=fix_unexpressed(c),
+                       range_unexpressed=range_unexpressed(c), exploited=c.exploited is True)
     return _guard(schema.render_post(adv, _inline("\n".join(body)))), adv
+
+
+def _root_lines(adv, head, title, fallback, scope, *, who=None, stop=False, unexpressed=False,
+                range_unexpressed=False, exploited=False) -> list[str]:
+    """A root's body lines (design section 6), for ``root_post`` and ``copy_post``."""
+    p = adv.products[0]
+    pkg, registry = package_of(scope)
+    return [headline(head, p.name, title, fallback),
+            *([f"Who: {who}"] if who else []),
+            f"Affected: {pkg}{_words(p.affected, range_unexpressed)}" + (f" ({registry})." if registry else "."),
+            _do(p.name, p.fixed, stop=stop, unexpressed=unexpressed, exploited=exploited or _exploited(adv)),
+            *_covers_line(adv), f"Source: {_primary(adv.sources)}"]
+
+
+def title_reason(adv: schema.Advisory) -> str | None:
+    """"unverified" when the block's template title says so, else None: the reason a
+    root composed from the block alone marks its head with (``copy_post``)."""
+    name = adv.products[0].name if adv.products else ""
+    return "unverified" if adv.title in _titles(name, adv.id) and f"{name}: unverified " in adv.title else None
+
+
+def copy_post(adv: schema.Advisory, scope, *, title: str | None = None, exploited: bool = False) -> str:
+    """The post text of a root for a thread that already exists, in a channel of its
+    level that has none (ai-tools-alerts#3t4p): ``root_post``'s body lines over the
+    thread's advisory as the ledger holds it. The block is ``adv`` and nothing else, so
+    every channel of the thread states the same advisory; ``root_post`` builds its block
+    from a candidate's flags, which the ledger does not keep. ``title`` is the ledger's
+    source title; ``exploited`` the ledger's mark. The head says unverified when the
+    block's title does. No model wording: the ledger keeps no source prose.
+
+    Raises ValueError, and nothing posts, for an unresolved scope entry, an id that is
+    not a CVE or GHSA id, a product that is not the scope's, no source, a critical with
+    no complete action (9kgk: a fixed version, or stop_using the product), text that does
+    not parse back to ``adv`` (``schema.render_post``) and text the guard refuses."""
+    adv = schema.validate(asdict(adv))
+    if getattr(scope, "components", ()):
+        raise ValueError("an unresolved scope entry would publish a group name")
+    if not candidates.BOT_ID.fullmatch(adv.id):
+        raise ValueError("the id is not a CVE or GHSA id: the advisory does not post")
+    if len(adv.products) != 1 or adv.products[0].name != scope.name or not adv.sources:
+        raise ValueError("a copy needs the scope's own product and a source")
+    p = adv.products[0]
+    stop_using = any(a.verb == "stop_using" and a.target == p.name for a in adv.actions)
+    upgrade = bool(p.fixed) and any(a.verb == "upgrade" and a.target == p.name for a in adv.actions)
+    if adv.level == "critical" and not (stop_using or upgrade):  # as main._complete reads a journaled block
+        raise ValueError("a critical needs a complete action: no fixed version and no stop_using")
+    stop = stop_using and not p.fixed
+    head = head_of(adv.level, adv.id, title_reason(adv))
+    kind = _headline_kind(adv).removeprefix(f"{SYNTHETIC}: ").replace(": unverified ", ": ", 1)
+    body = _root_lines(adv, head, _upstream(title), kind, scope, stop=stop, exploited=exploited is True)
+    return _guard(schema.render_post(adv, _inline("\n".join(body))))  # render_post: it parses back to adv
 
 
 def catalog_post(adv) -> str:
