@@ -15,6 +15,8 @@ Ending: the repository has no `.repoman-managed` marker, so the brief's landing 
 ## Scorecards
 Pass 1 [spec]: 4B/3S/1C/0R · fixed -/- · velocity = (—→8, escalation no)
 spec: passes 1 · reviewed 77cb1c0 (fresheyes, gpt-6.1-sol, high; REASON=-). All eight taken in the spec: the ecosystem binding; every new entry must state a pair; a readable range survives an unreadable one; the refusal is remembered by content and outlives the offer; a refusal stops only its own list; a flooded thread still takes an offer; `run` shows a changed product list; the false `min_cli` sentence removed. None survives, so the rung stays medium.
+Pass 1 [plan]: 0B/7S/1C/0R · fixed -/- · velocity = (—→8, escalation no)
+plan: passes 1 · reviewed 2795f02 (fresheyes, gpt-6.1-sol, high; REASON=-). All eight taken, in the plan and the code: a kept level contradiction no longer renews a confirmation (`_entry`, `whole` false); a cut-short run keeps the ranges it read; the two existing tests the change amends are named; `run` compares the same three fields on both sides; the refusal line comes from the marked entries and prints with the check off; `MAX_PAIRS` defined as the true maximum, nothing cut; a test that the same list's refusal ends by `run` alone; the README's contrary sentences. None survives, so the rung stays medium.
 
 ## Chunks
 - [ ] reader: the published narrowing, the record, `standing`

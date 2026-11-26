@@ -41,6 +41,8 @@ What the source states. Only a GitHub advisory states versions. For each good re
 
 For a thread, `_Run.thread` joins these lists over the records it counted (the first id and the related ids, as today), taking only records that are an authority for the product (`support[product][1]`, the `lowers` of its source row): a source its subject's attacker can write neither confirms nor refuses a narrowing. The result entry of the state gains `ranges`, `{product: [pair or null, ...]}`, and `whole`, whether every read the thread needs was made. The cache `VERSION` goes to 4; the shape check covers both.
 
+`whole` is true only for an entry whose products this run computed from whole reads. An entry kept with a new time (a level contradiction `_settled` holds over a failed read) and one written by a run the request budget cut short carry the ranges that were read and `whole` false: they still refuse, and they confirm nothing however new their time is.
+
 The comparison, per exact product name of `adv`. A product whose entries are the same set in `adv` and in `products` is not asked about. For any other, with `pairs` the readable pairs of that product:
 
 1. Every source pair is stated, in every ecosystem the thread holds for the product. For each ecosystem among the product's entries in `adv` and each pair `(r, f)` there must be an entry `q` of `products` with that exact name and that ecosystem for which `versions.covers(r, f, q.affected, q.fixed)` holds and `q.fixed` is absent or equal to `f` as versions. If not: **False**. This rests on bodies that arrived whole, so it holds on a partial read and at any age.
@@ -88,7 +90,7 @@ A refused narrowing is remembered by its content, in `State.refused` beside the 
 ## CLI
 
 - `_Check.narrowing` calls `verify.narrowing`. `_lowering_check` builds a check when a thread has a narrowing, not only a lowering.
-- `_matches` adds each narrowing thread's widest state to `a.asked`, and marks a thread whose standing list is remembered as refused.
+- `_matches` adds each narrowing thread's widest state to `a.asked`, and the state the narrowing would leave (read from the same ids in the same run, so the alert is not "not verified" after it applied), and marks a thread whose standing list is remembered as refused. The refusal line is printed from those marks, with `verify = "off"` too.
 - `check`: `a narrowing of <id> is published and not verified from this machine: it applies once signed checkpoints 72 hours apart have listed it`.
 - `check`, `verify`, `run`: `source check: a narrowing of <id> is not applied: its products are not what the source states`. Fixed words and the id only.
 - `verify`: `source check: N narrowings asked about: a confirmed, b contradicted, c not settled`.
@@ -119,6 +121,8 @@ No rollout here. The release session installs it; a note goes on ai-tools-alerts
 ## Review
 
 One independent pass (fresheyes, 2026-11-26, on 77cb1c0): four BLOCKER, three SUBSTANTIVE, one cosmetic, all taken. Ecosystem binding (criterion 7, rule 1); every new entry must state a pair (rule 2); readable pairs survive an unreadable one; the refusal is remembered by content and outlives the offer; a refusal stops only its own list; a flooded thread still takes an offer; `run` shows a changed product list; the false sentence about `min_cli` is gone.
+
+The plan's review (fresheyes, 2026-11-26, on 2795f02): seven SUBSTANTIVE, one cosmetic, all taken; the two that change this text are the `whole` paragraph above and the CLI lines.
 
 ## Open questions
 
