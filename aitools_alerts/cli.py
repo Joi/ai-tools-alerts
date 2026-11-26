@@ -670,7 +670,9 @@ def _judged_here(a, st: State, s: config.Settings) -> bool:
     """This CLI may leave an unjudgeable match out of the interrupts: the check is on,
     the trust root does not call this CLI too old, and its ruleset is the pinned one."""
     try:
-        return s.verify != "off" and _min_cli(a, st) is None and _pinned_exactly(a, st)
+        # and the scope products were read: with none, every product would look like no scope product
+        return (s.verify != "off" and _min_cli(a, st) is None and _pinned_exactly(a, st)
+                and bool(check.scope_products()))
     except Exception:
         return False
 

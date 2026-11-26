@@ -128,7 +128,7 @@ def _owns(ecosystem: str, installed: Installed) -> bool:
 
 
 @lru_cache(maxsize=1)
-def _scope_products() -> dict[str, tuple]:
+def scope_products() -> dict[str, tuple]:
     """ecosystem -> ((scope product name, its package in lowercase or None), ...) for
     every product a reading can support (``Ruleset.products``: entries and components,
     a component under its entry's ecosystem). A scope file that does not load: {}."""
@@ -153,7 +153,7 @@ def scope_name(name: str, ecosystem: str) -> str | None:
     try:
         n = name.lower()
         tool = IDENTITY.get(ecosystem, set()) | {ecosystem} if ecosystem not in _NAME_ECOSYSTEMS else set()
-        hits = {s for s, package in _scope_products().get(ecosystem, ())
+        hits = {s for s, package in scope_products().get(ecosystem, ())
                 if s.lower() == n or (n in tool and s.lower() in tool) or (ecosystem == "mcp" and package == n)}
         return hits.pop() if len(hits) == 1 else None
     except Exception:
@@ -171,9 +171,9 @@ def _concerns(action: Action, ecosystem: str, aliases: set[str]) -> bool:
 
 
 def match(advs: list[Advisory], inv: Inventory) -> list[Match]:
-    """One Match per (advisory, installation, range, reason): product entries
-    that repeat the same range and fixed version for one installation with
-    the same reason collapse; entries with different constraints, or one that
+    """One Match per (advisory, installation, range, reason, scope product): product
+    entries that repeat the same range and fixed version for one installation with
+    the same reason, and are the same scope product (``scope_name``) or none, collapse; entries with different constraints, or one that
     may apply beside one that is affected, each yield their own Match."""
     out = []
     for adv in advs:
@@ -198,7 +198,10 @@ def match(advs: list[Advisory], inv: Inventory) -> list[Match]:
                     reason = AFFECTED if hit else UNPARSABLE
                 # The reason is in the key: a may-apply product cannot hide
                 # an affected one for the same installation and range.
-                key = (product.ecosystem, inst, product.affected, product.fixed, reason)
+                # And the scope product (2mgd): an entry that is no scope product (an MCP
+                # server's configured key, say) cannot hide one the source check can judge.
+                key = (product.ecosystem, inst, product.affected, product.fixed, reason,
+                       scope_name(product.name, product.ecosystem))
                 if key in seen:
                     continue
                 seen.add(key)

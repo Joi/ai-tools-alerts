@@ -139,6 +139,13 @@ release session ships it (comment on ai-tools-alerts#fa5a).
 ## Assumes
 
 - The relay bot posts each product under its scope name and the scope entry's ecosystem.
+- Release order: the trust root pins a new scope file before the relay bot posts under
+  it. A bot that posts a product of a newer scope file than the pinned one is, to a
+  member on the pinned one, posting a product that is no scope product: listed, no
+  interrupt. The release session is told on ai-tools-alerts#fa5a.
+- A relay-bot synthetic check (an id `schema.is_synthetic` knows) names no source, so
+  under the pinned ruleset it is listed and does not interrupt. Exempting synthetic
+  ids would hand the signer the unverified interrupts back.
 - 0z4e lands separately and may conflict in `cli.py` (it looks results up by product
   name); main is merged before review and before merge.
 

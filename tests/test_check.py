@@ -456,3 +456,16 @@ def test_a_name_resolves_to_a_tool_exactly_when_match_takes_it_for_the_tool_s_in
             got = check.scope_name(name, ecosystem)
             assert hit(name) == (got is not None and hit(got)), (ecosystem, name)
             assert got in (None, tool), (ecosystem, name)
+
+
+@pytest.mark.parametrize("order", [("my-git", "mcp-server-git"), ("mcp-server-git", "my-git")])
+def test_an_entry_that_is_no_scope_product_does_not_hide_one_that_is(order):
+    """An MCP installation is matched by its package and by its configured key. An entry
+    under the key, with the same range, must not stand in for the entry under the scope
+    name: that one is what the source check can judge. Two spellings of one scope
+    product still collapse."""
+    there = inv(mcp=[Installed("mcp-server-git", "0.6.2", "/m", package="pypi:mcp-server-git", server="my-git")])
+    ms = check.match([adv([Product(n, "mcp", "*", "0.7.0") for n in order], [])], there)
+    assert [m.product.name for m in ms] == list(order)
+    same = check.match([adv([Product(n, "mcp", "*", "0.7.0") for n in ("MCP-Server-Git", "mcp-server-git")], [])], there)
+    assert [m.product.name for m in same] == ["MCP-Server-Git"]

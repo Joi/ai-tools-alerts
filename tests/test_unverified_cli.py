@@ -733,12 +733,17 @@ def test_a_match_that_cannot_be_judged_does_not_interrupt_under_the_pinned_rules
     assert n.urls in ([], [verify.KEV_URL])
 
 
-@pytest.mark.parametrize("extra, pin", [(ALL, None), (ALL, "later"), ('verify = "off"\n', "exact")])
+@pytest.mark.parametrize("extra, pin, min_cli", [
+    (ALL, None, None), (ALL, "later", None), ('verify = "off"\n', "exact", None),
+    (ALL, "digest", None),  # the pinned version with another digest: this CLI's scope file may be the wrong one
+    (ALL, "exact", "999.0.0"),  # a CLI the trust root calls too old
+])
 def test_without_the_pinned_ruleset_or_with_the_check_off_it_interrupts_as_unverified(feed, sent, monkeypatch, capsys,
-                                                                                    extra, pin):
+                                                                                    extra, pin, min_cli):
+    from aitools_alerts import ruleset
     with_skill(monkeypatch)
-    m = feed([under("Claude Code", "skill")], extra, ruleset_pin={None: None, "later": later_pin(), "exact": exact_pin()}[pin]
-             if pin else None)
+    pins = {"later": later_pin, "exact": exact_pin, "digest": lambda: ruleset.Pin(ruleset.load().version, "0" * 64, 1)}
+    m = feed([under("Claude Code", "skill")], extra, ruleset_pin=pins[pin]() if pin else None, min_cli=min_cli)
     use(monkeypatch, Net())
     status, out, _ = out_of(capsys, ["run"])
     assert status == cli.EXIT_UNSEEN_CRITICAL and len(sent["texts"]) == 1 and sent["texts"][0].endswith(cli.NOT_VERIFIED)
@@ -746,8 +751,18 @@ def test_without_the_pinned_ruleset_or_with_the_check_off_it_interrupts_as_unver
     assert "cannot judge" not in out
 
 
-def test_an_id_that_names_no_source_does_not_interrupt_under_the_pinned_ruleset(feed, sent, monkeypatch, capsys):
-    feed([bot(id="https://evil.example/GHSA-aaaa-bbbb-cccc", level="critical")], ALL, ruleset_pin=exact_pin())
+def test_with_no_scope_products_read_nothing_is_left_out(feed, sent, monkeypatch, capsys):
+    """A scope table that could not be built makes every product look like none: then no match is silenced."""
+    from aitools_alerts import check
+    feed([bot(id=CVE, level="critical")], ALL, ruleset_pin=exact_pin())
+    monkeypatch.setattr(check, "scope_products", lambda: {})
+    use(monkeypatch, Net())
+    assert out_of(capsys, ["run"])[0] == cli.EXIT_UNSEEN_CRITICAL and len(sent["texts"]) == 1
+
+
+@pytest.mark.parametrize("ident", ["https://evil.example/GHSA-aaaa-bbbb-cccc", "CVE-2099-0001"])  # the second: a synthetic check
+def test_an_id_that_names_no_source_does_not_interrupt_under_the_pinned_ruleset(feed, sent, monkeypatch, capsys, ident):
+    feed([bot(id=ident, level="critical")], ALL, ruleset_pin=exact_pin())
     use(monkeypatch, Net())
     status, out, _ = out_of(capsys, ["run"])
     assert status == 0 and sent["texts"] == [] and State.load().interrupts == {}
@@ -824,3 +839,49 @@ def test_a_lowering_is_still_refused_after_an_entry_of_the_same_name_under_anoth
     assert refusal(CVE, "high") in out_of(capsys, ["verify"])[1]
     serve(m, reader_clock, C0 + WAIT + 100)
     assert levels(capsys) == {CVE: "critical"} and State.load().refused == {root["id"]}
+
+
+@pytest.mark.parametrize("first", ["my-git", "mcp-server-git"])
+def test_a_name_that_cannot_be_judged_does_not_hide_the_match_that_can(feed, sent, monkeypatch, capsys, first):
+    """An MCP server is matched by its package and by its configured key. An entry under
+    the key, listed beside the scope product with the same range, must not leave the
+    alert with only a match that cannot be judged: under the pinned ruleset it still interrupts."""
+    from aitools_alerts import inventory
+    from aitools_alerts.inventory import Installed, Inventory
+    from aitools_alerts.schema import Action, Product
+    from dataclasses import replace
+    inv = Inventory(products={"mcp": [Installed("mcp-server-git", "0.6.2", "/invented/m", package="pypi:mcp-server-git",
+                                                server="my-git")]})
+    monkeypatch.setattr(inventory, "collect", lambda *a, **k: inv)
+    names = [first] + [n for n in ("my-git", "mcp-server-git") if n != first]
+    a = replace(bot(id=CVE, level="critical"), products=[Product(n, "mcp", "*", "99.0.0") for n in names],
+                actions=[Action("upgrade", "mcp-server-git", "99.0.0")])
+    m = feed([a], ALL, ruleset_pin=exact_pin())
+    use(monkeypatch, Net())
+    status, data = run_json(capsys)
+    assert status == cli.EXIT_UNSEEN_CRITICAL and len(data["unseen_critical"]) == 1 and len(data["matches"]) == 2
+    assert len(sent["texts"]) == 1 and {k: len(v) for k, v in State.load().interrupts.items()} == {m.bot: 1}
+    assert "cannot judge" not in out_of(capsys, ["check"])[1]
+
+
+def test_a_widening_reply_under_a_name_that_cannot_be_judged_does_not_silence_a_thread(feed, sent, monkeypatch, capsys,
+                                                                                      reader_clock):
+    """A signed widening patch puts the configured key in front of the scope product,
+    both with a wider range. The thread still interrupts under the pinned ruleset."""
+    from aitools_alerts import inventory
+    from aitools_alerts.inventory import Installed, Inventory
+    from aitools_alerts.schema import Action, Product
+    from dataclasses import replace
+    inv = Inventory(products={"mcp": [Installed("mcp-server-git", "0.6.2", "/invented/m", package="pypi:mcp-server-git",
+                                                server="my-git")]})
+    monkeypatch.setattr(inventory, "collect", lambda *a, **k: inv)
+    a = replace(bot(id=CVE, level="critical"), products=[Product("mcp-server-git", "mcp", "<1.0.0", "1.0.0")],
+                actions=[Action("upgrade", "mcp-server-git", "1.0.0")])
+    m = feed([a], ALL, ruleset_pin=exact_pin())
+    wide = [{"name": n, "ecosystem": "mcp", "affected": "*", "fixed": "2.0.0"} for n in ("my-git", "mcp-server-git")]
+    m.reply(m.bot_sec, m.events["feed.json"][0], m.patch_text(products=wide), created_at=AT)
+    serve(m, reader_clock, C0)
+    use(monkeypatch, Net())
+    status, data = run_json(capsys)
+    assert status == cli.EXIT_UNSEEN_CRITICAL and len(data["unseen_critical"]) == 1
+    assert "mcp-server-git" in [d["product"]["name"] for d in data["matches"]]

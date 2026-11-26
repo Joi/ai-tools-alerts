@@ -1002,8 +1002,9 @@ class _Hold:
 def _missing(h: _Hold) -> tuple:
     """The first entry of each product (ecosystem and name, 2mgd: an entry of the same
     name under another ecosystem is another product and stands for nothing) the thread
-    has carried and ``wide`` no longer does. The join compares names without case, the source check by the scope
-    file's exact name: an entry spelled otherwise can stand in for the original."""
+    has carried and ``wide`` no longer does. The join compares names without case and
+    an entry spelled otherwise can stand in for the original: the original, with the
+    fixed version it stated, is still what a lowering is checked against."""
     have = {(p.ecosystem, p.name) for p in h.wide.products}
     return tuple(p for key, p in h.names.items() if key not in have)
 
