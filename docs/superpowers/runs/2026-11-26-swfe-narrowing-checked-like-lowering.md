@@ -36,6 +36,7 @@ code: passes 2 · delta `fresheyes --since f418801` on 823eea5 (gpt-6.1-sol, hig
 Gate (`scripts/test-gate.sh`, single-branch clone): f418801 public scan clean, 2984 passed, 1 skipped; 823eea5 2997 passed, 1 skipped.
 Second merge of main (2mgd, 26f0) after edd4a2d: conflicts in `verify.py`, `cli.py`, `tests/test_curator_hold_cli.py`, the changelog. 2mgd keys results by ecosystem and name and judges a product as its scope product (`verify.scope_of`); the narrowing check now groups entries by that same rule, `ranges` are keyed by scope name, and the cache version is 5. Tests amended for it: an entry under an ecosystem where it is no scope product is a product of its own.
 Gate on 0942973: public scan clean, 3112 passed, 1 skipped. Third merge of main (3t4p, poster only) at f2cdd46: one changelog conflict, both entries kept.
+Gate on 9746639: 3138 passed, 1 skipped; on 96b2c28 (fourth merge of main, hh5s: the changelog and two tests appended to `tests/test_wire_compat.py`, both sides kept): 3196 passed, 1 skipped. Fifth merge of main (0z4e, which changes `cli.py`, `verify.py` and `state.py`): conflicts in `cli.py` (seven hunks), `verify.py` (three), README and the changelog, each resolved by keeping both changes; the run's cut-short write keeps 0z4e's rule for what is kept and this change's `_entry`; `run` compares level, products and matched product. No review saw this merge; the 615 tests of both changes' suites pass on it.
 
 ## Chunks
 - [x] reader: the published narrowing, the record, `standing` (968f3af)

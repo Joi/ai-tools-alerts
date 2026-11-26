@@ -30,7 +30,7 @@ from dataclasses import asdict, dataclass, replace
 from urllib.parse import quote
 
 from . import TRUST_ROOT_PUBKEY, __version__, check, config, curator, inventory, nostr, notify, pull, relay, ruleset, schema, verify, versions
-from .state import State, StateError
+from .state import State, StateError, no_support
 
 TRUST_ROOT_ENV = "AITOOLS_ALERTS_TRUST_ROOT"
 EXIT_UNSEEN_CRITICAL = 2
@@ -59,6 +59,13 @@ WAITING_LINE = ("a lowering of {id} to {level} is published and not verified fro
 NARROW_WAITING_LINE = ("a narrowing of {id} is published and not verified from this machine: "
                        "it applies once signed checkpoints 72 hours apart have listed it")
 NARROW_REFUSED_LINE = "source check: a narrowing of {id} is not applied: its products are not what the source states"
+# 0z4e (finding D8): a relay-bot match whose product this machine's reads never found a source to
+# support is shown at notice; one whose support was read earlier keeps its level, and is flagged
+# once a read more than this long after the first without support still finds none
+NOTICE = "notice"
+SUPPORT_GAP_S = verify.FRESH_S
+UNSUPPORTED_LINE = "source check: the source does not support {id} for {name}"
+LOST_LINE = "source check: the source has not supported {id} for {name} for more than 48 hours"
 OUTDATED_TAIL = ("It judges no level until it is upgraded: no source check, no computed expiry; "
                  "alerts are shown as posted. See the README to upgrade.")
 
@@ -192,6 +199,26 @@ class Entry:
     waiting: str | None = None  # tavj: a relay-bot lowering to this level waits its 72 hours
     narrow_refused: bool = False  # swfe: a published narrowing of its products was not applied
     narrow_waiting: bool = False  # swfe: one waits its 72 hours
+    # 0z4e. ``judged``: the state whose source-check result feeds the memory of support
+    # (``_judged``); None for a thread that is not judged. ``published``: the level the
+    # alert is published at, on an entry shown at notice because no source ever supported
+    # the product (``_shown``); ``adv`` then carries notice. ``also``: the other states
+    # the sources are asked about for the thread (its lowered states, ``_matches``).
+    judged: schema.Advisory | None = None
+    published: str | None = None
+    also: tuple = ()
+
+
+def _judged(t):
+    """What the sources are asked about to learn whether they support the alert of thread
+    ``t`` (as it stands): its widest state (``pull.widest``) at the level it stands at. The
+    aliases are the relay bot's to replace, and beside a CVE support comes only through
+    an alias the thread lists, so a reply that drops one must not make a true alert read
+    as unsupported. None for a thread a curator posted, one a curator's hold is in force
+    on and one the manifest retracts: a curator's word is not the relay bot's."""
+    if t.wide is None or t.curated or t.adv.posted_by != verify.BOT:
+        return None
+    return replace(pull.widest(t), level=t.adv.level)
 
 
 def _entries(threads: list, warned: set) -> list[Entry]:
@@ -202,7 +229,9 @@ def _entries(threads: list, warned: set) -> list[Entry]:
     groups: dict[tuple[str, str], list[list]] = {}
     for t in threads:
         copies = groups.setdefault((t.adv.id.casefold(), t.adv.posted_by), [])
-        same = next((c for c in copies if c[0].adv == t.adv), None)
+        # 0z4e: and whose judged states are equal. Copies with one current content and
+        # another history (an alias one of them held) are asked about different states.
+        same = next((c for c in copies if c[0].adv == t.adv and _judged(c[0]) == _judged(t)), None)
         if same is None:
             copies.append([t])
         else:
@@ -215,7 +244,7 @@ def _entries(threads: list, warned: set) -> list[Entry]:
         out += [Entry(c[0].root_id, tuple(t.root_id for t in c), c[0].adv, _merged(c),
                       next((t.refused for t in c if t.refused), None),
                       next((t.waiting for t in c if t.waiting), None),
-                      any(t.narrow_refused for t in c), any(t.narrow_waiting for t in c)) for c in copies]
+                      any(t.narrow_refused for t in c), any(t.narrow_waiting for t in c), _judged(c[0])) for c in copies]
     return out
 
 
@@ -281,7 +310,195 @@ def _matches(a, st: State) -> tuple[list, list]:
     # "not verified" for an hour after the narrowing applied
     a.asked += [(x, id(w) in here) for t, w in wide if t.narrowed is not None
                 for x in (w, replace(t.wide, products=list(t.narrowed)))]
-    return threads, [(by_adv[id(m.adv)], m) for m in ms]
+    # 0z4e: support read while a lowering was asked about is support for the thread
+    lowered: dict = {}
+    for t, w in wide:
+        lowered[t.root_id] = tuple(_asked(a, st, t, level, w) for level in pull.asks(t))
+    threads = [replace(t, also=tuple(x for r in t.root_ids for x in lowered.get(r, ()))) if t.judged is not None else t
+               for t in threads]
+    by_adv = {id(t.adv): t for t in threads}
+    _note_support(a, st, threads)
+    return _shown(a, st, threads, [(by_adv[id(m.adv)], m) for m in ms])
+
+
+# ------------------------------------------------- 0z4e: the memory of support
+
+def _support_step(record: dict, entries: list, cache: dict, digest: str, now: int, roots) -> dict:
+    """``State.supported`` after the results of ``cache`` (source-check results, from disk or
+    as a run of this command returned them) for the judged states of ``entries``.
+
+    Per thread root and product, [last, gone, seen] in this machine's time: the last read
+    that found a source supporting the product (the result names a level above none: a
+    whole read, or what an incomplete one did read), the first read not before it whose
+    result was contradicted, unsupported (every source read whole, every one an authority,
+    none supports the product), and the latest such read. Support at or after ``gone``
+    clears ``gone``; "unsupported" read before ``last`` is ignored: the reads are ordered
+    by their own times, so a command that reports late changes nothing a later read
+    found. A result that confirms the alert as it stands with nothing supported (a
+    withdrawn advisory at notice) clears ``gone`` the same way: the source and the alert
+    agree. Any other result (a failed read above all) changes nothing.
+
+    Support counts from every state the sources are asked about for the thread: the
+    judged one, the alert as shown and its lowered states (``Entry.also``). Support does
+    not depend on the level asked about, and a read made to check a lowering must end a
+    demotion like any other. But only the judged state's own result clears ``gone``, and
+    not when it is "below-source": that result is kept through a failed read under a new
+    time (``verify._settled``), so it can set ``last`` (which ends a demotion: too high is
+    the safe side) and cannot erase since when no support was read. "No support" counts only from the judged state, and only
+    from a read made since this machine first saw the root (``first``): results are kept
+    per published state, and a thread posted with the state of an older one must not
+    inherit what was read before it existed. Nor from a result dated after ``now``: it
+    is read again (``verify._due``), and counted as one read then, not at every command.
+
+    Every stored time is cut to ``now``: one written while the clock was ahead counts from
+    now. Under another ruleset digest every ``gone`` is dropped: "no support" found under
+    other rules or another scope file is not reused (``last`` is kept: too high is the
+    safe side). Roots not in ``roots`` (the ids of the stored events) are dropped."""
+    same = record["ruleset"] == digest
+    first = {root: min(at, now) for root, at in record["first"].items() if root in roots}
+    threads: dict = {}
+    for root, names in record["threads"].items():
+        for name, (last, gone, seen) in names.items() if root in roots else ():
+            last = None if last is None else min(last, now)
+            gone, seen = (min(gone, now), min(seen, now)) if same and gone is not None else (None, None)
+            if last is not None or gone is not None:
+                threads.setdefault(root, {})[name] = [last, gone, seen]
+    for t in entries:
+        if t.judged is None:
+            continue
+        mine = [r for r in t.root_ids if r in roots]
+        for root in mine:
+            first.setdefault(root, now)
+        keys = list(dict.fromkeys(verify.state_key(x) for x in (t.judged, t.adv, *t.also)))
+        for key in keys:
+            held = cache["results"].get(key)
+            for name, r in held["products"].items() if held is not None else ():
+                whole = key == keys[0] and held["at"] <= now  # the judged state's, and not dated ahead
+                up = r["source"] not in (None, ruleset.NONE)
+                agreed = whole and r["result"] == verify.CONFIRMED
+                down = whole and (r["result"], r["why"]) == (verify.CONTRADICTED, "unsupported")
+                at = min(held["at"], now)
+                for root in mine if up or agreed or down else ():
+                    last, gone, seen = threads.get(root, {}).get(name, (None, None, None))
+                    if up:
+                        last = at if last is None else max(last, at)
+                    if (up and whole and r["why"] != "below-source") or agreed:
+                        if gone is not None and at >= gone:
+                            gone = seen = None
+                    elif down and at >= first[root] and (last is None or at >= last):
+                        gone, seen = (at, at) if gone is None else (gone, max(seen, at))
+                    if last is None and gone is None:
+                        threads.get(root, {}).pop(name, None)
+                    else:
+                        threads.setdefault(root, {})[name] = [last, gone, seen]
+    return {"ruleset": digest, "first": first, "threads": {root: names for root, names in threads.items() if names}}
+
+
+def _note_support(a, st: State, entries: list, cache: dict | None = None) -> bool:
+    """Bring the memory of support (``State.supported``, ``_support_step``) up to the
+    source-check results: those of ``cache`` when this command's own source check just
+    returned them, else those on disk. True when the memory changed.
+
+    Both are needed. A command hands over its own results because another command may
+    write its view of verify.json over them before anyone reads the file again. And every
+    command that reads the feed applies what is on disk, so a read whose command died
+    before the hand-over is not lost. The record is rewritten under the state lock from
+    the record and the stored events as they are on disk then: a thread another command
+    pulled meanwhile keeps what that command recorded for it. A state directory that
+    cannot be written: this command uses what it computed.
+
+    Sets ``a.judging``: False for a CLI that verifies nothing (``_results`` is None) or
+    whose ruleset cannot be loaded. Such a CLI writes no memory and acts on none."""
+    a.judging = False
+    s = getattr(a, "settings", None)
+    try:
+        disk = _results(a, st, s) if s is not None else None
+        if disk is None:
+            return False
+        digest = ruleset.load().digest
+    except Exception:
+        return False
+    a.judging = True
+    want = _support_step(st.supported, entries, cache or disk, digest, int(time.time()), set(st.events))
+    if want == st.supported:
+        return False
+    try:
+        with st.locked():
+            if st.unverified_damaged:  # damaged since this command began: started again, on the safe side
+                _start_again(st)
+                return True
+            st.supported = _support_step(st.supported, entries, cache or _results(a, st, s) or disk, digest,
+                                         int(time.time()), set(st.events))
+            st.save_unverified()
+    except OSError:
+        st.supported = want
+    return True
+
+
+def _memory(st: State, t: Entry, name: str) -> tuple:
+    """(last, gone, seen) of a product (``name``: its key, ``verify.pkey``, as the results
+    are kept) of an entry over its roots (copies of one advisory):
+    the latest support any of them recorded; ``gone`` only when every root has one."""
+    got = [st.supported["threads"].get(r, {}).get(name) for r in t.root_ids]
+    last = max((e[0] for e in got if e is not None and e[0] is not None), default=None)
+    if any(e is None or e[1] is None for e in got):
+        return last, None, None
+    return last, max(e[1] for e in got), max(e[2] for e in got)
+
+
+def _never(a, st: State, t: Entry, name: str, now: int) -> bool:
+    """No source this machine read ever supported product ``name`` of the alert, and whole
+    reads of authorities found that none does. Not while the record is younger than
+    SUPPORT_GAP_S after it was rebuilt from damage: what it held is unknown."""
+    if t.judged is None or not getattr(a, "judging", False):
+        return False
+    if st.reset_at is not None and st.reset_at > now - SUPPORT_GAP_S:  # and when it is ahead of the clock
+        return False
+    last, gone, _ = _memory(st, t, name)
+    return last is None and gone is not None
+
+
+def _lost(a, st: State, t: Entry, name: str) -> bool:
+    """A source supported the product earlier, and reads more than SUPPORT_GAP_S apart have
+    found none since. From the memory alone: a failed read neither brings nor ends it."""
+    if t.judged is None or not getattr(a, "judging", False):
+        return False
+    last, gone, seen = _memory(st, t, name)
+    return last is not None and gone is not None and seen - gone > SUPPORT_GAP_S
+
+
+def _shown(a, st: State, threads: list, pairs: list) -> tuple[list, list]:
+    """``threads`` and ``pairs`` with what was never supported shown at notice (finding D8).
+    Per match: an alert that names a supported product beside an unsupported one keeps its
+    level for the first and loses it for the second. A thread's own entry is lowered when
+    every product of its judged state was never supported."""
+    now = int(time.time())
+
+    def never(t, names) -> bool:
+        return t.adv.level != NOTICE and bool(names) and all(_never(a, st, t, n, now) for n in names)
+
+    def low(t) -> Entry:
+        return replace(t, adv=replace(t.adv, level=NOTICE), published=t.adv.level)
+
+    whole = {t.root_id: low(t) for t in threads
+             if never(t, [verify.pkey(p) for p in t.judged.products] if t.judged is not None else [])}
+    return ([whole.get(t.root_id, t) for t in threads],
+            [(whole.get(t.root_id) or (low(t) if m.product is not None and never(t, [verify.pkey(m.product)]) else t), m)
+             for t, m in pairs])
+
+
+def _read_as(t: Entry):
+    """The state whose cached result describes an entry: its judged state when it is shown
+    at notice (``adv`` then carries a level nobody published), else the alert as shown."""
+    return t.judged if t.published else t.adv
+
+
+def _states(t: Entry) -> list:
+    """The states the sources are asked about for an entry: the alert as shown, and its
+    judged state when that is another one."""
+    if t.judged is None or (not t.published and verify.state_key(t.judged) == verify.state_key(t.adv)):
+        return [t.adv]
+    return [t.judged] if t.published else [t.adv, t.judged]
 
 
 def _pin(a, st: State):
@@ -435,15 +652,22 @@ def _mend(st: State) -> None:
     unknown. When the directory cannot be written the same holds for this command."""
     if not st.unverified_damaged:
         return
-    fresh = ({}, set(), {}, {}, int(time.time()))
     try:
         with st.locked():
             if st.unverified_damaged:  # else a concurrent run has mended it
-                st.lowerings, st.refused, st.interrupts, st.held, st.reset_at = fresh
-                st.save_unverified()
+                _start_again(st)
     except OSError:
-        st.lowerings, st.refused, st.interrupts, st.held, st.reset_at = fresh
+        _start_again(st, save=False)
+
+
+def _start_again(st: State, save: bool = True) -> None:
+    """The record of ``_mend``, emptied and dated; saved when the caller holds the lock.
+    0z4e: the memory of support goes with it, and nothing shows at notice for SUPPORT_GAP_S."""
+    st.lowerings, st.refused, st.interrupts, st.held, st.reset_at = {}, set(), {}, {}, int(time.time())
+    st.supported = no_support()
     _err("the record of unverified alerts was unreadable and has been started again")
+    if save:
+        st.save_unverified()
 
 
 def _source(adv) -> tuple[str, bool]:
@@ -472,24 +696,31 @@ def _cache(a, st: State, s: config.Settings) -> dict | None:
     return None if s.verify == "off" or _ruleset_outdated(a, st) is not None else verify.load(st.dir)
 
 
-def _source_check(a, st: State, s: config.Settings, threads: list, pairs: list, asked=()) -> None:
+def _source_check(a, st: State, s: config.Settings, threads: list, pairs: list, asked=()) -> dict | None:
     """Read the primary sources (aitools_alerts.verify) for the threads the
     ``verify`` setting names, and for the lowered states of ``asked`` (``_matches``).
     Never in ``run --json``, which the session-start hook runs, and never while
     this CLI's ruleset is out of date. It changes no exit status; what it finds
-    about a lowering is applied by the next ``_matches``."""
+    about a lowering is applied by the next ``_matches``. Returns the results it read
+    (for ``_note_support``), or None."""
     if s.verify == "off" or _ruleset_outdated(a, st) is not None:
-        return
-    wanted = [t.adv for t in threads] if s.verify == "all" else [t.adv for t, _ in pairs]
+        return None
+    wanted = [x for t in (threads if s.verify == "all" else [t for t, _ in pairs]) for x in _states(t)]
     wanted += [adv for adv, here in asked if here or s.verify == "all"]
     # tavj: a confirmation a critical on this machine rests on is read again daily too: it
     # exempts the alert from the cap on unverified interrupts only while it is fresh.
-    critical = [t.adv for t, _ in pairs if t.adv.level == "critical"]
+    # 0z4e: and so is every relay-bot match here, at any level: a source that stops
+    # supporting an alert this machine confirmed must be seen.
+    matched = [x for t, _ in pairs if t.adv.posted_by == verify.BOT for x in _states(t)]
     try:
-        verify.run([t.adv for t in threads] + [adv for adv, _ in asked], wanted, st.dir,
-                   recheck=[adv for adv, _ in asked] + critical)
+        return verify.run([x for t in threads for x in _states(t)] + [adv for adv, _ in asked], wanted, st.dir,
+                          recheck=[adv for adv, _ in asked] + matched)
+    except verify.Unsaved as e:  # read, and not written: what was read still counts in this command
+        _err(SOURCE_CHECK_FAILED)
+        return e.cache
     except Exception:
         _err(SOURCE_CHECK_FAILED)
+        return None
 
 
 def _source_lines(a, st: State, s: config.Settings, threads: list) -> list[str]:
@@ -506,7 +737,7 @@ def _source_lines(a, st: State, s: config.Settings, threads: list) -> list[str]:
                              if t.narrow_refused and (i := verify.norm_id(t.adv.id)) is not None))
     if cache is None:
         return out
-    scope = ruleset.load().products()
+    scope, now = ruleset.load().products(), int(time.time())
 
     def named(adv, found: dict) -> list:
         """(the scope product a result is about, the result), by scope name. A product
@@ -514,12 +745,27 @@ def _source_lines(a, st: State, s: config.Settings, threads: list) -> list[str]:
         return sorted(((name, found[key]) for key, name in ((verify.pkey(p), verify.scope_of(p)) for p in adv.products)
                        if key in found and name in scope), key=lambda x: x[0])
     for t in threads:
-        for name, r in named(t.adv, verify.result_for(t.adv, cache) or {}):
-            ident = verify.norm_id(t.adv.id)
-            if r["result"] != verify.CONTRADICTED or ident is None:
+        ident = verify.norm_id(t.adv.id)
+        found = {} if t.published else verify.result_for(t.adv, cache) or {}
+        # 0z4e: every product of the judged state, with or without a result on disk now
+        both = {verify.pkey(p): verify.scope_of(p) for p in (*t.adv.products, *(t.judged.products if t.judged else ()))}
+        for name, key in sorted((name, key) for key, name in both.items() if name in scope):
+            if ident is None:
+                continue
+            # 0z4e: from the memory, so a failed read neither brings nor ends either line
+            if _never(a, st, t, key, now):
+                out.append(UNSUPPORTED_LINE.format(id=ident, name=name))
+                continue
+            if _lost(a, st, t, key):
+                out.append(LOST_LINE.format(id=ident, name=name))
+                continue
+            r = found.get(key)
+            if r is None or r["result"] != verify.CONTRADICTED:
                 continue
             if r["why"] == "unsupported":
-                out.append(f"source check: the source does not support {ident} for {name}")
+                # supported earlier: not fabrication; said only past SUPPORT_GAP_S (``_lost``)
+                if not (t.judged is not None and getattr(a, "judging", False) and _memory(st, t, key)[0] is not None):
+                    out.append(UNSUPPORTED_LINE.format(id=ident, name=name))
             else:
                 out.append(f"source check: {ident} is published at {t.adv.level} for {name}; "
                            f"the source supports {r['source']}")
@@ -542,6 +788,8 @@ def _check_json(t, m, cache, judged: bool = True) -> dict | None:
     gives no result at all, not the "unknown, off" a missing cache means."""
     if not judged:
         return None
+    if t.published:  # 0z4e: from the memory of support, whatever a later failed read left in the cache
+        return {"result": verify.CONTRADICTED, "why": "unsupported", "source_level": ruleset.NONE}
     r = (verify.result_for(t.adv, cache) or {}).get(verify.pkey(m.product)) if m.product is not None else None
     return None if r is None else {"result": r["result"], "why": r["why"], "source_level": r["source"]}
 
@@ -552,11 +800,12 @@ def cmd_verify(a, st: State, s: config.Settings) -> int:
         print("the source check did not run: this aitools-alerts is out of date")
         return 0
     threads, pairs = _matches(a, st)
-    _source_check(a, st, s, threads, pairs, a.asked)
-    if a.asked:  # c1g2: the alerts as they stand after what the sources just said about a lowering
+    got = _source_check(a, st, s, threads, pairs, a.asked)
+    changed = got is not None and _note_support(a, st, threads, got)
+    if a.asked or changed:  # c1g2, 0z4e: the alerts as they stand after what the sources just said
         threads, pairs = _matches(a, st)
     cache = _cache(a, st, s)
-    found = [verify.summary(r)[0] for t in threads if (r := verify.result_for(t.adv, cache)) is not None]
+    found = [verify.summary(r)[0] for t in threads if (r := verify.result_for(_read_as(t), cache)) is not None]
     print(f"source check: {found.count(verify.CONFIRMED)} confirmed, {found.count(verify.CONTRADICTED)} "
           f"contradicted, {found.count(verify.UNKNOWN)} not verified")
     if a.asked and (check := _lowering_check(a, st)) is not None:
@@ -583,7 +832,8 @@ def _match_json(t, m, cache=None, judged: bool = True) -> dict:
             "actions": [asdict(x) for x in m.actions_allowed],
             "translations": dict(t.translations), "source_check": _check_json(t, m, cache, judged),
             "lowering_refused": t.refused, "lowering_waits": t.waiting,
-            "narrowing_refused": t.narrow_refused, "narrowing_waits": t.narrow_waiting}
+            "narrowing_refused": t.narrow_refused, "narrowing_waits": t.narrow_waiting,
+            "published_level": t.published}
 
 
 def _unverified(a, st: State) -> str | None:
@@ -666,7 +916,7 @@ def cmd_check(a, st: State, s: config.Settings, source_lines: bool = True) -> in
     for t, m in pairs:
         ver = m.installed.version or "unknown version"
         print(f"{t.adv.level.upper()}: {_title(t, s)} [{m.installed.name} {ver}: {m.reason}] "
-              f"(id {t.adv.id}, {_thread_ref(t)})")
+              f"(id {t.adv.id}, {_thread_ref(t)}{_published(t)})")
     cache = _results(a, st, s)
     loose = [t.adv.id for t, m in pairs if _result(t, m, cache) == verify.UNKNOWN]
     if loose:
@@ -693,6 +943,11 @@ def cmd_check(a, st: State, s: config.Settings, source_lines: bool = True) -> in
     return 0
 
 
+def _published(t: Entry) -> str:
+    """What a line about an entry shown at notice adds (0z4e)."""
+    return f"; published at {t.published}" if t.published else ""
+
+
 def _unseen_critical(a, st: State, pairs: list | None = None) -> list:
     if pairs is None:
         _, pairs = _matches(a, st)
@@ -716,6 +971,8 @@ def _result(t: Entry, m, cache) -> str | None:
     for a match with no product and for one whose product is no scope product."""
     if t.adv.posted_by != verify.BOT:
         return None
+    if t.published:
+        return verify.CONTRADICTED
     if m.product is None or verify.scope_of(m.product) is None:
         return verify.UNKNOWN
     r = (verify.result_for(t.adv, cache) or {}).get(verify.pkey(m.product))
@@ -947,7 +1204,8 @@ def cmd_plan(a, st: State, s: config.Settings) -> int:
     if not wanted:
         _err(f"no current advisory {a.advisory_id!r}")
         return 1
-    hits = [(t, m) for t, m in pairs if t in wanted]
+    roots = {t.root_id for t in wanted}  # by root: a match may carry its own entry, shown at notice (0z4e)
+    hits = [(t, m) for t, m in pairs if t.root_id in roots]
     if not hits:
         print(f"{_title(wanted[0], s)}: nothing installed here is affected")
         return 0
@@ -960,7 +1218,7 @@ def cmd_plan(a, st: State, s: config.Settings) -> int:
         if reason:
             p = replace(p, auto_apply=[], prepare=[*p.auto_apply, *p.prepare])
         print(f"{t.adv.level.upper()}: {_title(t, s)} [{m.installed.name} "
-              f"{m.installed.version or 'unknown version'}] posted by {t.adv.posted_by}")
+              f"{m.installed.version or 'unknown version'}] posted by {t.adv.posted_by}{_published(t)}")
         tr = _tr(t, s)  # quoted with "> ": translated text, never a section or a command
         for line in (tr.split("\n")[1:] if tr else []):
             print(f"    > {line}".rstrip())
@@ -1014,15 +1272,19 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
     status = send(pending, loose)
     if not a.json:  # the hourly job's form; the hook runs --json and must read no source.
         # After the notification: a critical never waits for a source.
-        _source_check(a, st, s, threads, pairs, a.asked)
+        got = _source_check(a, st, s, threads, pairs, a.asked)
         if s.verify != "off":
             # c1g2: what the sources just said about a lowering counts in this run. A
             # critical that a contradicted lowering had hidden is notified now, and so is
             # one that was held unverified and that its source has just confirmed (tavj).
-            def stands(ts):  # swfe: a confirmed narrowing changes the products, and may end this machine's match
-                return sorted((t.root_id, t.adv.level, repr(t.adv.products)) for t in ts)
-            before = stands(threads)
-            if a.asked:
+            # 0z4e: and an alert the sources just read never supported shows at notice.
+            def levels():
+                # swfe: a confirmed narrowing changes the products, and may end this machine's match
+                return (sorted((t.root_id, t.adv.level, repr(t.adv.products)) for t in threads),
+                        sorted((t.root_id, t.adv.level, repr(m.product)) for t, m in pairs))
+            before = levels()
+            changed = got is not None and _note_support(a, st, threads, got)
+            if a.asked or changed:
                 threads, pairs = _matches(a, st)
             tried = {r for t, _ in pending for r in t.root_ids}
             again, held, grants, loose = _interrupts(a, st, s, pairs)
@@ -1030,7 +1292,7 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
             late = [x for x in again if tried.isdisjoint(x[0].root_ids)]
             status = send(late, loose) or status
             pending = pending + late
-            if not a.quiet and before != stands(threads):
+            if not a.quiet and before != levels():
                 print("After the source check:")  # what was listed above is no longer what stands
                 cmd_check(a, st, s, source_lines=False)
         for line in () if a.quiet else _source_lines(a, st, s, threads):

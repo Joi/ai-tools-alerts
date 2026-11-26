@@ -9,8 +9,10 @@ the accepted checkpoint, and the ids of the events the reader applies; see
 (the last pull attempt's outcome) and ``unverified.json`` (ai-tools-alerts#tavj:
 since which checkpoint each relay-bot lowering this machine could not check has
 been listed, and when it was last interrupted by an alert it could not verify,
-per poster key; neither may be lost with the source check's cache, which is
-dropped whole when damaged). The certificate and checkpoint are not in
+per poster key; and, ai-tools-alerts#0z4e, when this machine last read a source
+to support each product of each relay-bot thread and since when it has not; none
+of it may be lost with the source check's cache, which is dropped whole when
+damaged). The certificate and checkpoint are not in
 ``events.json`` because the released v0.1.4 reader refuses a record there
 with a key it does not know; it ignores a file it does not know. A manifest and the events it authorises are one
 file, so no reader and no crash ever pairs events with another manifest; and
@@ -85,7 +87,31 @@ EVENT_KEYS = ("id", "pubkey", "created_at", "kind", "tags", "content", "sig")
 # (pull.MAX_STORED_EVENTS; tests/test_unchecked_lowering.py checks the two are equal):
 # no record the CLI writes is one this loader refuses.
 MAX_UNVERIFIED_ENTRIES = 20000
-_UNVERIFIED_KEYS = {"lowerings", "refused", "interrupts", "held", "reset_at"}
+_UNVERIFIED_KEYS = {"lowerings", "refused", "interrupts", "held", "reset_at"}  # and, since 0z4e, "supported"
+MAX_PRODUCT_NAME = 400  # a result's key: ecosystem and name (verify.pkey)
+
+
+def no_support() -> dict:
+    """The empty memory of support (see _load_unverified)."""
+    return {"ruleset": None, "first": {}, "threads": {}}
+
+
+def _support_ok(v, when, ident) -> bool:
+    def entry(e):
+        if not isinstance(e, list) or len(e) != 3 or not all(x is None or when(x) for x in e):
+            return False
+        last, gone, seen = e
+        return (last is not None or gone is not None) and (seen is None) == (gone is None) \
+            and (gone is None or seen >= gone)
+    return (isinstance(v, dict) and set(v) == {"ruleset", "first", "threads"}
+            and (v["ruleset"] is None or nostr._is_hex(v["ruleset"], 32))
+            and isinstance(v["first"], dict) and len(v["first"]) <= MAX_UNVERIFIED_ENTRIES
+            and all(ident(r) and when(t) for r, t in v["first"].items())
+            and isinstance(v["threads"], dict) and len(v["threads"]) <= MAX_UNVERIFIED_ENTRIES
+            and all(ident(r) and isinstance(names, dict) and len(names) <= MAX_UNVERIFIED_ENTRIES
+                    and all(isinstance(n, str) and 1 <= len(n) <= MAX_PRODUCT_NAME and entry(e)
+                            for n, e in names.items())
+                    for r, names in v["threads"].items()))
 
 
 def _load_unverified(where: Path) -> dict | None:
@@ -98,7 +124,12 @@ def _load_unverified(where: Path) -> dict | None:
     ``interrupts``: {bucket: {root event id: local time}}, a bucket being a poster key or
     a hash of an advisory id and product. ``held``: {root event id: the local time the
     alert was first held for want of a slot}. ``reset_at``: None, or the local time the record was
-    rebuilt after damage.
+    rebuilt after damage. ``supported`` (0z4e): {"ruleset": the digest the entries were judged
+    under or None, "first": {root event id: when this machine first saw the thread},
+    "threads": {root event id: {product name: [last, gone, seen]}}}, local times: the last
+    read that found a source supporting the product, the first read not before it that
+    found none, and the latest such read (``cli._support_step``). A record
+    written before 0z4e has no such key: it is read as holding none.
 
     Damage is not a StateError: nobody is there to mend the file, and the commands must
     go on. The caller rebuilds it on the safe side (``State.unverified_damaged``)."""
@@ -109,7 +140,10 @@ def _load_unverified(where: Path) -> dict | None:
         return nostr._is_hex(v, 32)
     try:
         rec = _read(where, {"lowerings": {}, "refused": [], "interrupts": {}, "held": {}, "reset_at": None})
-        ok = (isinstance(rec, dict) and set(rec) == _UNVERIFIED_KEYS
+        if isinstance(rec, dict) and set(rec) == _UNVERIFIED_KEYS:
+            rec = {**rec, "supported": no_support()}
+        ok = (isinstance(rec, dict) and set(rec) == _UNVERIFIED_KEYS | {"supported"}
+              and _support_ok(rec["supported"], when, ident)
               and isinstance(rec["lowerings"], dict) and isinstance(rec["refused"], list)
               and isinstance(rec["interrupts"], dict) and (rec["reset_at"] is None or when(rec["reset_at"]))
               and isinstance(rec["held"], dict)
@@ -167,6 +201,7 @@ class State:
     interrupts: dict = field(default_factory=dict)
     held: dict = field(default_factory=dict)
     reset_at: int | None = None
+    supported: dict = field(default_factory=no_support)
     unverified_damaged: bool = False
 
     @classmethod
@@ -208,7 +243,7 @@ class State:
                    trust=_load_trust(d / "checkpoint.json"), unverified_damaged=u is None,
                    **({} if u is None else {"lowerings": u["lowerings"], "refused": set(u["refused"]),
                                             "interrupts": u["interrupts"], "held": u["held"],
-                                            "reset_at": u["reset_at"]}))
+                                            "reset_at": u["reset_at"], "supported": u["supported"]}))
 
     @property
     def manifest(self) -> Manifest | None:
@@ -247,6 +282,7 @@ class State:
             self.seen, self.last_pull, self.trust = fresh.seen, fresh.last_pull, fresh.trust
             self.lowerings, self.refused, self.interrupts = fresh.lowerings, fresh.refused, fresh.interrupts
             self.reset_at, self.unverified_damaged, self.held = fresh.reset_at, fresh.unverified_damaged, fresh.held
+            self.supported = fresh.supported
             yield self
         finally:
             os.close(fd)
@@ -308,7 +344,7 @@ class State:
     def save_unverified(self) -> None:
         write_json(self.dir / "unverified.json", {"lowerings": self.lowerings, "refused": sorted(self.refused),
                                                    "interrupts": self.interrupts, "held": self.held,
-                                                   "reset_at": self.reset_at})
+                                                   "reset_at": self.reset_at, "supported": self.supported})
         self.unverified_damaged = False
 
     def save_seen(self) -> None:
