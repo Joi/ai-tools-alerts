@@ -342,7 +342,10 @@ def test_a_copy_of_a_post_confirmed_earlier_is_not_confirmed_with_it(feed, sent,
     assert len(data["unseen_critical"]) == 2 and len(data["held_critical"]) == 0  # two more, both unverified
     assert all(t.endswith(cli.NOT_VERIFIED) for t in sent["texts"][-2:])
     _, out, _ = out_of(capsys, ["run"])  # and the hourly run reads the source again
-    assert f"source check: the source does not support {G1} for Claude Code" in out
+    # 0z4e: the source supported it earlier, so nothing is said until reads 48 hours apart find none
+    assert "source check:" not in out
+    clock_at(monkeypatch, real + 5 * DAY + 60)
+    assert cli.LOST_LINE.format(id=G1, name="Claude Code") in out_of(capsys, ["run"])[1]
 
 
 def test_a_curator_s_alerts_need_no_slot(feed, sent, monkeypatch, capsys):
@@ -408,10 +411,12 @@ def test_the_notify_command_is_capped_too(feed, sent, monkeypatch, capsys):
 
 
 def test_an_alert_the_source_contradicts_is_unverified_and_says_so(feed, sent, monkeypatch, capsys):
-    feed([bot(id=CVE, level="critical")])
-    use(monkeypatch, Net().set(verify.KEV_URL, kev((CVE, "Cisco", "IOS XE"))))
+    """A critical the source supports at high (above-source) keeps its level (0z4e decided so).
+    One the source does not support at all shows at notice: tests/test_never_supported_cli.py."""
+    feed([bot(id=G1, level="critical")])
+    use(monkeypatch, Net().set(gurl(G1), ghsa()))
     cli.main(["pull"])
-    cli.main(["verify"])  # read before it is notified: contradicted, the catalog lists it for another product
+    cli.main(["verify"])  # read before it is notified: contradicted, the source supports high
     assert out_of(capsys, ["run"])[0] == cli.EXIT_UNSEEN_CRITICAL
     assert len(sent["texts"]) == 1 and sent["texts"][0].endswith("\n" + cli.NOT_VERIFIED)
     assert len(sent["texts"][0]) <= notify.MAX_TEXT + len(cli.NOT_VERIFIED) + 1

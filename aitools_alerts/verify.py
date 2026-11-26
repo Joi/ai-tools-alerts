@@ -14,11 +14,14 @@ parse error, a size overrun), every product of it is ``unknown``. This module
 changes no level: it reports. ``lowering`` is the answer the reader applies to a
 published lowering or retraction (ai-tools-alerts#c1g2, ``pull.standing``), and
 ``claimed`` tells a level that rests on the first id's fields from one that may rest
-on a reading (ai-tools-alerts#tavj).
+on a reading (ai-tools-alerts#tavj). ``narrowing`` is the answer to a published narrowing of
+products, range or fixed version (ai-tools-alerts#swfe).
 
 Nothing a response says is printed. What is stored from one: levels and
-booleans the ruleset computed, an ETag of an ETag's shape, and the ids the
-response names, each only in the exact form of a CVE, GHSA or MAL id. A run makes at most MAX_FETCHES
+booleans the ruleset computed, an ETag of an ETag's shape, the ids the
+response names, each only in the exact form of a CVE, GHSA or MAL id, and the
+version ranges and first patched versions a GitHub advisory states for a scope
+product, each only when ``versions`` reads it (``_pair``). A run makes at most MAX_FETCHES
 requests in at most RUN_SECONDS, each bounded as a whole by a worker thread.
 """
 
@@ -35,12 +38,12 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
-from . import check, ruleset, schema
+from . import check, ruleset, schema, versions
 from .state import write_json
 
 __all__ = ["KEV_URL", "HOSTS", "LIMITS", "TIMEOUT", "MAX_FETCHES", "RUN_SECONDS", "FILE", "BOT",
            "norm_id", "url_of", "default_fetch", "state_key", "judge", "summary", "load", "run",
-           "result_for", "at_level", "lowering", "claimed", "Asked", "pkey", "scope_of"]
+           "result_for", "at_level", "lowering", "claimed", "Asked", "Unsaved", "pkey", "scope_of", "narrowing"]
 
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 _GHSA_URL = "https://api.github.com/advisories/"
@@ -53,8 +56,12 @@ RUN_SECONDS = 30.0
 MAX_ALIASES = 3  # aliases of one thread that are read
 MAX_NAMES = 50  # ids one response may name; more is a failed read
 MAX_CACHE_BYTES = 16 << 20
+# The most version ranges one product of one thread can have: a thread counts its first id
+# and at most MAX_ALIASES more, and one reading holds at most ruleset.MAX_PACKAGES entries.
+# Nothing is ever cut to it: it is only what a cache this reader wrote cannot pass.
+MAX_PAIRS = (MAX_ALIASES + 1) * ruleset.MAX_PACKAGES
 FILE = "verify.json"
-VERSION = 4  # of the cache: raised whenever a stored value changes meaning, so nothing older is reused
+VERSION = 5  # of the cache: raised whenever a stored value changes meaning, so nothing older is reused
 BOT = "relay-bot"
 CONFIRMED, CONTRADICTED, UNKNOWN = "confirmed", "contradicted", "unknown"
 _WHYS = {CONFIRMED: ("match", "withdrawn"), CONTRADICTED: ("unsupported", "above-source", "below-source"),
@@ -205,6 +212,16 @@ def default_fetch(url: str, etag: str | None, limit: int, timeout: float):
 
 # ------------------------------------------------------------------ typed fields
 
+class Unsaved(OSError):
+    """``run`` read the sources and could not write the cache. ``cache``: what it read, so
+    the caller can still act on it (0z4e: a read that ends a demotion is not lost to a
+    full disk)."""
+
+    def __init__(self, cache: dict):
+        super().__init__("the source check's cache could not be written")
+        self.cache = cache
+
+
 class _Bad(ValueError):
     """A response that is not what the endpoint's format says."""
 
@@ -292,6 +309,17 @@ def _osv_reading(obj, lookup_id: str):
     return fields, _is(obj.get("aliases"), list, True) or []
 
 
+def _pair(rng, first_patched) -> list | None:
+    """[range, first patched version] as a GitHub advisory states them, the range without
+    its spaces, or None when ``versions`` cannot read them: only text of the version
+    grammar is ever kept. A missing range states nothing to compare with: None."""
+    if not isinstance(rng, str) or not (first_patched is None or isinstance(first_patched, str)):
+        return None
+    rng = "".join(rng.split())
+    ok = len(rng) <= 128 and versions.check("0", rng, first_patched) is not None
+    return [rng, first_patched] if ok else None
+
+
 def _record(rs, source: str, readings: list, named, etag, now: int) -> dict:
     """What is kept of one id's good read: per scope product the level and
     whether the class may lower; the reading's own ``lowers`` (its authority
@@ -299,20 +327,35 @@ def _record(rs, source: str, readings: list, named, etag, now: int) -> dict:
     advisory); the ids it names, each only in the exact form ``norm_id``
     returns; the ETag when it has an ETag's shape. No other text of the source.
 
+    ``ranges`` (swfe): per scope product, one item for each package entry of a GitHub
+    advisory that binds to it: its ``_pair``, or None when it cannot be read (the
+    readable ones still count). [None] for a product an OSV entry names: its ranges are
+    not read. The catalog states no version: a KEV record has none.
+
     KEV not listing a CVE is no authority: the catalog holds what is known to
     be exploited, and says nothing about the rest."""
     support: dict = {}
+    ranges: dict = {}
     lowers = True
     for fields in readings:
-        for name, s in rs.read(source, fields).items():
+        found = rs.read(source, fields)
+        for name, s in found.items():
             if name not in support or _RANK[s.level] > _RANK[support[name][0]]:
                 support[name] = [s.level, s.lowers, s.stop_using]  # 9kgk: stop_using completes this level
+        if source == "osv":
+            ranges.update((name, [None]) for name in found)
+        for pkg in fields["packages"] if source == "ghsa" else ():
+            pair = _pair(pkg["range"], pkg["first_patched"])
+            for name in rs.read(source, {**fields, "packages": [pkg]}):  # the products this package binds to
+                held = ranges.setdefault(name, [])
+                if pair not in held:
+                    held.append(pair)
         lowers = lowers and rs.lowers(source, fields) and not (source == "kev" and fields["name"] is None)
     if not isinstance(named, list) or len(named) > MAX_NAMES:
         raise _Bad("names")  # cut short, a tied id could silently become untied
     names = sorted({n for n in (norm_id(x) for x in named) if n is not None})
     return {"etag": etag if isinstance(etag, str) and _ETAG.fullmatch(etag) else None, "at": now,
-            "lowers": lowers, "support": support, "names": names}
+            "lowers": lowers, "support": support, "names": names, "ranges": ranges}
 
 
 # ------------------------------------------------------------------ results
@@ -352,7 +395,9 @@ def judge(level: str, product: str | None, records, complete: bool, rs, actions=
     if _RANK[s] > _RANK[level]:
         return out(CONTRADICTED, "below-source", s)  # rests on bodies that were read: a missing one could only add
     if not complete:
-        return out(UNKNOWN, "unread", None)  # one read missing: the source's level is only a lower bound
+        # One read missing: the source's level is only a lower bound. It is reported as one
+        # (0z4e): support that arrived whole is support, whatever else could not be read.
+        return out(UNKNOWN, "unread", s if s != ruleset.NONE else None)
     if s == level and (level != ruleset.NONE or (named and may_lower)):
         return out(CONFIRMED, "match", s)
     if not may_lower or level == ruleset.NONE:
@@ -519,6 +564,89 @@ def lowering(adv, level: str, cache: dict | None, now: float, rs=None, stated=No
     return True if whole or said or rs.rank(level) >= rs.rank(rs.reading_cap) else None
 
 
+def _states(q, rng, first_patched) -> bool:
+    """Product entry ``q`` states what the source does: it matches every version the
+    source's range does, and its ``fixed`` is absent or the source's first patched
+    version. ``fixed`` is the version an upgrade is sent to (``check.plan``): too low
+    hides installations the source calls vulnerable, too high names a version the
+    source did not call the fix."""
+    return versions.covers(rng, first_patched, q.affected, q.fixed) and (
+        q.fixed is None or (first_patched is not None and versions.parse(q.fixed) == versions.parse(first_patched)))
+
+
+def narrowing(adv, products, cache: dict | None, now: float, shown=None, *, whole: bool = False) -> bool | None:
+    """What the cached results say about showing ``products`` in place of the products a
+    thread shows (swfe; ``check.narrowing`` of ``pull.standing``). ``adv`` is
+    ``pull.widest`` of the thread, the state the sources were asked about; ``products`` its
+    ``narrowed``; ``shown`` the entries it shows now (``Thread.wide``'s; default: those of
+    ``adv``). Never ``adv``'s where they differ: ``widest`` fills an entry that states no
+    ``fixed`` with the first one the thread stated, which the thread's own signer chose,
+    and a list equal to that filled state is not "nothing changed".
+
+    Per product, by the matcher's own rule (2mgd, ``scope_of``): entries that are one
+    scope product are taken together, whatever their spelling; an entry that is no scope
+    product is its own product, by its ecosystem and its name in lower case. Two names
+    the matcher tells apart are two products here, so no confirmed list names an
+    installation otherwise than the matcher will read it. A product whose entries are the same in
+    ``shown`` and ``products``, spelling included, is not asked about. For any other, with
+    the version ranges the thread's authorities state for that scope product (``ranges``
+    of the result; a None item is one this reader cannot compare; an entry that is no
+    scope product has none):
+
+    1. Every readable range must be stated (``_states``), in every ecosystem ``shown``
+       holds for the product, by an entry of ``products`` for it in that ecosystem. If one
+       is not: False. A shorter range, another ``fixed``, a product dropped that the source
+       states versions for, an entry moved to another ecosystem. It rests on bodies that
+       arrived whole, so it holds on a partial read and at any age.
+    2. Every entry of ``products`` for it that ``shown`` does not hold must be in an
+       ecosystem ``shown`` holds for the product and state one of the ranges: a correct
+       entry never carries a wrong one through, and neither does a new name. If one
+       does not: False when the reads were whole and every range of the product was
+       readable; else not settled.
+    3. No range, or one that cannot be compared: not settled.
+
+    True: every changed product is settled, the thread's reads were whole, and they were
+    made no more than FRESH_S ago by this machine's clock. None: anything else, a failed
+    read and ``verify = "off"`` among them.
+
+    ``whole`` asks a weaker question, for a thread one of whose narrowings this machine
+    has refused (``cli._note_offers``): True whenever fresh whole reads do not contradict
+    the list, settled or not."""
+    if cache is None or adv.posted_by != BOT:
+        return None
+    t = _Target(adv)
+    held = cache["results"].get(t.key) if t.first is not None else None
+    if held is None or "ranges" not in held:
+        return None
+    def which(p):
+        name = scope_of(p)
+        return (None, p.ecosystem, p.name.lower()) if name is None else name
+
+    mine: dict = {}
+    theirs: dict = {}
+    for p in adv.products if shown is None else shown:
+        mine.setdefault(which(p), []).append(p)
+    for q in products:
+        theirs.setdefault(which(q), []).append(q)
+    settled = True
+    for name in {*mine, *theirs}:
+        own, new = mine.get(name, []), theirs.get(name, [])
+        if set(own) == set(new):
+            continue
+        items = held["ranges"].get(name, []) if type(name) is str else []
+        pairs = [x for x in items if x is not None]
+        ecosystems = {p.ecosystem for p in own}
+        if not all(any(q.ecosystem == e and _states(q, r, f) for q in new) for e in ecosystems for r, f in pairs):
+            return False  # rule 1
+        comparable = bool(pairs) and len(pairs) == len(items)
+        if not all(q in own or (q.ecosystem in ecosystems and any(_states(q, r, f) for r, f in pairs)) for q in new):
+            if comparable and held["whole"]:
+                return False  # rule 2
+            settled = False
+        settled = settled and comparable  # rule 3
+    return True if (settled or whole) and held["whole"] and 0 <= now - held["at"] <= FRESH_S else None
+
+
 def state_key(adv) -> str:
     """The published state a result was computed for: the first id, the
     aliases, the level and the products (ecosystem and name)."""
@@ -548,14 +676,19 @@ def _shape_ok(c, digest: str) -> bool:
     def when(v):
         return type(v) is int and 0 <= v <= schema.MAX_TIMESTAMP
 
+    def stated(v):
+        return isinstance(v, dict) and all(
+            isinstance(n, str) and isinstance(r, list) and len(r) <= MAX_PAIRS and all(
+                x is None or isinstance(x, list) and len(x) == 2 and _pair(*x) == x for x in r) for n, r in v.items())
+
     k = c["kev"]
     if k is not None and not (isinstance(k, dict) and set(k) == {"etag", "at"} and tag(k["etag"]) and when(k["at"])):
         return False
     if not isinstance(c["sources"], dict) or not isinstance(c["results"], dict):
         return False
     for i, r in c["sources"].items():
-        if norm_id(i) != i or not isinstance(r, dict) or set(r) != {"etag", "at", "lowers", "support", "names"} \
-                or not tag(r["etag"]) or not when(r["at"]) or type(r["lowers"]) is not bool \
+        if norm_id(i) != i or not isinstance(r, dict) or set(r) != {"etag", "at", "lowers", "support", "names", "ranges"} \
+                or not stated(r["ranges"]) or not tag(r["etag"]) or not when(r["at"]) or type(r["lowers"]) is not bool \
                 or not isinstance(r["support"], dict) or not isinstance(r["names"], list) \
                 or len(r["names"]) > MAX_NAMES or not all(isinstance(n, str) and norm_id(n) == n for n in r["names"]) \
                 or not all(isinstance(n, str) and isinstance(s, list) and len(s) == 3 and type(s[0]) is str and s[0] in _LEVELS
@@ -563,7 +696,9 @@ def _shape_ok(c, digest: str) -> bool:
             return False
     for key, r in c["results"].items():
         if not (isinstance(key, str) and _HEX.fullmatch(key)) or not isinstance(r, dict) \
-                or set(r) != {"at", "products"} or not when(r["at"]) or not isinstance(r["products"], dict):
+                or set(r) - {"ranges", "whole"} != {"at", "products"} or not when(r["at"]) \
+                or not isinstance(r["products"], dict) or ("ranges" in r) != ("whole" in r) \
+                or "ranges" in r and not (stated(r["ranges"]) and type(r["whole"]) is bool):
             return False
         for name, p in r["products"].items():
             if not isinstance(name, str) or not isinstance(p, dict) or set(p) != {"result", "why", "source"} \
@@ -616,6 +751,7 @@ class _Run:
         self.memo: dict = {}  # id -> record or None, for this run
         self.kev: dict | None = None  # the catalog this run read: {CVE id: entries}
         self.kev_asked = self.kev_unchanged = False
+        self.stated: dict | None = None  # swfe: ``ranges`` and ``whole`` of the thread last judged
 
     def spent(self) -> bool:
         """The run's 30 seconds are over."""
@@ -718,6 +854,7 @@ class _Run:
         claimed state (``claimed``) it is. The thread's signed claims then say the
         catalog listed this CVE for this product, this machine's whole read says it
         does not, and nothing the thread stated rests on anything else."""
+        self.stated = None
         first = self.read(t.first, known_cves)
         if first is None:
             return {p: t.judge(p, [], False, self.rs) for p in t.products}
@@ -748,20 +885,62 @@ class _Run:
                 complete = False
             elif not from_kev or (rec["lowers"] and t.first in rec["names"]):
                 records.append(rec)
+
+        def pairs(p):
+            """The version ranges the counted authorities state for scope product ``p``,
+            each once; a None item is one this reader cannot compare."""
+            out: list = []
+            for r in records:
+                if p in r["support"] and r["support"][p][1]:  # only a source that may lower
+                    out += [x for x in r["ranges"].get(p, []) if x not in out]
+            return out
+        self.stated = {"ranges": {p: pairs(p) for p in sorted({n for n in t.scope.values() if n is not None})},
+                       "whole": complete}
         return {p: t.judge(p, records, complete, self.rs) for p in t.products}
 
 
 def _settled(held, products: dict, asked: bool) -> dict:
-    """``products``, or for an asked state (c1g2) the held result when that said a source
-    supports more and the new one only failed to read: a contradiction of a lowering
-    stays until sources read whole say otherwise, so nobody ends it by making a read
-    fail or by crowding the run's budget."""
+    """``products``, or for an asked state (c1g2) with the held result of each product that
+    said a source supports more, when the new read only failed: a contradiction of a
+    lowering stays until sources read whole say otherwise, so nobody ends it by making a
+    read fail or by crowding the run's budget. Only those products' results are kept
+    (0z4e): every other product has what this run read, so support just read is not
+    lost, and an old "unsupported" is not stored again as if found today."""
     if asked and held is not None and set(held["products"]) == set(products) \
             and any(p["why"] == "below-source" for p in held["products"].values()) \
             and any(p["why"] == "unread" for p in products.values()) \
             and not any(p["why"] == "below-source" for p in products.values()):
-        return held["products"]
+        return {name: held["products"][name] if held["products"][name]["why"] == "below-source" else r
+                for name, r in products.items()}
     return products
+
+
+def _entry(now: int, products: dict, stated, held, whole: bool) -> dict:
+    """A result entry (swfe). ``stated``: the version ranges this run read for the thread
+    and whether its reads were whole (``_Run.stated``); None when it read none, and then
+    the ranges ``held`` (the entry before) had are kept, since a contradiction they hold
+    stands at any age. ``whole`` False: the products are not what this run computed from
+    whole reads (the run was cut short, or an earlier contradiction is kept over a
+    failed read), so the entry confirms no narrowing however new its time is."""
+    out = {"at": now, "products": products}
+    if stated is not None:
+        out.update(ranges=stated["ranges"], whole=stated["whole"] and whole)
+    elif held is not None and "ranges" in held:
+        out.update(ranges=held["ranges"], whole=False)
+    return out
+
+
+def _due(at: int, now: int) -> bool:
+    """A result read at ``at`` is old enough to be read again. One dated after the clock is
+    (0z4e): written while the clock was ahead, it would otherwise wait out that date."""
+    return at > now or now - at >= RETRY_S
+
+
+def _tried(held, now: int) -> int:
+    """When a state was last tried, for the order of a run. Never, for one with no result
+    and for one dated after the clock (0z4e): it must not queue behind threads that fail
+    every run until its date comes."""
+    return 0 if held is None or held["at"] > now else held["at"]
 
 
 def _waits(t: _Target, results: dict, now: int) -> bool:
@@ -772,7 +951,7 @@ def _waits(t: _Target, results: dict, now: int) -> bool:
     if held is None or set(held["products"]) != set(t.products):
         return True
     whys = {p["why"] for p in held["products"].values()}
-    return "unread" in whys or (whys - {"match", "no-source"} and now - held["at"] >= RETRY_S)
+    return "unread" in whys or (whys - {"match", "no-source"} and _due(held["at"], now))
 
 
 def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=time.monotonic, rs=None,
@@ -785,7 +964,8 @@ def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=
     RETRY_S old, a confirmed one too, so a source that changed is seen. Threads waiting (``_waits``) are taken
     longest untried first, then highest level, so no thread that keeps failing
     holds the others back. The 30 seconds run from this call. The state lock
-    is not held: a pull must not wait."""
+    is not held: a pull must not wait. Raises ``Unsaved``, which carries the results,
+    when the cache cannot be written."""
     start = clock()
     rs = rs or ruleset.load()
     fetch = fetch or default_fetch
@@ -800,8 +980,8 @@ def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=
                 targets.setdefault(t.key, t)
     again = {_Target(adv).key for adv in recheck}
     waiting = sorted((t for t in targets.values() if _waits(t, results, now)
-                      or (t.key in again and now - results[t.key]["at"] >= RETRY_S)),
-                     key=lambda t: (results.get(t.key, {}).get("at", 0), -_RANK[t.level], t.key))
+                      or (t.key in again and _due(results[t.key]["at"], now))),
+                     key=lambda t: (_tried(results.get(t.key), now), -_RANK[t.level], t.key))
     known = {i for t in waiting for i in [t.first, *cache["sources"].get(t.first, {}).get("names", [])]
              if ruleset.source_of(i) == "kev"}
     job = _Run(cache, rs, fetch, now, clock, start)
@@ -817,23 +997,34 @@ def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=
                 # tavj: what was read before the budget ran out supports more. That rests on
                 # bodies that arrived whole, whatever was not read: kept, so the lowering it
                 # contradicts is refused and never runs out its 72 hours unchecked.
-                results[t.key] = {"at": now, "products": products}
+                results[t.key] = _entry(now, products, job.stated, results.get(t.key), False)
             elif job.requests > asked:
                 held = results.get(t.key)
                 # c1g2: not for a state whose result authorises a lowering. Kept with a new
                 # time, an old ``match`` would read as confirmed today, and would stand in
                 # for what the requests this run did make had found. It is unread instead,
                 # unless it was a contradiction (``_settled``).
-                keep = held is not None and set(held["products"]) == set(t.products) and t.key not in again
-                results[t.key] = {"at": now, "products": held["products"] if keep else _settled(
-                    results.get(t.key), {p: t.judge(p, [], False, rs) for p in t.products}, t.key in again)}
+                # 0z4e: nor is an old "unsupported" kept with a new time (it would read as
+                # found again today, with no whole read behind it), nor anything when the
+                # requests this run did make read support: that is stored, as the lower
+                # bound an incomplete read reports (``judge``).
+                keep = (held is not None and set(held["products"]) == set(t.products) and t.key not in again
+                        and not any(p["why"] == "unsupported" for p in held["products"].values())
+                        and not any(p["source"] not in (None, ruleset.NONE) for p in products.values()))
+                results[t.key] = _entry(now, held["products"] if keep else _settled(
+                    results.get(t.key), products, t.key in again),
+                    job.stated, held, False)  # swfe: what was read still refuses a narrowing, and confirms none
             break
-        results[t.key] = {"at": now, "products": _settled(results.get(t.key), products, t.key in again)}
+        kept = _settled(results.get(t.key), products, t.key in again)
+        results[t.key] = _entry(now, kept, job.stated, results.get(t.key), kept is products)
     live = [_Target(adv) for adv in current if adv.posted_by == BOT and norm_id(adv.id) is not None]
     keys = {t.key for t in live}
     ids = {i for t in live for i in t.ids()}
     ids |= {n for i in list(ids) for n in cache["sources"].get(i, {}).get("names", [])}
     cache["results"] = {k: v for k, v in results.items() if k in keys}
     cache["sources"] = {i: r for i, r in cache["sources"].items() if i in ids}
-    write_json(Path(state_dir) / FILE, cache)
+    try:
+        write_json(Path(state_dir) / FILE, cache)
+    except OSError:
+        raise Unsaved(cache) from None
     return cache

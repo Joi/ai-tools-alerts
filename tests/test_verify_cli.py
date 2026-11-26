@@ -238,7 +238,7 @@ def test_an_alert_the_source_does_not_support_is_flagged_per_product(feed, monke
     feed([bot(id=CVE, level="critical", products=("Claude Code", "Codex", "Nobody Runs This"))], 'verify = "all"\n')
     use(monkeypatch, Net().set(verify.KEV_URL, kev((CVE, "OpenAI", "Codex"))))
     _, out, _ = out_of(capsys, ["run"])
-    assert out.count("source check:") == 1
+    assert out.count("\nsource check:") == 1  # (0z4e: the match is listed again, at notice, after the read)
     assert f"source check: the source does not support {CVE} for Claude Code\n" in out
     assert "Nobody Runs This" not in out  # outside this reader's scope file: not judged, never printed
     assert out_of(capsys, ["verify"])[1].startswith("source check: 0 confirmed, 1 contradicted, 0 not verified")
