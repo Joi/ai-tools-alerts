@@ -50,7 +50,7 @@ Prior work searched: `kata search "former name recompute"` (zmg2, 3qyq, q03f), t
 - A read's support is keyed by current names (`Ruleset.read`). "MCP servers and clients" is the former name of seven entries. Which one's support is the thread's is not something the thread states.
 - It is what happens today (3qyq note 5), so nothing a member sees changes for those threads.
 
-What it costs: a thread under "MCP servers and clients", "MCP Inspector", "MCP TypeScript SDK" or "MCP Python SDK" is raised only by a candidate (`plan_known`, through `Run._former`) and is never lowered by the recompute. It never falls wrongly; it can stand too high until its expiry. A follow-up issue records this for whoever takes the member's side of former names; it is not this issue's.
+What it costs: a thread under "MCP servers and clients", "MCP Inspector", "MCP TypeScript SDK" or "MCP Python SDK" is raised only by a candidate (`plan_known`, through `Run._former`) and is never lowered by the recompute. It never falls wrongly; it can stand too high until its expiry. ai-tools-alerts#aabw records this for whoever takes the member's side of former names; it is not this issue's.
 
 Rejected: recomputing a former-name thread against the highest support of the entries that list the name (as `Ruleset.level` reads a claim). It would publish raises and lowerings on threads no member can check, and a lowering there would rest on the absence of support for seven products at once.
 
@@ -82,4 +82,4 @@ Rollback is a revert of the commit. The recompute state file has the same shape 
 
 ## Open questions
 
-None that blocks. The follow-up named above (former names) is filed at close-out.
+None that blocks. The follow-up for former names is ai-tools-alerts#aabw.

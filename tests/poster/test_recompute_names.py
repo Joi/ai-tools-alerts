@@ -17,7 +17,7 @@ from test_recompute import _kev_with_its_fix, catalog, hours, levels, post  # no
 
 HOUR = 3600
 G, CVE = "GHSA-abcd-efgh-ijkl", "CVE-2026-0001"
-NOT_IDENTITIES = ("Codex", "Cursor", "Hermes", "git", "Python", "Go", "mcp")  # the issue's list
+NOT_IDENTITIES = ("Codex", "Cursor", "Hermes", "git", "Python", "Go", "mcp", "Rust")  # the issue's list, and Rust
 CURSOR_KEV = {"cveID": CVE, "vendorProject": "Anysphere", "product": "Cursor", "dateAdded": "2026-11-04"}
 HERMES = dict(packages=[("pip", "hermes-agent", "< 1.0", "1.0")], repo="NousResearch/hermes-agent")
 WHEN = "2026-11-06T00:00:00Z"
@@ -50,6 +50,8 @@ def test_every_scope_name_resolves_by_name():
     assert set(NOT_IDENTITIES) <= names
     for name in names:
         assert rules.scope_named(name).name == name
+        same = [s for s in rules._default_index().values() if s.name == name]
+        assert all(s == same[0] for s in same), name  # which of them is found makes no difference
     for name in NOT_IDENTITIES:  # the bug's precondition: were one an identity, this says which
         assert rules.scope_of(name) is None, name
     assert rules.scope_named("containerd").name == "containerd"  # a component, resolved
