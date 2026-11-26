@@ -301,3 +301,47 @@ def test_the_real_connect_is_blocked_in_tests():
     r = transport.Relay(URL, lambda: SEC, expected_pubkey=PUB, clock=lambda: NOW)
     res = r.send(CH, "x")
     assert res.outcome == "failed" and "connect failed" in res.stderr
+
+
+# ---------------------------------------------------------------- the claim tag (hh5s)
+
+def _claim_tag():
+    from aitools_alerts import schema, wire
+    v = json.loads((schema.SPEC_DIR / "claim-vectors.json").read_text(encoding="utf-8"))["claims"][0]
+    return wire.claim_tag(v["claim"]), v["claim"]
+
+
+def test_message_event_carries_one_claim_tag_last_and_is_unchanged_without_one():
+    tag, _ = _claim_tag()
+    ev = transport.message_event(CH, "x", ROOT, created_at=NOW, claim=tag)
+    assert ev["tags"] == [["h", CH], ["e", ROOT, "", "reply"], tag]
+    assert transport.message_event(CH, "x", None, created_at=NOW, claim=tag)["tags"] == [["h", CH], tag]
+    plain = transport.message_event(CH, "x", ROOT, created_at=NOW)
+    assert plain == transport.message_event(CH, "x", ROOT, created_at=NOW, claim=None)
+    assert plain == {"created_at": NOW, "kind": 9, "tags": [["h", CH], ["e", ROOT, "", "reply"]], "content": "x"}
+
+
+@pytest.mark.parametrize("bad", [["claim"], ["claim", "{}", "x"], ["claim", '{"b":1, "a":2}'], ["claim", '{"b":1,"a":2}'],
+                                 ["claim", "[]"], ["other", "{}"], ["claim", json.dumps({"a": "x" * 2100})],
+                                 "claim", ("claim", "{}"), [["claim", "{}"]], ["claim", 7], {}, 0])
+def test_check_send_refuses_what_claim_tag_would_not_write(bad):
+    with pytest.raises(ValueError):
+        transport.check_send(CH, "x", None, bad)
+    with pytest.raises(ValueError):
+        transport.message_event(CH, "x", None, created_at=NOW, claim=bad)
+
+
+def test_relay_send_signs_the_claim_and_dates_the_event_by_its_own_clock():
+    from aitools_alerts import wire
+    tag, obj = _claim_tag()
+    r, conn, _ = relay()
+    res = r.send(CH, "Level is now notice.", ROOT, tag)
+    ev = sent(conn)[2]
+    assert res.ok and nostr.verify_event(ev) and wire.claim_of(ev) == obj
+    assert ev["tags"] == [["h", CH], ["e", ROOT, "", "reply"], tag] and ev["created_at"] == NOW
+    forged = {**ev, "tags": [["h", CH], ["e", ROOT, "", "reply"], ["claim", tag[1].replace("critical", "notice")]]}
+    assert not nostr.verify_event(forged)  # the tag is under the signature
+    r, conn, _ = relay()
+    with pytest.raises(ValueError):
+        r.send(CH, "x", ROOT, ["claim", "{}x"])
+    assert conn.requests == []

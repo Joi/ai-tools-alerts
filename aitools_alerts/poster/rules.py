@@ -34,7 +34,7 @@ import urllib.request
 from dataclasses import dataclass, replace
 from urllib.parse import urljoin, urlsplit
 
-from aitools_alerts import ruleset, schema, versions
+from aitools_alerts import ruleset, schema, verify, versions, wire
 from aitools_alerts.poster import compose
 from aitools_alerts.poster.candidates import BOT_ID, MAX_SOURCE_TEXT, Candidate
 
@@ -300,6 +300,38 @@ def claims_for(c: Candidate, scope: schema.ScopeEntry, now: int) -> list[dict]:
     level the ruleset's for this product, confirmed and checked now."""
     rs = ruleset.load()
     return [rs.claim(source, fields, scope.name, now, now) for source, fields in _readings(c)]
+
+
+def claim_text(readings, ids, product: str, now: int, limit: bool = True) -> str | None:
+    """The text of the one claim tag an event about a thread carries (hh5s), or None.
+
+    ``readings``: [(source, fields)] this run holds and the level rested on. ``ids``:
+    the thread's ids, its first id first. Of the readings whose id is one of them (a
+    claim about an id the thread does not carry renews nothing on a reader), the one
+    the ruleset gives the highest level for ``product``; on a tie the first id's; then
+    by source and id. It is what the state rests on, confirmed and checked at ``now``.
+
+    None when no reading is about the thread, and when the chosen one cannot be
+    written as a claim or is larger than ``wire.MAX_CLAIM_BYTES``: the fields are the
+    source's, undiminished, so nothing is trimmed and no lesser reading takes its
+    place. The event then carries no claim. ``limit`` false: the claim's canonical
+    text whatever its size, for saying that the size was why. Never raises."""
+    try:
+        rs = ruleset.load()
+        want = [x for x in map(verify.norm_id, ids) if x is not None]
+        found = []
+        for source, fields in readings:
+            i = verify.norm_id(ruleset._id_of(source, fields))
+            if i is not None and i in want:
+                level = rs.level([(source, fields)], product)
+                found.append((-(rs.rank(level) if level in rs.levels else -1), i != want[0], source, i, fields))
+        if not found:
+            return None
+        _, _, source, _, fields = min(found, key=lambda f: f[:4])
+        claim = rs.claim(source, fields, product, int(now), int(now))
+        return wire.claim_tag(claim)[1] if limit else ruleset.canonical(claim).decode("utf-8")
+    except Exception:  # noqa: BLE001 - whatever a reading holds, the post goes out, without a claim
+        return None
 
 
 def _countable(url) -> bool:

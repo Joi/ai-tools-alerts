@@ -28,7 +28,7 @@ import json
 
 from . import schema
 
-__all__ = ["CLAIM_TAG", "MAX_CLAIM_BYTES", "LEVELS", "claim_tag", "claim_of", "is_lowering"]
+__all__ = ["CLAIM_TAG", "MAX_CLAIM_BYTES", "LEVELS", "claim_tag", "claim_of", "tag_bytes", "is_lowering"]
 
 CLAIM_TAG = "claim"
 MAX_CLAIM_BYTES = 2048
@@ -78,6 +78,12 @@ def claim_of(event) -> dict | None:
     except (ValueError, RecursionError):  # not JSON, a lone surrogate, nested too deeply
         return None
     return obj
+
+
+def tag_bytes(tag) -> int:
+    """The bytes one tag adds to an event as a channel file holds it: its JSON text
+    (the quotes and backslashes of a claim's text escaped) and the comma before it."""
+    return len(json.dumps(tag, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) + 1
 
 
 def is_lowering(patch, level: str) -> bool:
