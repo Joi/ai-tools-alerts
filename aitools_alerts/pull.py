@@ -56,6 +56,7 @@ retention takes its clock from the checkpoint too (``_fetch``).
 from __future__ import annotations
 
 import copy
+import hashlib
 import http.client
 import json
 import re
@@ -79,7 +80,7 @@ __all__ = ["FILES", "FetchError", "PULL_ERRORS", "MAX_FETCH_BYTES", "MAX_EVENTS"
            "STALE_EVENT_S", "STALE_MANIFEST_S", "freshness", "stale_since",
            "MAX_AHEAD_S", "CHAT_KIND", "ChannelSpecError", "channel_ids", "unverified",
            "bundled_cert", "SECOND_TIMEOUT", "head_clock", "CURATOR_HOLD_S", "NONE", "standing", "asks",
-           "widest", "UNCHECKED_LOWERING_S", "offers"]
+           "widest", "UNCHECKED_LOWERING_S", "offers", "narrow_key"]
 
 FILES = ("feed.json", "critical.json")
 MAX_FETCH_BYTES = 8 << 20
@@ -156,6 +157,19 @@ class Thread:
     offered_by: str | None = None
     stated: tuple = ()
     waiting: str | None = None
+    # swfe, a relay-bot thread only. ``narrowed``: the products list last published that does
+    # not stand for every entry of ``wide``'s (the join never applies it); None: none.
+    # ``narrowed_by``: the id of the relay-bot reply that published it (the first of them
+    # when the same list was sent again). ``narrowings``: ``narrow_key`` of every such list
+    # the thread has published, the ended ones too: what a member's memory of refused
+    # lists is kept against. Set by ``standing``: ``narrow_refused``, the member's check
+    # contradicted it; ``narrow_waiting``, the check could not settle it and it has not
+    # yet stood UNCHECKED_LOWERING_S.
+    narrowed: tuple | None = None
+    narrowed_by: str | None = None
+    narrowings: tuple = ()
+    narrow_refused: bool = False
+    narrow_waiting: bool = False
 
 
 # ------------------------------------------------------------------ fetching
@@ -810,7 +824,12 @@ def _apply_patch(adv: Advisory, patch: dict, role: str, dropped: Counter | None 
     patches are read in, so a patch dated before one already applied cannot
     undo it. A joined list may pass the schema's limit; the limit is checked
     on what each event carries. A curator's patch replaces the fields it
-    names."""
+    names.
+
+    A narrowing of ``products`` is not lost with that (ai-tools-alerts#swfe):
+    ``_bot_reply`` keeps the list as the thread's published narrowing, and
+    ``standing`` shows it once the member's own check confirms it or it has
+    stood UNCHECKED_LOWERING_S in signed checkpoints."""
     if set(patch) - (_PATCH_KEYS - {"id", "posted_by"}):
         return None  # B3's contract: id and posted_by may not appear
     if role != "curator":
@@ -922,7 +941,9 @@ def advisories(state: State, dropped: Counter | None = None, checkpointed: bool 
     reply's ``aitools-alert`` block, if any, is a patch (see _apply_patch):
     a relay-bot's adds to or widens the products, actions and sources of
     its thread and never narrows them (an attempt is counted as
-    ``narrowing``), even when the rest of it is refused.
+    ``narrowing``), even when the rest of it is refused. A narrower
+    ``products`` list is kept beside the thread as ``narrowed``, applied
+    nowhere here (ai-tools-alerts#swfe: ``_narrowing``, ``standing``).
     On a thread a curator posted, a curator's word is final and a relay-bot
     reply is discussion; only its ``lang:`` translations count
     (ai-tools-alerts#bq8v). On a relay-bot thread a curator's word is held,
@@ -977,11 +998,14 @@ class _Hold:
     exactly as written, the first entry that carried it. A later reply may drop an
     alias, clear ``fixed`` or put a product in another spelling in an entry's place:
     each is a widening for matching, and none may weaken what a check is asked about."""
-    __slots__ = ("wide", "until", "offered", "aliases", "fixed", "names", "_seen", "offered_by")
+    __slots__ = ("wide", "until", "offered", "aliases", "fixed", "names", "_seen", "offered_by",
+                 "narrowed", "narrowed_by", "keys")
 
     def __init__(self, adv: Advisory):
         self.until, self.offered, self.aliases, self.fixed, self.names, self._seen = None, None, [], {}, {}, set()
         self.offered_by = None  # tavj: the relay-bot reply that published ``offered``
+        self.narrowed = self.narrowed_by = None  # swfe: the published narrowing and its reply
+        self.keys: dict = {}  # narrow_key of every narrowing published, in order
         self.widen(adv)
 
     def note(self, adv: Advisory) -> None:
@@ -1030,6 +1054,32 @@ def _bot_patch(adv: Advisory, p: dict, dropped: Counter | None = None) -> tuple:
     return new, p
 
 
+def narrow_key(root_id: str, products) -> str:
+    """What a member's refusal of a published narrowing is remembered by (swfe): the
+    thread's root and the list itself, so the same list sent again in another reply is
+    the same refusal, and another list is not."""
+    text = json.dumps([root_id, [asdict(p) for p in products]], sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _narrowing(adv: Advisory, p: dict) -> tuple | None:
+    """What block ``p`` publishes about the products of ``adv`` (swfe). None: nothing (it
+    names none, or its list does not validate). (): its list stands for every entry
+    ``adv`` holds. Otherwise the list as the schema read it: a narrowing, which the join
+    never applies and ``standing`` may. Past _JOIN_SCAN entries ``adv`` is not compared
+    entry by entry (no single event's list stands for a flooded one), and every valid
+    list is a narrowing: a flooded thread can still be corrected. Never raises."""
+    if "products" not in p:
+        return None
+    try:
+        base = asdict(replace(adv, **{k: getattr(adv, k)[:limit] for k, limit in LIST_LIMITS.items()}))
+        stated = schema.validate({**base, "products": p["products"], "posted_by": adv.posted_by}).products
+    except Exception:  # a hostile block never stops the other threads
+        return None
+    covers = len(adv.products) <= _JOIN_SCAN and all(_covered(e, stated) for e in adv.products)
+    return () if covers else tuple(stated)
+
+
 def _bot_reply(t: list, h: _Hold, ev: dict, p: dict, dropped: Counter) -> None:
     """One relay-bot block on a relay-bot thread (c1g2). A level-only lowering
     (spec/wire.md rule 1) is published, not applied: ``standing`` applies it when the
@@ -1046,6 +1096,11 @@ def _bot_reply(t: list, h: _Hold, ev: dict, p: dict, dropped: Counter) -> None:
             if t[6][-1] != ev["id"]:
                 t[6].append(ev["id"])
         return
+    offer = _narrowing(h.wide, p)  # against the widest state before this reply joins it
+    if offer is not None and offer != h.narrowed:  # the same list again keeps the first reply: its wait goes on
+        h.narrowed, h.narrowed_by = (offer, ev["id"]) if offer else (None, None)
+        if offer:
+            h.keys.setdefault(narrow_key(t[6][0], offer))
     new, used = _bot_patch(h.wide, p, dropped)
     if new is None:
         return
@@ -1163,6 +1218,8 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
                 if "aliases" in p:  # only aliases a curator wrote:
                     t[4].update(i.casefold() for i in new.aliases)  # a bot's never list a thread
                 if h is not None:
+                    if "products" in p:
+                        h.narrowed = h.narrowed_by = None  # swfe: the curator's list is the last word on products
                     h.note(new)  # a fix or an alias the curator supplied is part of the thread's history
                     # The widest state takes a curator's reply as it takes the bot's: what it
                     # adds or raises stays after the hold, what it takes away does not.
@@ -1189,7 +1246,9 @@ def threads_from(events, m: Manifest, dropped: Counter | None = None) -> list[Th
                                              "held_aliases": tuple(h.aliases),
                                              "held_fixed": tuple(sorted(h.fixed.items())),
                                              "held_products": _missing(h), "stated": tuple(said),
-                                             "offered_by": h.offered_by if h.offered is not None else None}
+                                             "offered_by": h.offered_by if h.offered is not None else None,
+                                             "narrowed": h.narrowed, "narrowed_by": h.narrowed_by,
+                                             "narrowings": tuple(h.keys)}
         # ``ok``: every id and alias the thread has held. A later patch that drops an
         # alias must not take away a renewal made under it.
         enrolled = first is not None and first[0] in ok
@@ -1264,10 +1323,11 @@ def asks(t: Thread, now: float | None = None) -> list:
 
 
 def offers(threads, held: dict, now, listed) -> dict:
-    """The member's record of unchecked relay-bot lowerings as it should be under the
-    checkpoint issued at ``now`` that lists ``listed`` (``head_clock``): {the reply's id:
+    """The member's record of unchecked relay-bot lowerings and narrowings as it should be
+    under the checkpoint issued at ``now`` that lists ``listed`` (``head_clock``): {the reply's id:
     the issue time of the checkpoint this machine held when it first saw one list the
-    reply}. Kept: a reply that is still its thread's standing offer and that the
+    reply}. Kept: a reply that is still its thread's standing offer (``offered_by``, or
+    ``narrowed_by`` for a published narrowing) and that the
     checkpoint lists, with its root, at the earlier of its recorded time and ``now``.
     Everything else is dropped, so a lowering a checkpoint stops listing, or one a raise
     replaced, starts again from nothing. Without a checkpoint the record is unchanged.
@@ -1277,21 +1337,45 @@ def offers(threads, held: dict, now, listed) -> dict:
         return dict(held)
     out = {}
     for t in threads:
-        i = t.offered_by
-        if i is not None and t.offered not in (None, NONE) and i in listed and t.root_id in listed:
-            at = held.get(i)
-            out[i] = int(min(at, now)) if type(at) is int else int(now)
+        # swfe: a published narrowing is recorded by its reply as a lowering is
+        for i in (t.offered_by if t.offered not in (None, NONE) else None, t.narrowed_by):
+            if i is not None and i in listed and t.root_id in listed:
+                at = held.get(i)
+                out[i] = int(min(at, now)) if type(at) is int else int(now)
     return out
 
 
-def _stood(t: Thread, now, since) -> bool:
-    """The relay-bot lowering of ``t`` has been listed by checkpoints UNCHECKED_LOWERING_S apart."""
-    at = since.get(t.offered_by) if since is not None and t.offered_by is not None else None
-    return (now is not None and type(at) is int and t.offered not in (None, NONE)
-            and now - at >= UNCHECKED_LOWERING_S)
+def _stood(reply: str | None, now, since) -> bool:
+    """The relay-bot reply has been listed by checkpoints UNCHECKED_LOWERING_S apart."""
+    at = since.get(reply) if since is not None and reply is not None else None
+    return now is not None and type(at) is int and now - at >= UNCHECKED_LOWERING_S
 
 
 def standing(t: Thread, now: float | None = None, check=None, since=None) -> Thread:
+    """The thread as it stands at ``now``: its level and state as ``_level_standing``
+    decides them (c1g2, tavj), then its published narrowing (swfe).
+
+    A narrowing is decided only on a relay-bot thread that is not retracted and that no
+    curator's hold governs at ``now``. ``check.narrowing(widest state, the published
+    list)`` is the member's own source check of it: True when the source states it, False
+    when the source states otherwise, None when it does not settle it (and for a
+    ``check`` without that attribute). True: the thread's products are the published
+    list. None: the same once the reply has stood UNCHECKED_LOWERING_S in ``since`` by
+    ``now``; until then ``narrow_waiting`` is set when ``since`` holds the reply. False:
+    never, and ``narrow_refused`` is set. Only ``products`` change: the actions and
+    sources stay the widest."""
+    out = _level_standing(t, now, check, since)
+    if t.wide is None or t.narrowed is None or out.retracted or _held(t, now):
+        return out
+    ask = getattr(check, "narrowing", None)
+    said = ask(widest(t), t.narrowed) if ask is not None else None
+    if said is True or (said is None and _stood(t.narrowed_by, now, since)):
+        return replace(out, adv=replace(out.adv, products=list(t.narrowed)))
+    return replace(out, narrow_refused=said is False,
+                   narrow_waiting=said is None and since is not None and t.narrowed_by in since)
+
+
+def _level_standing(t: Thread, now: float | None = None, check=None, since=None) -> Thread:
     """The thread as it stands at ``now`` (c1g2). Only a relay-bot thread a curator
     acted on, or one with a published lowering, can differ from ``t``.
 
@@ -1328,7 +1412,7 @@ def standing(t: Thread, now: float | None = None, check=None, since=None) -> Thr
         ask = next(iter(asks(replace(t, offered=None), now)), None)
         return t if ask is None or says(ask) is not False else base(ask)
     said = says(t.offered) if t.offered is not None else None
-    if said is True or (said is None and _stood(t, now, since)):
+    if said is True or (said is None and t.offered not in (None, NONE) and _stood(t.offered_by, now, since)):
         return replace(base(), retracted=True) if t.offered == NONE else replace(
             base(), adv=replace(t.wide, level=t.offered))
     # waiting: only where the wait can run out (a record is kept, and it holds this reply:
