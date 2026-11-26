@@ -27,7 +27,8 @@ MAX_MSG = 1 << 20
 MAX_READS = 100
 GRACE = 10  # seconds past the timeout for connect and close (above close_timeout)
 _LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
-INSTALL_HINT = "install the curator extra: pip install 'aitools-alerts[curator]'"
+INSTALL_HINT = ("install the curator extra from the verified checkout: pipx install --force '.[curator]',"
+                " or pip install '.[curator]' in its venv")
 
 
 class RelayError(Exception):

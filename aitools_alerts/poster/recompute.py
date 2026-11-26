@@ -4,7 +4,10 @@ The poster recomputes the level of every open thread the ledger marks exploited,
 of every thread that carries a GHSA id (ai-tools-alerts#3qyq), from the KEV catalog
 and the advisory responses it read, each run. A read of a source, for one thread, has one
 of three results: ``confirmed`` (the source states it), ``contradicted`` (a complete
-read that does not) or ``unknown``. Only evidence moves a level:
+read that does not) or ``unknown``. A thread's product is found by the name the thread
+was posted under (``rules.scope_named``, ai-tools-alerts#zmg2); a thread whose product
+left the scope file, and one under a product's former name, is not recomputed. Only
+evidence moves a level:
 
 - ``unknown`` changes nothing, starts no wait and adds no time to one. A fetch that
   failed and a body that did not parse give no copy at all. A copy reached through a

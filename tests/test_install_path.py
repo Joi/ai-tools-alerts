@@ -48,6 +48,89 @@ def test_readme_names_the_pin_and_no_unpinned_install():
             assert em.RELEASE_COMMIT in line
 
 
+# 4fkh: a bare name resolves on PyPI, where the name holds only an empty placeholder. Every
+# tracked file a reader or an installer sees is checked: all but the tests, which quote the
+# forbidden forms, and the dated records under docs/superpowers/, which quote what they changed.
+NOT_SHIPPED = ("tests/", "docs/superpowers/")
+INSTALL = re.compile(r"\b(?:pipx? install|pipx inject|uv (?:pip|tool) install)\b", re.I)
+COMMAND_END = re.compile(r"`|&&|\|\||[;|,)]")
+NAME = re.compile(r"(?<![\w/+.:-])['\"]?ai[-_.]*tools[-_.]+alerts(?![\w./-])", re.I)  # both PyPI names (26f0)
+PROMISE = re.compile(r"\b(?:coming|upcoming|soon|will be)\b", re.I)
+
+
+def installs_by_name(line):
+    for m in INSTALL.finditer(line):
+        command = COMMAND_END.split(line[m.end():], 1)[0]
+        if NAME.search(command):
+            return True
+    return False
+
+
+def promises_pypi(text):
+    sentences = re.split(r"(?<=[.!?])\s+", " ".join(text.split()))
+    return [s for s in sentences if re.search(r"\bpypi\b", s, re.I) and PROMISE.search(s)]
+
+
+def _shipped_text():
+    r = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, text=True)
+    if shutil.which("git") is None or r.returncode != 0:
+        pytest.skip("not a git checkout")
+    for rel in sorted(filter(None, r.stdout.split("\0"))):
+        if rel.startswith(NOT_SHIPPED) or not (ROOT / rel).is_file():
+            continue
+        try:
+            yield rel, (ROOT / rel).read_text()
+        except UnicodeDecodeError:
+            continue
+
+
+@pytest.mark.parametrize("line", [
+    "pip install 'aitools-alerts[curator]'", "pip install -U 'aitools-alerts[curator]'",
+    "pipx install --python python3.11 aitools-alerts", "pip install websockets aitools-alerts",
+    "`pipx install aitools_alerts==0.2.1`", 'pip install "aitools-alerts>=0.2"', "uv tool install aitools-alerts",
+    "pipx inject aitools-alerts websockets", "pip install --upgrade aitools.alerts",
+    "pipx install ai-tools-alerts", "pip install ai_tools.alerts", "uv tool install 'ai-tools-alerts[curator]'",
+    "pip install ai--tools-alerts", "pip install aitools__alerts", "pip install AI_Tools-.Alerts",
+])
+def test_install_by_name_is_caught(line):
+    assert installs_by_name(line)
+
+
+@pytest.mark.parametrize("line", [
+    "pipx install --force .", "pipx install --force '.[curator]'", "pip install '.[curator]' in its venv",
+    "pipx install git+https://github.com/Joi/ai-tools-alerts@" + "0" * 40,
+    "`~/.local/share/aitools-alerts/bin/pip install .` from the verified checkout, then link "
+    "`ln -s ~/.local/share/aitools-alerts/bin/aitools-alerts ~/.local/bin/`",
+    "`pipx install --force .`, then run `aitools-alerts init`",
+])
+def test_install_from_a_checkout_is_not_caught(line):
+    assert not installs_by_name(line)
+
+
+@pytest.mark.parametrize("text", [
+    "aitools-alerts will be on PyPI.", "PyPI (`aitools-alerts`)\n is coming, no install line.",
+    "A release is coming to PyPI soon.", "It will be published to\nPyPI.",
+])
+def test_a_pypi_promise_is_caught(text):
+    assert promises_pypi(text)
+
+
+def test_no_install_by_the_package_name():
+    files = dict(_shipped_text())
+    # The walk covers what pyproject ships and what an operator follows; a narrowed list fails here.
+    for want in ("README.md", "SECURITY.md", "CHANGELOG.md", "pyproject.toml", "aitools_alerts/relay.py",
+                 "spec/scope.json", "trust/manifest.json", "ops/vm/README.md", "mirror/export_mirror.py",
+                 "skills/claude-code/aitools-alerts/SKILL.md", "snippets/AGENTS.md",
+                 "hooks/claude-code/session-start.sh", "templates/cron/aitools-alerts.cron", "docs/design.md"):
+        assert want in files, want
+    for rel, text in files.items():
+        for n, line in enumerate(text.splitlines(), 1):
+            assert not installs_by_name(line), f"{rel}:{n}: install by the package name"
+        assert not promises_pypi(text), f"{rel}: says the package is coming to PyPI: {promises_pypi(text)}"
+    readme = section(README, "### Install")
+    assert "do not install from PyPI" in readme and not promises_pypi(readme)
+
+
 def test_checks_come_before_any_install():
     first_check = README.index("tag -v")
     assert README.index("rev-parse") > first_check
