@@ -679,10 +679,21 @@ def reply_post(prev: schema.Advisory, c, changes: dict, *, reason: str | None = 
     return _guard(out)
 
 
-def level_post(prev: schema.Advisory, level: str) -> str:
+RENEWAL = "Sources checked. No change to this alert."
+UNCONFIRMED = "No source has confirmed the higher level for {days} days."
+
+
+def renewal_post() -> str:
+    """A renewal (gtw9, spec/wire.md): a thread reply whose only news is its event's
+    claim tag. One fixed line and no block, so every reader takes it as discussion."""
+    return _guard(RENEWAL)
+
+
+def level_post(prev: schema.Advisory, level: str, reason: str | None = None) -> str:
     """A thread reply that changes the level and nothing else: one line and a block of
     exactly ``{"level": ...}``. What justifies it travels in the event's claim tag
-    (``wire.claim_tag``), never in the block.
+    (``wire.claim_tag``), never in the block. ``reason``: one more sentence on the
+    line (gtw9: why a level nothing confirmed was stepped down).
 
     Every lowering is sent this way, and so is every level change on a thread that
     has had a lowering (spec/wire.md). Readers at 0.1.7 and earlier refuse a
@@ -694,7 +705,8 @@ def level_post(prev: schema.Advisory, level: str) -> str:
     if not isinstance(level, str) or level not in wire.LEVELS or level == prev.level:
         raise ValueError("level change: the level must be a known level other than the thread's")
     merged = apply_patch(prev, patch)
-    out = _inline(_change_line("level", merged)) + f"\n\n```{schema.INFO_STRING}\n{json.dumps(patch, separators=(',', ':'))}\n```\n"
+    line = _change_line("level", merged) + (f" {reason}" if reason else "")
+    out = _inline(line) + f"\n\n```{schema.INFO_STRING}\n{json.dumps(patch, separators=(',', ':'))}\n```\n"
     if parse_reply(out, prev) != merged or json.loads(schema._last_block(out)) != patch:
         raise ValueError("level change does not parse back")
     return _guard(out)

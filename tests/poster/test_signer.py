@@ -192,9 +192,9 @@ def test_owed_entries_are_recorded_settled_and_given_up_only_by_time(tmp_path):
     rec = signer.load_owed(path, 3000)
     assert rec["hold_until"] == 0 and rec["owed"] == [{"id": a, "bytes": 100 + signer.ENVELOPE, "since": 1000, "root": None},
                            {"id": b, "bytes": 50 + signer.ENVELOPE, "since": 2000, "root": root}]
-    assert signer.settle_owed(rec["owed"], {a}, 3000) == ([rec["owed"][1]], 0)
-    assert signer.settle_owed(rec["owed"], set(), 1000 + signer.OWED_S - 1) == (rec["owed"], 0)
-    assert signer.settle_owed(rec["owed"], set(), 1000 + signer.OWED_S) == ([rec["owed"][1]], 1)
+    assert signer.settle_owed(rec["owed"], {a}, 3000) == ([rec["owed"][1]], 0, set())
+    assert signer.settle_owed(rec["owed"], set(), 1000 + signer.OWED_S - 1) == (rec["owed"], 0, set())
+    assert signer.settle_owed(rec["owed"], set(), 1000 + signer.OWED_S) == ([rec["owed"][1]], 1, set())
     many = [{"id": f"{i:064x}", "bytes": 10**6, "since": 5} for i in range(500)]
     assert signer.settle_owed([dict(o, root=None) for o in many], set(), 6)[1] == 0  # never dropped for room
     signer.init_owed(path)  # never replaces a record
@@ -786,3 +786,90 @@ def test_a_config_built_in_code_with_two_of_the_three_checkpoint_keys_never_post
     code, summary, _ = signing.run(relay=relay)
     assert code == 2 and "error=config" in summary and relay.calls == [] and relay.puts == []
     assert "go together" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------- renewals (ai-tools-alerts#gtw9)
+
+def _claim(at, checked=None, cve="CVE-2026-0001"):
+    """The poster's own claim tag for a KEV reading, confirmed at ``at``."""
+    from aitools_alerts import wire
+    from aitools_alerts.poster import rules
+    obj = json.loads(rules.claim_text([("kev", {"cve_id": cve, "name": "Anthropic Claude Code"})], [cve], "Claude Code", at))
+    return wire.claim_tag({**obj, "checked_at": checked or at})
+
+
+def _renewal(m, root, at, confirmed=None):
+    return m.post(m.bot_sec, "Sources checked. No change to this alert.", created_at=at,
+                  tags=[["e", root["id"], "", "root"], _claim(confirmed or at, at)])
+
+
+def test_a_renewal_the_mirror_stops_serving_is_never_given_up_its_thread_is_left_out(signing):
+    """The mirror keeps a claimed root and hides its renewal. Listed without it, the
+    alert would decay on every reader: after 72 hours the thread is left out instead,
+    until the mirror serves that renewal or a later one."""
+    m = signing.mirror
+    other = on_mirror(m, "Another alert", T0 - 700)
+    root = m.root_post(m.bot_sec, advisory(id="CVE-2026-0001", posted_by="relay-bot"), created_at=T0 - 600,
+                       tags=[_claim(T0 - 600)], files=("feed.json",))
+    hidden = _renewal(m, root, T0 - 500, confirmed=T0 - 600)
+    assert signer.renewals_of(hidden, m.man) == [(T0 - 600, T0 - 500)] and signer.renewals_of(root, m.man) == []
+    _, _, ssh = signing.run(relay=PutRelay())
+    assert {root["id"], hidden["id"]} <= ssh.last().events
+    m.events["feed.json"].remove(hidden)
+    _, _, ssh = signing.run(relay=PutRelay(), now=T0 + 3600)
+    assert {root["id"], hidden["id"]} <= ssh.last().events  # still listed: readers refuse the mirror
+    for hours in (74, 200):
+        _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + hours * 3600)
+        assert "threads_suppressed=1" in summary and "gone_dropped" not in summary
+        assert root["id"] not in ssh.last().events and other["id"] in ssh.last().events
+    later = _renewal(m, root, T0 + 200 * 3600, confirmed=T0 - 600)  # a later check: the hidden one adds nothing now
+    _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + 201 * 3600)
+    assert "gone_dropped=1" in summary and "threads_suppressed" not in summary
+    assert {root["id"], later["id"]} <= ssh.last().events and hidden["id"] not in ssh.last().events
+
+
+def test_a_hidden_reply_in_a_thread_whose_root_has_no_claim_is_given_up_as_before(signing):
+    m = signing.mirror
+    root = on_mirror(m, "Posted before claims", T0 - 600, sec=m.bot_sec)
+    reply = _renewal(m, root, T0 - 500)
+    signing.run(relay=PutRelay())
+    m.events["feed.json"].remove(reply)
+    signing.run(relay=PutRelay(), now=T0 + 3600)
+    _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + 74 * 3600)
+    assert "gone_dropped=1" in summary and "threads_suppressed" not in summary and root["id"] in ssh.last().events
+
+
+def test_an_owed_renewal_is_kept_past_72_hours_until_a_later_one_is_held(tmp_path):
+    path, root, a, b = tmp_path / "owed.json", "c" * 64, "a" * 64, "b" * 64
+    signer.init_owed(path)
+    signer.record_sent(path, a, 100, root, 1000, renewal=(900, 1000))
+    signer.record_sent(path, b, 100, root, 1000)
+    signer.record_sent(path, "d" * 64, 100, None, 1000, renewal=(900, 1000))  # no thread: nothing to renew
+    owed = signer.load_owed(path, 1000)["owed"]
+    assert [o.get("renewal") for o in owed] == [[900, 1000], None, None]
+    late = 1000 + signer.OWED_S
+    kept, dropped, suppress = signer.settle_owed(owed, set(), late)
+    assert [o["id"] for o in kept] == [a] and dropped == 2 and suppress == {root}
+    assert signer.settle_owed(owed, set(), late, {root: [(900, 999)]})[2] == {root}  # an earlier check replaces nothing
+    assert signer.settle_owed(owed, set(), late, {root: [(900, 1000)]}) == ([], 2, set())
+    assert signer.settle_owed(owed, {a}, late)[2] == set()  # the mirror shows it
+
+
+def test_a_must_listed_thread_that_does_not_fit_whole_lists_the_renewals_that_keep_it_standing(monkeypatch):
+    """An owed reply puts the thread on the must-list. Too large to list whole, it used
+    to be listed as its root alone, which a reader would decay. Of two renewals with the
+    same times one is listed, and one that another makes redundant is not."""
+    m = Mirror()
+    root = m.root_post(m.bot_sec, advisory(id="CVE-2026-0001", posted_by="relay-bot"), created_at=T0 - 9000,
+                       tags=[_claim(T0 - 9000)], files=("feed.json",))
+    for i in range(30):
+        m.post(m.bot_sec, f"note {i}", created_at=T0 - 8000 + i, tags=[("e", root["id"], "", "root")])
+    old = _renewal(m, root, T0 - 5000, confirmed=T0 - 9000)
+    twins = sorted([_renewal(m, root, T0 - 100, confirmed=T0 - 9000), _renewal(m, root, T0 - 100, confirmed=T0 - 9000)],
+                   key=lambda e: e["id"])
+    # a reply that names a level renews from its own date: later confirmed than the twins, earlier checked
+    raised = m.post(m.bot_sec, m.patch_text(level="critical"), created_at=T0 - 6000, tags=[("e", root["id"], "", "root")])
+    monkeypatch.setattr(signer, "MAX_LISTED", 10)
+    owed = [{"id": "a" * 64, "bytes": 10, "since": T0, "root": root["id"]}]
+    got = set(_win(m, owed))
+    assert got == {"a" * 64, root["id"], twins[0]["id"], raised["id"]} and old["id"] not in got

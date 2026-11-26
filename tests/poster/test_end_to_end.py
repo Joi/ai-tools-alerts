@@ -62,15 +62,15 @@ class World:
         monkeypatch.setattr(em, "TRUST_ROOT_PUBKEY", self.root)
         self.puts = 0
 
-    def relay_store(self, sec, channel, text, reply_to=None):
-        tags = [["h", CHANNELS[channel]]] + ([["e", reply_to, "", "root"]] if reply_to else [])
+    def relay_store(self, sec, channel, text, reply_to=None, claim=None):
+        tags = [["h", CHANNELS[channel]]] + ([["e", reply_to, "", "root"]] if reply_to else []) + ([claim] if claim else [])
         ev = nostr.sign_event(sec, {"created_at": self.now, "kind": 9, "tags": tags, "content": text})
         self.rows[channel].append(ev)
         return ev
 
-    def send(self, channel_id, text, reply_to=None):
+    def send(self, channel_id, text, reply_to=None, claim=None):
         """A post as the relay takes it over HTTPS: stored as a bot-signed event."""
-        ev = self.relay_store(self.bot_sec, NAME[channel_id], text, reply_to)
+        ev = self.relay_store(self.bot_sec, NAME[channel_id], text, reply_to, claim)
         return transport.SendResult(True, ev["id"], 200, "", "ok")
 
     def ssh(self, argv, **kw):

@@ -38,11 +38,13 @@ def run(env, now, **kw):
     return env.run(now=now, mirror_fetch=served(env, now - 300), **kw)
 
 
-def show(env, call, when=T0 + 5, sec=None, claim=None, **kw):
+def show(env, call, when=T0 + 5, sec=None, claim=..., **kw):
     """Put a send the relay took (a FakeRelay call) on the mirror, under the bot's key,
-    with the claim tag it was sent with (hh5s; ``relay.claims``)."""
+    with the claim tag it was sent with (hh5s; ``call.claim``) unless ``claim`` says
+    otherwise (None: with none)."""
     ch, reply_to, text = call
     tags = [["e", reply_to, "", "reply"]] if reply_to else []
+    claim = getattr(call, "claim", None) if claim is ... else claim
     tags += [claim] if claim else []
     return env.mirror.post(sec or env.mirror.bot_sec, text, created_at=when, tags=tags, files=(f"{ch}.json",), **kw)
 

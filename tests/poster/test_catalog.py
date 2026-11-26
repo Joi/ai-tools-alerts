@@ -148,12 +148,12 @@ def test_catalog_sends_come_after_the_ledger_lock_and_the_checkpoint(env, monkey
     env.collector([finding()])
     seen = []
 
-    def sender(channel_id, text, reply_to=None):
+    def sender(channel_id, text, reply_to=None, claim=None):
         if channel_id == CATALOG:
             with Ledger(env.config.ledger):  # another run could take the lock now
                 seen.append("ledger free")
             seen.append(("checkpoint ran", bool(order)))
-        return FakeRelay()(channel_id, text, reply_to)
+        return FakeRelay()(channel_id, text, reply_to, claim)
     order = []
     real = signer.run_checkpoint
     monkeypatch.setattr(signer, "run_checkpoint", lambda *a, **k: (order.append(1), real(*a, **k))[1])

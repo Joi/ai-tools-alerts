@@ -461,3 +461,30 @@ def test_a_groups_members_are_keyed_under_its_former_names_too():
     groups = {}
     (m, _), = ledger.merge([pair(a), pair(b)], groups=groups)
     assert set(groups) == {("mcp-server-git", m.id.casefold()), ("MCP servers and clients", m.id.casefold())}
+
+
+def test_the_standing_claim_and_the_roots_ids_are_optional_keys(tmp_path):
+    """gtw9: an entry without them loads; ``set_claim`` writes the claim, and the root's
+    ids once; a level change recorded later counts from when it was sent."""
+    import json
+    p = tmp_path / "l.json"
+    with Ledger(p) as led:
+        led.record_root(adv_for(cand()), "e1", {"feed": "e1"}, scope="Claude Code", exploited=False, now=T0)
+        e = led.thread("e1")
+        assert e.claim is None and e.root_ids is None
+        with pytest.raises(LedgerError):
+            led.set_claim("e1", "")
+        with pytest.raises(LedgerError):
+            led.set_claim("nope", "{}")
+        assert led.set_claim("e1", "one", ["CVE-2026-0001", "GHSA-x"]).root_ids == ["CVE-2026-0001", "GHSA-x"]
+        e = led.set_claim("e1", "two", ["other"])
+        assert e.claim == "two" and e.root_ids == ["CVE-2026-0001", "GHSA-x"]  # the root's ids are written once
+        led.record_reply("e1", adv_for(cand(), "high"), {"feed": "r1"}, now=T0 + 9 * DAY, changed_at=T0 + DAY)
+        assert led.thread("e1").changed == [T0 + DAY]
+    with Ledger(p) as led:
+        assert led.thread("e1").claim == "two"
+    data = json.loads(p.read_text())
+    data["entries"][0]["claim"] = ""
+    p.write_text(json.dumps(data))
+    with pytest.raises(LedgerError):
+        Ledger(p).__enter__()

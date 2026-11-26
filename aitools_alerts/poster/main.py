@@ -59,7 +59,16 @@ run for RETRY_DAYS. At most 30 advisory requests a run, in three lanes.
 
 A reply that changes a thread's level carries the claim tag of the reading the change
 rests on (``Run._claim``, ``rules.claim_text``; ai-tools-alerts#hh5s, spec/wire.md); the
-journal item keeps its text. Roots carry none until the poster renews (``ROOT_CLAIMS``).
+journal item keeps its text. So does a root and its copy (``ROOT_CLAIMS``), and the ledger
+keeps the newest claim of a level sent for such a thread, its standing claim.
+
+Every run ends by renewing what readers would otherwise let decay (``Run.renew``,
+ai-tools-alerts#gtw9): a thread with a standing claim whose life on a reader is under
+half its level's TTL gets a reply with no block and a claim tag in each of its channels,
+confirmed now when this run's reads state the claim's level again, else with the old
+confirmation and checked now. A level no read has confirmed for 45 days (less a day) is
+lowered one step, the reply saying why. A renewal is not journaled: one not acknowledged
+is sent by the next run.
 
 The recompute ends by posting the copy a thread's level lacks (``Run.copies``,
 ai-tools-alerts#3t4p): a thread it raised to critical that has a root in ``feed``
@@ -93,7 +102,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from aitools_alerts import TRUST_ROOT_PUBKEY, check, manifest, pull, ruleset, schema, versions, wire
+from aitools_alerts import TRUST_ROOT_PUBKEY, check, manifest, pull, ruleset, schema, verify, versions, wire
 from aitools_alerts import config as _member_config
 from aitools_alerts.poster import (candidates, catalog, compose, inputs, ledger, recompute, rules, signer, sources,
                                    translate, wording,
@@ -123,11 +132,15 @@ SETTLE_SKEW = 600  # an event dated this long before the attempt is still its de
 MIRROR_FRESH = 3600  # a channel file generated longer ago proves no absence
 GIVE_UP = 72 * 3600  # an unknown send is sent again after this whatever the mirror says (signer.OWED_S)
 WITHHELD_SECONDS = 3 * 86400  # a refused item is dropped, and its advisory planned anew, after this
-# hh5s: whether a root and its copies carry a claim tag. Off until the poster renews
-# (ai-tools-alerts#gtw9, which turns it on): readers 0.1.8 and later decay a thread whose
-# root carries a claim (critical for 14 days) unless a later claim renews it, and a thread
-# whose root carries none never expires, whatever its replies carry (spec/wire.md).
-ROOT_CLAIMS = False
+# hh5s: whether a root and its copies carry a claim tag. Readers 0.1.8 and later decay a
+# thread whose root carries a claim (critical for 14 days) unless a later claim renews it,
+# and a thread whose root carries none never expires, whatever its replies carry
+# (spec/wire.md). On since the poster renews (``Run.renew``, ai-tools-alerts#gtw9) and the
+# signer keeps a renewal the mirror hides (``signer.settle_gone``): never on without both.
+ROOT_CLAIMS = True
+MAX_RENEWALS = 20  # gtw9: renewal sends a run, the thread with the least life left first
+STEP_EARLY = 86400  # gtw9: an unconfirmed level is stepped down this long before readers drop it
+_CLAIM_RANK = {ruleset.NONE: -1, **RANK}
 _LEVEL_LINE = ("level: high", "level: notice")
 
 
@@ -181,6 +194,7 @@ class Run:
         # jsje: thread root -> (journal items, withheld groups) a raise of that thread will
         # replace (yields). They stay where they are until the raise is journaled (enqueue).
         self.passed: dict[str, tuple] = {}
+        self.unrenewed: set[str] = set()  # gtw9: roots this run's checkpoint leaves out (renew)
 
     def save(self):
         inputs.save_state(self.config.state, self.state)
@@ -348,14 +362,27 @@ class Run:
         shows it (signer.record_sent), written now, before the journal lets the item go."""
         if self.config.checkpoint_key_file is None or it.get("sent") is None:
             return
-        root = it.get("root") if it["kind"] == "ja" else None
+        root, e = it.get("root") if it["kind"] == "ja" else None, None
         if it["kind"] == "reply":  # the root it replied to in ITS channel (a critical has one per channel)
             e = self.led.lookup(it["ids"], scope=it.get("scope"))
             root = (getattr(e, "channel_ids", {}).get(it["channel"]) if e is not None else None) or it.get("root")
+        self._owed(it["sent"], it["text"], self._tag(it), root,
+                   reply=it["kind"] == "reply" and getattr(e, "claim", None) is not None)
+
+    def _owed(self, eid, text, tag, root, reply):
+        """Record one acknowledged post as owed. ``reply``: it is a reply in a thread whose
+        root carries a claim. One a reader counts as a renewal of that thread says so, with
+        the times it counts (gtw9, ``signer.renewals_of``): the run's time twice for one
+        whose block names a level (the event is dated no earlier), else its claim's. The
+        signer never gives such a reply up for lost."""
+        if self.config.checkpoint_key_file is None:
+            return
         try:
-            tag = self._tag(it)  # hh5s: the claim tag is part of what a channel file holds
-            size = len(it["text"].encode("utf-8")) + (wire.tag_bytes(tag) if tag else 0)
-            signer.record_sent(self.config.owed_state, it["sent"], size, root, self.now)
+            size = len(text.encode("utf-8")) + (wire.tag_bytes(tag) if tag else 0)  # hh5s: a channel file holds the tag
+            c = self._parsed(tag[1]) if tag and reply else None
+            named = (pull._patch(text) or {}).get("level") if reply else None
+            times = (self.now, self.now) if named in RANK else (c["confirmed_at"], c["checked_at"]) if c else None
+            signer.record_sent(self.config.owed_state, eid, size, root, self.now, renewal=times)
         except OSError as e:  # a debt that cannot be written down must stop the run, not be forgotten
             self.owe_failed = True  # and this run signs no checkpoint: it would omit the post
             raise LedgerError(f"checkpoint state {self.config.owed_state}: {e.strerror or e}") from None
@@ -865,6 +892,7 @@ class Run:
                 self.led.record_root(schema.validate(it["adv"]), eid, {ch: eid}, scope=it["scope"],
                                      exploited=it["exploited"], now=self.now, ids=it["ids"],
                                      source_title=it.get("source_title"), floor=it.get("floor"))
+            self._stand(eid, it, enrol=True)
             for o in self.state["outbox"]:  # its copies now name this thread, never a lookup
                 if o["kind"] == "copy" and o["root"] is None and o["scope"] == it["scope"] \
                         and _fold(o["ids"]) & _fold(it["ids"]):
@@ -873,6 +901,7 @@ class Run:
             e = self._entry(it)
             if ch not in e.channel_ids:
                 self.led.add_channel(e.root_event_id, ch, eid)
+            self._stand(e.root_event_id, it)
         elif it["kind"] == "reply":
             e = self._entry(it)
             if not any(r.get(ch) == eid for r in e.replies):
@@ -889,8 +918,11 @@ class Run:
                         self.rc["lowered"] = (self.rc["lowered"] + [low])[-recompute.MAX_LOWERED:]
                     recompute.note(self.rc, e.root_event_id, self.now)  # the breaker counts what was sent, once
                     self.save_rc()
-                self.led.record_reply(e.root_event_id, adv, {ch: eid},
-                                      now=self.now, exploited=it["exploited"], ids=it["ids"])
+                # gtw9: the level counts from the attempt's time, also when a later run records it
+                at = [p["at"] for p in self.led.pending_entries() if p["key"] == it["key"]] + [it.get("tried", self.now)]
+                self.led.record_reply(e.root_event_id, adv, {ch: eid}, now=self.now, exploited=it["exploited"],
+                                      ids=it["ids"], changed_at=min(at))
+            self._stand(e.root_event_id, it)
         else:  # digest: acknowledge exactly the notices and ledger cutoff it was built from
             snap = set(it["adv"]["held"])
             keep = [h for h in self.state["held"] if not set(self._notice_keys(h["scope"], h["adv"])) <= snap]
@@ -905,6 +937,33 @@ class Run:
                               digest_roots=it["adv"]["roots"], digest_ids=ids,
                               held=keep, digested=(self.state["digested"] + sorted(snap))[-MAX_DIGESTED:])
             _say(f"digest {it['date']} sent: {eid}")
+
+    @staticmethod
+    def _parsed(text) -> dict | None:
+        """The claim a tag's text holds when a reader takes it as a renewal (well formed,
+        of a level), else None."""
+        try:
+            c = ruleset.parse_claim(wire.claim_of({"tags": [[wire.CLAIM_TAG, text]]}))
+        except Exception:  # noqa: BLE001 - whatever the text holds, it is then no claim
+            return None
+        return c if c["level"] != ruleset.NONE else None
+
+    def _stand(self, root, it, enrol=False):
+        """gtw9: a sent item's claim of a level becomes its thread's standing claim, when
+        it was checked no earlier than the one the ledger holds. ``enrol``: the item is the
+        thread's first root, whose claim is what makes readers compute the thread's life.
+        A reply's or a later copy's claim is kept only for a thread that has one already,
+        so a thread whose first root carries none is never renewed or stepped down."""
+        new = self._parsed(it.get("claim"))
+        e = self.led.thread(root)
+        if new is None or e is None or (e.claim is None and not enrol):
+            return
+        ids = e.root_ids if e.claim is not None else [it["adv"]["id"], *it["adv"]["aliases"]]
+        if verify.norm_id(new["id"]) not in {verify.norm_id(i) for i in ids or ()}:
+            return  # about an id a later reply brought: no renewal may rest on it (Entry.root_ids)
+        old = self._parsed(e.claim)
+        if old is None or new["checked_at"] >= old["checked_at"]:
+            self.led.set_claim(root, it["claim"], None if e.claim is not None else ids)
 
     def busy(self, ids, scope, passing=False) -> bool:
         """True when this advisory has journaled work or a send in flight. Its ids are
@@ -1380,7 +1439,9 @@ class Run:
         # own event leaves the thread with: a copy states them all, a level-only reply none new.
         def claim_for(ids):
             return self._claim(rules._readings(c), ids, scope.name)
-        claim = claim_for([new.id, *new.aliases]) if copies and ROOT_CLAIMS else None
+        # gtw9: only for a thread whose first root carries one, so both roots are enrolled alike
+        claim = (claim_for([new.id, *new.aliases]) or self._checked(entry)) \
+            if copies and ROOT_CLAIMS and entry.claim is not None else None
         w = self.wording(k, scope, level, reason) if copies else None  # c6ak: a copy is a post
         if w is not None:
             text = compose.root_post(k, (level, reason), scope, posted_at=prev.posted_at, wording=w)[0]
@@ -1422,14 +1483,14 @@ class Run:
                       for ch in entry.channel_ids]
         return items
 
-    def _level_items(self, entry, level, claim=None):
+    def _level_items(self, entry, level, claim=None, reason=None):
         """A level change and nothing else (``compose.level_post``), one reply for each
         channel the thread has a root in, each with the claim the change rests on
         (``_claim``; None: no reading states it). No Japanese copy: the digest reports it. A
         channel of the new level the thread has no root in gets its copy from ``copies``,
-        which is a root there and carries no claim (``ROOT_CLAIMS``)."""
+        which is a root there. ``reason``: a sentence for the reply's line (gtw9)."""
         prev = schema.validate(entry.advisory)
-        text = compose.level_post(prev, level)
+        text = compose.level_post(prev, level, reason)
         return [self._item("reply", entry.scope, entry.aliases, ch, text, key_id=f"{prev.id}#level",
                            adv=asdict(replace(prev, level=level)), exploited=entry.exploited,
                            root=entry.root_event_id, claim=claim) for ch in entry.channel_ids]
@@ -1640,14 +1701,183 @@ class Run:
                         {e.root_event_id, *e.channel_ids.values()}):
                     continue
                 text = compose.copy_post(adv, scope, title=e.source_title, exploited=e.exploited)
+                # gtw9: a root in its channel, enrolled as the thread's first root is: the claim
+                # this run's reads state, else the standing one, checked now. None for a
+                # thread whose first root carries none (a copy must not enrol it).
+                claim = (self._claim(getattr(self, "readings", {}).get(e.root_event_id, ()), [adv.id, *adv.aliases], e.scope)
+                         or self._checked(e)) if ROOT_CLAIMS and e.claim is not None else None
                 ja = self._ja(compose.root_post_ja, adv, compose.title_reason(adv), False, e.source_title,
                               exploited=e.exploited is True, package=compose.package_of(scope))
                 items = [self._item("copy", e.scope, e.aliases, ch, text, key_id=adv.id, exploited=e.exploited,
-                                    root=e.root_event_id, ja=ja) for ch in missing]
+                                    root=e.root_event_id, ja=ja, claim=claim) for ch in missing]
             except ValueError:
                 self.n["withheld"] += 1
                 continue
             self.enqueue(items)
+
+    # ------------------------------------------------------------ renewals (gtw9)
+
+    def _checked(self, e) -> str | None:
+        """The thread's standing claim with ``checked_at`` now: what a check that could
+        not confirm says. None for a thread with none, or a clock behind its last check."""
+        old = self._parsed(e.claim)
+        if old is None or self.now < old["checked_at"]:
+            return None
+        try:
+            return wire.claim_tag({**old, "checked_at": self.now})[1]
+        except ValueError:
+            return None
+
+    def _confirming(self, e, old) -> tuple[bool, str | None]:
+        """(whether this run's reads confirm the thread's level, the text of the renewal's
+        claim when they do). Confirmed: the thread was judged (``_judge``) and, of the
+        readings its verdict rested on, the one chosen for its ids gives no less than the
+        level being kept, the lower of the standing claim ``old``'s and the ledger's. A
+        read that failed, was not made or cannot lower, a thread not judged, and a source
+        that now states less do not confirm. The text is the new claim, or, when that no
+        longer fits a tag (the size of a reading is no failure to confirm), ``old`` with
+        both times now: the fields of the last reading that fit."""
+        root = e.root_event_id
+        if root not in getattr(self, "judged", ()) or not e.root_ids:
+            return False, None
+        try:
+            ids = e.root_ids  # what the first root stated: every reader of the thread holds them
+            read = getattr(self, "readings", {}).get(root, ())
+            whole = rules.claim_text(read, ids, e.scope, self.now, limit=False)
+            new = ruleset.parse_claim(json.loads(whole)) if whole else None
+        except (ValueError, RecursionError):  # a RulesetError is a ValueError
+            return False, None
+        kept = min(_CLAIM_RANK[old["level"]], RANK[e.level])
+        if new is None or _CLAIM_RANK.get(new["level"], -1) < kept or new["level"] == ruleset.NONE:
+            return False, None
+        text = self._claim(read, ids, e.scope)
+        if text is None:
+            try:
+                text = wire.claim_tag({**old, "confirmed_at": self.now, "checked_at": self.now})[1]
+            except ValueError:
+                return False, None
+        return True, text
+
+    @staticmethod
+    def _life(e, rs, confirmed_at, checked_at) -> int:
+        """The last second a reader keeps the thread at its ledger level, as the reader
+        computes it (``Ruleset.stands_until``): by a claim with these times, or by the
+        thread's last level change, which a reader counts as a renewal of its own date."""
+        t = max(e.changed or [0])
+        return max(rs.stands_until(e.level, confirmed_at, checked_at), rs.stands_until(e.level, t, t) if t else 0)
+
+    def renew(self):
+        """Keep every enrolled thread (one with a standing claim) standing on readers, and
+        step down the level nothing confirms (module docstring; docs/superpowers/specs/
+        2026-11-26-gtw9-renewals-and-step-down-design.md).
+
+        For each: ``life`` is how long what was sent keeps its level standing, ``best``
+        how long a renewal sent now would: the claim this run's reads confirm
+        (``_confirming``), else the standing claim checked now. When ``best`` is under
+        STEP_EARLY away (45 days since the last confirmation, or the level's TTL since
+        the step that brought it there), a level above notice is lowered one step through
+        the journal, as every lowering is, with the reason in its line. Otherwise a
+        renewal is due when under half the level's TTL is left and it adds life, or when
+        the checkpoint state was lost since the claim was checked (``signer.load_owed``:
+        what was owed is forgotten, so every thread is renewed and owed anew).
+
+        A renewal is a reply with no block in each of the thread's channels, at most
+        MAX_RENEWALS sends a run, the due threads in an order that starts one further on
+        each hour. It is not journaled: the ledger takes the new claim when every channel
+        acknowledged it, a thread whose send was not is left for the next run, and three
+        such sends end the pass. ``unrenewed`` then holds the roots of each thread whose
+        due renewal or step is undelivered with under two hours of life left, of each
+        whose renewal after a lost checkpoint state is undelivered, and of each channel
+        that lacks a journaled level reply: the checkpoint leaves them out, since listed
+        they would decay for want of an event the poster failed to send. Raises _Stop or
+        LedgerError as a step down's send does."""
+        try:
+            self._renew()
+        finally:  # also when a step's send stopped the run: what is unsent must not be vouched for
+            for it in self.state["outbox"] + self._withheld_items():
+                e = self.led.thread(it["root"]) if it["kind"] == "reply" and it["sent"] is None \
+                    and "#level:" in it["key"] else None
+                if e is not None and e.claim is not None and it["channel"] in e.channel_ids:
+                    # A level reply this channel lacks: the ledger's level, and so ``life``,
+                    # may already count it (another channel took it). Not listed until sent.
+                    self.unrenewed.add(e.channel_ids[it["channel"]])
+
+    def _renew(self):
+        rs, due, steps = ruleset.load(), [], []
+        lost, soon = None, self.now + 2 * 3600
+        if self.config.checkpoint_key_file is not None:
+            # What was owed was forgotten when this hold began (it stays in the record after
+            # it ends): every claim checked before then is renewed, due or not.
+            hold = signer.load_owed(self.config.owed_state, self.now)["hold_until"]
+            lost = hold - signer.OWED_S if hold > 0 else None
+
+        def lapsing(life, e, anyway=False):
+            if life < soon or anyway:
+                self.unrenewed |= {e.root_event_id, *e.channel_ids.values()}
+        for e in self.led.entries():
+            old = self._parsed(e.claim)
+            if old is None or compose.is_synthetic(e.advisory.get("id")) or self.now < old["checked_at"]:
+                continue
+            fresh, text = self._confirming(e, old)
+            life = self._life(e, rs, old["confirmed_at"], old["checked_at"])
+            best = self._life(e, rs, self.now if fresh else old["confirmed_at"], self.now)
+            if not fresh and best - self.now <= STEP_EARLY:
+                if RANK[e.level] > 0:
+                    if self.busy(e.aliases, e.scope):
+                        lapsing(best, e)  # its step, or other work of the thread, is in flight
+                    else:
+                        steps.append((best, e, old))
+                continue
+            forced = lost is not None and old["checked_at"] < lost
+            if forced or (life - self.now <= rs.ttl_days[e.level] * 86400 // 2 and best > life):
+                due.append((life, e, text if fresh else self._checked(e), forced))
+        due.sort(key=lambda x: x[1].root_event_id)
+        k = (self.now // 3600) % len(due) if due else 0
+        left, failed = MAX_RENEWALS, 0
+        for life, e, text, forced in due[k:] + due[:k]:
+            ok = None
+            if text is not None and len(e.channel_ids) <= left and failed < 3:
+                left -= len(e.channel_ids)
+                ok = self._send_renewal(e, text)
+                failed += ok is False
+            if not ok:
+                lapsing(life, e, anyway=forced)
+        for best, e, old in steps:
+            if not self._step_down(e, old):
+                lapsing(best, e)
+
+    def _step_down(self, e, old) -> bool:
+        days = (self.now - old["confirmed_at"]) // 86400
+        lower = next(lv for lv, r in RANK.items() if r == RANK[e.level] - 1)
+        try:
+            items = self._level_items(e, lower, self._checked(e), compose.UNCONFIRMED.format(days=days))
+        except ValueError:  # compose refused it: nothing is journaled, and the caller says so
+            self.n["withheld"] += 1
+            return False
+        _say(f"{compose.public_form(e.advisory.get('id'))}: no source confirmed {e.level} for {days} days; lowered to {lower}")
+        self.enqueue(items)
+        return True
+
+    def _send_renewal(self, e, text) -> bool | None:
+        """Send one thread's renewal to each of its channels. True when every channel
+        acknowledged it (the ledger then holds the claim); None when the relay refused
+        one or it is not sendable; False when a send failed or gave no answer."""
+        body, tag = compose.renewal_post(), [wire.CLAIM_TAG, text]
+        for ch, root in sorted(e.channel_ids.items()):
+            try:
+                transport.check_send(self.channels[ch], body, root, tag)
+            except (ValueError, KeyError):
+                self.n["renew_failed"] += 1
+                return None
+            r = self.send(self.channels[ch], body, root, tag)
+            if r.outcome != "ok":
+                self.n["renew_failed"] += 1
+                _say(f"renewal of {compose.public_form(e.advisory.get('id'))} in {ch} {r.outcome}: the next run sends it")
+                return None if r.outcome == "refused" else False
+            self._owed(r.event_id, body, tag, root, reply=True)
+            self.n["renewed"] += 1
+        self.led.set_claim(e.root_event_id, text)
+        return True
 
     def _withdrawn(self, root, fetch=None) -> tuple[set, set]:
         """(case-folded advisory ids, root event ids) withdrawn under ``root`` as of a
@@ -2110,6 +2340,13 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                     err = str(e)
                 if merged is not None:
                     r.defer([p for p in merged if p is not None])  # unplanned: they wait in the state
+            if err is None:  # gtw9: also after a stopped send, so one thread's failure starves no renewal
+                try:
+                    r.renew()
+                except _Stop:
+                    code = 1
+                except LedgerError as e:
+                    code, err = 1, str(e)
             if merged is not None:
                 state["deferred"] = list(r.deferred.values())  # replaces last run's list only now
                 live = {f"{sc}|{i.casefold()}" for (sc, _), d in r.deferred.items() for i in [d["id"], *d["aliases"]]}
@@ -2131,7 +2368,8 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                     cp_status = "owed-unrecorded"
                 else:
                     cp_status = signer.run_checkpoint(config, now, ssh=ssh, fetch=mirror_fetch,
-                                                      root=translate_kw.get("root", TRUST_ROOT_PUBKEY))
+                                                      root=translate_kw.get("root", TRUST_ROOT_PUBKEY),
+                                                      suppress=frozenset(r.unrenewed))
             except Exception as e:  # noqa: BLE001 - nothing here may reach the run's exit code
                 cp_status = "error"
                 _say(f"checkpoint stopped: {type(e).__name__}")
@@ -2164,6 +2402,8 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
     done = ("settled", "resent", "dropped", "superseded")
     if any(n[k] for k in done):  # jsje: likewise, only in a run that settled something by itself
         summary += " settled=" + ",".join(f"{'delivered' if k == 'settled' else k}:{n[k]}" for k in done)
+    if n["renewed"] or n["renew_failed"]:  # gtw9: likewise, only in a run that tried a renewal
+        summary += f" renewed={n['renewed']}" + (f"/{n['renew_failed']}" if n["renew_failed"] else "")
     if err:
         print(f"aitools-alerts-poster: {err}", file=sys.stderr)
         summary += " error=" + ("internal" if err.startswith("internal error") else "ledger")

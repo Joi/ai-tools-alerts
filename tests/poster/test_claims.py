@@ -1,5 +1,5 @@
 """The claim travels in the event tag of the level changes the poster sends, and of its
-roots once ``main.ROOT_CLAIMS`` is on (ai-tools-alerts#hh5s). Through ``main.run`` with
+roots (``main.ROOT_CLAIMS``, on since ai-tools-alerts#gtw9; ai-tools-alerts#hh5s). Through ``main.run`` with
 the fake relay, which records the claim tag each send was given (``relay.claims``)."""
 
 import json
@@ -21,7 +21,7 @@ CC = "Claude Code"
 
 @pytest.fixture
 def roots_on(monkeypatch):
-    """As ai-tools-alerts#gtw9 will ship it: a root and its copies carry their claim."""
+    """As shipped since ai-tools-alerts#gtw9: a root and its copies carry their claim."""
     monkeypatch.setattr(main, "ROOT_CLAIMS", True)
 
 
@@ -47,12 +47,20 @@ def level_claims(relay):
 # ---------------------------------------------------------------- roots and copies
 
 
-def test_as_shipped_a_root_and_its_copy_carry_no_claim(env):
+def test_with_root_claims_off_a_root_and_its_copy_carry_no_claim_and_the_thread_has_none(env, monkeypatch):
+    monkeypatch.setattr(main, "ROOT_CLAIMS", False)  # as every thread posted before gtw9
     kev_fixed(env)
     code, summary, relay = env.run()
     assert code == 0 and [c[0] for c in relay.calls] == ["critical", "feed"]
     assert relay.claims == [None, None]
-    assert all("claim" not in it for it in env.state()["outbox"])
+    assert all("claim" not in it for it in env.state()["outbox"]) and "claim" not in env.ledger()[0][0]
+
+
+def test_as_shipped_a_root_and_its_copy_carry_the_claim_and_the_ledger_keeps_it(env):
+    kev_fixed(env)
+    code, summary, relay = env.run()
+    assert code == 0 and relay.claims[0] == relay.claims[1] and claim(relay.claims[0], T0, "critical", "kev")
+    assert env.ledger()[0][0]["claim"] == relay.claims[0][1]
 
 
 def test_with_root_claims_on_a_root_and_its_copy_carry_one_claim(env, roots_on):
@@ -180,7 +188,7 @@ def test_a_raise_a_candidate_brings_carries_the_claim_and_a_later_fix_reply_carr
         obj = claim(c, T0 + HOUR, "critical", "kev")
         assert obj["id"] == CVE
     copies = [c for (ch, reply, text), c in zip(relay.calls, relay.claims) if reply is None]
-    assert copies == [None]  # the critical channel's copy is a root: none as shipped
+    assert len(copies) == 1 and claim(copies[0], T0 + HOUR, "critical", "kev")  # a root there: enrolled as the first
     env.collector([finding(fid=G, severity="moderate", fixed="2.2.0")])
     relay = run(env, 2)
     later = [c for (ch, reply, text), c in zip(relay.calls, relay.claims) if reply is not None]
@@ -397,7 +405,7 @@ def test_an_unknown_claimed_level_reply_is_settled_only_by_an_event_with_its_cla
         run(env, h)
     code, summary, relay = env.run(now=T0 + 25 * HOUR, relay=FakeRelay("unknown"))
     assert code == 1 and relay.claims[0] is not None and relay.calls[0][1] is not None
-    show(env, relay.calls[0], when=T0 + 25 * HOUR + 5)  # the same text in the thread, with no claim: another event
+    show(env, relay.calls[0], when=T0 + 25 * HOUR + 5, claim=None)  # the same text in the thread, with no claim: another event
     code, summary, again = env.run(now=T0 + 26 * HOUR)
     assert "settled" not in summary and again.calls == [] and entries(env)[0]["level"] == "high"
     ev = show(env, relay.calls[0], when=T0 + 25 * HOUR + 6, claim=relay.claims[0])

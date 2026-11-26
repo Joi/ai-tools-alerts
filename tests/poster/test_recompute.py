@@ -804,11 +804,12 @@ def test_the_rollback_steps_name_every_key_an_older_poster_refuses(env):
     env.collector([finding()], name="2026-11-07T000000Z")
     one(env, 26, relay=FakeRelay("fail"), code=1)  # another advisory's root fails to send: it waits in the journal
     items = env.state()["outbox"]
-    assert [it.get("floor") for it in items] == ["high"] and all(set(it) - {"floor"} <= OLD_ITEM_KEYS for it in items)
+    # gtw9: and ``claim``, which a root's item and a claimed thread's entry now hold (CHANGELOG)
+    assert [it.get("floor") for it in items] == ["high"] and all(set(it) - {"floor", "claim"} <= OLD_ITEM_KEYS for it in items)
     one(env, 27, BACK)  # the lowered thread is raised
     e = next(e for e in env.ledger()[0] if e["exploited"])
     assert {"lowered", "changed", "floor"} <= set(e) and len(e["changed"]) == 2
-    assert all(set(x) - {"lowered", "changed", "floor", "root_fixed"} <= OLD_ENTRY_KEYS for x in env.ledger()[0])
+    assert all(set(x) - {"lowered", "changed", "floor", "root_fixed", "claim", "root_ids"} <= OLD_ENTRY_KEYS for x in env.ledger()[0])
     # 9kgk: root_fixed too (CHANGELOG)
 
 
