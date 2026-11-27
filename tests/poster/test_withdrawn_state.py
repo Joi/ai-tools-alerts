@@ -389,7 +389,8 @@ def test_a_partly_withdrawn_thread_is_brought_to_the_ledgers_level_not_below(env
 def test_a_reply_that_ends_the_state_passes_the_withdrawal_one_channel_still_lacks(env, monkeypatch):
     """``yields``: one channel took the withdrawal and the other's send failed, then the
     advisory is back. The unsent withdrawal leaves the journal in the save that journals
-    the level reply, which goes to the channel that is withdrawn."""
+    the level reply, which goes to both channels (aqtf: to the one that never took the
+    withdrawal too, for the reply's date)."""
     asked = []
     real = main.Run.yields
     monkeypatch.setattr(main.Run, "yields", lambda self, e, level: asked.append(level) or real(self, e, level))
@@ -402,7 +403,8 @@ def test_a_reply_that_ends_the_state_passes_the_withdrawal_one_channel_still_lac
     assert [it["channel"] for it in env.state()["outbox"]] == [c for c in ("feed", "critical") if c != took]
     env.api.put(G, ghsa_json(G, **malware))
     relay = run(env, 26)
-    assert asked and [(c[0], json.loads(schema._last_block(c[2]))) for c in relay.calls] == [(took, {"level": "critical"})]
+    assert asked and sorted((c[0], json.loads(schema._last_block(c[2]))["level"]) for c in relay.calls) == [
+        ("critical", "critical"), ("feed", "critical")]
     (e,) = entries(env)
     assert "withdrawn" not in e and e["level"] == "critical" and env.state()["outbox"] == []
     assert moved(env, 27, 30) == []

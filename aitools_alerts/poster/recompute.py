@@ -375,7 +375,7 @@ def withdrawal(counted) -> bool:
 
 
 def leaving(entry, found: str, known: bool, counted, rs) -> str | None:
-    """The level a withdrawn thread (``Entry.withdrawn``) returns to on this read, or
+    """The level a withdrawn thread (``Entry.gone``) returns to on this read, or
     None while it stays withdrawn (kk2q). Its level reads as ``none``, so each way out
     is a raise and needs no wait: a read supports a level (``found``, as ``held`` gave
     it); its prose floor is above notice (a candidate taught it since); or every source
@@ -398,7 +398,7 @@ def raised(entry, scope, copy: Copy | None, rs, read=None) -> str | None:
     on ``judge``'s own account of what was read whole."""
     found, known, _, _, stop = support(entry, scope, copy, rs, read)
     found = held(entry, scope, found, rs, stop, infer=not known)
-    if entry.withdrawn:
+    if entry.gone:
         return leaving(entry, found, False, (), rs)
     return found if rs.rank(found) > rs.rank(entry.level) else None
 
@@ -439,7 +439,7 @@ def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int, read=None, in
         info.update(known=known, listed=listed, readings=counted)
     off = found == ruleset.NONE and not listed and withdrawal(counted)  # before ``held``: what the sources state
     found = held(entry, scope, found, rs, stop, infer=not known)
-    if entry.withdrawn:
+    if entry.gone:
         dwell.pop(root, None)
         level = leaving(entry, found, known, counted, rs)
         return ("raise", level) if level is not None else None

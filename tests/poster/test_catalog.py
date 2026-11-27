@@ -139,10 +139,10 @@ def test_a_withdrawn_thread_that_no_longer_starts_at_its_level_still_leaves_the_
     out = next(e for e in schema.load_scope() if not main.rules.starts(e, "notice") and main.rules.starts(e, "high"))
     adv["products"][0].update(name=out.name, ecosystem=out.ecosystem)
     assert catalog._valid(adv) is not None
-    entry = SimpleNamespace(scope=out.name, level="notice", advisory=adv, withdrawn=["feed"])
+    entry = SimpleNamespace(scope=out.name, level="notice", advisory=adv, gone=True)  # aqtf: the standing reply's
     led = SimpleNamespace(entries=lambda: [entry])
     assert catalog.snapshot(led, []) == {catalog.key(out.name, adv["id"]): None}
-    entry.withdrawn = None
+    entry.gone = False
     assert catalog.snapshot(led, []) == {}  # not withdrawn: a notice of an out product starts nothing, as before
 
 
