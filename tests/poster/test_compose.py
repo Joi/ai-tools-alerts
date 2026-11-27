@@ -7,7 +7,7 @@ import socket
 
 import pytest
 
-from aitools_alerts import schema
+from aitools_alerts import schema, wire
 from aitools_alerts.poster import compose, rules
 from aitools_alerts.poster.candidates import Candidate, Source
 
@@ -109,6 +109,21 @@ def test_body_never_contains_host_names(monkeypatch):
     # An alias that is not a CVE or GHSA id is never published (h340), a host name included.
     text, adv = root(cand(aliases=("host-alpha", "OSV-2026-9", "CVE-2026-0001:claude-code", "CVE-2026-0044")))
     assert adv.aliases == ["CVE-2026-0044"] and "host-alpha" not in text and "OSV" not in text
+
+
+def test_the_withdrawal_is_one_line_and_the_block_alone_and_no_level_to_the_schema():  # kk2q
+    text = compose.withdrawal_post()
+    assert text == "The source withdrew this advisory.\n\n```aitools-alert\n{\"level\":\"withdrawn\"}\n```\n"
+    assert wire.is_withdrawal(json.loads(schema._last_block(text))) and schema.parse_post(text) is None
+    _, adv = root(cand())
+    assert compose.parse_reply(text, adv) is None  # a reader of the schema takes no level from it
+    # the reply that ends it may name the level the thread kept; nothing else may
+    with pytest.raises(ValueError):
+        compose.level_post(adv, adv.level)
+    again = compose.level_post(adv, adv.level, again=True)
+    assert json.loads(schema._last_block(again)) == {"level": adv.level} and compose.parse_reply(again, adv) == adv
+    with pytest.raises(ValueError):
+        compose.level_post(adv, "withdrawn", again=True)
 
 
 def test_rule_inputs_never_reach_post_text():

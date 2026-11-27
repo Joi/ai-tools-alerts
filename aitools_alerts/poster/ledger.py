@@ -87,6 +87,12 @@ class Entry:
     # of them only, so a reader that holds the root and the renewal counts it, whatever
     # replies it lacks (an alias a later reply brought is not one a renewal may rest on).
     root_ids: list | None = None
+    # kk2q: the channels of the thread whose last level reply is the withdrawal (spec/wire.md
+    # "A withdrawal"), sorted; the thread is in the state ``withdrawn`` while any is named.
+    # ``level`` and ``advisory`` keep what the thread stood at, which released readers still
+    # show. By channel, so that a channel the reply that ends the state never reached is
+    # still known to lack it. Absent when no channel is.
+    withdrawn: list | None = None
 
     @property
     def listed(self) -> int:
@@ -128,7 +134,10 @@ def _entry_ok(e) -> bool:
             and ("changed" not in e or (isinstance(e["changed"], list) and len(e["changed"]) <= 50
                                         and all(type(t) is int for t in e["changed"])))
             and ("claim" not in e or (isinstance(e["claim"], str) and bool(e["claim"])))
-            and ("root_ids" not in e or (_strs(e["root_ids"]) and bool(e["root_ids"]) and "claim" in e)))
+            and ("root_ids" not in e or (_strs(e["root_ids"]) and bool(e["root_ids"]) and "claim" in e))
+            and ("withdrawn" not in e or (_strs(e["withdrawn"]) and bool(e["withdrawn"])
+                                          and e["withdrawn"] == sorted(set(e["withdrawn"]))
+                                          and set(e["withdrawn"]) <= set(e["channel_ids"]))))
 
 
 def _pending_ok(p) -> bool:
@@ -377,19 +386,36 @@ class Ledger:
             self._save()
 
     def record_reply(self, root_event_id: str, adv: schema.Advisory, reply_ids: dict, *,
-                     now: int, exploited: bool = False, ids=(), changed_at: int | None = None) -> Entry:
+                     now: int, exploited: bool = False, ids=(), changed_at: int | None = None,
+                     withdrawn: bool | None = None) -> Entry:
+        """``withdrawn`` (kk2q): True for the withdrawal reply, which puts its channels
+        (``reply_ids``) in the state and leaves ``adv`` (the caller passes the thread's
+        own) as it was; False for a reply whose block names a level, which ends the state
+        in its channels as it does on their readers; None for any other reply. Entering
+        is a level change counted by the first channel's reply. Leaving is one too, also
+        at an equal level, counted once for one time: a second channel's reply of the
+        same run adds none, and one a later run had to send again adds its own."""
         if not _ids_map(reply_ids):
             raise LedgerError("reply_ids must map channel to event id")
         e = self._entry(root_event_id)
         was, new = e["advisory"], asdict(adv)
+        held = set(e.get("withdrawn", ()))
+        stamp = min(now, changed_at or now)
+        entered = withdrawn is True and not held
+        left = withdrawn is False and bool(held & set(reply_ids)) and stamp not in e.get("changed", [])[-1:]
         if "root_fixed" not in e and not e["replies"]:  # 9kgk: a legacy entry's root, kept before it changes
             e["root_fixed"] = Entry(**e).fix_at_root or ""
-        if adv.level != e["level"]:  # ny5g: counted once; a second channel's copy finds it equal
+        if adv.level != e["level"] or entered or left:  # ny5g: counted once; a second channel's copy finds it equal
             # gtw9: ``changed_at``, no later than the reply is dated: a reader counts the level
             # from that date, and a replay after a stopped run records in a later run.
-            e["changed"] = [t for t in e.get("changed", []) if now - t < QUIET][-49:] + [min(now, changed_at or now)]
-            if wire.is_lowering({"level": adv.level}, e["level"]):
+            e["changed"] = [t for t in e.get("changed", []) if now - t < QUIET][-49:] + [stamp]
+            if wire.is_lowering({"level": adv.level}, e["level"]) or withdrawn is True:
                 e["lowered"] = True
+        if withdrawn is not None:
+            held = (held | set(reply_ids)) if withdrawn else (held - set(reply_ids))
+            e.pop("withdrawn", None)
+            if held & set(e["channel_ids"]):
+                e["withdrawn"] = sorted(held & set(e["channel_ids"]))
         if _listed_fields(was) != _listed_fields(new):
             e["listed_at"] = now  # a digest lists it again
         else:  # frozen, a legacy entry's too, before last_change moves

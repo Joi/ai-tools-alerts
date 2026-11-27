@@ -10,6 +10,7 @@ import test_main
 from aitools_alerts import schema
 from aitools_alerts.poster import catalog, inputs, main, signer, transport
 from aitools_alerts.poster.ledger import Ledger
+from advisories import ghsa_json
 from test_signer import PutRelay, signing  # noqa: F401 - the checkpoint fixture
 from test_main import CHANNELS, MAC, SYNTHETIC, T0, FakeRelay, at, chans, finding
 
@@ -86,6 +87,27 @@ def test_a_fix_learned_posts_a_new_catalog_root(env):
     assert code == 0 and [c[:2] for c in relay.calls if c[0] == "catalog"] == [("catalog", None)]
     (b,) = blocks(relay)
     assert b.products[0].fixed == "2.1.1"  # a root with the whole current block, never a reply
+
+
+def test_a_withdrawn_thread_is_not_catalogued_again_until_it_returns(env):
+    """kk2q: the ledger keeps a withdrawn thread's level; the catalog announces nothing
+    of it, neither a block that waited unsent nor one a fix changed."""
+    gid = finding()["id"]
+    env.api.put(gid, ghsa_json(gid))  # high by its fields; its prose a notice, so it can be withdrawn
+    env.collector([finding(severity="moderate")])
+    code, summary, relay = run(env, relay=FakeRelay("ok", "fail"))  # the alert posted; its catalog root did not
+    assert summary.endswith(" catalog=0/1"), summary
+    with Ledger(env.config.ledger) as led:
+        led._state()["entries"][0]["withdrawn"] = ["feed"]
+        led._save()
+    env.api.put(gid, ghsa_json(gid, withdrawn_at="2026-11-06T00:00:00Z"))
+    env.collector([finding(severity="moderate", fixed="2.1.1")])  # a fix learned while withdrawn: a reply in the thread, no catalog root
+    code, summary, relay = run(env, now=T0 + 3600)
+    assert code == 0 and summary.endswith(" catalog=0/0") and not [c for c in relay.calls if c[0] == "catalog"], summary
+    env.api.put(gid, ghsa_json(gid))  # published again: the recompute ends the state
+    code, summary, relay = run(env, now=T0 + 7200)
+    assert "withdrawn" not in env.ledger()[0][0]
+    assert summary.endswith(" catalog=1/0") and [b.products[0].fixed for b in blocks(relay)] == ["2.1.1"], summary
 
 
 def test_a_held_notice_posts_to_the_catalog_and_not_to_feed(env):

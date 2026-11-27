@@ -82,11 +82,16 @@ def _in_scope(name) -> bool:
     return _scope(name) is not None
 
 
-def snapshot(led, held) -> dict[str, dict]:
+def snapshot(led, held) -> dict[str, dict | None]:
     """{key: advisory} for every ledger thread whose product is in scope now and starts
     at its level (the ruleset's channel_if lets an out product's high in; an out
     notice starts nothing, wa6n), and every held notice. A thread wins over a held
-    notice under the same key. Synthetic and malformed advisories are left out."""
+    notice under the same key. Synthetic and malformed advisories are left out.
+
+    A thread in the state ``withdrawn`` (ai-tools-alerts#kk2q) gives ``{key: None}``:
+    the ledger keeps its level, and the catalog must not announce it at that level
+    again. ``remember`` takes the key out of the inventory, sent or not; the thread is
+    catalogued anew when it leaves the state."""
     out: dict[str, dict] = {}
     for h in held:
         a = _valid(h.get("adv")) if isinstance(h, dict) else None
@@ -97,7 +102,7 @@ def snapshot(led, held) -> dict[str, dict]:
         a = _valid(e.advisory)
         if a is None or scope is None or not rules.starts(scope, e.level):
             continue
-        out[key(e.scope, a["id"])] = a
+        out[key(e.scope, a["id"])] = None if getattr(e, "withdrawn", None) else a
     return out
 
 
@@ -145,7 +150,11 @@ def remember(path, snap: dict, at: int = 0) -> int:
     stamp = {k: t for k, t in _read(path, "at").items() if k in known and type(t) is int}
     for k, a in snap.items():
         if stamp.get(k, 0) <= at:  # equal: the same snapshot merged again
-            known[k], stamp[k] = a, at
+            if a is None:  # kk2q: withdrawn by its source; nothing of it waits to be sent
+                known.pop(k, None)
+                stamp.pop(k, None)
+            else:
+                known[k], stamp[k] = a, at
     known = {k: a for k, a in known.items() if _in_scope(a["products"][0]["name"])}
     order = sorted(known, key=lambda k: (known[k]["posted_at"], k), reverse=True)[:MAX_KEYS]  # newest first
     while True:
