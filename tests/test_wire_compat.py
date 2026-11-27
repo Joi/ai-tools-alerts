@@ -535,3 +535,81 @@ def test_a_renewed_thread_and_its_step_down_never_show_lower_on_a_released_reade
     assert mine[str(now)][CVE][0] == "critical"  # the step is an offer this reader has not applied yet
     if tag in RELEASED:
         assert theirs[str(now + MONTH)][CVE][0] == "critical"  # they refuse a relay-bot lowering for good
+
+
+# What a member is shown under the checkpoint the reader holds: its date (the clock expiry
+# is judged by) and each thread's level. Written against the modules as v0.1.8 has them.
+HEAD_DUMP = """
+import json
+from aitools_alerts import pull
+from aitools_alerts.state import State
+st = State.load()
+at, listed = pull.head_clock(st)
+print(json.dumps([at, {t.adv.id: t.adv.level for t in pull.active(pull.advisories(st), at, listed)}]))
+"""
+
+
+def late_feed(renewed=True, checked_after=None):
+    """(mirror, clock): a claimed critical root 20 days old, whose own claim holds critical
+    for 14 days and high to day 30, and a checkpoint dated ten minutes ago that lists it.
+    ``renewed``: also a renewal dated five minutes ago, after that checkpoint, which lists
+    it too: what a poster to 0.3.0 signs after a run that posted (it dates the checkpoint
+    at the start of its run), and what a later poster signs when its clock was set back.
+    ``checked_after``: the renewal's claim was checked that long after the root (not five
+    minutes ago), so a day gives a claim that holds critical to day 15 and no longer."""
+    m, now = mirror_now()
+    t0 = now - 20 * DAY
+    root = poster_event(m, schema.render_post(advisory(id=CVE, posted_by="relay-bot"), "Body line."), t0, claim=kev_claim(t0))
+    ids = [root["id"]]
+    if renewed:
+        checked = wire.claim_tag({**json.loads(kev_claim(t0)[1]), "checked_at": t0 + checked_after if checked_after else now - 300})
+        ids.append(poster_event(m, compose.renewal_post(), now - 300, reply_to=root["id"], claim=checked)["id"])
+    m.checkpoint(ids=ids, now=now - 600)
+    return m, now
+
+
+def head_view(st) -> list:
+    at, listed = pull.head_clock(st)
+    return [at, {t.adv.id: t.adv.level for t in pull.active(pull.advisories(st), at, listed)}]
+
+
+@pytest.mark.parametrize("tag", CLAIM_READERS + WITHDRAWAL_READERS)  # v0.1.8 to v0.3.0
+def test_an_event_dated_after_the_checkpoint_that_lists_it_is_admitted_and_its_claim_waits(tmp_path, tag):
+    """The rule of spec/wire.md for an event dated after its checkpoint (ai-tools-alerts#p93w),
+    on every reader that computes expiry and on this one. The checkpoint is not refused
+    and the event is admitted. While the checkpoint the reader holds is dated before
+    the renewal, the thread is not judged: it shows critical, where the root's claim
+    alone, judged at that time, gives high (the control: the same root with no renewal).
+    Under the next checkpoint, dated after the renewal, the thread is judged with the
+    renewal counted and shows critical by it. A third feed tells that hold from a reader
+    that counts the late claim at once: its late claim holds critical to day 15 only, so
+    the thread shows critical while the claim waits and high once it is counted."""
+    def both(m, now, name):
+        st = State.load(tmp_path / f"this-{name}")
+        run = released_reader(tmp_path / name, tag=tag)
+
+        def pulled():
+            res = pull.fetch("https://mirror.example.invalid/", st, fetch=m.fetch, root_pubkey=m.root, now=now)
+            assert res.error is None, res.error
+            got = run("pull", "--mirror-url", m.write(tmp_path / name), root=m.root)
+            assert got.returncode == 0 and "unverified" not in got.stderr, (got.stdout, got.stderr)
+            out = run.py(HEAD_DUMP, root=m.root)
+            assert out.returncode == 0, out.stderr
+            return head_view(st), json.loads(out.stdout)
+        return pulled
+    for name in ("control", "late", "short"):
+        (tmp_path / name).mkdir()
+    m, now = late_feed(renewed=False)
+    assert both(m, now, "control")() == ([now - 600, {CVE: "high"}],) * 2
+    m, now = late_feed()
+    pulled = both(m, now, "late")
+    assert pulled() == ([now - 600, {CVE: "critical"}],) * 2  # held: the renewal is dated after the checkpoint
+    m.checkpoint(now=now - 100)
+    assert pulled() == ([now - 100, {CVE: "critical"}],) * 2  # judged, the renewal counted
+    rs = ruleset.load()
+    assert rs.level_at("critical", [(now - 20 * DAY, now - 20 * DAY)], now - 100) == "high"  # without it: decayed
+    m, now = late_feed(checked_after=DAY)
+    pulled = both(m, now, "short")
+    assert pulled() == ([now - 600, {CVE: "critical"}],) * 2  # not judged: counted now, this claim would give high
+    m.checkpoint(now=now - 100)
+    assert pulled() == ([now - 100, {CVE: "high"}],) * 2  # judged, and the claim does not hold critical

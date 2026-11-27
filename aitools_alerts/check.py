@@ -164,6 +164,25 @@ def scope_name(name: str, ecosystem: str) -> str | None:
         return None
 
 
+def former_name(name: str, ecosystem: str) -> str | None:
+    """The former product name a posted product carries (scope ``formerly``, wa6n), in
+    the scope file's spelling, or None (ai-tools-alerts#aabw). Compared in lower case,
+    as ``match`` compares names. Only when one former name fits and every entry that
+    lists it has ``ecosystem``, so the answer does not depend on which of them is asked;
+    which scope products the name stands for is ``Ruleset.stands_for``. A current
+    product is ``scope_name``'s, asked first. Never raises."""
+    try:
+        n, found = name.lower(), {}
+        for e in schema.load_scope():
+            for old in e.formerly:
+                if old.lower() == n:
+                    found.setdefault(old, set()).add(e.ecosystem)
+        (old, ecosystems), = found.items()  # one former name, or none is the answer
+        return old if ecosystems == {ecosystem} else None
+    except Exception:
+        return None
+
+
 def _concerns(action: Action, ecosystem: str, aliases: set[str]) -> bool:
     if action.verb in _TARGETED:
         want = _TARGETED[action.verb]

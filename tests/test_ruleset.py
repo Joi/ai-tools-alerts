@@ -548,3 +548,17 @@ def test_a_published_version_2_claim_is_judged_by_this_readers_rules():
              "confirmed_at": 1795000000, "checked_at": 1795000000}
     assert ruleset.check_claim(word2, CC) == "mismatch"
     assert ruleset.check_claim(dict(word2, level="notice"), CC) == "ok"
+
+
+def test_a_name_stands_for_itself_or_for_the_entries_that_list_it():
+    """aabw: one reading of a product name, for a claim, the recompute and a member's check."""
+    assert RS.stands_for(CC) == {CC} and RS.stands_for("containerd") == {"containerd"}  # a component
+    assert RS.stands_for("MCP Inspector") == {"@modelcontextprotocol/inspector"}
+    assert len(RS.stands_for("MCP servers and clients")) == 7 and "mcp-server-git" in RS.stands_for("MCP servers and clients")
+    for other in ("No Such Product", "claude code", "mcp inspector", "", None, 7, ("MCP Inspector",)):
+        assert RS.stands_for(other) == frozenset()
+    mcp = ghsa(repository="modelcontextprotocol/servers", cwes=["CWE-78"], packages=[pkg("mcp-server-git", ecosystem="pypi")])
+    for name in (*RS.products(), "MCP Inspector", "MCP servers and clients", "MCP Python SDK", "MCP TypeScript SDK"):
+        for reading in (mcp, kev(), ghsa()):
+            want = RS.highest(NONE, *(RS.level([reading], n) for n in RS.stands_for(name)))
+            assert RS.level([reading], name) == want, name
