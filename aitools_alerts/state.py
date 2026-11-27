@@ -87,13 +87,32 @@ EVENT_KEYS = ("id", "pubkey", "created_at", "kind", "tags", "content", "sig")
 # (pull.MAX_STORED_EVENTS; tests/test_unchecked_lowering.py checks the two are equal):
 # no record the CLI writes is one this loader refuses.
 MAX_UNVERIFIED_ENTRIES = 20000
-_UNVERIFIED_KEYS = {"lowerings", "refused", "interrupts", "held", "reset_at"}  # and, since 0z4e, "supported"
+_UNVERIFIED_KEYS = {"lowerings", "refused", "interrupts", "held", "reset_at"}  # and, since 0z4e, "supported"; since cftg, "probation"
 MAX_PRODUCT_NAME = 400  # a result's key: ecosystem and name (verify.pkey)
+MAX_STRIKES = 2  # kept per poster key: all the strike rule reads (cftg)
+MAX_STRIKE_ROOTS = 64  # the roots (copies of one alert) kept with a strike
 
 
 def no_support() -> dict:
     """The empty memory of support (see _load_unverified)."""
     return {"ruleset": None, "first": {}, "threads": {}}
+
+
+def no_probation() -> dict:
+    """No strike and no probation (see _load_unverified)."""
+    return {"strikes": {}, "since": {}}
+
+
+def _probation_ok(v, when, ident) -> bool:
+    def strike(s):
+        return (isinstance(s, list) and len(s) == 2 and when(s[0]) and isinstance(s[1], list)
+                and 1 <= len(s[1]) <= MAX_STRIKE_ROOTS and all(ident(r) for r in s[1]))
+    return (isinstance(v, dict) and set(v) == {"strikes", "since"}
+            and isinstance(v["strikes"], dict) and len(v["strikes"]) <= MAX_UNVERIFIED_ENTRIES
+            and all(ident(k) and isinstance(ss, list) and 1 <= len(ss) <= MAX_STRIKES and all(strike(s) for s in ss)
+                    for k, ss in v["strikes"].items())
+            and isinstance(v["since"], dict) and len(v["since"]) <= MAX_UNVERIFIED_ENTRIES
+            and all(ident(k) and when(t) for k, t in v["since"].items()))
 
 
 def _support_ok(v, when, ident) -> bool:
@@ -129,7 +148,11 @@ def _load_unverified(where: Path) -> dict | None:
     "threads": {root event id: {product name: [last, gone, seen]}}}, local times: the last
     read that found a source supporting the product, the first read not before it that
     found none, and the latest such read (``cli._support_step``). A record
-    written before 0z4e has no such key: it is read as holding none.
+    written before 0z4e has no such key: it is read as holding none. ``probation`` (cftg):
+    {"strikes": {poster key: [[local time, [root event id, ...]], ...]}, "since": {poster
+    key: the local time its probation began}}: the alerts of a key that this machine's
+    source check found unsupported, MAX_STRIKES at most per key, and the keys on probation
+    (``cli._probation_step``). A record written before cftg has no such key: none.
 
     Damage is not a StateError: nobody is there to mend the file, and the commands must
     go on. The caller rebuilds it on the safe side (``State.unverified_damaged``)."""
@@ -142,8 +165,10 @@ def _load_unverified(where: Path) -> dict | None:
         rec = _read(where, {"lowerings": {}, "refused": [], "interrupts": {}, "held": {}, "reset_at": None})
         if isinstance(rec, dict) and set(rec) == _UNVERIFIED_KEYS:
             rec = {**rec, "supported": no_support()}
-        ok = (isinstance(rec, dict) and set(rec) == _UNVERIFIED_KEYS | {"supported"}
-              and _support_ok(rec["supported"], when, ident)
+        if isinstance(rec, dict) and set(rec) == _UNVERIFIED_KEYS | {"supported"}:
+            rec = {**rec, "probation": no_probation()}
+        ok = (isinstance(rec, dict) and set(rec) == _UNVERIFIED_KEYS | {"supported", "probation"}
+              and _support_ok(rec["supported"], when, ident) and _probation_ok(rec["probation"], when, ident)
               and isinstance(rec["lowerings"], dict) and isinstance(rec["refused"], list)
               and isinstance(rec["interrupts"], dict) and (rec["reset_at"] is None or when(rec["reset_at"]))
               and isinstance(rec["held"], dict)
@@ -202,6 +227,7 @@ class State:
     held: dict = field(default_factory=dict)
     reset_at: int | None = None
     supported: dict = field(default_factory=no_support)
+    probation: dict = field(default_factory=no_probation)
     unverified_damaged: bool = False
 
     @classmethod
@@ -243,7 +269,8 @@ class State:
                    trust=_load_trust(d / "checkpoint.json"), unverified_damaged=u is None,
                    **({} if u is None else {"lowerings": u["lowerings"], "refused": set(u["refused"]),
                                             "interrupts": u["interrupts"], "held": u["held"],
-                                            "reset_at": u["reset_at"], "supported": u["supported"]}))
+                                            "reset_at": u["reset_at"], "supported": u["supported"],
+                                            "probation": u["probation"]}))
 
     @property
     def manifest(self) -> Manifest | None:
@@ -282,7 +309,7 @@ class State:
             self.seen, self.last_pull, self.trust = fresh.seen, fresh.last_pull, fresh.trust
             self.lowerings, self.refused, self.interrupts = fresh.lowerings, fresh.refused, fresh.interrupts
             self.reset_at, self.unverified_damaged, self.held = fresh.reset_at, fresh.unverified_damaged, fresh.held
-            self.supported = fresh.supported
+            self.supported, self.probation = fresh.supported, fresh.probation
             yield self
         finally:
             os.close(fd)
@@ -344,7 +371,8 @@ class State:
     def save_unverified(self) -> None:
         write_json(self.dir / "unverified.json", {"lowerings": self.lowerings, "refused": sorted(self.refused),
                                                    "interrupts": self.interrupts, "held": self.held,
-                                                   "reset_at": self.reset_at, "supported": self.supported})
+                                                   "reset_at": self.reset_at, "supported": self.supported,
+                                                   "probation": self.probation})
         self.unverified_damaged = False
 
     def save_seen(self) -> None:

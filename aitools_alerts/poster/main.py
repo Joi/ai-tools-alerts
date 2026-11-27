@@ -86,7 +86,10 @@ exit code or the checkpoint.
 With ``translate_curator`` on, a curator's post or amendment read from the mirror gets
 a machine translation (``translate``), journaled as ``curator:<event id>:<channel>:ja``
 after the English work of the run is saved. A 401/403 holds it until
-``translate-clear-hold``; nothing in that pass reaches the exit code.
+``translate-clear-hold``; nothing in that pass reaches the exit code. With a
+checkpoint key the pass reads the mirror without the relay-bot events this poster did
+not sign, and does not run (``translate=no-record``) until the sent record is started
+(ai-tools-alerts#9cch).
 """
 
 from __future__ import annotations
@@ -207,6 +210,8 @@ class Run:
         self.withdrew: set[str] = set()
         self.gone: frozenset = frozenset()  # z360: the stored manifest's retracted ids, case-folded
         self._released = None  # z360: the base ids retired threads released (``released``)
+        # btqg: the mirror a join by fix reads (``_gone``): (trust root, fetch), set by ``run``.
+        self.mirror = (TRUST_ROOT_PUBKEY, None)
 
     def save(self):
         inputs.save_state(self.config.state, self.state)
@@ -473,7 +478,8 @@ class Run:
 
     def _mirror(self, root, fetch):
         """(the relay bot's events in the poster's verified copy of the mirror after a
-        pull made now, {channel name: when its file was generated}), or None when there
+        pull made now, without those this poster did not sign (``_own``, 9cch),
+        {channel name: when its file was generated}), or None when there
         is no copy to read. The second is empty when the pull failed: stored events are
         still evidence of a delivery, and nothing is evidence of an absence."""
         get, seen = fetch or pull.default_fetch, {}
@@ -507,7 +513,8 @@ class Run:
                     made[name.rsplit(".", 1)[0]] = int(at.replace(tzinfo=_dt.timezone.utc).timestamp())
                 except (KeyError, TypeError, ValueError, AttributeError, RecursionError):
                     pass
-        return [e for e in st.events_for(root).values() if manifest.role_of(m, e["pubkey"]) == "relay-bot"], made
+        return [e for e in self._own(st.events_for(root), m).values()
+                if manifest.role_of(m, e["pubkey"]) == "relay-bot"], made
 
     def _delivery(self, it, p, events) -> str | None:
         """The id of the mirror event that is this journal item's send, or None: the
@@ -669,9 +676,8 @@ class Run:
         is unsent there (``yields``), so the drain does not send a lowering only for the
         same run to raise it."""
         for c, scope in merged:
-            ids = [c.id, *c.aliases]
-            scope = self._former(scope, ids)
-            self._clears(c, scope, self.led.lookup(ids, scope=scope.name))
+            scope, entry, _ = self._thread_for(c, scope)  # btqg: a joined member's too
+            self._clears(c, scope, entry)
 
     def _queue_ja(self, it):
         """Journal a recorded item's Japanese reply, to this channel's root (of: names a reply)."""
@@ -730,7 +736,11 @@ class Run:
 
     def curator_events(self, fetch=None, root=TRUST_ROOT_PUBKEY, done=(), start=None):
         """(event, root id, of, channel) for each curator root or amendment in the mirror,
-        oldest first, from after the backfill floor. None when the mirror cannot be read."""
+        oldest first, from after the backfill floor. None when the mirror cannot be read.
+        Read from the copy without the relay-bot events this poster did not sign (``_own``,
+        9cch): a forged translation marks nothing as translated, a curator's reply in a
+        forged thread has no root here, and no forged block shapes an amended advisory.
+        Raises sent.NotStarted when, with a checkpoint key, the copy could not be judged."""
         try:
             st = State.load(self.config.mirror_dir)
             if translate.bounded(lambda: pull.fetch(self.config.translate_mirror_url, st, fetch=fetch,
@@ -738,10 +748,14 @@ class Run:
                 return None
         except (translate.CallError, ValueError, OSError):  # a timeout, an unreadable mirror state
             return None
-        m, evs = st.manifest, st.events
+        m = st.manifest
         names = {self.channels[c]: c for c in ("feed", "critical")}  # the journal takes no other channel
-        self.mirror_ids, out = set(evs), []
-        # What the bot has already translated, (thread root, of), so a lost translate file never reposts.
+        self.mirror_ids, out = set(st.events), []  # the whole copy: it only bounds the translate state
+        # strict: the record may have been lost since ``translate_curator`` asked (the pull
+        # above can take two minutes); the read that filters is the one that says so
+        evs = self._own(st.events, m, strict=True)
+        # What the bot has already translated, (thread root, of), so a lost translate file never reposts
+        # (9cch: what this poster's record holds; a translation the record does not hold counts for nothing).
         posted = {(pull._thread_ref(e), tr[1]) for e in evs.values()
                   if manifest.role_of(m, e["pubkey"]) == "relay-bot"
                   and (tr := pull.parse_translation(e["content"])) is not None and tr[0] == "ja"}
@@ -776,6 +790,11 @@ class Run:
         is counted (20 a UTC day) and its outcome cached by event id before anything is sent."""
         if not self.config.translate_curator:
             return "off"
+        if self.config.checkpoint_key_file is not None and not sent.started(self.config.sent_state):
+            # 9cch: nothing is translated from a copy that cannot be judged yet. A translation
+            # made from a forged block would be sent as the poster's own and never made again.
+            # The signer starts the record at the end of this run; the next run translates.
+            return "no-record"
         path = self.config.translate_state
         try:
             tr = _translate_state(path)
@@ -785,7 +804,10 @@ class Run:
         if tr["hold"] is not None or self.key_refused:  # c6ak: a wording 401/403 this run holds it too
             return "held"
         start = time.monotonic()  # the pass deadline covers the mirror and the replay too
-        evs = self.curator_events(fetch, root, {k for k, v in tr["done"].items() if v in ("ok", "untranslated")}, start)
+        try:
+            evs = self.curator_events(fetch, root, {k for k, v in tr["done"].items() if v in ("ok", "untranslated")}, start)
+        except sent.NotStarted:  # lost between the question above and the read of the copy
+            return "no-record"
         if evs is None:
             return "mirror-error"
         today, memo = _utc_date(self.now), {}
@@ -1011,17 +1033,19 @@ class Run:
         if old is None or new["checked_at"] >= old["checked_at"]:
             self.led.set_claim(root, it["claim"], None if e.claim is not None else ids)
 
-    def busy(self, ids, scope, passing=False) -> bool:
+    def busy(self, ids, scope, passing=False, learn=True) -> bool:
         """True when this advisory has journaled work or a send in flight. Its ids are
         learned by the overlapping items, so a later candidate under any of them waits too.
-        ``passing``: asked for a raise, which passes over the work it will replace (yields)."""
+        ``passing``: asked for a raise, which passes over the work it will replace (yields).
+        ``learn=False`` (btqg, a member joining by its fix): the items learn nothing, or
+        their send would record it into the thread past the join's checks."""
         want, root = _fold(ids), getattr(self.led.lookup(ids, scope=scope), "root_event_id", None)
         hits = [it for it in self.state["outbox"] + self._withheld_items()  # withheld: until expire_withheld
                 if it["kind"] != "ja" and it["scope"] == scope and (_fold(it["ids"]) & want or root and it["root"] == root)
                 and not (passing and self._passing(it))]
-        for it in hits:
+        for it in hits if learn else ():
             it["ids"] = list(dict.fromkeys(it["ids"] + [i for i in ids if i.casefold() not in _fold(it["ids"])]))
-        if hits:
+        if hits and learn:
             self.save()
         return bool(hits) or bool(self.led.pending_for(ids))
 
@@ -1194,6 +1218,17 @@ class Run:
         """(the candidate, its level, the reason) against its thread; ``entry`` is None
         for a new one."""
         c = self._tied(c, entry)  # 3qyq: only readings the source ties to the post's first id
+        if entry is not None and entry.joined:
+            # btqg: so too a KEV listing, on a thread an advisory joined by its fix: a member's
+            # check reads the CVEs its first id names, so a joined advisory's own listing
+            # neither raises the thread nor marks it exploited (``one`` lets a louder one out).
+            first = recompute.lookup_id(entry.advisory.get("id"))
+            kev = [r for r in c.readings if r[0] == "kev"]
+            keep = [r for r in kev if sources.tied(first, json.loads(r[1]).get("cve_id"), self._admit_read,
+                                                   recompute.published_aliases(entry))]
+            if len(keep) < len(kev):
+                c = replace(c, readings=tuple(r for r in c.readings if r[0] != "kev" or r in keep),
+                            exploited=c.exploited if keep else False)
         if entry is not None and entry.lowered and c.exploited is True \
                 and not any(r[0] == "kev" for r in c.readings):
             # ny5g: on a lowered thread the recompute holds the KEV level. A mark that no
@@ -1219,16 +1254,129 @@ class Run:
             return ruleset.load().action_cap, "no-action"
         return level, reason
 
-    def one(self, c, scope):
+    def _gone(self):
+        """btqg: (retracted ids, withdrawn thread roots) as the mirror says now
+        (``_withdrawn``), pulled once a run, the first time a candidate could join a
+        thread by its fix; None when the pull failed, and no join this run."""
+        if not hasattr(self, "_gone_now"):
+            try:
+                self._gone_now = self._withdrawn(*self.mirror)
+            except (translate.CallError, OSError, ValueError) as err:  # StateError is a ValueError
+                _say(f"join by fix held: {err}")
+                self._gone_now = None
+        return self._gone_now
+
+    def _fix_thread(self, c, scope):
+        """btqg: (scope, entry) of the open thread whose fixed version is c's, for a
+        candidate with no thread of its own, or None. Under the product's name or a former
+        one (wa6n), the oldest; never a synthetic thread, a withdrawn one (kk2q), one the
+        mirror shows retracted or expired, or any thread for a candidate whose own id is
+        retracted (a reader retracts a whole thread for any one of its ids). A former name
+        another scope entry also lists does not say which product its thread is about
+        (``_scope_named``): none under it. Nor a thread whose ids and c's pass the one-block
+        cap (``ledger.BLOCK_IDS``): a thread's ids stay what one block could name."""
+        key = ledger.fix_key_of(c.fixed)
+        if key is None or self.is_synthetic(c):
+            return None
+        index = rules._default_index().values()
+        names = (scope.name, *(n for n in getattr(scope, "formerly", ())
+                               if len({s.name for s in index if n in getattr(s, "formerly", ())}) == 1))
+        mine = _fold([c.id, *c.aliases])
+        found = [e for e in self.led.entries()
+                 if e.scope in names and not e.withdrawn and not compose.is_synthetic(e.advisory.get("id"))
+                 and ledger.fix_key_of((e.advisory.get("products") or [{}])[0].get("fixed")) == key
+                 and len(_fold(e.aliases) | mine) <= ledger.BLOCK_IDS]
+        if not found:
+            return None
+        gone = self._gone()
+        if gone is None:
+            return None  # the mirror cannot say: the candidate posts on its own, never waits for it
+        ids, roots = gone
+        if not ids.isdisjoint(mine):
+            return None
+        for e in found:  # every id the thread holds, published or learned
+            if compose.withdrawn(schema.validate(e.advisory), ids, self.now) or not ids.isdisjoint(_fold(e.aliases)) \
+                    or not roots.isdisjoint({e.root_event_id, *e.channel_ids.values()}):
+                continue
+            return (scope if e.scope == scope.name else replace(scope, name=e.scope, formerly=())), e
+        return None
+
+    def _thread_for(self, c, scope):
+        """(scope, thread entry or None, joined): c's own thread, else (btqg) the open
+        thread of its fix (``_fix_thread``). The thread's level and exploited mark rest on
+        its first id (3qyq), which no source ties to c: a candidate that alone rates above
+        the thread's level, or is exploited where the thread is not, joins nothing and
+        posts its own root, so a join never changes either."""
         ids = [c.id, *c.aliases]
         scope = self._former(scope, ids)
         entry = self.led.lookup(ids, scope=scope.name)
+        if entry is not None:
+            return scope, entry, entry.member(ids) is not None  # a joined advisory sighted again
+        got = self._fix_thread(c, scope)
+        if got is None:
+            return scope, None, False
+        joined, e = got
+        if not self._judged(c) or self._louder(c, scope, e):
+            return scope, None, False
+        return joined, e, True
+
+    def _judged(self, c) -> bool:
+        """btqg: c's own advisory reading is in hand this run, or c has no GHSA id to read.
+        Without it (a read failed, a share spent) what c alone supports is unknown."""
+        return not any(i.casefold().startswith("ghsa-") for i in (c.id, *c.aliases)) \
+            or any(r[0] == "ghsa" for r in self._tied(c).readings)
+
+    def _leaves(self, c, scope, e) -> bool:
+        """btqg: a joined advisory sighted again leaves thread e when it is exploited where e
+        is not (a KEV listing needs no advisory read), when its own fix is one e's does not
+        cover (a later or an incomparable version), or, its reading in hand, when it alone
+        rates above e."""
+        if c.exploited is True and not e.exploited:
+            return True
+        mine = compose.schema_fixed(c.fixed)
+        theirs = compose.schema_fixed((e.advisory.get("products") or [{}])[0].get("fixed"))
+        if mine is not None and mine != theirs:
+            a, b = versions.parse(mine), versions.parse(theirs)
+            if a is None or b is None or a > b:
+                return True
+        return self._judged(c) and self._louder(c, scope, e)
+
+    def _louder(self, c, scope, e) -> bool:
+        """btqg: c alone rates above thread e, or is exploited where e is not. A thread's
+        level and mark rest on its first id (3qyq), which no source ties to c."""
+        return RANK[self._rate(c, scope, None)[1]] > RANK[e.level] or (c.exploited is True and not e.exploited)
+
+    def one(self, c, named):
+        ids = [c.id, *c.aliases]
+        scope = own = self._former(named, ids)
+        entry = self.led.lookup(ids, scope=scope.name)
+        # btqg: a joined advisory's ids are never learned by the thread's work, whose send
+        # would record them as the thread's own
+        learn = entry is None or entry.member(ids) is None
         # jsje: a raise never waits behind lower-priority work on its own thread
-        if self.busy(ids, scope.name) and not (self._clears(c, scope, entry)
-                                               and not self.busy(ids, scope.name, passing=True)):
+        if self.busy(ids, scope.name, learn=learn) and not (
+                self._clears(c, scope, entry) and not self.busy(ids, scope.name, passing=True, learn=learn)):
             self.n["busy"] += 1
             self.defer([(c, scope)])  # its update (a fix, a promotion) is planned once the send resolves
             return
+        joined = False
+        if entry is not None and entry.member(ids) is not None:
+            joined = True  # btqg: a joined advisory sighted again keeps the join's rules
+            if self._leaves(c, scope, entry):
+                # it now says more than the thread can: it leaves and posts alone
+                self.led.unjoin(entry.root_event_id, ids)
+                scope = own = self._former(named, ids)
+                entry, joined = None, False
+        elif entry is None:
+            scope, entry, joined = self._thread_for(c, scope)
+        # btqg: joining now: the thread's work counts, found by its ids and root, not by c's
+        if joined and self.led.lookup(ids, scope=scope.name) is None:
+            both = [*entry.aliases, *ids]
+            if self.busy(both, scope.name, learn=False) and not (
+                    self._clears(c, scope, entry) and not self.busy(both, scope.name, passing=True, learn=False)):
+                self.n["busy"] += 1
+                self.defer([(c, own)])  # kept under its own id; it joins once the thread's send resolves
+                return
         c, level, reason = self._rate(c, scope, entry)
         # 9kgk: a fix the thread already states counts as this candidate's (plan_known keeps it)
         was = (entry.advisory.get("products") or [{}])[0].get("fixed") if entry is not None else None
@@ -1252,7 +1400,7 @@ class Run:
             return
         try:
             items = self.plan_new(c, scope, level, reason, ids, floor) if entry is None \
-                else self.plan_known(c, scope, level, reason, ids, entry)
+                else self.plan_known(c, scope, level, reason, ids, entry, joined)
         except ValueError:  # compose refused something: the whole advisory is withheld
             self.n["withheld"] += 1
             return
@@ -1416,7 +1564,11 @@ class Run:
         self.save()
         self.n["held"] += 1
 
-    def plan_known(self, c, scope, level, reason, ids, entry):
+    def plan_known(self, c, scope, level, reason, ids, entry, joined=False):
+        """An update of ``entry``'s thread from candidate c. ``joined`` (btqg): c is an
+        advisory that joins the thread by its fix, or one that did (``Entry.member``): the
+        thread keeps its fix and headline, its range widens to cover c's, and c's ids are
+        learned and never published (so it can leave, ``one``)."""
         prev = schema.validate(entry.advisory)
         level, reason = self._thread_level(level, reason, entry)
         # kk2q: nor does a candidate move a withdrawn thread: the recompute ends that state, by
@@ -1426,12 +1578,20 @@ class Run:
         was = prev.products[0]
         stored = _fold(entry.aliases)
         fresh = [i for i in dict.fromkeys(ids) if i.casefold() not in stored and i != prev.id]
-        if fresh:  # identity is learned whether or not a reply can say so (the 50-alias cap)
+        if joined:  # btqg: one group for each advisory, a fix group's members apart, so each can leave
+            members = self.groups.get((scope.name, c.id.casefold()), [c])
+            for m in members:
+                self.led.add_ids(entry.root_event_id, [m.id, *m.aliases], joined=True)
+            have = _fold([i for m in members for i in (m.id, *m.aliases)])
+            if rest := [i for i in ids if i.casefold() not in have]:  # with its first member's
+                self.led.add_ids(entry.root_event_id, [members[0].id, *rest], joined=True)
+        elif fresh:  # identity is learned whether or not a reply can say so (the 50-alias cap)
             self.led.add_ids(entry.root_event_id, fresh)
-        title = compose.source_title(c)
+        hidden = set().union(*map(set, entry.joined or ())) | (_fold(ids) if joined else set())  # btqg
+        title = (entry.source_title or compose.source_title(c)) if joined else compose.source_title(c)
         if title and not entry.source_title:  # learned late: the digest carries it; no reply says it
             self.led.learn_title(entry.root_event_id, title)
-        own_fix = compose.schema_fixed(c.fixed) is not None
+        own_fix = compose.schema_fixed(c.fixed) is not None and not joined  # btqg: one fix by the key
         older = versions.parse(compose.schema_fixed(c.fixed)), versions.parse(was.fixed)
         if own_fix and None not in older and older[0] < older[1]:
             # faxq: a member of a fix group sighted again says its own, older fix; the thread
@@ -1450,17 +1610,21 @@ class Run:
                 seen_urls.add(s.url)
                 extra.append(s)
         unpublished = [i for i in dict.fromkeys([*ids, *entry.aliases])
-                       if i.casefold() not in prev_ids and compose.public_id(i)]
+                       if i.casefold() not in prev_ids and compose.public_id(i) and i.casefold() not in hidden]
         k = replace(  # the thread's identity and everything already known, plus what is new
             c, id=prev.id, aliases=tuple(prev.aliases) + tuple(unpublished),
             fixed=c.fixed if own_fix else was.fixed,
             # a range the schema cannot say is kept raw when none is known: no "not stated" (0dvh)
             # faxq: one member's sighting never narrows a fix group's range, which covers them
             # all; a range that differs widens it to everything before the fix
-            affected=_group_range(was, c, c.fixed if own_fix else was.fixed) if compose.covers(prev)[0] not in (0, 1)
+            # btqg: so does a thread a member joined by its fix, before a reply names it;
+            # the member joining widens it to cover the member's own
+            affected=_join_range(was, c) if joined
+            else _group_range(was, c, c.fixed if own_fix else was.fixed) if compose.covers(prev)[0] not in (0, 1)
+            or entry.joined
             else c.affected if compose.schema_affected(c.affected) else (was.affected or c.affected),
             sources=tuple(prev.sources) + tuple(extra),
-            source_title=compose.source_title(c) or entry.source_title)  # faxq: a copy's headline
+            source_title=title or entry.source_title)  # faxq: a copy's headline; btqg: the thread's when joined
         text, new = compose.root_post(k, (level, reason), scope, posted_at=prev.posted_at)
         changes = {}
         if RANK[level] > RANK[prev.level]:
@@ -1480,7 +1644,7 @@ class Run:
             # its Japanese action turns urgent, 4yr1).
             self.led.learn_sources(entry.root_event_id, compose._sources(extra))  # publishable ones only
             changes = {}
-        if changes and new.advisory_severity not in (None, prev.advisory_severity):
+        if changes and not joined and new.advisory_severity not in (None, prev.advisory_severity):
             changes["advisory_severity"] = new.advisory_severity  # 0dvh: never a reply on its own
         copies = [ch for ch in CHANNELS_FOR[level] if ch not in entry.channel_ids and not entry.withdrawn]
         # hh5s: what this candidate's readings say of the thread, for a level change and
@@ -1989,7 +2153,8 @@ class Run:
         """(case-folded advisory ids, root event ids) withdrawn under ``root`` as of a
         mirror pull made now: the manifest's retracted ids (whoever posted them), and the
         root of every thread that is retracted or, as amended, expired (that thread only:
-        another product's post of the same id stays). Raises when the pull fails."""
+        another product's post of the same id stays). Raises when the pull fails.
+        Read without the relay-bot events this poster did not sign (``_own``, 9cch)."""
         st = State.load(self.config.mirror_dir)
         res = translate.bounded(lambda: pull.fetch(self.config.translate_mirror_url, st, fetch=fetch,
                                                    root_pubkey=root, now=self.now, checkpoint=False), 120)
@@ -1997,7 +2162,7 @@ class Run:
             raise ValueError(f"mirror pull: {res.error}")
         m = st.accepted(root)
         roots = set()
-        for t in pull.threads_from(list(st.events_for(root).values()), m):
+        for t in pull.threads_from(list(self._own(st.events_for(root), m).values()), m):
             t = pull.standing(t, self.now)  # c1g2: a curator's retraction of a bot thread lapses
             if t.retracted or (t.adv.expires_at is not None and t.adv.expires_at < self.now):
                 roots.add(t.root_id)
@@ -2019,7 +2184,8 @@ class Run:
         advisory publishes is judged once, by its own repository advisory page: released
         when that page is structured, names the id and assigns no retracted id, kept
         when a page answers otherwise (the retracted advisory's own CVE) or no source
-        confirms it, and left for the next run when a page could not be read. On doubt
+        confirms it, and left for the next run when a page could not be read (with the
+        ids of advisories that joined the thread by fix, btqg, never published). On doubt
         the retraction wins. Ids are compared by their base (a thread key's slug
         dropped), so a retracted ``CVE-...:slug`` keeps its bare CVE and GHSA.
 
@@ -2039,8 +2205,8 @@ class Run:
             return
         self.gone = frozenset(i.casefold() for i in m.retracted)
         bases = self.gone | {_base(i) for i in self.gone}
-        events = list(st.events_for(root).values())
         try:
+            events = list(self._own(st.events_for(root), m).values())  # 9cch: never a post it did not sign
             hidden = {t.root_id for t in pull.threads_from(events, m) if pull.standing(t, self.now).retracted}
             hidden -= {t.root_id for t in pull.threads_from(events, replace(m, retracted=()))
                        if pull.standing(t, self.now).retracted}
@@ -2055,7 +2221,8 @@ class Run:
                 continue  # hidden by an id the poster never held (a curator's alias): not judged
             done = {_base(x) for k in ("released", "kept") for x in (e.split or {}).get(k, ())}
             mine = {_base(a) for a in e.aliases}
-            ids = [i for i in [e.advisory.get("id"), *(e.advisory.get("aliases") or ())]
+            joined = [i.upper() if i.startswith("cve-") else "GHSA" + i[4:] for g in e.joined or () for i in g]
+            ids = [i for i in [e.advisory.get("id"), *(e.advisory.get("aliases") or ()), *joined]  # btqg: joined too
                    if isinstance(i, str) and candidates.BOT_ID.fullmatch(i) and not compose.is_synthetic(i)
                    and _base(i) in mine and _base(i) not in bases | done]
             if ids:
@@ -2116,8 +2283,8 @@ class Run:
         def order(s):
             last = _base(urlsplit(s["url"]).path.rstrip("/").rsplit("/", 1)[-1])
             return 0 if last == _base(i) else 1 if last in bases else 2
-        urls = sorted((s for s in e.advisory.get("sources") or () if isinstance(s, dict) and isinstance(s.get("url"), str)),
-                      key=order)
+        urls = sorted({s["url"]: s for s in [*(e.advisory.get("sources") or ()), *(e.learned_sources or ())]
+                       if isinstance(s, dict) and isinstance(s.get("url"), str)}.values(), key=order)  # btqg: learned
         retry, answered = False, None
         for scope in scopes:
             text = next((x for x in scope.match if (r := rules.scope_of(x)) is not None and r.name == scope.name), None)
@@ -2135,6 +2302,25 @@ class Run:
                 answered = answered or (False, assigned, None)
             retry = retry or ev.retry  # a fetch that may pass, a page not parsed, a budget spent
         return None if answered is None and retry else answered or (False, frozenset(), None)
+    def _own(self, events: dict, m, strict: bool = False) -> dict:
+        """9cch: the mirror copy's events without the relay-bot events this poster did
+        not sign (``sent.own``), for every read of the copy outside the signer. The
+        copy as it is without a checkpoint key (no record is kept), without a manifest,
+        and, with one line on stderr, when the check itself fails: no read waits on it.
+        ``strict`` (the curator-translation pass, whose result outlives the run): with a
+        checkpoint key, sent.NotStarted is raised instead whenever the copy was not
+        judged, by an unstarted or unreadable record or by a check that failed."""
+        if self.config.checkpoint_key_file is None or m is None:
+            return events
+        try:
+            return sent.own(self.config.sent_state, events, m, self.now, strict=strict)
+        except sent.NotStarted:
+            raise
+        except Exception as e:  # noqa: BLE001
+            _say(f"own-key check of the mirror copy stopped: {type(e).__name__}")
+            if strict:
+                raise sent.NotStarted from None
+            return events
 
     def _foreign(self, root) -> list:
         """m729: the ids of the relay-bot events this poster did not sign that no digest has
@@ -2317,6 +2503,19 @@ def _group_range(was, c, fixed) -> str | None:
     if new is None or new == was.affected or was.affected is None:
         return was.affected
     fixed = compose.schema_fixed(fixed)
+    return f"<{fixed}" if fixed else None
+
+
+def _join_range(was, c) -> str | None:
+    """btqg: a thread's range once advisory c joined it by its fix: one that covers both.
+    The thread's when they agree, none stated when either states none (c's unknown range
+    may be any), else everything before the thread's fix."""
+    new = compose.schema_affected(c.affected)
+    if new is None or was.affected is None:
+        return None
+    if new == was.affected:
+        return was.affected
+    fixed = compose.schema_fixed(was.fixed)
     return f"<{fixed}" if fixed else None
 
 
@@ -2592,6 +2791,7 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                 merged = ledger.merge(pairs, led, r.groups, settled=settled,  # BEFORE level_for
                                       loud=lambda c, scope: rules.evidence_rank(r._tied(c), scope))
                 r.observe(kev_out)
+                r.mirror = (translate_kw.get("root", TRUST_ROOT_PUBKEY), mirror_fetch)  # btqg: _gone
                 r.make_way(merged)
                 r.drain()
                 for i, (c, scope) in enumerate(merged):
