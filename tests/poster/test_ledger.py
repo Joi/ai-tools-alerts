@@ -395,7 +395,9 @@ def test_the_withdrawn_state_is_kept_by_channel_beside_the_level(tmp_path):  # k
 @pytest.mark.parametrize("bad", [{"lowered": 1}, {"floor": "severe"}, {"floor": None}, {"changed": [1.5]},
                                  {"changed": list(range(51))}, {"changed": 3},
                                  {"withdrawn": True}, {"withdrawn": []}, {"withdrawn": "feed"}, {"withdrawn": ["critical"]},
-                                 {"withdrawn": ["feed", "feed"]}, {"withdrawn": None}])
+                                 {"withdrawn": ["feed", "feed"]}, {"withdrawn": None},
+                                 {"joined": False}, {"joined": True}, {"joined": None}, {"joined": []},
+                                 {"joined": [[]]}, {"joined": [["b", "a"]]}, {"joined": [["GHSA-A"]]}])  # btqg
 def test_a_ledger_with_a_malformed_recompute_key_is_refused(tmp_path, bad):  # ny5g
     path = tmp_path / "l.json"
     with Ledger(path) as led:
@@ -405,6 +407,29 @@ def test_a_ledger_with_a_malformed_recompute_key_is_refused(tmp_path, bad):  # n
     path.write_text(json.dumps(data))
     with pytest.raises(LedgerError, match="malformed"):
         Ledger(path).__enter__()
+
+
+def test_joined_advisories_are_kept_by_group_and_leave_whole(tmp_path):  # btqg
+    path = tmp_path / "l.json"
+    with Ledger(path) as led:
+        led.record_root(adv_for(cand()), "r1", {"feed": "r1"}, scope="Claude Code", exploited=False, now=T0)
+        assert led.thread("r1").joined is None and led.thread("r1").member(["GHSA-zzzz-zzzz-zzzz"]) is None
+        e = led.add_ids("r1", ["GHSA-zzzz-zzzz-zzzz"], joined=True)
+        assert e.joined == [["ghsa-zzzz-zzzz-zzzz"]]
+        e = led.add_ids("r1", ["GHSA-zzzz-zzzz-zzzz", "CVE-2026-0002"], joined=True)  # its CVE, learned later
+        e = led.add_ids("r1", ["GHSA-yyyy-yyyy-yyyy"], joined=True)
+        assert e.joined == [["cve-2026-0002", "ghsa-zzzz-zzzz-zzzz"], ["ghsa-yyyy-yyyy-yyyy"]]
+        assert e.member(["CVE-2026-0002"]) == ["cve-2026-0002", "ghsa-zzzz-zzzz-zzzz"]
+        assert e.member(["CVE-2026-0002", cand().id]) is None  # with one of the thread's own ids: not a member
+    with Ledger(path) as led:  # it loads again
+        e = led.unjoin("r1", ["CVE-2026-0002"])
+        assert e.joined == [["ghsa-yyyy-yyyy-yyyy"]]
+        assert not {"cve-2026-0002", "ghsa-zzzz-zzzz-zzzz"} & {a.casefold() for a in e.aliases}
+        with pytest.raises(LedgerError):
+            led.unjoin("r1", [cand().id])
+        assert led.unjoin("r1", ["GHSA-yyyy-yyyy-yyyy"]).joined is None
+    with Ledger(path) as led:
+        assert "joined" not in led._state()["entries"][0]
 
 
 # ---------------------------------------------------------------- faxq: one release, one post
