@@ -1,6 +1,6 @@
 # Run: cftg-member-strike-rule
 Instruction: Read TASK-ai-tools-alerts#cftg.md in this worktree root, then run `kata show ai-tools-alerts#cftg` and follow the brief and the dispatch rules (run as /do-it, starting rung floored at medium).
-Stage: plan-review
+Stage: code-review:whole-branch
 Rung: heavy (start-floor medium: constraint-lens, BR1 REV1 NOV1 INT1 FC1 = 5, no hard trigger; the dispatch floor was medium too) + escalated medium→heavy after the spec's pass: one BLOCKER is fixed in part and rebutted in part (whose strike with two relay-bot keys)
 Lens: "the service runs with no human in the loop. Nothing you build may wait for a person to act."; "`tests/test_wire_compat.py` is untouched"
 Last reviewed: spec 16ba0b2cfa5ed4fd552cbb5ca6f452b9496f3f30 (the delta, `--since 7504c03`)
@@ -15,12 +15,16 @@ Pass 1 [spec]: 6B/0S/0C/0R · fixed -/- · velocity = (—→6, escalation no)
 spec — pass 1 (fresheyes, gpt-6.1-sol, 7504c03, watchdog FRESHEYES_DONE REASON=-). Fixed in the next commit: a copy changed after its strike stayed inside the strike (a recorded strike two found alerts share roots with becomes two); a probation was read before the lock only (`_reserve` reads it again); the wait of a lowering counted from the last command during the probation (the bar is read from the record, and `_note_offers` removes a run-out entry in the write that starts the waits); the evidence-loss test left the evidence on the machine (it now removes the roots from the store and the mirror, the memory and the cached results, and asserts each); the existing assertion on the record's keys (updated, named in the spec). Fixed in part: a key on probation lowering another relay-bot key's thread (the reply's signer now bars too). Rebutted in part: counting a strike or a raise against the signer of a reply (the manifest names one relay-bot key; `pull` keeps no signer per reply; holding by any reply's signer would let a key on probation silence the other key's alerts; a limit in the spec and a follow-up issue). The fixes changed the design, and the rebutted half is why the rung is heavy: the one delta runs `--since 7504c03` with the rebuttal.
 Pass 2 [spec]: 1B/0S/0C/0R · fixed 6/6 prior · velocity ↓ (6→1, escalation no)
 spec — pass 2, the delta (fresheyes, gpt-6.1-sol, `--since 7504c03`, head 16ba0b2, FRESHEYES_DONE REASON=-): one finding, the rebuttal not overturned. A stored checkpoint from before the probation's end became the start of the restarted wait (a `check` on day 31 with the checkpoint of day 26, then a pull). Fixed with no further pass, in the commit that adds the plan: the entry is removed only when the checkpoint held was issued at or after the probation's end. spec — passes: 2 · elapsed: about 25 min.
+Last reviewed: plan acbf73b23c0144c73a92d0c39b649f410791c206
+Pass 1 [plan]: 2B/0S/0C/0R · fixed -/- · velocity = (—→2, escalation no)
+plan — pass 1 (fresheyes, gpt-6.1-sol, acbf73b, FRESHEYES_DONE REASON=-). Both fixed in the next commit: the plan worded the rebuilt-record guard of `_strikes` without `is not None` (the code had it; the plan now says it); no test covered a narrowing during probation (three tests added: not applied and no wait shown, the wait starting at the checkpoint after the end, a confirmed narrowing applying; two mutations added). Neither fix changed what the code does, so no delta. plan — passes: 1 · elapsed: about 5 min.
 
 ## Chunks
 - [ ] the record of strikes and probations (`state.py`), the step that writes it and the two places it bites (`cli.py`), tests
 - [ ] docs: CHANGELOG, README
 
 ## Notes
+- Mutation check (a script in the scratchpad, each change restored after): ten changes to `cli.py`, one per rule (the probation test in `_interrupts`, the bar on a lowering, the reply's signer, the split of a strike, the record ending the bar, the checkpoint's time ending it, the two halves of the bar on a narrowing, the denial in `_reserve`, strikes kept without their alert); each makes its named test in `tests/test_probation_cli.py` fail.
 - Follow-up filed: ai-tools-alerts#ex8f (count a strike, a slot and a held raise against the signer of the reply; needs `pull` to keep signers per thread).
 - Skip temptation: the code and its tests were written in the working tree while the spec's reviews ran, and changed with each finding; nothing of it was committed before the plan's review.
 - Spec, plan and this record were edited by scripts with exact-match replacements, each asserted to occur once, not with the Edit tool the skill names.
