@@ -12,7 +12,7 @@ import pytest
 from aitools_alerts import checkpoint as cp
 from aitools_alerts import config as member_config
 from aitools_alerts import nostr, pull
-from aitools_alerts.poster import inputs, main, signer
+from aitools_alerts.poster import inputs, main, sent, signer
 from aitools_alerts.state import State
 from mirror_helpers import CHANNELS, Mirror, advisory
 from test_main import T0, FakeRelay, env, finding  # noqa: F401 - env is a fixture
@@ -823,6 +823,7 @@ def test_a_renewal_the_mirror_stops_serving_is_never_given_up_its_thread_is_left
         assert "threads_suppressed=1" in summary and "gone_dropped" not in summary
         assert root["id"] not in ssh.last().events and other["id"] in ssh.last().events
     later = _renewal(m, root, T0 + 200 * 3600, confirmed=T0 - 600)  # a later check: the hidden one adds nothing now
+    sent.note(signing.config.sent_state, later["id"], T0 + 200 * 3600)  # m729: the poster's own send, as its record has it
     _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + 201 * 3600)
     assert "gone_dropped=1" in summary and "threads_suppressed" not in summary
     assert {root["id"], later["id"]} <= ssh.last().events and hidden["id"] not in ssh.last().events

@@ -13,7 +13,13 @@ thread whose root carries a claim decays on readers unless it is renewed
 (ai-tools-alerts#gtw9), so its root is never listed without the renewals
 that keep it standing: see ``renewals_of``, ``settle_gone``, ``settle_owed``
 and ``window``. It does not vouch for a curator's post the relay withheld before the poster ever saw
-it, nor that the legitimate poster wrote an event signed by the bot key.
+it.
+
+Nor for a relay-bot event this poster did not sign (ai-tools-alerts#m729): the key
+that signs alerts exists outside this machine, the checkpoint key does not. Each run
+compares the relay-bot events of its copy with the record of what it signed
+(``aitools_alerts.poster.sent``) and works on the copy without the foreign ones, so no
+checkpoint lists one, nor a thread whose root is one.
 
 One checkpoint key belongs to one poster with one ledger.
 """
@@ -28,6 +34,7 @@ import sys
 from aitools_alerts import TRUST_ROOT_PUBKEY
 from aitools_alerts import checkpoint as cpt
 from aitools_alerts import manifest, nostr, pull
+from aitools_alerts.poster import sent
 from aitools_alerts.state import State, write_json
 
 __all__ = ["run_checkpoint", "KeyFileError", "read_key", "keygen", "init_owed", "load_owed", "save_owed", "record_sent", "settle_owed", "renewals_of", "lapsed",
@@ -412,15 +419,23 @@ def next_seq(now: int, last_seq: int, published_seq: int = 0) -> int:
 
 # ---------------------------------------------------------------- one run
 
+FULL = "state limit reached: new events not stored"  # pull's error when the store is at its limit
+
+
 def run_checkpoint(config, now: int, *, ssh=None, fetch=None, root: str = TRUST_ROOT_PUBKEY,
-                   suppress=frozenset()) -> str:
+                   suppress=frozenset(), known=frozenset()) -> str:
     """Sign and deliver this run's checkpoint; returns the summary token:
     ``off`` (not configured), ``no-mirror`` (the pull failed), ``no-certificate``
     (no usable certificate names this key), ``too-large`` (what must be listed
     does not fit: nothing is signed), ``sent`` or ``failed``, with
-    ``,owed_dropped=N`` appended when acknowledged posts were given up.
+    ``,owed_dropped=N`` appended when acknowledged posts were given up, and
+    ``,foreign=N`` while N relay-bot events this poster did not sign are in its copy
+    of the mirror (m729): they are in no checkpoint.
     ``suppress``: thread roots the caller will not vouch for in this checkpoint
-    (gtw9: a renewal that was due could not be delivered)."""
+    (gtw9: a renewal that was due could not be delivered). ``known``: the event ids
+    the ledger and the journal record as this poster's; with the ids its own served
+    checkpoint lists and the owed ones they start the sent record when it has not
+    been started (``sent.check``), and are not used otherwise."""
     from aitools_alerts.poster import transport, translate
     if config.checkpoint_key_file is None or config.relay_put_wrapper is None or config.relay_ssh_host is None:
         return "off"
@@ -456,6 +471,18 @@ def run_checkpoint(config, now: int, *, ssh=None, fetch=None, root: str = TRUST_
     except (translate.CallError, ValueError, OSError):
         return "no-mirror"
     m = st.manifest
+    if res.error == FULL and m is not None and st.manifest_root == root:
+        # m729: foreign events kept from earlier pulls must not hold the store at its limit.
+        # They are removed and the pull is made once more (one export alone cannot fill it).
+        strays = sent.check(config.sent_state, st.events.values(), m, now)
+        if strays:
+            st.accept(root, m, {i: e for i, e in st.events.items() if i not in strays})
+            st.save_events()
+            try:
+                res, docs = translate.bounded(read_mirror, 120)
+            except (translate.CallError, ValueError, OSError):
+                return "no-mirror"
+            m = st.manifest
     if res.error is not None or m is None or st.manifest_root != root:
         return "no-mirror"
 
@@ -467,11 +494,11 @@ def run_checkpoint(config, now: int, *, ssh=None, fetch=None, root: str = TRUST_
     cert = pull._choose_cert(m, root, now, None, [(served, base)])
     if cert is None or cpt.cert_problem(cert, m, now) is not None or cert.checkpoint_key != pub:
         return "no-certificate"
-    published = 0
+    published, listed = 0, set()
     try:  # the number of the checkpoint the mirror serves, when this key signed it: a floor for ours
         cp = cpt.load_checkpoint(served(base + "checkpoint.json"))
         if cpt.verify_checkpoint(cp, cert):
-            published = cp.seq
+            published, listed = cp.seq, set(cp.events)  # and what this poster last vouched for (m729)
     except (OSError, cpt.CheckpointError):  # none served or malformed: no floor from it
         pass
     # What the mirror serves right now: the events in the fetched files whose own signature
@@ -483,24 +510,34 @@ def run_checkpoint(config, now: int, *, ssh=None, fetch=None, root: str = TRUST_
             serving |= {e["id"] for e in json.loads(docs[name])["events"] if nostr.verify_event(e)}
         except (TypeError, ValueError, KeyError, AttributeError, RecursionError):
             return "no-mirror"
-    gone, give_up, hidden_gone = settle_gone(rec["gone"], st.events, serving, now, m)
+    # m729: the relay-bot events this poster did not sign. Everything below reads the copy
+    # without them (``mine``): none is listed, none makes a real renewal redundant, none
+    # counts as a level reply or a renewal in ``lapsed``.
+    foreign = sent.check(config.sent_state, st.events.values(), m, now,
+                         adopt={o["id"] for o in rec["owed"]} | set(known) | listed)
+    mine = {i: e for i, e in st.events.items() if i not in foreign}
+    gone, give_up, hidden_gone = settle_gone(rec["gone"], mine, serving, now, m)
     suppress = set(suppress) | hidden_gone
-    if give_up:  # missing for OWED_S: no longer the poster's to vouch for
-        st.accept(root, m, {i: e for i, e in st.events.items() if i not in give_up})
+    strays = foreign - serving  # no longer served: not kept, so they cannot fill the store
+    if give_up or strays:  # missing for OWED_S: no longer the poster's to vouch for
+        st.accept(root, m, {i: e for i, e in st.events.items() if i not in give_up and i not in strays})
         st.save_events()
+        mine = {i: e for i, e in mine.items() if i not in give_up}
     rec = {**rec, "gone": gone}
     # An acknowledged post stays owed until the poster holds it AND could list it: one
     # stamped after this run began is not listed yet, so it is not settled yet either.
     # gtw9: a renewal neither the mirror nor a later renewal has replaced keeps its thread out.
-    owed, dropped, hidden = settle_owed(rec["owed"], {i for i, e in st.events.items() if e["created_at"] <= now}, now,
-                                        _later((e for e in st.events.values() if e["created_at"] <= now), m))
+    owed, dropped, hidden = settle_owed(rec["owed"], {i for i, e in mine.items() if e["created_at"] <= now}, now,
+                                        _later((e for e in mine.values() if e["created_at"] <= now), m))
     suppress = suppress | hidden
-    listable = [o for o in owed if not ("renewal" in o and o["since"] <= now - OWED_S)]
+    # m729: nor a reply still owed to a thread whose root is foreign (it stays owed until its time runs out)
+    listable = [o for o in owed if not ("renewal" in o and o["since"] <= now - OWED_S) and o["root"] not in foreign]
     # gtw9: and no root a reader of the poster's own copy would decay unasked (``lapsed``).
-    suppress = suppress | lapsed(st.events.values(), m, now)
+    suppress = suppress | lapsed(mine.values(), m, now)
     tail = ((f",owed_dropped={dropped}" if dropped else "") + (f",gone_dropped={len(give_up)}" if give_up else "")
-            + (f",threads_suppressed={len(suppress)}" if suppress else ""))
-    ids = window(st.events.values(), m, listable, now, suppress=suppress)
+            + (f",threads_suppressed={len(suppress)}" if suppress else "") + (f",foreign={len(foreign)}" if foreign else ""))
+    # a foreign id as a thread root: the thread is left out whole, a curator's reply to it too
+    ids = window(mine.values(), m, listable, now, suppress=suppress | foreign)
     if ids is None:
         save_owed(config.owed_state, {**rec, "owed": owed})
         _say(f"checkpoint not signed: {len(owed)} owed posts and the curator replies do not fit one checkpoint")
