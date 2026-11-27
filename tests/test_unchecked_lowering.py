@@ -166,7 +166,7 @@ def test_a_damaged_record_is_flagged_and_never_an_error(tmp_path, damage):
     assert st.unverified_damaged and (st.lowerings, st.refused, st.interrupts, st.reset_at) == ({}, set(), {}, None)
     st.save_unverified()
     assert not State.load(tmp_path).unverified_damaged
-    assert set(json.loads((tmp_path / "unverified.json").read_text())) == {"lowerings", "refused", "interrupts", "held", "reset_at", "supported"}
+    assert set(json.loads((tmp_path / "unverified.json").read_text())) == {"lowerings", "refused", "interrupts", "held", "reset_at", "supported", "probation"}
 
 
 # ---------------------------------------------------------------- the check: withdrawal
