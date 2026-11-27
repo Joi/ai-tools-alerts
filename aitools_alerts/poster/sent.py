@@ -5,6 +5,8 @@ machine. An event that key signed and this poster did not is evidence of theft. 
 poster cannot revoke the key (that takes the trust root), but it signs the checkpoint,
 and a reader applies only what a checkpoint lists: so it leaves such an event out
 (``signer.run_checkpoint``) and says so once in the digest (``main.Run.digest``).
+Its other reads of its copy of the mirror leave such an event out too (``own``,
+through ``main.Run._own``; ai-tools-alerts#9cch).
 
 The record, ``Config.sent_state``:
 
@@ -40,7 +42,7 @@ from pathlib import Path
 from aitools_alerts import manifest, nostr, pull
 from aitools_alerts.state import write_json
 
-__all__ = ["load", "note", "holds", "check", "unsaid", "mark_said", "MAX_SAID"]
+__all__ = ["load", "note", "holds", "started", "check", "own", "unsaid", "mark_said", "MAX_SAID"]
 
 MAX_SAID = 200  # foreign ids one digest reports; more wait for the next
 MAX_KEPT = 1000  # foreign ids no longer on the mirror that are kept until a digest has reported them
@@ -137,6 +139,23 @@ def holds(path) -> set:
     except OSError:
         return set()
     return set(rec["ids"]) if rec["since"] is not None else set()
+
+
+def started(path) -> bool:
+    """Whether the record has been started: before that nothing is judged. False for
+    a record that is there and cannot be read."""
+    try:
+        return load(path)["since"] is not None
+    except OSError:
+        return False
+
+
+def own(path, events: dict, m, now: int, channels=None) -> dict:
+    """``events`` ({id: event}, the poster's whole copy of the mirror) without the
+    foreign ones (``check``, run here without ``adopt``: an unstarted record judges
+    nothing and the copy comes back whole). The same mapping when none is foreign."""
+    foreign = check(path, events.values(), m, now, channels=channels)
+    return {i: e for i, e in events.items() if i not in foreign} if foreign else events
 
 
 def check(path, events, m, now: int, adopt=None, channels=None) -> set:

@@ -636,3 +636,232 @@ def test_a_record_that_is_there_and_cannot_be_read_is_not_overwritten(tmp_path, 
     assert sent.holds(path) == set()
     monkeypatch.undo()
     assert set(_rec(path)["ids"]) == {"ab" * 32}
+
+
+# ---------------------------------------------------------------- the other reads of the copy (ai-tools-alerts#9cch)
+
+from aitools_alerts import schema  # noqa: E402
+from test_advisory_recompute import entries  # noqa: E402
+from test_copy_on_raise import lost, roots  # noqa: E402
+from test_translate import SRC, Call  # noqa: E402
+
+
+def _run_of(env, now=T0):  # noqa: F811
+    """A ``main.Run`` on the environment's ledger and state, for one read."""
+    led = Ledger(env.config.ledger)
+    led.__enter__()
+    return main.Run(now, env.config, led, inputs.load_state(env.config.state, now, 3), CHANNELS, FakeRelay(), None), led
+
+
+def _read(env, name, now=T0):  # noqa: F811
+    r, led = _run_of(env, now)
+    try:
+        return getattr(r, name)(env.mirror.root, env.mirror.fetch)
+    finally:
+        led.__exit__(None, None, None)
+
+
+def test_own_returns_the_copy_without_the_foreign_events(tmp_path):
+    m, path = Mirror(), tmp_path / "sent.json"
+    mine, forged = _bot(m, 1), _bot(m, 2)
+    curators = m.root_post(m.cur_sec, advisory(id="AITA-TEST-0003"), files=("feed.json",))
+    copy = {e["id"]: e for e in _events(m)}
+    assert sent.started(path) is False and sent.own(path, copy, m.man, NOW, channels=FEED) is copy
+    sent.check(path, copy.values(), m.man, NOW, adopt=[mine["id"]], channels=FEED)
+    assert sent.started(path) is True
+    assert set(sent.own(path, copy, m.man, NOW, channels=FEED)) == {mine["id"], curators["id"]}
+    sent.note(path, forged["id"], NOW)
+    assert sent.own(path, copy, m.man, NOW, channels=FEED) is copy  # none foreign: the same mapping
+
+
+def test_settling_reads_no_foreign_event(signing):
+    m = signing.mirror
+    mine = on_mirror(m, "The poster's own", T0 - 500, sec=m.bot_sec)
+    m.checkpoint()
+    signing.run(relay=PutRelay())
+    forged = _forged(m)
+    events, _ = _read(signing, "_mirror", T0 + HOUR)
+    assert [e["id"] for e in events] == [mine["id"]] and forged["id"] in _stored(signing)
+
+
+def test_a_forged_thread_a_curator_retracted_is_not_among_the_withdrawn_roots(signing):
+    m = signing.mirror
+    signing.run(relay=PutRelay())
+    real = on_mirror(m, "A curator's own, retracted", T0 + 100)
+    m.reply(m.cur_sec, real, "retract\nwrong", created_at=T0 + 200)
+    forged = _forged(m)
+    m.reply(m.cur_sec, forged, "retract\nnot ours", created_at=T0 + 200)
+    _, gone = _read(signing, "_withdrawn", T0 + HOUR)
+    assert gone == {real["id"]}
+
+
+def _forged_replies(m, root_id, when):
+    """What a thief would try against a real relay-bot thread: the two replies that
+    read as a withdrawal. Neither withdraws a thread for the poster (the relay bot has
+    no retraction, and its withdrawal block hides nothing unchecked)."""
+    tags = [["e", root_id, "", "root"]]
+    return [m.post(m.bot_sec, "retract\nwrong", created_at=when, tags=tags),
+            m.post(m.bot_sec, m.patch_text(level="withdrawn"), created_at=when + 1, tags=tags)]
+
+
+def test_forged_replies_take_no_real_thread_out_of_the_digest(signing):
+    m = signing.mirror
+    signing.collector([finding()])
+    _, _, relay = signing.run(relay=PutRelay())
+    (root_id,) = _roots(signing)
+    m.events["feed.json"].append(_event_of(signing, root_id, relay))
+    _forged_replies(m, root_id, T0 + 100)
+    _, summary, relay = signing.run(relay=PutRelay(), now=at(5, 9))
+    (digest,) = [c[2] for c in relay.calls if c[2].startswith("Daily digest")]
+    assert "GHSA-abcd-efgh-ijkl" in digest and ",foreign=2" in summary
+
+
+def _event_of(env, root_id, relay):  # noqa: F811
+    """The poster's own root as the mirror would serve it: signed with the bot key, and
+    taken as the poster's (its id written down, as the real sender does before a send)."""
+    channel, _, text = next(c for c in relay.calls if c[1] is None)
+    ev = nostr.sign_event(env.mirror.bot_sec, {"created_at": T0, "kind": 9, "tags": [["h", CHANNELS[channel]]],
+                                               "content": text})
+    sent.note(env.config.sent_state, ev["id"], T0)
+    with Ledger(env.config.ledger) as led:
+        e = next(e for e in led._state()["entries"] if e["root_event_id"] == root_id)
+        e["root_event_id"] = ev["id"]
+        e["channel_ids"] = {k: ev["id"] for k in e["channel_ids"]}
+        led._save()
+    return ev
+
+
+def test_forged_replies_keep_no_copy_from_posting(signing):
+    m = signing.mirror
+    signing.run(relay=PutRelay())  # the record is started
+    lost(signing)
+    feed = entries(signing)[0]["channel_ids"]["feed"]
+    _forged_replies(m, feed, T0 + HOUR + 100)
+    _, _, relay = signing.run(relay=PutRelay(), now=T0 + 2 * HOUR)
+    assert len(roots(relay, "critical")) == 1
+
+
+@pytest.fixture
+def curating(signing):
+    """``signing`` with curator translation on, and its record started by a first run."""
+    signing.config = replace(signing.config, translate_curator=True)
+    signing.run(relay=PutRelay(), translate_call=Call(lambda t: pytest.fail("nothing to translate")))
+    assert sent.started(signing.config.sent_state)
+    return signing
+
+
+def _curator_root(m, when=T0 + 100, title="Invented critical for tests"):
+    return m.post(m.cur_sec, schema.render_post(advisory(title=title), SRC.replace("Invented critical for tests", title)),
+                  created_at=when)
+
+
+def _amendment(m, root_ev, when, word="Amended: x"):
+    fixed = [{"name": "Claude Code", "ecosystem": "claude-code", "affected": "<99.0.1", "fixed": "99.0.1"}]
+    return m.post(m.cur_sec, m.patch_text(products=fixed).replace("Update.", word), created_at=when,
+                  tags=[["e", root_ev["id"], "", "root"]])
+
+
+def _ja(m, root_ev, when, of=None):
+    """A thief's translation under the bot key, of the root or of the change ``of``."""
+    head = "lang: ja\n" + (f"of: {of['id']}\n" if of else "")
+    return m.post(m.bot_sec, head + "\n偽の翻訳", created_at=when, tags=[["e", root_ev["id"], "", "root"]])
+
+
+def test_a_forged_translation_does_not_stop_the_posters_own(curating):
+    m = curating.mirror
+    r = _curator_root(m)
+    amend = _amendment(m, r, T0 + 200)
+    forged = [_ja(m, r, T0 + 300), _ja(m, r, T0 + 301, of=amend)]
+    assert all(pull.parse_translation(f["content"]) is not None for f in forged)
+    call = Call()
+    _, summary, relay = curating.run(relay=PutRelay(), now=T0 + HOUR, translate_call=call)
+    assert " translate=ok " in summary and len(call.texts) == 2
+    assert [(to, text.startswith("lang: ja\n")) for _, to, text in relay.ja] == [(r["id"], True)] * 2
+    assert f"of: {amend['id']}" in relay.ja[1][2] and "偽の翻訳" not in relay.ja[0][2] + relay.ja[1][2]
+
+
+def test_a_curators_reply_in_a_forged_thread_is_not_translated(curating):
+    m = curating.mirror
+    forged = _forged(m)
+    amend = _amendment(m, forged, T0 + 200)
+    call = Call()
+    _, summary, relay = curating.run(relay=PutRelay(), now=T0 + HOUR, translate_call=call)
+    assert " translate=ok " in summary and call.texts == [] and relay.ja == []
+    assert amend["id"] not in main._translate_state(curating.config.translate_state)["done"]  # not given up on
+    assert amend["id"] not in owed_ids(curating) and not any(o["root"] == forged["id"] for o in
+                                                             signer.load_owed(curating.config.owed_state, T0)["owed"])
+    sent.note(curating.config.sent_state, forged["id"], T0 + HOUR)  # the poster's after all
+    _, _, relay = curating.run(relay=PutRelay(), now=T0 + 2 * HOUR, translate_call=call)
+    assert len(call.texts) == 1 and [to for _, to, _ in relay.ja] == [forged["id"]]
+
+
+def _poisoned(env):  # noqa: F811
+    """A relay-bot thread of the poster's, a forged block in it that renames the alert
+    and adds a product, then a curator's amendment: the text to translate is the whole
+    advisory as amended."""
+    m = env.mirror
+    mine = m.root_post(m.bot_sec, advisory(id="CVE-2026-0007", title="A real alert", posted_by="relay-bot"),
+                       created_at=T0 + 100, files=("feed.json",))
+    sent.note(env.config.sent_state, mine["id"], T0 + 100)
+    extra = [{"name": "Forged Product", "ecosystem": "npm", "affected": "<1.0.0", "fixed": "1.0.0"}]
+    block = m.post(m.bot_sec, m.patch_text(title="Forged title", products=[*_products(), *extra]),
+                   created_at=T0 + 150, tags=[["e", mine["id"], "", "root"]])
+    return mine, block, _amendment(m, mine, T0 + 200)
+
+
+def _products():
+    return [{"name": p.name, "ecosystem": p.ecosystem, "affected": p.affected, "fixed": p.fixed}
+            for p in advisory().products]
+
+
+def test_a_forged_block_shapes_no_translation(curating):
+    mine, block, amend = _poisoned(curating)
+    whole = pull.threads_from([mine, block, amend], curating.mirror.man)[0].adv  # what the whole copy reads as
+    assert "Forged" in whole.title + " ".join(p.name for p in whole.products)
+    call = Call()
+    _, summary, relay = curating.run(relay=PutRelay(), now=T0 + HOUR, translate_call=call)
+    assert " translate=ok " in summary and len(call.texts) == 1 and len(relay.ja) == 1
+    assert "A real alert" in call.texts[0] and "Forged" not in call.texts[0] + relay.ja[0][2]
+
+
+@pytest.mark.parametrize("how", ["first run", "the record is lost"])
+def test_the_pass_waits_for_the_record(signing, how):
+    signing.config = replace(signing.config, translate_curator=True)
+    if how == "the record is lost":
+        signing.run(relay=PutRelay(), translate_call=Call())
+        signing.config.sent_state.unlink()
+    m = signing.mirror
+    m.raw["checkpoint.json"] = None  # no checkpoint of the poster's is served: nothing on the mirror starts the record
+    r = _curator_root(m)
+    _ja(m, r, T0 + 300)
+    call = Call(lambda t: pytest.fail("called before the record was started"))
+    _, summary, relay = signing.run(relay=PutRelay(), now=T0 + HOUR, translate_call=call,
+                                    mirror_fetch=m.fetch)
+    assert " translate=no-record " in summary and relay.ja == []
+    assert sent.started(signing.config.sent_state)  # by the signer, at the end of that run
+    call = Call()
+    _, summary, relay = signing.run(relay=PutRelay(), now=T0 + 2 * HOUR, translate_call=call)
+    assert " translate=ok " in summary and len(call.texts) == 1 and [to for _, to, _ in relay.ja] == [r["id"]]
+
+
+def test_without_a_checkpoint_key_the_reads_take_the_whole_copy(env):  # noqa: F811
+    m = env.mirror
+    env.run()
+    stray = _forged(m)
+    events, _ = _read(env, "_mirror", T0 + HOUR)
+    assert [e["id"] for e in events] == [stray["id"]] and not env.config.sent_state.exists()
+
+
+def test_a_check_that_raises_leaves_the_read_as_it_was(signing, monkeypatch, capsys):
+    m = signing.mirror
+    signing.run(relay=PutRelay())
+    forged = _forged(m)
+    m.reply(m.cur_sec, forged, "retract\nnot ours", created_at=T0 + 200)
+
+    def boom(*a, **k):
+        raise RuntimeError("x")
+    monkeypatch.setattr(sent, "own", boom)
+    capsys.readouterr()
+    _, gone = _read(signing, "_withdrawn", T0 + HOUR)
+    assert gone == {forged["id"]}
+    assert "own-key check of the mirror copy stopped: RuntimeError" in capsys.readouterr().err
