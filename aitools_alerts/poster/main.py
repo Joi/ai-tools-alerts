@@ -1820,8 +1820,8 @@ class Run:
         while its life has not run out, a renewal that this run's reads confirm, which
         makes redundant whatever acknowledged renewal the ledger never recorded. Until
         a run can send that, its roots are left out of the checkpoint. One whose life by
-        the ledger has run out is sent nothing, and its roots are left out for the longest
-        TTL after the loss: that long an unrecorded renewal could keep it on readers.
+        the ledger has run out is sent nothing and stays listed: unlisted, it would show
+        again on every reader that still stores it.
 
         A renewal is a reply with no block in each of the thread's channels, at most
         MAX_RENEWALS sends a run, the due threads in an order that starts one further on
@@ -1868,13 +1868,12 @@ class Run:
             if ended:
                 # A renewal the ledger never recorded may be newer than its claim: only a
                 # confirmation made now covers it. Nothing is sent to a thread off readers.
-                # Past the ledger's life it is not renewed (that could bring back a thread
-                # that is off readers) and not vouched for either, for as long as such a
-                # renewal could keep it standing: the longest TTL from the loss.
-                cover = lost is not None and old["confirmed_at"] < lost
-                forced = cover and life >= self.now
+                # Past the ledger's life nothing is sent and its roots stay listed: a thread
+                # a checkpoint does not list is not judged, so a reader that still stores an
+                # expired one would show it again, and a renewal would bring it back too.
+                forced = lost is not None and old["confirmed_at"] < lost and life >= self.now
                 fresh, text = self._confirming(e, old) if forced else (False, None)
-                if (forced and not fresh) or (cover and not forced and self.now <= lost + max(rs.ttl_days.values()) * 86400):
+                if forced and not fresh:
                     lapsing(life, e, anyway=True)
             else:
                 forced = lost is not None and old["checked_at"] < lost

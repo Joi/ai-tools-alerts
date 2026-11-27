@@ -1,6 +1,6 @@
 # Run: 65xv-when-a-thread-stops-being-renewed
 Instruction: Read TASK-ai-tools-alerts#65xv.md in this worktree root, then run `kata show ai-tools-alerts#65xv` and follow the brief and the dispatch rules (run as /do-it, starting rung floored at medium).
-Stage: code-review:whole-branch
+Stage: verifying
 Rung: medium (start-floor medium: dispatch brief)
 Spec: docs/superpowers/specs/2026-11-27-65xv-when-a-thread-stops-being-renewed-design.md   Plan: docs/superpowers/plans/2026-11-27-65xv-when-a-thread-stops-being-renewed.md
 Agency project: —
@@ -11,6 +11,7 @@ Limits: wall clock 5 hours from the 20:26Z dispatch (01:26Z); one independent pa
 Pass 1 [spec]: 5B/1S/0C/0R · fixed -/- · velocity = (—→6, escalation no)
 Pass 1 [plan]: 6B/0S/0C/0R · fixed -/- · velocity = (—→6, escalation no)
 Pass 1 [code:whole-branch]: 2B/0S/0C/0R · fixed -/- · velocity = (—→2, escalation no)
+Pass 2 [code:delta]: 0B/2S/0C/0R · fixed 2/2 prior · velocity = (2→2, escalation no)
 
 ## Chunks
 - [x] signer: a checkpoint lists a thread without its superseded renewals
@@ -47,3 +48,8 @@ Pass 1 [code:whole-branch]: 2B/0S/0C/0R · fixed -/- · velocity = (—→2, esc
 The gate at that head, in a clone of the branch alone: 3369 passed, 1 skipped. The same-model Stage 1 reviewer stopped on the seat's usage limit before reporting; nothing of its is counted.
 1. `_core` compared only what decides a thread's level, so the must-list could list a thread without a reply that widens its affected range, and a new reader on a version only that reply covers was not matched. Fixed: `_core` uses its set only when the reader builds the very thread from it (`_reads_alike`, every field), else the slim thread.
 2. After a lost checkpoint state an ended thread past its life by the ledger was neither renewed nor left out, though an acknowledged renewal the ledger never recorded could still keep it on readers. Fixed: its roots are left out for the longest TTL after the loss; nothing is sent to it.
+
+## Code review, delta (fresheyes, gpt-6-astra, run 20261128-070912-f3cfb3, `--since 89d33f0c7e0876dddb49255bfdbf086f601b49e7` at d05c891f63c4d300d712e45a9739357a38be645b): 2 SUBSTANTIVE
+1. Leaving the roots of an ended thread past its life out of the checkpoint (the second half of the fix to whole-branch finding 2) shows the expired thread again on every reader that still stores it: a reader does not judge an unlisted thread. Fixed: that suppression is removed. An ended thread inside its life is still renewed once, confirmed now, and left out until then; one past its life is sent nothing and stays listed. What whole-branch finding 2 described for a thread past its life is now rebutted: it needs an acknowledged renewal the ledger never recorded, a lost checkpoint state and a mirror that withholds that renewal, all found after the ledger's life has run out, and it loses up to one TTL of a notice the poster had stopped renewing; covering it by suppression resurrects every expired alert after any lost state. The spec says so.
+2. The recovery test asserts the `suppress` argument and the sends, not a published checkpoint read by a reader, and its certificate lasts 120 days. Fixed in part: the test that ran past day 120 is replaced by one whose claim is about `suppress` and sends only (days 251 and 300), and the in-life test runs on day 111, inside the certificate. Rebutted in part: what a checkpoint does with `suppress`, and what a reader does with an unlisted root, are gtw9's and pinned by its tests (`tests/poster/test_signer.py`, `tests/test_pull.py`); the year simulation reads published checkpoints through a reader.
+No further pass (review cycle: one review, one delta).
