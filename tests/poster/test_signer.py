@@ -1287,5 +1287,6 @@ def test_a_level_change_from_before_a_lost_state_keeps_its_root_out_until_its_re
     assert signer.answered(a["id"], t, u, [a, confirmed], m.man) and not signer.answered(a["id"], t, u, [confirmed], m.man)
     status, relay = _sign(signing, changes=changes)
     assert status == "sent,threads_suppressed=1"
-    assert relay.last().events == {other["id"], b["id"], in_run["id"], a["id"], confirmed["id"], other_id["id"],
-                                   *(e["id"] for e in early)}
+    # 65xv: listed with the renewal that keeps it standing; the earlier ones, and the claim
+    # about another advisory, which a reader does not count, are redundant beside it
+    assert relay.last().events == {other["id"], b["id"], in_run["id"], a["id"], confirmed["id"]}
