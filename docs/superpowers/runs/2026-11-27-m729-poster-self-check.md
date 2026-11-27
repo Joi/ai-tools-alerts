@@ -21,6 +21,12 @@ plan — pass 1 (fresheyes, gpt-6.1-sol, b94e143, FRESHEYES_DONE REASON=-). Fixe
 Pass 2 [plan]: 0B/0S/0C/0R · fixed 5/6 prior · velocity ↓ (6→0, escalation no)
 plan — pass 2, the delta (fresheyes, gpt-6.1-sol, `--since b94e143`, head b97826a, FRESHEYES_DONE REASON=-): passed, no finding, the rebuttal stands. plan — passes: 2 · elapsed: about 20 min.
 
+Gate: `scripts/test-gate.sh` on be1ead8: 3383 passed, public scan clean.
+Last reviewed: code be1ead8040f0169adda5a41aeb997879768a6d86 (whole branch, `git diff origin/main...be1ead8`)
+Pass 1 [code:whole-branch]: 4B/2S/0C/0R · fixed -/- · velocity = (—→6, escalation no)
+code — pass 1, Stage 2 (fresheyes, gpt-6.1-sol, be1ead8, FRESHEYES_DONE REASON=-). Fixed in the next commit: an old checkpoint served again could restart the record (only a fresh checkpoint of the current manifest counts); a full store kept an unstarted record from starting; the record was not fsynced in its directory before a send. Rebutted: overflow by a new foreign batch when the poster's own history is near the limit (ai-tools-alerts#pdag); the first digest after the record starts; a failed Japanese copy. Stage 1 (same-model subagent) stopped on the seat's usage limit before it reported; it was run again on the fixed head.
+Brief: the TASK file was empty; the brief arrived as comment qazgkf with directive hgkba4 while this run was under way (acknowledged). It adds: stay inside the worktree, no rollout (a note on ai-tools-alerts#5fry), main merged before the last review pass and before the merge.
+
 ## Chunks
 - [ ] the sent record and the check (aitools_alerts/poster/sent.py, signer, main, transport, inputs, compose)
 - [ ] docs: CHANGELOG, README
