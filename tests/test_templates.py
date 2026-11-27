@@ -137,6 +137,11 @@ def test_procedure_text_is_fixed(path):
     assert "a `source: <url>` line" in flat and "the source link (`source`)" in flat
     assert "when `source_primary` is false, say that it is not a primary source" in flat
     assert "#security-feed" not in text and "if the CLI printed one" not in flat
+    # 53fy: the JSON keeps the published title, fixed version and actions; the rule comes before the first report
+    rule = ("When `fixed_contradicted` is true on any match of an advisory, name it by its `id` and not by its "
+            "`title`, and say no fixed version and no version from its `actions`")
+    assert rule in flat and flat.index(rule) < flat.index("Run `aitools-alerts plan <thread>`")
+    assert "the fixed version given is not the advisory's: notify only, no command" in flat
 
 
 RULES = ("Do not run it yet.",

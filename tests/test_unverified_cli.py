@@ -280,7 +280,7 @@ def test_a_third_unverified_critical_from_one_key_is_listed_and_does_not_interru
     # its source confirms it: it interrupts in the run that reads the source, and says nothing of "not verified"
     waiting = next(e for e in m.events["feed.json"] if e["id"] == held[0])
     ident = next(i for i in THREE if i in waiting["content"])
-    use(monkeypatch, Net().set(gurl(ident), ghsa(ident, type="malware")))
+    use(monkeypatch, Net().set(gurl(ident), ghsa(ident, type="malware", fixed="99.0.0")))  # the fixed version bot() posts
     status, out, _ = out_of(capsys, ["run"])
     assert status == cli.EXIT_UNSEEN_CRITICAL and len(sent["texts"]) == 3 and cli.NOT_VERIFIED not in sent["texts"][2]
     assert out_of(capsys, ["run"])[0] == 0 and len(State.load().seen) == 3
@@ -327,7 +327,7 @@ def test_a_copy_of_a_post_confirmed_earlier_is_not_confirmed_with_it(feed, sent,
     """A result belongs to the published state, not to the post. After the source withdrew,
     new roots that copy the confirmed state must not each pass as checked."""
     m = feed([bot(id=G1, level="critical")])
-    use(monkeypatch, Net().set(gurl(G1), ghsa(type="malware")))
+    use(monkeypatch, Net().set(gurl(G1), ghsa(type="malware", fixed="99.0.0")))  # the fixed version bot() posts
     assert out_of(capsys, ["run"])[0] == cli.EXIT_UNSEEN_CRITICAL  # notified unverified, then read and confirmed
     for i in range(4):  # the same state, another title: another alert to the reader
         m.root_post(m.bot_sec, bot(id=G1, level="critical", title=f"Invented copy {i}"), created_at=T0 + 200 + i)
