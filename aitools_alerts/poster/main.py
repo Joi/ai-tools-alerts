@@ -88,7 +88,10 @@ exit code or the checkpoint.
 With ``translate_curator`` on, a curator's post or amendment read from the mirror gets
 a machine translation (``translate``), journaled as ``curator:<event id>:<channel>:ja``
 after the English work of the run is saved. A 401/403 holds it until
-``translate-clear-hold``; nothing in that pass reaches the exit code.
+``translate-clear-hold``; nothing in that pass reaches the exit code. With a
+checkpoint key the pass reads the mirror without the relay-bot events this poster did
+not sign, and does not run (``translate=no-record``) until the sent record is started
+(ai-tools-alerts#9cch).
 """
 
 from __future__ import annotations
@@ -472,7 +475,8 @@ class Run:
 
     def _mirror(self, root, fetch):
         """(the relay bot's events in the poster's verified copy of the mirror after a
-        pull made now, {channel name: when its file was generated}), or None when there
+        pull made now, without those this poster did not sign (``_own``, 9cch),
+        {channel name: when its file was generated}), or None when there
         is no copy to read. The second is empty when the pull failed: stored events are
         still evidence of a delivery, and nothing is evidence of an absence."""
         get, seen = fetch or pull.default_fetch, {}
@@ -506,7 +510,8 @@ class Run:
                     made[name.rsplit(".", 1)[0]] = int(at.replace(tzinfo=_dt.timezone.utc).timestamp())
                 except (KeyError, TypeError, ValueError, AttributeError, RecursionError):
                     pass
-        return [e for e in st.events_for(root).values() if manifest.role_of(m, e["pubkey"]) == "relay-bot"], made
+        return [e for e in self._own(st.events_for(root), m).values()
+                if manifest.role_of(m, e["pubkey"]) == "relay-bot"], made
 
     def _delivery(self, it, p, events) -> str | None:
         """The id of the mirror event that is this journal item's send, or None: the
@@ -729,7 +734,11 @@ class Run:
 
     def curator_events(self, fetch=None, root=TRUST_ROOT_PUBKEY, done=(), start=None):
         """(event, root id, of, channel) for each curator root or amendment in the mirror,
-        oldest first, from after the backfill floor. None when the mirror cannot be read."""
+        oldest first, from after the backfill floor. None when the mirror cannot be read.
+        Read from the copy without the relay-bot events this poster did not sign (``_own``,
+        9cch): a forged translation marks nothing as translated, a curator's reply in a
+        forged thread has no root here, and no forged block shapes an amended advisory.
+        Raises sent.NotStarted when, with a checkpoint key, the copy could not be judged."""
         try:
             st = State.load(self.config.mirror_dir)
             if translate.bounded(lambda: pull.fetch(self.config.translate_mirror_url, st, fetch=fetch,
@@ -737,10 +746,14 @@ class Run:
                 return None
         except (translate.CallError, ValueError, OSError):  # a timeout, an unreadable mirror state
             return None
-        m, evs = st.manifest, st.events
+        m = st.manifest
         names = {self.channels[c]: c for c in ("feed", "critical")}  # the journal takes no other channel
-        self.mirror_ids, out = set(evs), []
-        # What the bot has already translated, (thread root, of), so a lost translate file never reposts.
+        self.mirror_ids, out = set(st.events), []  # the whole copy: it only bounds the translate state
+        # strict: the record may have been lost since ``translate_curator`` asked (the pull
+        # above can take two minutes); the read that filters is the one that says so
+        evs = self._own(st.events, m, strict=True)
+        # What the bot has already translated, (thread root, of), so a lost translate file never reposts
+        # (9cch: what this poster's record holds; a translation the record does not hold counts for nothing).
         posted = {(pull._thread_ref(e), tr[1]) for e in evs.values()
                   if manifest.role_of(m, e["pubkey"]) == "relay-bot"
                   and (tr := pull.parse_translation(e["content"])) is not None and tr[0] == "ja"}
@@ -775,6 +788,11 @@ class Run:
         is counted (20 a UTC day) and its outcome cached by event id before anything is sent."""
         if not self.config.translate_curator:
             return "off"
+        if self.config.checkpoint_key_file is not None and not sent.started(self.config.sent_state):
+            # 9cch: nothing is translated from a copy that cannot be judged yet. A translation
+            # made from a forged block would be sent as the poster's own and never made again.
+            # The signer starts the record at the end of this run; the next run translates.
+            return "no-record"
         path = self.config.translate_state
         try:
             tr = _translate_state(path)
@@ -784,7 +802,10 @@ class Run:
         if tr["hold"] is not None or self.key_refused:  # c6ak: a wording 401/403 this run holds it too
             return "held"
         start = time.monotonic()  # the pass deadline covers the mirror and the replay too
-        evs = self.curator_events(fetch, root, {k for k, v in tr["done"].items() if v in ("ok", "untranslated")}, start)
+        try:
+            evs = self.curator_events(fetch, root, {k for k, v in tr["done"].items() if v in ("ok", "untranslated")}, start)
+        except sent.NotStarted:  # lost between the question above and the read of the copy
+            return "no-record"
         if evs is None:
             return "mirror-error"
         today, memo = _utc_date(self.now), {}
@@ -2057,7 +2078,8 @@ class Run:
         """(case-folded advisory ids, root event ids) withdrawn under ``root`` as of a
         mirror pull made now: the manifest's retracted ids (whoever posted them), and the
         root of every thread that is retracted or, as amended, expired (that thread only:
-        another product's post of the same id stays). Raises when the pull fails."""
+        another product's post of the same id stays). Raises when the pull fails.
+        Read without the relay-bot events this poster did not sign (``_own``, 9cch)."""
         st = State.load(self.config.mirror_dir)
         res = translate.bounded(lambda: pull.fetch(self.config.translate_mirror_url, st, fetch=fetch,
                                                    root_pubkey=root, now=self.now, checkpoint=False), 120)
@@ -2065,11 +2087,31 @@ class Run:
             raise ValueError(f"mirror pull: {res.error}")
         m = st.accepted(root)
         roots = set()
-        for t in pull.threads_from(list(st.events_for(root).values()), m):
+        for t in pull.threads_from(list(self._own(st.events_for(root), m).values()), m):
             t = pull.standing(t, self.now)  # c1g2: a curator's retraction of a bot thread lapses
             if t.retracted or (t.adv.expires_at is not None and t.adv.expires_at < self.now):
                 roots.add(t.root_id)
         return {i.casefold() for i in m.retracted}, roots
+
+    def _own(self, events: dict, m, strict: bool = False) -> dict:
+        """9cch: the mirror copy's events without the relay-bot events this poster did
+        not sign (``sent.own``), for every read of the copy outside the signer. The
+        copy as it is without a checkpoint key (no record is kept), without a manifest,
+        and, with one line on stderr, when the check itself fails: no read waits on it.
+        ``strict`` (the curator-translation pass, whose result outlives the run): with a
+        checkpoint key, sent.NotStarted is raised instead whenever the copy was not
+        judged, by an unstarted or unreadable record or by a check that failed."""
+        if self.config.checkpoint_key_file is None or m is None:
+            return events
+        try:
+            return sent.own(self.config.sent_state, events, m, self.now, strict=strict)
+        except sent.NotStarted:
+            raise
+        except Exception as e:  # noqa: BLE001
+            _say(f"own-key check of the mirror copy stopped: {type(e).__name__}")
+            if strict:
+                raise sent.NotStarted from None
+            return events
 
     def _foreign(self, root) -> list:
         """m729: the ids of the relay-bot events this poster did not sign that no digest has
