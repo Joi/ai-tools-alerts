@@ -1,6 +1,6 @@
 # Run: m729-poster-self-check
 Instruction: Read TASK-ai-tools-alerts#m729.md in this worktree root, then run `kata show ai-tools-alerts#m729` and follow the brief and the dispatch rules (run as /do-it, starting rung floored at medium).
-Stage: verifying
+Stage: done
 Rung: heavy (start-floor heavy: hard-trigger, BR1 REV1 NOV1 INT1 FC2 = 6; the evaluator named "secrets, auth or credential handling" for the change to what the checkpoint key signs, a torn call it resolved to the higher floor; the dispatch floor was medium)
 Lens: "the service self-corrects with no human in the loop"
 Last reviewed: spec 6d99ae259b63516d0950d8821c6f9e60a40a14af
@@ -26,16 +26,24 @@ Last reviewed: code be1ead8040f0169adda5a41aeb997879768a6d86 (whole branch, `git
 Pass 1 [code:whole-branch]: 4B/2S/0C/0R · fixed -/- · velocity = (—→6, escalation no)
 code — pass 1, Stage 2 (fresheyes, gpt-6.1-sol, be1ead8, FRESHEYES_DONE REASON=-). Fixed in the next commit: an old checkpoint served again could restart the record (only a fresh checkpoint of the current manifest counts); a full store kept an unstarted record from starting; the record was not fsynced in its directory before a send. Rebutted: overflow by a new foreign batch when the poster's own history is near the limit (ai-tools-alerts#pdag); the first digest after the record starts; a failed Japanese copy. Stage 1 (same-model subagent) stopped on the seat's usage limit before it reported; it was run again on the fixed head.
 Brief: the TASK file was empty; the brief arrived as comment qazgkf with directive hgkba4 while this run was under way (acknowledged). It adds: stay inside the worktree, no rollout (a note on ai-tools-alerts#5fry), main merged before the last review pass and before the merge.
+Pass 2 [code:whole-branch]: 1B/1S/0C/0R · fixed 3/6 prior · velocity ↓ (6→2, escalation no)
+code — pass 2, the delta (fresheyes, gpt-6.1-sol, `git diff be1ead8 fc26f74`, FRESHEYES_DONE REASON=-): the three fixes checked; two findings, both fixed in bf0c3dc with no further pass (a still-fresh older checkpoint could restart the record: now only one not numbered below the poster's own count; a note for an id already written did not sync again). No rebuttal overturned.
+code — Stage 1 (same-model subagent, on fc26f74 with main merged): 0 blockers, 3 substantive, 4 cosmetic. Fixed in bf0c3dc: a foreign post that left the mirror before the digest was never said; a record that could not be read was overwritten; a test assertion that could not fail; README wording. Rebutted: the full-store path starts the record without the served checkpoint (it runs before the certificate is chosen; the strict side); the renewal test through a real Relay (see Notes).
+Gate: `scripts/test-gate.sh` on bf0c3dc: 3504 passed. Main merged three times since (kk2q and nx25; p93w and aabw; 53fy), with conflicts in the signer, the run and the changelog resolved by hand; two of main's new tests that post under the bot's key after a first run now record the id (test_signer.py, test_renew.py). On 4842e09 (main at 80b0900 merged): 3618 passed, public scan clean.
+After the last reviewed code (bf0c3dc): the merges of main, the two test lines above, one changelog sentence, and this record. No behaviour of this branch changed after bf0c3dc.
 
 ## Chunks
-- [ ] the sent record and the check (aitools_alerts/poster/sent.py, signer, main, transport, inputs, compose)
-- [ ] docs: CHANGELOG, README
+- [x] the sent record and the check (be1ead8; review fixes fc26f74, bf0c3dc)
+- [x] docs: CHANGELOG, README (be1ead8, bf0c3dc)
 
 ## Notes
 - Follow-ups filed: ai-tools-alerts#cftg (the member strike rule), #9cch (the poster's other reads of its mirror copy), #pdag (a pull-level filter before the store limit).
 - Plan deviations in the build: the path-collision case is a new test in `tests/poster/test_sent.py`, not an addition to the one in `test_signer.py`; the "renewal with an unknown outcome through a real Relay" test is not written, because the hook is in `Relay.send`, which every kind of send goes through, and the two transport tests and the two settle tests exercise it with a real `Relay`; no existing test needed an `as_sent` helper (the mirror's default checkpoint lists what the tests post, so the record takes it).
 - Mutation check: with the signer's filter and the settle-by-id filter removed, 13 of the 35 tests in `tests/poster/test_sent.py` fail; restored, all pass.
 - I edited the spec and plan with a script after their reviews (exact-match replacements, each asserted to occur once), not with the Edit tool the skill names; every replacement was checked afterwards.
+- The run stopped for about four hours on the seat's usage limit (2026-11-27 22:13 to 2026-11-28 02:00 JST); the liveness watcher's needs-review label was removed on resuming.
+- Wall clock: over the brief's five hours counting that stop; about four hours of work, most of it in six gate runs of 15 to 20 minutes and seven review passes.
+- Rollout note left on ai-tools-alerts#5fry (install after a `checkpoint=sent` run, with nothing pending).
 - Skip temptations: starting the build before the plan's delta verdict (I wrote `sent.py` and its unit tests while reviews ran; nothing was committed until the plan passed).
 - My mistake, 2026-11-27: `fresheyes.sh --help` is not a help flag; it started a detached review with "--help" as its scope (handle 20261127-211716-785f8a). Stopped within a minute by ending its own process group; no verdict, nothing used from it.
 - The brief file TASK-ai-tools-alerts#m729.md is empty (0 bytes); the issue body and its one comment are the brief.
