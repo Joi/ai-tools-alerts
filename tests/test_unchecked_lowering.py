@@ -319,3 +319,17 @@ def test_the_alias_that_supported_the_thread_is_read_first(tmp_path):
     n = Net().set(verify.KEV_URL, kev()).set(gurl(G1), ghsa(type="malware", cve=CVE))
     assert lowering(tmp_path, crowded, "high", n, now=NOW + 60) is False
     assert n.urls[:2] == [verify.KEV_URL, gurl(G1)]
+
+
+def test_the_alias_that_supported_a_former_name_thread_is_read_first(tmp_path):
+    """aabw: the same for a thread under a former name, whose support is that of the
+    products the name stands for. Were the stored support read by the former name
+    itself, it would weigh nothing and the crowded read would never reach it."""
+    old = [("MCP servers and clients", "mcp")]
+    git = ghsa(pkgs=(("pip", "mcp-server-git"),), cve=CVE)  # the advisory gives high
+    a = adv(id=CVE, aliases=[G1], level="high", products=old)
+    assert lowering(tmp_path, a, "notice", Net().set(verify.KEV_URL, kev()).set(gurl(G1), git)) is False
+    crowded = adv(id=CVE, aliases=[G2, G3, G4, G1], level="high", products=old)
+    n = Net().set(verify.KEV_URL, kev()).set(gurl(G1), git)
+    assert lowering(tmp_path, crowded, "notice", n, now=NOW + 60) is False
+    assert n.urls[:2] == [verify.KEV_URL, gurl(G1)]
