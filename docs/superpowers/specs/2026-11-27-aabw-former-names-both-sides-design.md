@@ -145,6 +145,10 @@ The fixes of 1 and 2 change behaviour, so the independent reviewer read them in 
 
 The delta pass raised nothing on the silence rule or the schema rule.
 
+## After the merge of main at `cfdbfc7` (nx25)
+
+nx25 landed while this branch was in review and also raised the cache version to 6. Both are unreleased, and a cache written by main's version 6 holds the `no-source` this change must not keep, so this branch's version is 7 (criterion 6 and its tests read 7 and 6 where the text above says 6 and 5). Two conflicts, both kept whole on both sides: the changelog's two entries, and the two new sections at the end of `tests/test_verify.py`. nx25 rewrote how aliases beside a CVE first id are chosen and kept `weight`, which this branch's change to it merged into without conflict; nx25's new code reads no support by product name.
+
 ## Open questions
 
 None that blocks.
