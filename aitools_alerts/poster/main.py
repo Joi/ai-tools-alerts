@@ -35,9 +35,10 @@ for three days; then a root, copy or digest is dropped and its advisory planned 
 and a reply is sent once more and dropped only when refused again (``Run.expire_withheld``).
 A raise never waits behind an unsent lowering or source-only reply of its own thread:
 that work leaves the journal in the save that journals the raise (``Run.yields``,
-``Run.enqueue``). A level reply the journal gave up in one channel is not lost: the ledger
-names the channel as lacking the thread's standing reply (``Entry.lacks``) and a later run
-sends it again (``Run.reconcile``, ai-tools-alerts#aqtf). It does wait while a send of the thread is unknown. ``pending`` lists
+``Run.enqueue``). It does wait while a send of the thread is unknown. A level reply the
+journal gave up in one channel is not lost: the ledger names the channel as lacking the
+thread's standing reply (``Entry.lacks``) and a later run sends it again (``Run.reconcile``,
+ai-tools-alerts#aqtf). ``pending`` lists
 what is in flight and ``resolve <key> --delivered <event id> | --not-delivered --reason
 <text> | --requeue | --drop`` settles one sooner, both under the ledger lock.
 
@@ -206,6 +207,7 @@ class Run:
         # aqtf: thread roots a reply of which the relay refused in this run. ``reconcile``
         # plans nothing for them now: the next run does, at the journal's own pace.
         self.refused: set[str] = set()
+        self.again: set[str] = set()  # aqtf: thread roots ``reconcile`` planned a reply for in this run
 
     def save(self):
         inputs.save_state(self.config.state, self.state)
@@ -1590,7 +1592,7 @@ class Run:
         except Exception:  # noqa: BLE001 - whatever the text holds, it is then no claim
             return None
 
-    def reconcile(self, up: bool):
+    def reconcile(self, up: bool, skip=frozenset()):
         """Send each channel that lacks its thread's standing level reply that reply
         again (ai-tools-alerts#aqtf). The journal gives up a reply a channel refused
         twice (``_withhold``); the ledger still names the channel (``Entry.lacking``),
@@ -1605,17 +1607,22 @@ class Run:
         the journal lets go of the last attempt), a thread a reply of which the relay
         refused in this run (the next run plans it; two refusals stop a run), nor a
         level for a thread whose withdrawal this run recorded (kk2q: the two could
-        carry one second).
+        carry one second). Nor for a thread in ``skip``: one this run is about to lower,
+        whose lowering goes to every channel and is the standing reply from then on. And
+        no more once the relay has refused a reply in this run: a second refusal stops a
+        run, so channels that refuse for good are tried one thread a run.
 
         The claim is the one that states the standing word: this run's reading of the
         thread, else for a level the standing claim checked now; none when neither does.
         The item is marked ``again``: recorded, the thread's channels no longer count as
         holding the same ids (``Entry.uneven``). Raises _Stop or LedgerError as any send."""
         for e in self.led.entries():
+            if self.n["refused"]:
+                return
             word = e.standing
             rank = RANK.get(word, -1)
             lacking = [ch for ch, w in e.lacking.items() if (RANK.get(w, -1) < rank) == up]
-            if not lacking or compose.is_synthetic(e.advisory.get("id")) or e.root_event_id in self.refused \
+            if not lacking or compose.is_synthetic(e.advisory.get("id")) or e.root_event_id in self.refused | set(skip) \
                     or (e.root_event_id in self.withdrew and not e.gone) or self.busy(e.aliases, e.scope):
                 continue
             try:
@@ -1631,6 +1638,7 @@ class Run:
                 continue
             for it in items:
                 it["again"] = True
+            self.again.add(e.root_event_id)
             _say(f"{compose.public_form(e.advisory.get('id'))}: {', '.join(lacking)} lacks the reply "
                  f"that says {word}; sent again")
             self.enqueue(items)
@@ -1804,8 +1812,9 @@ class Run:
                 # its wait stays until the ledger shows the level: see drop_unsent_lowerings
                 self.enqueue(items, self.passed.pop(e.root_event_id, None) if raising else None)
             # aqtf: a channel that lacks a raise shows less than the poster holds, so it goes
-            # before this run's lowerings; a channel that shows more goes after them.
-            self.reconcile(up=raising)
+            # before this run's lowerings; a channel that shows more goes after them. Not
+            # for a thread about to be lowered: the two replies could carry one second.
+            self.reconcile(up=raising, skip={e.root_event_id for e, _ in due} if raising else ())
         self.copies(trust_root, fetch)
 
     @staticmethod
@@ -1994,8 +2003,10 @@ class Run:
             best = self._life(e, rs, self.now if fresh else old["confirmed_at"], self.now)
             if not fresh and best - self.now <= STEP_EARLY:
                 if RANK[e.level] > 0:
-                    if self.busy(e.aliases, e.scope):
-                        lapsing(best, e)  # its step, or other work of the thread, is in flight
+                    if self.busy(e.aliases, e.scope) or e.root_event_id in self.again:
+                        # its step, or other work of the thread, is in flight; or (aqtf) a
+                        # reply sent again in this run names a level in the same second
+                        lapsing(best, e)
                     else:
                         steps.append((best, e, old))
                 continue

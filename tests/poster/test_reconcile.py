@@ -9,7 +9,7 @@ from dataclasses import replace
 import pytest
 
 from aitools_alerts import ruleset, schema, wire
-from aitools_alerts.poster import compose, inputs, main, signer
+from aitools_alerts.poster import compose, inputs, main, recompute, signer
 from aitools_alerts.poster.ledger import Entry, Ledger, LedgerError
 
 from advisories import ghsa_json
@@ -138,6 +138,18 @@ def test_a_reply_sent_again_to_a_withdrawn_channel_is_no_level_change_of_the_thr
     with book(tmp_path / "later", withdrawn=["critical"], lacks={"critical": "withdrawn"}, changed=[5]) as led:
         # kk2q's own later reply (a journal item sent once more) still counts when it lands
         assert reply(led, "critical", "high", now=400).changed == [5, 400]
+
+
+def test_leaving_the_state_is_counted_whichever_channel_takes_the_reply_first(tmp_path):
+    """The channel that never took the withdrawal acknowledges the return first, and the
+    withdrawn one refuses: the return is a level change, and the seven quiet days before
+    another lowering count from it."""
+    with book(tmp_path, withdrawn=["feed"], lacks={"critical": "high"}, changed=[5]) as led:
+        e = reply(led, "critical", "high", now=8 * 86400)
+        assert (e.gone, e.lacks, e.changed) == (False, {"feed": "withdrawn"}, [8 * 86400])
+        assert not recompute.quiet(e, 9 * 86400) and recompute.quiet(e, 15 * 86400 + 1)
+        e = reply(led, "feed", "high", R2, now=12 * 86400, again=True)  # given up, then sent again: no second time
+        assert (e.withdrawn, e.lacks, e.changed) == (None, None, [8 * 86400])
 
 
 def test_a_withdrawn_channel_lacks_no_second_withdrawal(tmp_path):
@@ -304,6 +316,34 @@ def test_a_failed_send_stops_the_run_after_the_raise_and_nothing_is_planned_twic
     assert quiet(env, 4)
 
 
+def test_a_thread_about_to_be_lowered_is_not_sent_its_missed_raise_first(env):
+    """The lowering goes to every channel and is the standing reply from then on. A raise
+    sent again before it in the same run could carry the same second and read last."""
+    critical(env)
+    env.api.put(G, ghsa_json(G, packages=NO_FIX))  # no longer critical: a wait of a day
+    edit(env, lambda e: at(e, "critical"))
+    assert all(sends(run(env, h)) == [] for h in range(1, 25))
+    edit(env, lambda e: e.update(lacks={"feed": "high"}))
+    relay = run(env, 25)
+    (level,) = {lv for _, lv in sends(relay)}
+    assert level != "critical" and sorted(ch for ch, _ in sends(relay)) == ["critical", "feed"]
+    (e,) = entries(env)
+    assert e["level"] == level and "lacks" not in e and "uneven" not in e
+
+
+def test_channels_that_refuse_for_good_are_tried_one_thread_a_run(env):
+    """Two refusals stop a run. Two threads lack a raise in a channel that refuses: one
+    reply a run, and no run stops for it."""
+    two_threads(env)
+    edit(env, lambda e: (at(e, "critical"), e.update(lacks={"feed": "high"})), 0)
+    env.api.put(G, ghsa_json(G, **MALWARE))
+    for h in (2, 3):  # the relay refuses the first send of each run: the reconciliation's
+        code, _, relay = env.run(now=T0 + h * HOUR, relay=FakeRelay("refuse"))
+        assert code == 0 and sends(relay) == [("feed", "critical")]
+    assert [w["items"][0]["again"] for w in env.state()["withheld"]] == [True, True]
+    assert sends(env.run(now=T0 + 4 * HOUR, relay=FakeRelay("refuse"))[2]) == []
+
+
 def test_a_reply_acknowledged_and_not_recorded_is_finished_by_the_next_run(env, monkeypatch):
     """A run that stops between the acknowledgement and the ledger's record: the item on
     disk still says the reconciliation planned it."""
@@ -378,6 +418,9 @@ def test_a_copy_whose_reply_the_feed_never_took_is_sent_nothing(env):
     (e,) = entries(env)
     assert e["level"] == "high" and e["copied"] == {"critical": "critical"} and "lacks" not in e
     env.kev.catalog = {"vulnerabilities": []}  # nothing raises it again in these runs
-    for h in range(2, 6):
-        _, _, relay = env.run(now=T0 + h * HOUR)
-        assert all(c[0] != "critical" for c in relay.calls)
+    for h in range(2, 2 + 3 * DAY + 4):  # past the hour the journal gives the feed's reply up
+        _, _, relay = env.run(now=T0 + h * HOUR, relay=FakeRelay(*["refuse"] * 9))
+        # no reply naming the level alone: the candidate's own raise, planned again once the
+        # journal lets go, is what brings the thread to critical, in every channel as before
+        assert sends(relay) == [] and "lacks" not in entries(env)[0]
+        assert all(not it.get("again") for it in env.state()["outbox"] + [i for w in env.state()["withheld"] for i in w["items"]])

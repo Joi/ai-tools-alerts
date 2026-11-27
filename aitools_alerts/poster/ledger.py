@@ -487,8 +487,10 @@ class Ledger:
         held = set(e.get("withdrawn", ()))
         stamp = min(now, changed_at or now)
         entered = withdrawn is True and not before.gone
-        left = withdrawn is False and bool(held & set(reply_ids)) and stamp not in e.get("changed", [])[-1:] \
-            and not again
+        # aqtf: also when the channel that takes the reply first never took the withdrawal:
+        # the thread leaves the state with it, whichever channel that is
+        left = withdrawn is False and (before.gone or bool(held & set(reply_ids))) and not again \
+            and stamp not in e.get("changed", [])[-1:]
         if "root_fixed" not in e and not e["replies"]:  # 9kgk: a legacy entry's root, kept before it changes
             e["root_fixed"] = Entry(**e).fix_at_root or ""
         if adv.level != e["level"] or entered or left:  # ny5g: counted once; a second channel's copy finds it equal

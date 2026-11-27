@@ -35,6 +35,19 @@ Plan findings and what was done:
 5. SUBSTANTIVE: no regression test for `uneven`. Fixed: a ledger test with equal reply counts and an alias, asserted through `Run._stated`.
 Rung after the pass: medium.
 
+Last reviewed: code d664e67 (whole branch, `git diff origin/main...d664e67`, main at fd36ba6 merged)
+Pass 1 [code:whole-branch]: 1B/3S/3C/0R · fixed -/- · velocity = (—→7, escalation no)
+code: passes 1 · Stage 2 gpt-6.1-sol through fresheyes on d664e67 (watchdog FRESHEYES_DONE REASON=-): one BLOCKER. Stage 1 a same-model reviewer on the same commit, in parallel: no BLOCKER, three SUBSTANTIVE (one the same defect as Stage 2's), three COSMETIC.
+
+Code findings and what was done (the same defect counted once):
+1. BLOCKER (Stage 2; Stage 1 S3): leaving the withdrawn state was not counted in `changed` when the channel that never took the withdrawal acknowledged the return first, so another lowering could follow within seven days. Fixed: the return counts when the thread was withdrawn before the reply, whichever channel takes it first; a test with that order and the quiet-days assertion.
+2. SUBSTANTIVE (Stage 1 S1): a thread due a lowering in this run could be sent its missed raise first, the two replies in one second. Fixed: `reconcile(up=True)` skips the threads this run lowers; the step down skips a thread the reconciliation sent a reply for in this run; a test.
+3. SUBSTANTIVE (Stage 1 S2): two threads lacking in a channel that refuses for good took two refusals in one run, which stops the run, every three days. Fixed: the reconciliation plans nothing more once the relay has refused a reply in the run; a test.
+4. COSMETIC (Stage 1 C1): the copy test ended before the journal gave the reply up. Fixed: it runs past that hour.
+5. COSMETIC (Stage 1 C2): a sentence of the module docstring had lost its subject. Fixed.
+6. COSMETIC (Stage 1 C3), rebutted: an entry kk2q wrote with one channel withdrawn and the other channel's withdrawal still in the journal at the upgrade counts the entering twice. Once per such thread, and it lengthens the quiet days. kk2q is unreleased.
+Rung after the pass: medium. Finding 1 changed behaviour: the fixes are committed and get the one delta pass (`fresheyes --since d664e67`).
+
 ## Chunks
 - [x] ledger: `lacks`, `copied` and `uneven`, the thread's standing by channel; the journal item's `again`
 - [x] poster: `Run.reconcile`, the state read from the standing reply, tests, `spec/wire.md`, changelog
