@@ -1,6 +1,6 @@
 # Run: kk2q-poster-withdrawn-state
 Instruction: Read TASK-ai-tools-alerts#kk2q.md in this worktree root, then run `kata show ai-tools-alerts#kk2q` and follow the brief and the dispatch rules pasted after this sentence. (The brief: ai-tools-alerts#kk2q, the poster reaches, sends and leaves the withdrawn state, D4 and D13; run as /do-it, starting rung medium.)
-Stage: verifying
+Stage: committing
 Rung: medium (start-floor medium: constraint-lens, BR2 REV2 NOV1 INT2 FC2 = 9; no hard trigger; the dispatch floors it at medium too)
 Lens: "every released reader still shows the alert"; "Nothing you build may wait for a person to act"; "No rollout in this task: no install, signing step or release" (in every review pass)
 Last reviewed: spec f31d14cb13bb18a4c8376a2df230565282d7afca
@@ -59,6 +59,11 @@ Delta finding and what was done:
 
 ## Chunks
 - [x] poster: the withdrawn state in `recompute`, the ledger, `compose`, `main`, `signer`, with tests and `spec/wire.md` — f744c46 (whole-branch review), d699911 (its fixes; reviewed by the delta), 2 code passes
+
+## Gate
+`scripts/test-gate.sh` exit 0 at a93485867bc5f81ed891db4e5fc316654bcbc8d4 (the public scan, then 3462 passed, 1 skipped), in a clone holding this branch alone. That head is the merge of main at cfdbfc7 (pull request 55, nx25) into 5562e7e; the one conflict was the changelog's Unreleased section, where both entries are kept. Also exit 0 at d699911 before that merge (3404 passed, 1 skipped). The commit after a934858 is this record, documents only.
+
+Reviewed shas: the whole branch at f744c46, the delta at d699911. Not reviewed: 5562e7e (the rollback note's wording, documents only) and the merge of main.
 
 ## Notes
 - The session stood at its usage limit from about 2026-11-26T20:50Z to 2026-11-27T12:00Z; working time before it was about 25 minutes.
