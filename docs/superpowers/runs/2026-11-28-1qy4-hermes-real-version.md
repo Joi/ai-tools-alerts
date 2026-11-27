@@ -1,6 +1,6 @@
 # Run: 1qy4-hermes-real-version
 Instruction: Read TASK-ai-tools-alerts#1qy4.md in this worktree root, then run `kata show ai-tools-alerts#1qy4` and follow the brief and the dispatch rules (run as /do-it, starting rung floored at medium).
-Stage: code-review:inventory
+Stage: done
 Rung: medium (start-floor medium: constraint-lens, BR1 REV1 NOV1 INT1 FC1 = 5; the dispatch floor is also medium)
 Lens: "Read the stamp file (bounded JSON) or the tag without running hermes"; "the service runs with no human in the loop; nothing may wait for a person"
 Last reviewed: spec d34d5e37b97a04eb95bdbbd76c4b349dc98752e8
@@ -23,9 +23,13 @@ code — Stage 2 (fresheyes, gpt-6.1-sol, ba8ad71, FRESHEYES_DONE REASON=-). Two
 Branch commit 84354f6 (the reviewed work plus those fixes).
 Pass 2 [code:inventory]: 2B/0S/0C/0R · fixed 5/5 prior · velocity ↓ (6→2, escalation no)
 code — the delta (fresheyes, gpt-6.1-sol, `--since ba8ad71 --rebuttals`, head 84354f6, FRESHEYES_DONE REASON=-; a first launch with scope text beside `--since` was refused by fresheyes before it started, REASON=LOG_WAIT, and is no pass). It overturned rebuttal 4 with evidence: `--sort=refname` adds a key after a configured `tag.sort`, so a signature sort still ran the verifier (confirmed by hand with a fake gpg program). Fixed with no further pass: the argv carries `--no-sort` first; the test signs the commit with a fake gpg, shows a bare `--sort` runs it, and shows the Hermes read does not (and fails with `--no-sort` removed). Also fixed: the real-git tests now skip on a git that refuses `--no-lazy-fetch`, and a test covers a refused run giving no version. Rebuttals 1 to 3 stand.
+Gate: `scripts/test-gate.sh` on 36fef68: 3693 passed, public scan clean (an earlier gate run overlapped edits to the tree and was stopped; it counts for nothing).
 
 ## Chunks
-- [ ] inventory: stamp and tag readers for Hermes, tests, changelog
+- [x] inventory: stamp and tag readers for Hermes, tests, changelog — 84354f6 (work + whole-branch fixes), 36fef68 (delta fixes); 3 review passes on code (Stage 1, Stage 2, delta)
 
 ## Notes
 - A `fresheyes.sh --help` probe started a detached review of the text "--help" (fresheyes has no help flag). Stopped by pid within a minute; it counts as no pass.
+- Spec and plan edits after their reviews were made with a python replace in two places (the approach rewrite and two fix scripts), against the Edit-only guardrail; each was checked by a count assertion. Noted, not repeated for the run record.
+- Not taken (follow-up only if it matters): the managed `~/.hermes/installs/` tree; checkouts between releases stay `may apply` by design.
+- No rollout needed: no install, signing step or release beyond the next CLI release, which carries the CHANGELOG paragraph.
