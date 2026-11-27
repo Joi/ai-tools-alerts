@@ -48,6 +48,12 @@ Code findings and what was done (the same defect counted once):
 6. COSMETIC (Stage 1 C3), rebutted: an entry kk2q wrote with one channel withdrawn and the other channel's withdrawal still in the journal at the upgrade counts the entering twice. Once per such thread, and it lengthens the quiet days. kk2q is unreleased.
 Rung after the pass: medium. Finding 1 changed behaviour: the fixes are committed and get the one delta pass (`fresheyes --since d664e67`).
 
+Pass 2 [code:whole-branch]: 0B/2S/0C/0R · fixed 6/7 prior · velocity ↓ (7→2, escalation no)
+code: passes 2 · the delta, gpt-6.1-sol through `fresheyes --since d664e67 --rebuttals` at head b5577f544368ce191cd73820f8f546b671caa15a (watchdog FRESHEYES_DONE REASON=-). Six of seven fixed, one rebutted and carried; no rebuttal overturned. Two findings, both called major, both fixed in the commit after b5577f5 with no further pass:
+1. Stopping the reconciliation after any refusal in the run let a backlog of refused replies keep a later thread untried for good. Fixed: that guard is gone; a refusal of a reply sent again does not count toward the two that stop a run, so every lacking thread is tried. The test runs through the journal's whole cycle.
+2. The step-down guard had no test. Fixed: a thread 44 days unconfirmed with a lacking channel is sent the reply in one run and stepped down in the next; without the guard the test fails.
+Not reviewed again: the review cycle allows one delta. `git diff b5577f5..HEAD` shows what landed after it.
+
 ## Chunks
 - [x] ledger: `lacks`, `copied` and `uneven`, the thread's standing by channel; the journal item's `again`
 - [x] poster: `Run.reconcile`, the state read from the standing reply, tests, `spec/wire.md`, changelog

@@ -350,7 +350,9 @@ class Run:
             if r.outcome == "refused":  # never sent again unchanged; the run goes on
                 self._withhold(it, r.message)  # saved before the mark clears: a crash between holds it
                 self.led.clear_pending(it["key"])
-                self.n["refused"] += not ja
+                # aqtf: nor does a reply sent again count. A channel that refuses for good
+                # would otherwise stop a run for each two of its threads, every three days.
+                self.n["refused"] += not ja and not it.get("again")
                 if self.n["refused"] > 1:  # a relay refusing everything stops the run as before
                     raise _Stop
                 return True
@@ -1608,17 +1610,15 @@ class Run:
         refused in this run (the next run plans it; two refusals stop a run), nor a
         level for a thread whose withdrawal this run recorded (kk2q: the two could
         carry one second). Nor for a thread in ``skip``: one this run is about to lower,
-        whose lowering goes to every channel and is the standing reply from then on. And
-        no more once the relay has refused a reply in this run: a second refusal stops a
-        run, so channels that refuse for good are tried one thread a run.
+        whose lowering goes to every channel and is the standing reply from then on. A
+        refusal of such a reply does not count toward the two that stop a run
+        (``deliver``), so every lacking thread is tried, whatever the others meet.
 
         The claim is the one that states the standing word: this run's reading of the
         thread, else for a level the standing claim checked now; none when neither does.
         The item is marked ``again``: recorded, the thread's channels no longer count as
         holding the same ids (``Entry.uneven``). Raises _Stop or LedgerError as any send."""
         for e in self.led.entries():
-            if self.n["refused"]:
-                return
             word = e.standing
             rank = RANK.get(word, -1)
             lacking = [ch for ch, w in e.lacking.items() if (RANK.get(w, -1) < rank) == up]

@@ -77,6 +77,9 @@ Not sent:
 
 - to a thread a reply of which the relay refused in this run (`Run._withhold` notes the root). Without this, the run in which the journal gives up the reply sent once more would plan it anew at once, and a second refusal in one run stops the run. The next run plans it. The pace is then the journal's: refused, withheld three days, sent once more, refused, given up, planned by the next run.
 - a reply naming a level to a thread whose withdrawal this run recorded in some channel (`Run.withdrew`; kk2q's rule that the two never carry the same second).
+- to a thread this run is about to lower (code review): the lowering goes to every channel and is the standing reply from then on, and a raise sent again before it could carry the same second. For the same reason the step down (`Run._renew`) leaves a thread the reconciliation sent a reply for to the next run.
+
+A refusal of a reply sent again does not count toward the two refusals that stop a run (`Run.deliver`): a channel that refuses for good would otherwise stop a run for each two of its threads every three days, and holding the reconciliation back after one refusal would let old failures keep a later thread untried (code review, delta).
 
 The claim tag: of this run's reading for the thread (`_claim`, over the thread's first id) and, for a level, the thread's standing claim checked now (`_checked`), the first whose level is the standing word's (`none` for the withdrawal). None when neither is: the reply then goes without a claim, as a level change no reading states does today.
 

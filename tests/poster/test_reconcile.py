@@ -331,17 +331,31 @@ def test_a_thread_about_to_be_lowered_is_not_sent_its_missed_raise_first(env):
     assert e["level"] == level and "lacks" not in e and "uneven" not in e
 
 
-def test_channels_that_refuse_for_good_are_tried_one_thread_a_run(env):
-    """Two refusals stop a run. Two threads lack a raise in a channel that refuses: one
-    reply a run, and no run stops for it."""
+def test_a_channel_that_refuses_for_good_stops_no_run_and_starves_no_thread(env):
+    """Two refusals stop a run, but not those of replies sent again: two threads lack a
+    raise in a channel that refuses, and a third thread's reply is still delivered, in
+    that run and through the journal's whole cycle."""
     two_threads(env)
     edit(env, lambda e: (at(e, "critical"), e.update(lacks={"feed": "high"})), 0)
     env.api.put(G, ghsa_json(G, **MALWARE))
-    for h in (2, 3):  # the relay refuses the first send of each run: the reconciliation's
-        code, _, relay = env.run(now=T0 + h * HOUR, relay=FakeRelay("refuse"))
-        assert code == 0 and sends(relay) == [("feed", "critical")]
+    code, _, relay = env.run(now=T0 + 2 * HOUR, relay=FakeRelay("refuse", "refuse"))
+    assert code == 0 and sends(relay) == [("feed", "critical")] * 2
     assert [w["items"][0]["again"] for w in env.state()["withheld"]] == [True, True]
-    assert sends(env.run(now=T0 + 4 * HOUR, relay=FakeRelay("refuse"))[2]) == []
+    codes = [env.run(now=T0 + h * HOUR, relay=FakeRelay("refuse", "refuse"))[0] for h in range(3, 3 + 3 * DAY + 2)]
+    assert set(codes) == {0}  # the two sent once more in one run, given up, planned anew
+    assert [bool(e.get("lacks")) for e in entries(env)] == [True, True]
+
+
+def test_a_thread_sent_a_reply_again_is_not_stepped_down_in_the_same_run(env):
+    """45 days unconfirmed, less one: the step is due. The reply sent again names the level
+    in this run's second; the step waits for the next run."""
+    critical(env)
+    edit(env, lambda e: e.update(lacks={"feed": "high"}))
+    env.api.put(G, 503)
+    relay = run(env, 44 * DAY)
+    assert sends(relay) == [("feed", "critical")] and entries(env)[0]["level"] == "critical"
+    relay = run(env, 44 * DAY + 1)
+    assert sorted(sends(relay)) == [("critical", "high"), ("feed", "high")] and entries(env)[0]["level"] == "high"
 
 
 def test_a_reply_acknowledged_and_not_recorded_is_finished_by_the_next_run(env, monkeypatch):
