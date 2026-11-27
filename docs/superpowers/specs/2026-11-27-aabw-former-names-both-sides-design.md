@@ -72,9 +72,13 @@ Rejected:
 - `_Run.thread.weight` (which alias is read first) reads the support of every product the thread's names stand for.
 - `VERSION = 6`.
 
-### Member: the matcher, `check._identity`
+### Member: a match on a former name is not judged for interrupts (`cli._installed_as`)
 
-Added after the code review (both reviews found it). A former-name product was unjudgeable, so on a pinned reader a critical match on it was held out of the interrupts (`cli._unjudgeable`, 2mgd). Judged, it can interrupt as verified. An MCP installation matches a post by its configured key, which is free text: a server configured under the key `mcp servers and clients` whose package is `npm:mcp-remote` would take a confirmation that is about `mcp-server-git`. For a current name `_identity` already refuses an installation whose package is another product's. It now does the same for a former name: the installation's package is one of the packages of the entries that list the name (it is the product), or it is known and none of theirs (no match at all); a key alone still matches by name, as for a current name.
+Added after the code review, and corrected by its delta pass. A former-name product was unjudgeable, so on a pinned reader a critical match on it was held out of the interrupts (`cli._unjudgeable`, 2mgd). If the match were judged like the thread, it could interrupt as verified. But an MCP installation matches a post by its configured key, which is free text and says nothing about its package: a server configured under the key `mcp servers and clients` would take a confirmation that is about `mcp-server-git`, whatever it runs.
+
+The first fix compared the installation's package with the packages of the entries that list the name, in `check._identity`. The delta review showed two faults in it: an old alert that really is about a server outside the seven stopped matching and disappeared, and a sibling package (another of the seven) became a definite match for an advisory about one of them. It was removed; `check.py`'s matcher is as it is on main.
+
+What is built: the thread's own level is judged under a former name (`verify.scope_of`), and a match is judged only as a current product (`cli._installed_as`, `check.scope_name`). So for a match on a former name `_result` is unknown, `_unjudgeable` is true, the verified slot is not taken and `source_check` in `--json` says `unknown`, `no-source`: all as before this issue. The alert is still matched and shown, with the line that says why it does not interrupt. Nothing a source confirms for the name is confirmed for an installation.
 
 ### `aitools_alerts/schema.py`: entries that share a former name are one kind of product
 
@@ -128,13 +132,18 @@ Rollout: the change ships with the next release (ai-tools-alerts#5fry). No insta
 ## Review dispositions (code, whole branch at `af685e7`: one independent pass, gpt-6.1-sol, and one same-model pass)
 
 1. Same-model, SUBSTANTIVE (regraded BLOCKER here: it would have lowered live alerts): a thread under the shared name about a server outside the seven read as unsupported. Fixed: "Silence about a former name". Tests: the poster's `..._names_none_of_its_products_is_unknown_and_stands`, the member's four-case test and the built-records test.
-2. Independent, SUBSTANTIVE, and same-model, SUBSTANTIVE: an installation of another package under a former name's key could take its confirmation. Fixed: "Member: the matcher". Test: `test_an_installation_of_another_package_is_not_a_former_names_product`.
+2. Independent, SUBSTANTIVE, and same-model, SUBSTANTIVE: an installation of another package under a former name's key could take its confirmation. Fixed first in `check._identity` (commit `f78ec70`), which the delta pass refused; see below.
 3. Same-model, COSMETIC (latent): mixed authority among a former name's products is counted differently by the two sides. Fixed by the schema rule.
 4. Same-model, COSMETIC (latent): the two sides resolve a former name by different rules for a scope file with a name under two ecosystems or two spellings. Fixed by the schema rule.
 5. Same-model, COSMETIC: the changelog did not say such a match can now interrupt. Fixed.
 6. Same-model, COSMETIC: `_source_lines` docstring. Fixed.
 
-The fixes of 1 and 2 change behaviour, so the independent reviewer reads them in one delta pass (`--since af685e7`).
+The fixes of 1 and 2 change behaviour, so the independent reviewer read them in one delta pass (`--since af685e7`, at `f78ec70`). It raised two findings, both about the `check._identity` fix of 2, both fixed with no further pass (Review Cycle):
+
+- D1, major: the package check also hid a genuine old alert about a server outside the seven. Fixed: the matcher change is removed.
+- D2, major: a package among the seven became a definite match for an advisory about another of them, so the confirmation still crossed packages. Fixed the same way, and by "Member: a match on a former name is not judged for interrupts". Test: `test_a_match_on_a_former_product_name_is_shown_and_never_interrupts_as_confirmed`, over a package outside the seven, a sibling, the advisory's own package and a key alone.
+
+The delta pass raised nothing on the silence rule or the schema rule.
 
 ## Open questions
 

@@ -69,10 +69,10 @@ Spec: `docs/superpowers/specs/2026-11-27-aabw-former-names-both-sides-design.md`
 ### Added by the code review
 
 - [ ] `aitools_alerts/verify.py` `judge` and `aitools_alerts/poster/recompute.py` `support`: for a former name, no source naming one of its products is unknown (spec, "Silence about a former name"). The member's four-case test and built-records test and the poster's built-read test carry the cases.
-- [ ] `aitools_alerts/check.py` `_identity` and `_former_packages`; `tests/test_check.py` `test_an_installation_of_another_package_is_not_a_former_names_product`.
+- [ ] `aitools_alerts/cli.py` `_installed_as`, used by `_result`, `_unjudgeable`, `_verified_bucket` and `_check_json`; `tests/test_unverified_cli.py` `test_a_match_on_a_former_product_name_is_shown_and_never_interrupts_as_confirmed` (four packages). This replaces a first fix in `check._identity`, which the delta review refused (spec, "Review dispositions (code)").
 - [ ] `aitools_alerts/schema.py` `load_scope`; `tests/test_schema.py` `test_entries_that_share_a_former_name_are_one_kind_of_product`.
 - [ ] `tests/test_never_supported_cli.py`: the source-line test reads a withdrawn advisory that names one of the seven (a silent one has no line now).
-- [ ] Mutations 14 to 17: `judge` without the silence rule; `support` returning `known` without `named`; `_identity` without the former-name branch; `load_scope` without the shared-name rule. Each must fail the test named above.
+- [ ] Mutations 14 to 17: `judge` without the silence rule; `support` returning `known` without `named`; a former-name match judged for interrupts (`_installed_as` on `verify.scope_of`), and its `--json` result taken from the thread; `load_scope` without the shared-name rule. Each must fail the test named above.
 
 ### Review dispositions (plan, one independent pass, gpt-6.1-sol)
 

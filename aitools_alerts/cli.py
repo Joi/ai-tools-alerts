@@ -797,6 +797,9 @@ def _check_json(t, m, cache, judged: bool = True) -> dict | None:
     if t.published:  # 0z4e: from the memory of support, whatever a later failed read left in the cache
         return {"result": verify.CONTRADICTED, "why": "unsupported", "source_level": ruleset.NONE}
     r = (verify.result_for(t.adv, cache) or {}).get(verify.pkey(m.product)) if m.product is not None else None
+    if r is not None and _installed_as(m.product) is None and verify.scope_of(m.product) is not None:
+        # aabw: a former name's result is the thread's, not this installation's (``_installed_as``)
+        return {"result": verify.UNKNOWN, "why": "no-source", "source_level": None}
     return None if r is None else {"result": r["result"], "why": r["why"], "source_level": r["source"]}
 
 
@@ -971,6 +974,17 @@ def _results(a, st: State, s: config.Settings) -> dict | None:
         return None
 
 
+def _installed_as(product) -> str | None:
+    """The scope product a matched installation is judged as: a current product
+    (``check.scope_name``), or None. Not a former name (aabw), though the thread's own
+    level is judged under one (``verify.scope_of``): a former name stands for several
+    products, some threads under it are about none of them, and an installation matches
+    it by a configured key, which says nothing about its package. So what the sources
+    confirm for the name is not confirmed for the installation, and a match on a former
+    name is, for interrupts, the match no check can judge that it was before."""
+    return check.scope_name(product.name, product.ecosystem)
+
+
 def _result(t: Entry, m, cache) -> str | None:
     """The source-check result of the product a match rests on (its ecosystem and name,
     ``verify.pkey``): None for an alert no relay bot posted (it is not checked), unknown
@@ -979,7 +993,7 @@ def _result(t: Entry, m, cache) -> str | None:
         return None
     if t.published:
         return verify.CONTRADICTED
-    if m.product is None or verify.scope_of(m.product) is None:
+    if m.product is None or _installed_as(m.product) is None:
         return verify.UNKNOWN
     r = (verify.result_for(t.adv, cache) or {}).get(verify.pkey(m.product))
     return r["result"] if r is not None else verify.UNKNOWN
@@ -1002,11 +1016,11 @@ def _pinned_exactly(a, st: State) -> bool:
 
 def _unjudgeable(t: Entry, m) -> bool:
     """A relay-bot match the source check cannot judge by construction (2mgd): its
-    product is no scope product (``verify.scope_of``), or the alert's first id names no
+    product is no scope product (``_installed_as``), or the alert's first id names no
     source. Read from the post alone, never from a result: it holds before any source
     was read. Either is the signer's choice, and neither is a failed read."""
     return t.adv.posted_by == verify.BOT and (
-        verify.norm_id(t.adv.id) is None or m.product is None or verify.scope_of(m.product) is None)
+        verify.norm_id(t.adv.id) is None or m.product is None or _installed_as(m.product) is None)
 
 
 def _judged_here(a, st: State, s: config.Settings) -> bool:
@@ -1061,7 +1075,7 @@ def _verified_bucket(t: Entry, m) -> str:
     else of the post. The aliases, the level, the title, the root and the spelling of
     the product are the signer's to vary; what this machine read and confirmed is that
     id for that product."""
-    name = (verify.scope_of(m.product) or m.product.name) if m.product is not None else ""
+    name = (_installed_as(m.product) or m.product.name) if m.product is not None else ""
     return hashlib.sha256(json.dumps([verify.norm_id(t.adv.id), name]).encode("utf-8")).hexdigest()
 
 
