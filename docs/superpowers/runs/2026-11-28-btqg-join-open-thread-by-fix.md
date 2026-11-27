@@ -1,12 +1,12 @@
 # Run: btqg-join-open-thread-by-fix
 Instruction: Read TASK-ai-tools-alerts#btqg.md in this worktree root, then run `kata show ai-tools-alerts#btqg` and follow the brief and the dispatch rules (do-it, start rung floored at medium; landing per the brief: scripts/test-gate.sh, one independent review, a PR merged with the no-reply author, the issue closed on the merge commit).
-Stage: spec
+Stage: done (pull request; merged by this session)
 Rung: medium (start-floor medium: dispatch floor; evaluator FC=2, BR1 REV2 NOV1 INT1 FC2 = 7, no hard trigger)
 Lens: "Nothing you build may wait for a person to act." (carried in every review prompt)
 Spec: docs/superpowers/specs/2026-11-28-btqg-join-open-thread-by-fix-design.md   Plan: docs/superpowers/plans/2026-11-28-btqg-join-open-thread-by-fix.md
 Agency project: — (no mcp__agency__* tools in this session; built directly, recorded below)
 Kata: ai-tools-alerts#btqg
-Last reviewed: —
+Last reviewed: spec 1758b9a; plan 4a9293f; code whole branch origin/main...4a9293f, delta 4a9293f..4d3f244. Not reviewed after: bc5088b (the delta's fixes, mutation-checked), the merge of main d97e0e9, this record
 
 ## Scorecards
 Pass 1 [spec]: 4B/1S/1C/0R · fixed -/- · velocity = (—→6, escalation no)   (fresheyes gpt-6.1-sol high, snapshot 1758b9a, REASON=-)
@@ -42,7 +42,7 @@ Pass 2 [code:join]: 4B/0S/0C/0R · fixed 6/6 prior · velocity ↓ (8→4, escal
   Each delta fix mutation-checked. No further pass (review cycle: the delta is the last).
 
 ## Chunks
-- [ ] join — Run.one finds the open thread of the candidate's fix; plan_known widens its range; ledger `joined`
+- [x] join — Run.one finds the open thread of the candidate's fix; plan_known widens its range; ledger `joined` (4a9293f, 4d3f244, bc5088b)
 
 ## Notes
 - Built while the spec review ran (no Agency tools here); the spec findings were folded into spec, plan and code before any commit. The plan's one review runs beside the code review, on the plan as amended.
@@ -50,3 +50,5 @@ Pass 2 [code:join]: 4B/0S/0C/0R · fixed 6/6 prior · velocity ↓ (8→4, escal
 - Mutation check: with the shared-former-name filter off, test_a_shared_former_name_thread_is_never_joined_by_fix fails.
 - Base 3d376b8 (main). Not repoman-managed (no .repoman-managed): PR, gate scripts/test-gate.sh, self-merge with --author-email (xrx2 closed).
 - ai-tools-alerts#z360 (partial retraction of a fix group) is in flight on another host and touches the same files; merge main before review and before merge.
+- Gate: `scripts/test-gate.sh` in the worktree failed only at its public scan, on objects under `refs/rescue/2026-11-23/` that another session left in the shared repository (none reachable from this branch or main; not touched). Run instead in a single-branch clone of this branch, which holds what a push publishes: at 4a9293f public scan clean, 3636 passed, 1 skipped; at d97e0e9 (main at fd36ba6 merged, 9cch) public scan clean, 3669 passed, 1 skipped.
+- Follow-up filed: ai-tools-alerts#yd1y (a fix group's level rests on its first id through withdrawal and renewal; pre-existing since faxq). Rollout note on ai-tools-alerts#5fry.
