@@ -1555,8 +1555,9 @@ class Run:
         nothing. An entry with no source to judge it by (``recompute.judged``), out of
         scope now or with work in flight is not judged, and its wait takes no time for a
         run that did not look at it. In scope is by the thread's name
-        (``rules.scope_named``, zmg2: a name is not always an identity); a thread under
-        a former name is not judged, since no member's check can confirm a level for it. Advisory reads are made here (3qyq), in the ``wait``
+        (``rules.scope_named``, zmg2: a name is not always an identity), a former name
+        too (aabw: ``recompute.support`` reads it as a member's check does, by
+        ``Ruleset.stands_for``). Advisory reads are made here (3qyq), in the ``wait``
         lane for a thread whose wait is running and in ``rest`` for any other."""
         st = self.rc
         for e in entries:  # with no copy every read is unknown, and judge says so to each wait
@@ -1564,7 +1565,7 @@ class Run:
             self.verdicts.pop(root, None)
             self.readings.pop(root, None)
             self.known.discard(root)
-            scope = rules.scope_named(e.scope) if recompute.judged(e) else None
+            scope = rules.scope_named(e.scope, former=True) if recompute.judged(e) else None
             if scope is None or (
                     self.busy(e.aliases, e.scope) and not self._raise_clears(e, scope, rs)):
                 self.judged.discard(root)

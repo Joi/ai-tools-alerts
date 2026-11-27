@@ -994,7 +994,8 @@ def test_a_respelled_product_is_judged_as_the_scope_product_it_is(tmp_path, name
 
 
 @pytest.mark.parametrize("name, ecosystem", [("claude-code-router", "claude-code"), ("Claude Code", "skill"),
-                                             ("Claude Code", "codex"), ("MCP servers and clients", "mcp")])
+                                             ("Claude Code", "codex"), ("MCP servers and clients", "skill"),
+                                             ("MCP servers", "mcp")])  # a former name is one under its ecosystem, whole
 def test_a_product_that_is_no_scope_product_is_not_judged(tmp_path, name, ecosystem):
     a = adv(id=CVE, level="critical", products=[(name, ecosystem)])
     go(tmp_path, [a], net((verify.KEV_URL, KEV_CC)))
@@ -1046,7 +1047,94 @@ def test_a_cache_of_the_version_before_is_an_empty_one(tmp_path):
     a = adv()
     go(tmp_path, [a], net((gurl(G1), ghsa())))
     old = json.loads((tmp_path / verify.FILE).read_text())
-    assert old["version"] == 5
-    old["version"] = 4
+    assert old["version"] == 6
+    old["version"] = 5  # aabw: a result stored as no-source for a former name is not kept
     (tmp_path / verify.FILE).write_text(json.dumps(old))
     assert verify.load(tmp_path) == verify._empty(ruleset.load().digest)
+
+
+# ------------------------------------------------------------------ former product names (aabw)
+
+GIT, FETCH = ("pip", "mcp-server-git"), ("pip", "mcp-server-fetch")
+OLD = "MCP servers and clients"  # the name seven entries had: it stands for each of them
+GONE_AT = "2026-11-01T00:00:00Z"
+
+
+@pytest.mark.parametrize("name, pkgs", [(OLD, (GIT,)), (OLD.lower(), (FETCH,)), (OLD, (CC, GIT)),
+                                        ("MCP Inspector", (("npm", "@modelcontextprotocol/inspector"),))])
+def test_a_thread_under_a_former_name_is_judged_by_its_own_advisory(tmp_path, name, pkgs):
+    """The acceptance cases of the member's side. The thread's advisory says which of
+    the products the name stands for it is about; its support is the thread's."""
+    key = K(name, "mcp")
+    high, notice = (adv(level=lv, products=[(name, "mcp")]) for lv in ("high", "notice"))
+    go(tmp_path, [high, notice], net((gurl(G1), ghsa(pkgs=pkgs))))
+    assert res(tmp_path, high)[key] == {"result": "confirmed", "why": "match", "source": "high"}
+    assert res(tmp_path, notice)[key] == {"result": "contradicted", "why": "below-source", "source": "high"}
+    go(tmp_path / "gone", [high, notice], net((gurl(G1), ghsa(pkgs=pkgs, withdrawn_at=GONE_AT))))
+    assert res(tmp_path / "gone", notice)[key] == {"result": "confirmed", "why": "withdrawn", "source": "none"}
+    assert res(tmp_path / "gone", high)[key] == {"result": "contradicted", "why": "unsupported", "source": "none"}
+    go(tmp_path / "other", [high], net((gurl(G1), ghsa())))  # an advisory about another product
+    assert res(tmp_path / "other", high)[key] == {"result": "contradicted", "why": "unsupported", "source": "none"}
+
+
+def test_a_former_name_takes_the_highest_support_and_lowers_only_when_all_of_it_may():
+    rs = ruleset.load()
+
+    def said(level, support):
+        r = verify.judge(level, OLD, [rec(support)], True, rs)
+        return r["result"], r["why"], r["source"]
+    both = {"mcp-server-git": ["notice", True], "mcp-server-fetch": ["high", True]}
+    assert said("high", both) == ("confirmed", "match", "high")
+    assert said("notice", both) == ("contradicted", "below-source", "high")
+    assert said("high", {"Claude Code": ["critical", True]}) == ("contradicted", "unsupported", "none")  # not one of them
+    # support its subject's attacker can write for one of them: the record contradicts nothing
+    mixed = {"mcp-server-git": ["high", False], "mcp-server-fetch": ["notice", True]}
+    assert said("critical", mixed) == ("unknown", "unauthoritative", "notice")
+    assert said("critical", {"mcp-server-fetch": ["notice", True]}) == ("contradicted", "above-source", "notice")
+
+
+def test_an_action_that_names_the_former_name_in_another_spelling_completes_a_critical(tmp_path):
+    """9kgk through a former name: the stop_using action of a malware advisory names the
+    product as the post spells it, and the critical stands only by that action."""
+    malware = ghsa(pkgs=(GIT,), type="malware")
+    for v in malware["vulnerabilities"]:
+        v["first_patched_version"] = None
+    spelled = adv(level="critical", products=[(OLD.lower(), "mcp")], actions=[schema.Action("stop_using", OLD.upper(), None)])
+    other = adv(level="critical", products=[(OLD.lower(), "mcp")], actions=[schema.Action("stop_using", "mcp-server-git", None)])
+    go(tmp_path, [spelled, other], net((gurl(G1), malware)))
+    assert res(tmp_path, spelled)[K(OLD.lower(), "mcp")] == {"result": "confirmed", "why": "match", "source": "critical"}
+    assert res(tmp_path, other)[K(OLD.lower(), "mcp")] == {"result": "contradicted", "why": "above-source", "source": "high"}
+
+
+def test_a_claimed_lowering_of_a_former_name_thread_is_confirmed_by_its_withdrawal(tmp_path):
+    """What lets a reader apply the relay bot's lowering at once (tavj): the thread's high
+    carries the claim of its advisory's fields, and this machine reads the withdrawal."""
+    rs = ruleset.load()
+    a = adv(level="high", products=[(OLD, "mcp")])
+    fields = verify._ghsa_reading(ghsa(pkgs=(GIT,)), G1)[0]
+    stated = (("high", rs.claim("ghsa", fields, OLD, NOW, NOW)),)
+    assert verify.claimed(a, "notice", stated) is True
+    for folder, body, want in (("gone", ghsa(pkgs=(GIT,), withdrawn_at=GONE_AT), True), ("live", ghsa(pkgs=(GIT,)), False)):
+        ask = verify.at_level(a, "notice", True)
+        go(tmp_path / folder, [a, ask], net((gurl(G1), body)), wanted=[ask], recheck=[ask])
+        assert verify.lowering(a, "notice", verify.load(tmp_path / folder), NOW, stated=stated) is want
+
+
+def test_a_no_source_stored_for_a_former_name_by_the_version_before_is_read_again(tmp_path):
+    """Why the cache version is 6: ``no-source`` is a result no run reads again, so the one
+    version 5 stored for such a thread would stand for good under an unchanged number."""
+    a, key = adv(level="high", products=[(OLD, "mcp")]), K(OLD, "mcp")
+    n = net((gurl(G1), ghsa(pkgs=(GIT,))))
+    go(tmp_path, [a], n)
+    path = tmp_path / verify.FILE
+    held = json.loads(path.read_text())
+    (state,) = held["results"]
+    held["results"][state]["products"] = {key: {"result": "unknown", "why": "no-source", "source": None}}
+    path.write_text(json.dumps(held))
+    asked = len(n.calls)
+    go(tmp_path, [a], n, now=NOW + 7 * 86400)
+    assert len(n.calls) == asked and res(tmp_path, a)[key]["why"] == "no-source"  # under this number: never read again
+    held["version"] = 5
+    path.write_text(json.dumps(held))
+    go(tmp_path, [a], n, now=NOW + 7 * 86400)
+    assert res(tmp_path, a)[key] == {"result": "confirmed", "why": "match", "source": "high"}

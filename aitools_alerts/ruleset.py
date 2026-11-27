@@ -429,6 +429,17 @@ class Ruleset:
         """The names a reading can support: every scope product and component."""
         return frozenset(e.name for e in self._index.values())
 
+    def stands_for(self, product) -> frozenset[str]:
+        """The scope products a product name stands for (aabw): itself when it is one
+        (``products``); for a name entries list in ``formerly`` (wa6n: a thread keeps
+        the name it was posted under), every entry that lists it; none for any other
+        value. What a reading supports for the name is the highest it supports for any
+        of them, as ``level`` computes a claim: the poster's recompute and a member's
+        check read a former name by this one rule."""
+        if type(product) is not str:
+            return frozenset()
+        return frozenset({product}) if product in self.products() else frozenset(self._former.get(product, ()))
+
     def lowers(self, source, fields) -> bool:
         """Whether this reading, for a product it does not name, may justify a
         lowering: the ``lowers`` of the first source row that matches it with no

@@ -737,19 +737,24 @@ def _source_lines(a, st: State, s: config.Settings, threads: list) -> list[str]:
                              if t.narrow_refused and (i := verify.norm_id(t.adv.id)) is not None))
     if cache is None:
         return out
-    scope, now = ruleset.load().products(), int(time.time())
+    rs, now = ruleset.load(), int(time.time())
+
+    def known(name) -> bool:
+        """A name of this reader's scope file: a product, or a former name (aabw), which is
+        judged as the products that list it and printed in the scope file's spelling."""
+        return bool(rs.stands_for(name))
 
     def named(adv, found: dict) -> list:
         """(the scope product a result is about, the result), by scope name. A product
         that is no scope product has no line: its name is the signer's text."""
         return sorted(((name, found[key]) for key, name in ((verify.pkey(p), verify.scope_of(p)) for p in adv.products)
-                       if key in found and name in scope), key=lambda x: x[0])
+                       if key in found and known(name)), key=lambda x: x[0])
     for t in threads:
         ident = verify.norm_id(t.adv.id)
         found = {} if t.published else verify.result_for(t.adv, cache) or {}
         # 0z4e: every product of the judged state, with or without a result on disk now
         both = {verify.pkey(p): verify.scope_of(p) for p in (*t.adv.products, *(t.judged.products if t.judged else ()))}
-        for name, key in sorted((name, key) for key, name in both.items() if name in scope):
+        for name, key in sorted((name, key) for key, name in both.items() if known(name)):
             if ident is None:
                 continue
             # 0z4e: from the memory, so a failed read neither brings nor ends either line

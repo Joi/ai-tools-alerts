@@ -61,7 +61,7 @@ MAX_CACHE_BYTES = 16 << 20
 # Nothing is ever cut to it: it is only what a cache this reader wrote cannot pass.
 MAX_PAIRS = (MAX_ALIASES + 1) * ruleset.MAX_PACKAGES
 FILE = "verify.json"
-VERSION = 5  # of the cache: raised whenever a stored value changes meaning, so nothing older is reused
+VERSION = 6  # of the cache: raised whenever a stored value changes meaning, so nothing older is reused
 BOT = "relay-bot"
 CONFIRMED, CONTRADICTED, UNKNOWN = "confirmed", "contradicted", "unknown"
 _WHYS = {CONFIRMED: ("match", "withdrawn"), CONTRADICTED: ("unsupported", "above-source", "below-source"),
@@ -362,7 +362,10 @@ def _record(rs, source: str, readings: list, named, etag, now: int) -> dict:
 
 def judge(level: str, product: str | None, records, complete: bool, rs, actions=(), fixed=None) -> dict:
     """One product's result. ``product``: its scope name, None for a posted product that
-    is none (``scope_of``). ``records``: what was kept of each counted id.
+    is none (``scope_of``). ``records``: what was kept of each counted id. A former name
+    (aabw) is judged as every scope product it stands for (``Ruleset.stands_for``): the
+    highest support any of them has is its support, and a record may lower only when
+    its support for each of them may.
     Support from a source its subject's attacker can write (``lowers`` false)
     confirms nothing and contradicts nothing: it only makes the result unknown.
     The source's level is what a post with the thread's ``actions`` and ``fixed``
@@ -378,19 +381,21 @@ def judge(level: str, product: str | None, records, complete: bool, rs, actions=
     was withdrawn stands at notice, and that is not "the source never supported it"."""
     def out(result, why, source):
         return {"result": result, "why": why, "source": source}
-    if product not in rs.products():
+    names = sorted(rs.stands_for(product))
+    if not names:
         return out(UNKNOWN, "no-source", None)  # not in this reader's scope file: it cannot judge
     s, may_lower = ruleset.NONE, True  # s: the highest level a source that may set one gives
     stop = False  # a source gives s through a stop_using row
     named = False  # a source that may lower states something about this product
     for r in records:
-        own = r["support"].get(product)
-        named = named or (own is not None and own[1])
-        if own is not None and own[1] and _RANK[own[0]] > _RANK[s]:
-            s, stop = own[0], False
-        if own is not None and own[1] and own[0] == s:
-            stop = stop or own[2]
-        may_lower = may_lower and (own[1] if own is not None else r["lowers"])
+        owns = [r["support"][n] for n in names if n in r["support"]]
+        for own in owns:
+            named = named or own[1]
+            if own[1] and _RANK[own[0]] > _RANK[s]:
+                s, stop = own[0], False
+            if own[1] and own[0] == s:
+                stop = stop or own[2]
+        may_lower = may_lower and (all(own[1] for own in owns) if owns else r["lowers"])
     s = rs.action_level(s, actions, product, fixed, stop_using=stop)
     if _RANK[s] > _RANK[level]:
         return out(CONTRADICTED, "below-source", s)  # rests on bodies that were read: a missing one could only add
@@ -431,9 +436,17 @@ def pkey(product) -> str:
     return f"{product.ecosystem}\n{product.name}"
 
 
+def _resolved(name, ecosystem) -> str | None:
+    """The name a posted name is judged as under ``ecosystem``: the scope product it is
+    (``check.scope_name``), else the former product name it is (``check.former_name``,
+    aabw: a thread keeps the name it was posted under), else None."""
+    return check.scope_name(name, ecosystem) or check.former_name(name, ecosystem)
+
+
 def scope_of(product) -> str | None:
-    """The scope product a posted product is judged as (``check.scope_name``), or None."""
-    return check.scope_name(product.name, product.ecosystem)
+    """The scope product a posted product is judged as, or a former product name, which
+    stands for the scope products that list it (``Ruleset.stands_for``); or None."""
+    return _resolved(product.name, product.ecosystem)
 
 
 class _Target:
@@ -468,7 +481,7 @@ class _Target:
         """The result of the product with this key, judged as its scope product. An
         action whose target is that product in another spelling counts as naming it."""
         name = self.scope[key]
-        actions = [(v, name if name is not None and check.scope_name(t, self.eco[key]) == name else t, x)
+        actions = [(v, name if name is not None and _resolved(t, self.eco[key]) == name else t, x)
                    if type(t) is str else (v, t, x) for v, t, x in self.actions]
         return judge(self.level, name, records, complete, rs, actions, self.fixed.get(key))
 
@@ -903,7 +916,7 @@ class _Run:
             r = held.get(alias)
             if r is None or not r["lowers"] or t.first not in r["names"]:
                 return 0
-            return max((_RANK[r["support"][p][0]] for p in t.scope.values()
+            return max((_RANK[r["support"][p][0]] for name in t.scope.values() for p in self.rs.stands_for(name)
                         if p in r["support"] and r["support"][p][1]), default=0)
         if from_kev:
             related = sorted((a for a in t.aliases if ruleset.source_of(a) != "kev"), key=lambda a: -weight(a))
