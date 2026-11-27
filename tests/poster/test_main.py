@@ -2859,3 +2859,19 @@ def test_a_scoped_retraction_keeps_its_bare_ids_and_frees_a_scoped_survivor(env)
     text = relay.calls[0][2]
     assert GHSA_Z in text and "abcd" not in text.casefold()
     assert all("abcd" not in i.casefold() for i in env.ledger()[0][1]["aliases"])
+
+
+def test_a_survivors_page_that_fails_once_is_retried_in_a_large_group(env):
+    """Delta review: past the per-candidate page cap with a failed fetch is a retry, not
+    a verdict; the page that answers next run releases the survivor."""
+    many = [f"GHSA-{c}{c}{c}{c}-{c}{c}{c}{c}-{c}{c}{c}{c}" for c in "stuvwxy"]
+    env.collector([finding(), finding(fid=GHSA_Z)] + [finding(fid=g) for g in many])
+    code, summary, relay = env.run()
+    assert "roots=1" in summary, summary
+    _retract(env, relay, ["GHSA-abcd-efgh-ijkl"] + many)
+    env.pages.put(ZURL, "", status=503)
+    code, summary, relay = env.run(now=at(5, 10))
+    assert code == 0 and "roots=0" in summary, summary
+    del env.pages.fixed[ZURL]
+    code, summary, relay = env.run(now=at(5, 11))
+    assert code == 0 and "roots=1" in summary and GHSA_Z in relay.calls[0][2], summary

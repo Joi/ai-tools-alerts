@@ -2028,7 +2028,7 @@ class Run:
         ledger with every learned id its page assigns (``Ledger.release``), so the run
         plans it like any deferred candidate: admitted from its own page, grouped by
         fix with the other survivors, and posted as a new root. The work starts at a
-        different place each hour, so ids whose pages keep failing never starve the
+        different thread each hour, so ids whose pages keep failing never starve the
         rest of the RETIRE_PAGES budget. Sets ``gone`` for the run. Never raises."""
         try:
             st = State.load(self.config.mirror_dir)
@@ -2047,7 +2047,7 @@ class Run:
         except Exception as e:  # noqa: BLE001 - a damaged copy never stops the run
             _say(f"retired threads not read: {type(e).__name__}")
             return
-        work = []  # (entry, id), every undecided id of every retired thread, GHSA ids first
+        work = []  # per retired thread, its undecided ids, GHSA ids first (a CVE is often decided with its GHSA)
         for e in self.led.entries():
             if hidden.isdisjoint({e.root_event_id, *e.channel_ids.values()}):
                 continue
@@ -2058,11 +2058,12 @@ class Run:
             ids = [i for i in [e.advisory.get("id"), *(e.advisory.get("aliases") or ())]
                    if isinstance(i, str) and candidates.BOT_ID.fullmatch(i) and not compose.is_synthetic(i)
                    and _base(i) in mine and _base(i) not in bases | done]
-            work += [(e, i) for i in sorted(dict.fromkeys(ids), key=lambda i: not i.upper().startswith("GHSA"))]
+            if ids:
+                work.append([(e, i) for i in sorted(dict.fromkeys(ids), key=lambda i: not i.upper().startswith("GHSA"))])
         if not work:
             return
-        k = (self.now // 3600) % len(work)
-        work = work[k:] + work[:k]
+        k = (self.now // 3600) % len(work)  # threads, not ids, rotate: a GHSA stays ahead of its CVE
+        work = [x for thread in work[k:] + work[:k] for x in thread]
         start, verdicts = len(self.pages), {}  # root -> (entry, released, kept, pointers)
         for e, i in work:
             _, released, kept, _ = verdicts.setdefault(e.root_event_id, (e, [], [], []))
@@ -2107,7 +2108,8 @@ class Run:
         thread ``e``, or None when a page could not be read. The thread's product, under
         its name or a former one; a former name several entries share tries each. The
         sources that name ``i`` are read first, then those that name a retracted id
-        (whose page assigns its CVE), then the rest."""
+        (whose page assigns its CVE), then the rest. Any retry ``rules.evidence`` reports
+        leaves the id undecided: a page that failed this run may answer the next."""
         names = rules._default_index().values()
         scopes = [s for s in names if s.name == e.scope] or [s for s in names if e.scope in getattr(s, "formerly", ())]
 
@@ -2131,9 +2133,7 @@ class Run:
                 return True, assigned, c
             if ev.ok:
                 answered = answered or (False, assigned, None)
-            # A source past the per-candidate cap is no answer either: only a fetch that may
-            # pass, or the run's budget, is worth another run.
-            retry = retry or (ev.retry and not (ev.budget and len(self.pages) < MAX_RUN_PAGES))
+            retry = retry or ev.retry  # a fetch that may pass, a page not parsed, a budget spent
         return None if answered is None and retry else answered or (False, frozenset(), None)
 
     def _foreign(self, root) -> list:

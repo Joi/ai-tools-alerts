@@ -76,8 +76,10 @@ Added after the whole-branch review:
   primary is a thread key is released.
 - A released id takes with it every ledger id (learned ones too) its page assigns.
 - GHSA ids are judged before CVEs; a CVE reads first the sources named for it, then
-  those named for a retracted id. A source past the per-candidate page cap is no
-  answer (kept), not a retry. The work starts at a different place each hour.
+  those named for a retracted id. Any retry `rules.evidence` reports leaves the id
+  undecided (the delta review: a page that failed once must not keep an id for good).
+  The work starts at a different thread each hour; within a thread GHSA ids stay
+  first, so a CVE is decided with its GHSA (the delta review).
 - A pointer replaces any deferred row for the same id (its sources are proven).
 - The 0dvh exemption is for a root whose lead id was released, read once a run.
 - "Kept" includes "no source confirms it" (a 404 included): the retraction wins.
