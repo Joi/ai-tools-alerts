@@ -29,6 +29,10 @@ evidence moves a level:
   than ``TRIP_MIN`` threads or ``TRIP_SHARE`` of the threads judged fall due
   within a day (``select``).
 
+A thread the poster has stopped renewing (the ledger's ``ended``, ai-tools-alerts#65xv)
+is raised only above the level it ended at: its sources still state that level, and
+that is no news.
+
 A level that rests on a reading of prose is never recomputed below it (the
 ledger's ``floor``), and ``notice`` is the lowest result: there is no withdrawn
 state and no retraction here. Nothing in this module sends or fetches.
@@ -337,13 +341,20 @@ def held(entry, scope, found: str, rs, stop: bool = False, infer: bool = True) -
     return capped
 
 
+def _rises(entry, found: str, rs) -> bool:
+    """Whether ``found`` raises the thread: above its level and, for a thread that has
+    ended (65xv), above the level it ended at."""
+    ended = getattr(entry, "ended", None)
+    return rs.rank(found) > rs.rank(entry.level) and (ended is None or rs.rank(found) > rs.rank(ended))
+
+
 def raised(entry, scope, copy: Copy | None, rs, read=None) -> str | None:
     """The level ``judge`` would raise the thread to on this read, or None. It reads
     only: the thread's wait is ``judge``'s to keep (jsje: asked of a thread with work
     in flight, which is not judged)."""
     found, known, _, _, stop = support(entry, scope, copy, rs, read)
     found = held(entry, scope, found, rs, stop, infer=not known)
-    return found if rs.rank(found) > rs.rank(entry.level) else None
+    return found if _rises(entry, found, rs) else None
 
 
 def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int, read=None, info: dict | None = None):
@@ -375,7 +386,7 @@ def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int, read=None, in
     if info is not None:
         info.update(known=known, listed=listed, readings=counted)
     found = held(entry, scope, found, rs, stop, infer=not known)
-    if rs.rank(found) > rs.rank(entry.level):
+    if _rises(entry, found, rs):
         dwell.pop(root, None)
         return "raise", found
     seen = set(st["listed"].get(root, ()))

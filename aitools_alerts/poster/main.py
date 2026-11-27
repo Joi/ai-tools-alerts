@@ -70,6 +70,11 @@ confirmation and checked now. A level no read has confirmed for 45 days (less a 
 lowered one step, the reply saying why. A renewal is not journaled: one not acknowledged
 is sent by the next run.
 
+A thread is renewed for ``RENEW_DAYS`` after its level last changed (ai-tools-alerts#65xv).
+Then it has ended: no renewal is sent, each level is stepped down a day before its life
+on readers runs out, the reply saying why, and at notice it leaves them. Only a level
+above the one it ended at raises it again, and then it is renewed like any thread.
+
 The recompute ends by posting the copy a thread's level lacks (``Run.copies``,
 ai-tools-alerts#3t4p): a thread it raised to critical that has a root in ``feed``
 alone gets its root in ``critical`` in that run, composed from the ledger with no
@@ -140,6 +145,11 @@ WITHHELD_SECONDS = 3 * 86400  # a refused item is dropped, and its advisory plan
 ROOT_CLAIMS = True
 MAX_RENEWALS = 20  # gtw9: renewal sends a run, the thread with the least life left first
 STEP_EARLY = 86400  # gtw9: an unconfirmed level is stepped down this long before readers drop it
+# 65xv: a thread is renewed this long after its level last changed (after its root, when it
+# never did), then runs down. Every thread must end: a checkpoint lists 990 events and a
+# reader stores 20,000. With its Japanese reply an open thread costs a checkpoint three
+# events in a channel; at one new high a day, 90 days is about 800 of the 990.
+RENEW_DAYS = 90
 _CLAIM_RANK = {ruleset.NONE: -1, **RANK}
 _LEVEL_LINE = ("level: high", "level: notice")
 
@@ -627,8 +637,10 @@ class Run:
         thread's way (``yields``); one that would not raise supersedes nothing."""
         if entry is None or self.is_synthetic(c) or compose.is_synthetic(entry.advisory.get("id")):
             return False
-        level = self._thread_level(*self._rate(c, scope, entry)[1:], entry)[0]
-        return RANK[level] > RANK[entry.level] and self.yields(entry, level)
+        c, level, reason = self._rate(c, scope, entry)
+        level = self._thread_level(level, reason, entry)[0]
+        # 65xv: a raise plan_known will not plan must not pass over the thread's unsent work
+        return RANK[level] > RANK[entry.level] and self._may_rise(c, scope, entry, level) and self.yields(entry, level)
 
     def make_way(self, merged):
         """Before the journal drains: a candidate that raises its thread passes over what
@@ -1369,10 +1381,30 @@ class Run:
         self.save()
         self.n["held"] += 1
 
+    def _may_rise(self, c, scope, entry, level) -> bool:
+        """Whether candidate ``c`` may raise its thread to ``level`` (65xv). A thread that
+        has ended is raised only above the level it ended at: the sources still state
+        that level, and that is no news. A thread no read has confirmed for 45 days less
+        a day, which the poster has stepped down or is about to, and that this run's own
+        reads do not confirm either, is raised only by a reading of fields: the claim the
+        candidate's readings give for an id of the root must be of at least ``level``.
+        Sent with the raise, it becomes the standing claim, confirmed now. A reading of
+        prose would raise it for one TTL, to be stepped down again, for as long as
+        candidates bring it."""
+        if entry.ended is not None and RANK[level] <= RANK[entry.ended]:
+            return False
+        old = self._parsed(entry.claim)
+        if old is None or self.now - old["confirmed_at"] < ruleset.UNCONFIRMED_DAYS * 86400 - STEP_EARLY \
+                or self._confirming(entry, old)[0]:
+            return True
+        new = self._parsed(self._claim(rules._readings(c), entry.root_ids or [], scope.name))
+        return new is not None and RANK[new["level"]] >= RANK[level]
+
     def plan_known(self, c, scope, level, reason, ids, entry):
         prev = schema.validate(entry.advisory)
         level, reason = self._thread_level(level, reason, entry)
-        if RANK[level] <= RANK[entry.level]:  # a run never lowers a level; a curator does
+        if RANK[level] <= RANK[entry.level] or not self._may_rise(c, scope, entry, level):
+            # a run never lowers a level; and 65xv: not every higher level is a raise
             level, reason = entry.level, None
         was = prev.products[0]
         stored = _fold(entry.aliases)
@@ -1781,6 +1813,14 @@ class Run:
         the checkpoint state was lost since the claim was checked (``signer.load_owed``:
         what was owed is forgotten, so every thread is renewed and owed anew).
 
+        A thread whose level last changed RENEW_DAYS ago, with no work in flight, ends
+        here (65xv, ``Ledger.end``). An ended thread is not renewed and no read confirms
+        it, so ``best`` is ``life`` and each level is stepped down as that runs out, the
+        line giving its age. One renewal it still gets: after a lost checkpoint state,
+        while its life has not run out, a renewal that this run's reads confirm, which
+        makes redundant whatever acknowledged renewal the ledger never recorded. Until
+        a run can send that, its roots are left out of the checkpoint.
+
         A renewal is a reply with no block in each of the thread's channels, at most
         MAX_RENEWALS sends a run, the due threads in an order that starts one further on
         each hour. It is not journaled: the ledger takes the new claim when every channel
@@ -1818,9 +1858,22 @@ class Run:
             old = self._parsed(e.claim)
             if old is None or compose.is_synthetic(e.advisory.get("id")) or self.now < old["checked_at"]:
                 continue
-            fresh, text = self._confirming(e, old)
+            ended = e.ended is not None
+            if not ended and self.now - max([e.posted_at, *(e.changed or ())]) >= RENEW_DAYS * 86400 \
+                    and not self.busy(e.aliases, e.scope):
+                e, ended = self.led.end(e.root_event_id, e.level), True
             life = self._life(e, rs, old["confirmed_at"], old["checked_at"])
-            best = self._life(e, rs, self.now if fresh else old["confirmed_at"], self.now)
+            if ended:
+                # A renewal the ledger never recorded may be newer than its claim: only a
+                # confirmation made now covers it. Nothing is sent to a thread off readers.
+                forced = lost is not None and old["confirmed_at"] < lost and life >= self.now
+                fresh, text = self._confirming(e, old) if forced else (False, None)
+                if forced and not fresh:
+                    lapsing(life, e, anyway=True)
+            else:
+                forced = lost is not None and old["checked_at"] < lost
+                fresh, text = self._confirming(e, old)
+            best = self._life(e, rs, self.now if fresh else old["confirmed_at"], self.now) if fresh or not ended else life
             if not fresh and best - self.now <= STEP_EARLY:
                 if RANK[e.level] > 0:
                     if self.busy(e.aliases, e.scope):
@@ -1828,7 +1881,10 @@ class Run:
                     else:
                         steps.append((best, e, old))
                 continue
-            forced = lost is not None and old["checked_at"] < lost
+            if ended:
+                if fresh:
+                    due.append((life, e, text, True))
+                continue
             # A read that confirms a claim sent unconfirmed is sent at once: kept only in a
             # renewal, a confirmation between two renewals would be lost to the 45-day count.
             if forced or (fresh and old["checked_at"] > old["confirmed_at"]) or (life - self.now <= rs.ttl_days[e.level] * 86400 // 2 and best > life):
@@ -1849,14 +1905,16 @@ class Run:
                 lapsing(best, e)
 
     def _step_down(self, e, old) -> bool:
-        days = (self.now - old["confirmed_at"]) // 86400
+        days = (self.now - (e.posted_at if e.ended is not None else old["confirmed_at"])) // 86400
         lower = next(lv for lv, r in RANK.items() if r == RANK[e.level] - 1)
+        reason = compose.AGED if e.ended is not None else compose.UNCONFIRMED  # 65xv: it has ended
         try:
-            items = self._level_items(e, lower, self._checked(e), compose.UNCONFIRMED.format(days=days))
+            items = self._level_items(e, lower, self._checked(e), reason.format(days=days))
         except ValueError:  # compose refused it: nothing is journaled, and the caller says so
             self.n["withheld"] += 1
             return False
-        _say(f"{compose.public_form(e.advisory.get('id'))}: no source confirmed {e.level} for {days} days; lowered to {lower}")
+        why = f"is {days} days old and no longer renewed" if e.ended is not None else f"no source confirmed {e.level} for {days} days"
+        _say(f"{compose.public_form(e.advisory.get('id'))}: {why}; lowered to {lower}")
         self.enqueue(items)
         return True
 

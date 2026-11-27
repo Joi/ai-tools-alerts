@@ -87,6 +87,11 @@ class Entry:
     # of them only, so a reader that holds the root and the renewal counts it, whatever
     # replies it lacks (an alias a later reply brought is not one a renewal may rest on).
     root_ids: list | None = None
+    # 65xv: the level the thread held when the poster stopped renewing it
+    # (``main.RENEW_DAYS`` after its level last changed). It is then stepped down as its
+    # life on readers runs out, and raised again only above this level; a recorded
+    # raise removes the key. Only a thread with a standing claim has it.
+    ended: str | None = None
 
     @property
     def listed(self) -> int:
@@ -128,7 +133,8 @@ def _entry_ok(e) -> bool:
             and ("changed" not in e or (isinstance(e["changed"], list) and len(e["changed"]) <= 50
                                         and all(type(t) is int for t in e["changed"])))
             and ("claim" not in e or (isinstance(e["claim"], str) and bool(e["claim"])))
-            and ("root_ids" not in e or (_strs(e["root_ids"]) and bool(e["root_ids"]) and "claim" in e)))
+            and ("root_ids" not in e or (_strs(e["root_ids"]) and bool(e["root_ids"]) and "claim" in e))
+            and ("ended" not in e or (isinstance(e["ended"], str) and e["ended"] in schema.LEVELS and "claim" in e)))
 
 
 def _pending_ok(p) -> bool:
@@ -308,6 +314,18 @@ class Ledger:
             self._save()
         return Entry(**e)
 
+    def end(self, root_event_id: str, level: str) -> Entry:
+        """The poster stops renewing this thread (65xv): keep ``level``, the level it
+        holds now, as the level it ended at. Written once; a thread that has ended
+        keeps the first."""
+        e = self._entry(root_event_id)
+        if level not in schema.LEVELS or "claim" not in e:
+            raise LedgerError("only a thread with a standing claim ends, at a level")
+        if "ended" not in e:
+            e["ended"] = level
+            self._save()
+        return Entry(**e)
+
     def add_ids(self, root_event_id: str, ids) -> Entry:
         """Learn more ids for a thread without a post (identity is not capped)."""
         e = self._entry(root_event_id)
@@ -390,6 +408,8 @@ class Ledger:
             e["changed"] = [t for t in e.get("changed", []) if now - t < QUIET][-49:] + [min(now, changed_at or now)]
             if wire.is_lowering({"level": adv.level}, e["level"]):
                 e["lowered"] = True
+            else:  # 65xv: a raise makes an ended thread an ordinary one; its clock starts from here
+                e.pop("ended", None)
         if _listed_fields(was) != _listed_fields(new):
             e["listed_at"] = now  # a digest lists it again
         else:  # frozen, a legacy entry's too, before last_change moves

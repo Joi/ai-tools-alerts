@@ -305,3 +305,180 @@ def test_a_renewal_pass_that_raises_costs_the_run_its_exit_code_and_nothing_else
     monkeypatch.undo()
     code, summary, relay = env.run(now=T0 + HOUR)
     assert code == 0 and relay.calls == []  # nothing is sent again
+
+
+# ---------------------------------------------------------------- a thread ends (ai-tools-alerts#65xv)
+
+def run_down(env, last, first=1, **kw):
+    """Daily runs from day ``first`` to ``last``: ({day: renewals}, {day: steps}, every other send)."""
+    renewed, stepped, other = {}, {}, []
+    for d in range(first, last + 1):
+        relay = day(env, d, **kw)
+        assert relay.code == 0, relay.summary
+        if renewals(relay):
+            renewed[d] = renewals(relay)
+        if steps(relay):
+            stepped[d] = steps(relay)
+        other += [(d, c) for c in relay.calls if c[2] != compose.RENEWAL and not c[2].startswith("Level is now")]
+    return renewed, stepped, other
+
+
+def test_a_confirmed_high_is_renewed_for_90_days_then_runs_down(env):
+    """The advisory states high on every run. The thread is renewed every 15 days until
+    it is 90 days old, then no more; its level is stepped down a day before the last
+    renewal's 30 days run out, with its age on the line, and nothing raises it back."""
+    post(env)
+    renewed, stepped, other = run_down(env, 89)
+    assert sorted(renewed) == [15, 30, 45, 60, 75] and not stepped and "ended" not in entries(env)[0]
+    renewed, stepped, more = run_down(env, 220, first=90)
+    assert not renewed and sorted(stepped) == [104] and not other and not more
+    (reply,) = stepped[104]
+    assert reply[0] == "feed" and reply[2].startswith(
+        "Level is now notice. This alert is 104 days old and is no longer renewed.\n")
+    assert json.loads(schema._last_block(reply[2])) == {"level": "notice"}
+    claim = wire.claim_of({"tags": [reply.claim]})
+    assert claim["confirmed_at"] == T0 + 75 * DAY and claim["checked_at"] == T0 + 104 * DAY and claim["level"] == "high"
+    (e,) = entries(env)
+    assert e["ended"] == "high" and e["level"] == "notice" and e["lowered"] is True
+    assert env.state()["outbox"] == [] and env.ledger()[1] == []
+
+
+def test_a_thread_ends_on_the_day_it_is_90_days_old_and_not_before(env):
+    post(env)
+    for d in range(1, 90):
+        day(env, d)
+    day(env, 89, hours=23)
+    assert "ended" not in entries(env)[0]
+    day(env, 90)
+    assert entries(env)[0]["ended"] == "high"
+
+
+def test_a_critical_ends_through_high_to_notice(env):
+    critical(env)
+    renewed, stepped, _ = run_down(env, 230)
+    assert sorted(renewed) == list(range(7, 90, 7))  # to day 84
+    assert sorted(stepped) == [97, 126]  # a day before 84 + 14, then a day before 97 + 30
+    assert [c[0] for c in stepped[97]] == ["critical", "feed"] and [c[0] for c in stepped[126]] == ["critical", "feed"]
+    assert stepped[97][0][2].startswith("Level is now high. This alert is 97 days old and is no longer renewed.\n")
+    assert stepped[126][0][2].startswith("Level is now notice. This alert is 126 days old and is no longer renewed.\n")
+    (e,) = entries(env)
+    assert e["ended"] == "critical" and e["level"] == "notice"
+
+
+def test_an_ended_thread_is_raised_only_above_the_level_it_ended_at(env):
+    """Ended at high and stepped to notice. A candidate that brings high again raises
+    nothing. KEV then lists its CVE: critical is above high, so it is raised, it is an
+    ordinary thread again, and it is renewed."""
+    from test_advisory_recompute import CVE
+    post(env)
+    run_down(env, 110)
+    assert entries(env)[0]["level"] == "notice"
+    env.collector([finding(fid=G, severity="remote code execution")], name="2027-02-25T000000Z")
+    relay = day(env, 111)
+    assert entries(env)[0]["level"] == "notice" and not [c for c in relay.calls if "Level is now" in c[2] or "level" in c[2].lower()]
+    env.api.put(G, ghsa_json(G, cve=CVE))
+    env.kev.catalog = catalog("v1", CVE)
+    env.collector([finding(fid=CVE, fixed="2.1.0", aliases=(G,))], name="2027-02-26T000000Z")
+    day(env, 112)
+    (e,) = entries(env)
+    assert e["level"] == "critical" and "ended" not in e
+    renewed, stepped, _ = run_down(env, 140, first=113)
+    assert renewed and not stepped and entries(env)[0]["level"] == "critical"
+    assert "ended" not in entries(env)[0]  # its 90 days count from the raise
+
+
+def test_a_thread_with_work_in_flight_ends_on_a_later_run(env):
+    post(env)
+    run_down(env, 89)
+    st = env.state()
+    (e,) = entries(env)
+    st["outbox"].append({"kind": "reply", "key": f"{G}#fix:feed", "scope": e["scope"], "ids": [G], "channel": "feed",
+                         "text": "x", "root": e["root_event_id"], "sent": None, "adv": e["advisory"], "exploited": False,
+                         "date": None})
+    env.config.state.write_text(json.dumps(st))
+    relay = day(env, 90, relay=FakeRelay("fail"))  # the journaled reply fails: the thread stays busy
+    assert "ended" not in entries(env)[0]
+
+
+def test_a_thread_whose_root_carries_no_claim_never_ends(env, monkeypatch):
+    monkeypatch.setattr(main, "ROOT_CLAIMS", False)
+    post(env)
+    renewed, stepped, _ = run_down(env, 130)
+    assert not renewed and not stepped and "ended" not in entries(env)[0] and entries(env)[0]["level"] == "high"
+
+
+def test_a_candidate_does_not_pass_over_an_ended_threads_unsent_step(env):
+    """The step of an ended critical reaches the critical channel and fails in feed. A
+    candidate then brings critical again: it is no raise, so the unsent reply is not
+    passed over, and the run sends it."""
+    critical(env)
+    run_down(env, 96)
+    relay = day(env, 97, relay=FakeRelay("ok", "fail"))
+    assert [c[0] for c in steps(relay)] == ["critical", "feed"] and relay.code == 1
+    kev_fixed(env)
+    relay = day(env, 97, hours=1)
+    assert [c[0] for c in steps(relay)] == ["feed"] and "superseded" not in relay.summary
+    (e,) = entries(env)
+    assert e["level"] == "high" and e["ended"] == "critical" and env.state()["outbox"] == []
+
+
+def test_a_candidate_with_prose_alone_does_not_raise_a_thread_stepped_down_unconfirmed(env):
+    """The API fails for 44 days and the high is stepped to notice. A candidate whose
+    page says high again, with the API still failing, raises nothing; once the API
+    answers, the candidate's own reading of the fields states high and it is raised."""
+    post(env)
+    env.api.default = lambda i: 503
+    del env.api.answers[G]
+    for d in range(1, 45):
+        relay = day(env, d)
+    assert len(steps(relay)) == 1 and entries(env)[0]["level"] == "notice"
+    env.collector([finding(fid=G, severity="remote code execution")], name="2026-12-25T000000Z")
+    relay = day(env, 50)
+    assert entries(env)[0]["level"] == "notice" and not steps(relay)
+    env.api.put(G, ghsa_json(G))
+    env.collector([finding(fid=G, severity="remote code execution")], name="2026-12-26T000000Z")
+    day(env, 51)
+    (e,) = entries(env)
+    assert e["level"] == "high" and json.loads(e["claim"])["confirmed_at"] == T0 + 51 * DAY
+
+
+def test_after_a_lost_checkpoint_state_an_ended_thread_is_renewed_once_confirmed_now(signing, monkeypatch):
+    """An ended notice inside its life. The checkpoint state is lost: a renewal the relay
+    acknowledged and the ledger never recorded may be owed by nobody. Only a confirmation
+    made now covers it, so the thread's roots are out of the checkpoint until a run's read
+    confirms; then one renewal, confirmed now, and no other."""
+    env = signing
+    env.api.put(G, ghsa_json(G))
+    env.collector([finding(fid=G, severity="moderate")])
+    day(env, 0, relay=PutRelay())
+    for d in range(1, 111):
+        day(env, d, relay=PutRelay())
+    (e,) = entries(env)
+    assert e["level"] == "notice" and e["ended"] == "high"
+    seen = []
+    real = signer.run_checkpoint
+    monkeypatch.setattr(signer, "run_checkpoint", lambda *a, **k: (seen.append(set(k["suppress"])), real(*a, **k))[1])
+    env.config.owed_state.unlink()
+    answer = env.api.answers.pop(G)
+    env.api.default = lambda i: 503
+    relay = day(env, 111, relay=PutRelay())
+    assert not renewals(relay) and seen[-1] == set(e["channel_ids"].values())
+    env.api.put(G, answer)
+    relay = day(env, 111, hours=1, relay=PutRelay())
+    assert [(c["confirmed_at"], c["checked_at"]) for _, c in renewals(relay)] == [(T0 + 111 * DAY + HOUR,) * 2]
+    assert seen[-1] == set()
+    assert not renewals(day(env, 111, hours=2, relay=PutRelay()))
+    assert not renewals(day(env, 300, relay=PutRelay()))  # long off readers, another loss or not: nothing
+
+
+def test_an_ended_thread_off_readers_gets_nothing_after_a_lost_checkpoint_state(signing):
+    env = signing
+    env.api.put(G, ghsa_json(G))
+    env.collector([finding(fid=G, severity="moderate")])
+    day(env, 0, relay=PutRelay())
+    for d in range(1, 111):
+        day(env, d, relay=PutRelay())
+    day(env, 250, relay=PutRelay())  # its notice ran out on day 194
+    env.config.owed_state.unlink()
+    relay = day(env, 251, relay=PutRelay())
+    assert relay.calls == []
