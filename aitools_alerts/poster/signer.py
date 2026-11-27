@@ -5,14 +5,17 @@ so that the mirror, which the relay VM serves, cannot leave one out
 unnoticed. It is signed here, with a key that never reaches that VM, at the
 end of every poster run, and delivered over the poster's ssh route to a
 command that only stores it; the exporter verifies it before publishing.
+It is dated when it is signed, by the clock the posts of the run were stamped
+with (ai-tools-alerts#p93w): a run's own posts are not dated after the
+checkpoint that lists them, unless that clock was set back in between.
 
 What it vouches for: every event in the poster's verified copy of the
 mirror inside the window, and every event this poster sent and the relay
 acknowledged (``owed``) until the poster has seen it on the mirror. A
 thread whose root carries a claim decays on readers unless it is renewed
 (ai-tools-alerts#gtw9), so its root is never listed without the renewals
-that keep it standing: see ``renewals_of``, ``settle_gone``, ``settle_owed``
-and ``window``. It does not vouch for a curator's post the relay withheld before the poster ever saw
+that keep it standing: see ``renewals_of``, ``settle_gone``, ``settle_owed``,
+``window`` and, for a level reply forgotten with a lost state file, ``answered``. It does not vouch for a curator's post the relay withheld before the poster ever saw
 it, nor that the legitimate poster wrote an event signed by the bot key.
 
 One checkpoint key belongs to one poster with one ledger.
@@ -30,7 +33,7 @@ from aitools_alerts import checkpoint as cpt
 from aitools_alerts import manifest, nostr, pull
 from aitools_alerts.state import State, write_json
 
-__all__ = ["run_checkpoint", "KeyFileError", "read_key", "keygen", "init_owed", "load_owed", "save_owed", "record_sent", "settle_owed", "renewals_of", "lapsed",
+__all__ = ["run_checkpoint", "KeyFileError", "read_key", "keygen", "init_owed", "load_owed", "save_owed", "record_sent", "settle_owed", "renewals_of", "lapsed", "answered",
            "window", "next_seq", "MAX_LISTED", "MAX_LISTED_BYTES", "OWED_S", "MARGIN_S", "ENVELOPE"]
 
 # One checkpoint lists at most this much. The exporter must be able to serve
@@ -263,6 +266,29 @@ def lapsed(events, m, now: int, channels=None) -> set:
     return out
 
 
+def answered(root, t: int, u: int, events, m) -> bool:
+    """Whether ``events`` hold what stands in for the level reply the ledger records for
+    the thread under ``root`` (ai-tools-alerts#p93w). The state file that remembered the
+    reply was lost; the ledger keeps ``t``, the start of the run that first attempted it,
+    and ``u``, the start of the run that recorded it (a later run when it was sent again).
+    The reply is dated from ``t`` on and was sent before any run after ``u`` began. So:
+    a relay-bot reply to ``root`` whose block names a level (a reader counts it from its
+    own date, ``renewals_of``) dated at or after ``t``: the reply, or a later one. Or a
+    relay-bot reply whose claim a reader takes as a renewal, confirmed after ``u``: the
+    reader that lacks the level reply loses no life by it. A renewal confirmed earlier,
+    whatever it checked since, may be older than the reply and does not count."""
+    for ev in events:
+        if pull._thread_ref(ev) != root or manifest.role_of(m, ev["pubkey"]) != "relay-bot":
+            continue
+        named = (pull._patch(ev["content"]) or {}).get("level")
+        if isinstance(named, str) and named in pull._RANK and ev["created_at"] >= t:
+            return True
+        rn = pull._renewal(ev, "relay-bot")
+        if rn is not None and rn[1] > u:
+            return True
+    return False
+
+
 def settle_owed(owed: list, present, now: int, later: dict | None = None) -> tuple[list, int, set]:
     """The owed list after looking at the mirror, how many entries were
     given up, and the thread roots to leave out of checkpoints. An entry
@@ -343,7 +369,7 @@ def window(events, m, owed: list, now: int, channels=None, suppress=frozenset())
     must not by itself fill it.
 
     Eligible: the thread's newest event is not older than the reader's
-    retention less MARGIN_S. Events dated after ``now`` are never listed. A
+    retention less MARGIN_S. Events dated after ``now`` (the signing time) are never listed. A
     skipped thread whose listed events are all older than that line also has
     its newest event listed, so the reader's retention, which sees only
     listed events, keeps them. ``suppress``: thread roots to leave out whole
@@ -413,17 +439,32 @@ def next_seq(now: int, last_seq: int, published_seq: int = 0) -> int:
 # ---------------------------------------------------------------- one run
 
 def run_checkpoint(config, now: int, *, ssh=None, fetch=None, root: str = TRUST_ROOT_PUBKEY,
-                   suppress=frozenset()) -> str:
+                   suppress=frozenset(), clock=None, changes=()) -> str:
     """Sign and deliver this run's checkpoint; returns the summary token:
     ``off`` (not configured), ``no-mirror`` (the pull failed), ``no-certificate``
     (no usable certificate names this key), ``too-large`` (what must be listed
     does not fit: nothing is signed), ``sent`` or ``failed``, with
     ``,owed_dropped=N`` appended when acknowledged posts were given up.
     ``suppress``: thread roots the caller will not vouch for in this checkpoint
-    (gtw9: a renewal that was due could not be delivered)."""
+    (gtw9: a renewal that was due could not be delivered).
+
+    ``now`` is when the run began. ``clock`` (p93w): the clock the run's posts were
+    stamped with, read once here; the later of the two is the signing time, and from
+    here on everything is judged by it and the checkpoint is dated with it: the hold
+    after a lost state, the mirror pull, the certificate, what is given up after
+    OWED_S, ``lapsed``, the window and the number. One thing keeps the run's start:
+    what ``settle_owed`` may settle (see there). None: the signing time is ``now``.
+    The date is never raised to a post's date: after a clock set back that would date
+    the checkpoint ahead of the true time, which readers refuse.
+
+    ``changes`` (p93w): ``(root, t, u)`` for each thread root whose level reply the
+    ledger records from before the state file was lost (``Run.level_changes``). The
+    root is left out until the poster's copy holds what ``answered`` asks for."""
     from aitools_alerts.poster import transport, translate
     if config.checkpoint_key_file is None or config.relay_put_wrapper is None or config.relay_ssh_host is None:
         return "off"
+    start = int(now)
+    now = start if clock is None else max(start, int(clock()))
     rec = load_owed(config.owed_state, now)
     if now < rec["hold_until"]:  # the record of what is owed was lost: see load_owed
         save_owed(config.owed_state, rec)
@@ -489,12 +530,19 @@ def run_checkpoint(config, now: int, *, ssh=None, fetch=None, root: str = TRUST_
         st.accept(root, m, {i: e for i, e in st.events.items() if i not in give_up})
         st.save_events()
     rec = {**rec, "gone": gone}
-    # An acknowledged post stays owed until the poster holds it AND could list it: one
-    # stamped after this run began is not listed yet, so it is not settled yet either.
+    # An acknowledged post stays owed until the poster holds it dated no later than this
+    # run began: a post of this run is owed, and so on the must-list, in this run's
+    # checkpoint even when the mirror already shows it. Settled at once it would be an
+    # ordinary thread, which ``window`` leaves out when it does not fit whole (p93w). The
+    # same for the renewals that may replace an owed one: a level reply of this run, owed
+    # with the run's time, is not made redundant by its own date.
     # gtw9: a renewal neither the mirror nor a later renewal has replaced keeps its thread out.
-    owed, dropped, hidden = settle_owed(rec["owed"], {i for i, e in st.events.items() if e["created_at"] <= now}, now,
-                                        _later((e for e in st.events.values() if e["created_at"] <= now), m))
+    before = [e for e in st.events.values() if e["created_at"] <= start]
+    owed, dropped, hidden = settle_owed(rec["owed"], {e["id"] for e in before}, now, _later(before, m))
     suppress = suppress | hidden
+    # p93w: and no root whose level reply was forgotten with a lost state file, until it is held.
+    seen = [e for e in st.events.values() if e["created_at"] <= now]
+    suppress = suppress | {r for r, t, u in changes if r in st.events and not answered(r, int(t), int(u), seen, m)}
     listable = [o for o in owed if not ("renewal" in o and o["since"] <= now - OWED_S)]
     # gtw9: and no root a reader of the poster's own copy would decay unasked (``lapsed``).
     suppress = suppress | lapsed(st.events.values(), m, now)

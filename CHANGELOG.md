@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+The poster dates its checkpoint when it signs it (ai-tools-alerts#p93w, from the review note on ai-tools-alerts#r0ra). Until now a checkpoint carried the time its run began and listed the posts of that run, each dated after it, so a reader held the claim of every new post back for one checkpoint. The signer now reads the machine's clock once, when it starts its work, and judges everything by that time: the hold after a lost state file, the mirror pull, the certificate, what is given up after 72 hours, the window and the number. A post of the run stays owed for that run's checkpoint as before, so a crowded checkpoint is still refused rather than signed without it. The date is never raised to a post's date: after a clock set back, that would date the checkpoint ahead of the true time, which readers refuse.
+
+A reader does not refuse a checkpoint that lists an event dated after it. This is what releases 0.1.8 to 0.3.0 do, now stated in `spec/wire.md` and tested on each of them: the event is admitted, its claim waits for a checkpoint dated at or after it, and the thread keeps its level meanwhile. No reader code changes.
+
+After a lost checkpoint state file, a thread whose level changed before the loss is left out of checkpoints until the poster's copy of the mirror holds that level reply, or a renewal confirmed after it was sent. The state file was the only memory that the relay had acknowledged the reply, and the renewal sent after a loss does not replace it when no source confirms. The times come from the ledger. Such a thread keeps its level on the readers that hold it.
+
+What an operator should know. Checkpoints are dated up to a few minutes later than before. No state file, ledger, wire format, schema, manifest or ruleset changes shape, so the 0.3.0 poster reads what this one writes.
+
 ## 0.3.0 — 2026-11-26
 
 The relay bot and the member's CLI now correct an alert from its source. The relay bot reads GitHub's advisory database and OSV, recomputes the level of every open alert it can judge, signs the source fields a level change rests on when a reading states them and they fit, settles its own unknown and refused sends, and copies a raise to critical into the critical channel. The member's CLI applies what its own source check finds: a lowering or a narrowing the source confirms applies at once, one nobody can check after 72 hours of signed checkpoints, one the source contradicts never; an alert the source never supported is shown at notice; at most two unverified relay-bot criticals interrupt per poster key per day; a relay-bot withdrawal is read, though the poster does not send one yet (ai-tools-alerts#kk2q). No wire format, manifest, ruleset or scope file changes: the trust root and the ruleset pin stay as 0.2.1 left them. The source check's cache is rebuilt once (version 5). Going back on the poster needs the `jq` step in the ai-tools-alerts#jsje entry below.

@@ -970,3 +970,117 @@ def test_the_renewals_of_a_root_the_poster_no_longer_holds_are_kept_for_its_retu
     held = {renewal["id"]: renewal}  # the root was given up for missing; its renewal is still held and missing
     gone, drop, suppress = signer.settle_gone({renewal["id"]: T0 - signer.OWED_S}, held, set(), T0, m.man)
     assert drop == set() and suppress == {root["id"]} and renewal["id"] in gone
+
+
+# ---------------------------------------------------------------- the signing time (ai-tools-alerts#p93w)
+
+def _sign(env, now=T0, **kw):  # noqa: F811
+    relay = PutRelay()
+    status = signer.run_checkpoint(env.config, now, ssh=relay, fetch=env.mirror.fetch, root=env.mirror.root, **kw)
+    return status, relay
+
+
+def test_the_checkpoint_is_dated_when_it_is_signed(signing):
+    """The run began at T0 and posted 40 seconds later; the signer reads the clock at
+    T0 + 90. The checkpoint is dated, numbered and valid from that reading, so it is not
+    dated before the post it lists. An event dated after the reading is not listed. The
+    post stays owed although the mirror shows it: what is settled is still judged by the
+    run's start (next test)."""
+    m = signing.mirror
+    sent = on_mirror(m, "Posted forty seconds into the run", T0 + 40, sec=m.bot_sec)
+    late = on_mirror(m, "Dated after the signing", T0 + 95, sec=m.bot_sec)
+    signer.record_sent(signing.config.owed_state, sent["id"], 100, None, T0)
+    status, relay = _sign(signing, clock=lambda: T0 + 90.7)
+    c = relay.last()
+    assert status == "sent" and (c.created_at, c.seq, c.valid_until) == (T0 + 90, T0 + 90, T0 + 90 + DAY)
+    assert sent["id"] in c.events and c.created_at >= sent["created_at"] and late["id"] not in c.events
+    assert owed_ids(signing) == [sent["id"]]
+    assert signer.load_owed(signing.config.owed_state, T0)["last_seq"] == T0 + 90
+    _, relay = _sign(signing, now=T0 + 3600, clock=lambda: T0 + 3600)
+    assert {sent["id"], late["id"]} <= relay.last().events and owed_ids(signing) == []
+
+
+def test_a_post_of_this_run_the_mirror_already_shows_is_listed_or_nothing_is_signed(signing, monkeypatch):
+    """Settled at once, a post of this run would be an ordinary thread, which the window
+    leaves out when it does not fit whole: a checkpoint signed without the alert the run
+    just posted. It stays owed for this run's checkpoint, so a full window is refused."""
+    m = signing.mirror
+    for i in range(3):  # each with a curator's correction: root and correction must be listed
+        _thread(m, f"Corrected {i}", T0 - 500 + i, retract_at=T0 - 400 + i)
+    sent = on_mirror(m, "Posted forty seconds into the run", T0 + 40, sec=m.bot_sec)
+    signer.record_sent(signing.config.owed_state, sent["id"], 100, None, T0)
+    monkeypatch.setattr(signer, "MAX_LISTED", 6)
+    status, relay = _sign(signing, clock=lambda: T0 + 90)
+    assert status == "too-large" and relay.puts == [] and owed_ids(signing) == [sent["id"]]
+    monkeypatch.setattr(signer, "MAX_LISTED", 7)
+    status, relay = _sign(signing, clock=lambda: T0 + 91)
+    assert status == "sent" and sent["id"] in relay.last().events and len(relay.last().events) == 7
+
+
+def test_a_level_reply_of_this_run_is_not_made_redundant_by_its_own_date(signing, monkeypatch):
+    """A level reply is owed with the run's time as the renewal a reader counts. The
+    mirror already shows it, dated later in the run: that must not settle it, or its
+    thread would leave the must-list of the very checkpoint that should carry it."""
+    m = signing.mirror
+    for i in range(3):
+        _thread(m, f"Corrected {i}", T0 - 500 + i, retract_at=T0 - 400 + i)
+    root = m.root_post(m.bot_sec, advisory(id="CVE-2026-0001", posted_by="relay-bot", level="high"),
+                       created_at=T0 - 5 * DAY, tags=[_claim(T0 - 5 * DAY)], files=("feed.json",))
+    raised = m.post(m.bot_sec, m.patch_text(level="critical"), created_at=T0 + 40, tags=[["e", root["id"], "", "root"]])
+    signer.record_sent(signing.config.owed_state, raised["id"], 100, root["id"], T0, renewal=(T0, T0))
+    monkeypatch.setattr(signer, "MAX_LISTED", 7)  # six for the corrected threads: the reply and its root do not fit
+    status, relay = _sign(signing, clock=lambda: T0 + 90)
+    assert status == "too-large" and relay.puts == [] and owed_ids(signing) == [raised["id"]]
+    monkeypatch.setattr(signer, "MAX_LISTED", 8)
+    status, relay = _sign(signing, clock=lambda: T0 + 91)
+    assert status == "sent" and {root["id"], raised["id"]} <= relay.last().events
+
+
+@pytest.mark.parametrize("clock", [None, lambda: T0 - 500])
+def test_a_clock_behind_the_run_and_no_clock_date_the_checkpoint_at_the_runs_time(signing, clock):
+    status, relay = _sign(signing, clock=clock)
+    assert status == "sent" and relay.last().created_at == T0 == relay.last().seq
+
+
+def test_a_lost_state_holds_signing_by_the_signing_time(signing):
+    signing.config.owed_state.unlink()
+    assert _sign(signing, now=T0)[0] == "held"  # the hold begins: T0 + 72 hours
+    status, relay = _sign(signing, now=T0 + signer.OWED_S - 60, clock=lambda: T0 + signer.OWED_S + 5)
+    assert status == "sent" and relay.last().created_at == T0 + signer.OWED_S + 5
+
+
+def test_a_level_change_from_before_a_lost_state_keeps_its_root_out_until_its_reply_or_a_later_confirmation_is_held(signing):
+    """The checkpoint state was lost, and with it the memory of a level reply the relay
+    acknowledged; the ledger still says when the reply was first attempted (``t``) and
+    when the run that recorded it began (``u``, here two hours later: it was sent again).
+    Each such root is left out until the poster's copy holds, under it, a level reply
+    dated from ``t`` on, or a renewal confirmed after ``u``. A renewal confirmed no later
+    than ``u`` may be older than the reply, whatever it checked since."""
+    m, t = signing.mirror, T0 - DAY
+    u = t + 7200
+    other = on_mirror(m, "Another alert", T0 - 700)
+    a, b, c = (m.root_post(m.bot_sec, advisory(id=cve, posted_by="relay-bot", level="high"), created_at=T0 - 5 * DAY,
+                           tags=[_claim(T0 - 5 * DAY, cve=cve)], files=("feed.json",))
+               for cve in ("CVE-2026-0001", "CVE-2026-0002", "CVE-2026-0003"))
+    changes = [(r["id"], t, u) for r in (a, b, c)] + [("f" * 64, t, u)]  # the last: a root the copy does not hold
+    status, relay = _sign(signing, changes=changes)
+    assert status == "sent,threads_suppressed=3" and relay.last().events == {other["id"]}
+    assert _sign(signing)[1].last().events == {other["id"], a["id"], b["id"], c["id"]}  # no loss: listed
+
+    def level_reply(root, at):
+        return m.post(m.bot_sec, m.patch_text(level="critical"), created_at=at, tags=[["e", root["id"], "", "root"]])
+
+    def renewal(root, confirmed, at):
+        return m.post(m.bot_sec, "Sources checked. No change to this alert.", created_at=at,
+                      tags=[["e", root["id"], "", "root"], _claim(confirmed, at)])
+    early = [renewal(a, T0 - 5 * DAY, T0 - 100), renewal(a, t + 3600, T0 - 95), renewal(a, u, T0 - 90)]
+    in_run, before = level_reply(b, t + 5), level_reply(c, t - 300)
+    assert signer.answered(b["id"], t, u, [in_run], m.man) and not signer.answered(c["id"], t, u, [before], m.man)
+    assert not signer.answered(a["id"], t, u, early + [in_run], m.man)
+    status, relay = _sign(signing, changes=changes)
+    assert status == "sent,threads_suppressed=2" and relay.last().events == {other["id"], b["id"], in_run["id"]}
+    confirmed = renewal(a, u + 3600, T0 - 50)
+    assert signer.answered(a["id"], t, u, [confirmed], m.man)
+    status, relay = _sign(signing, changes=changes)
+    assert status == "sent,threads_suppressed=1"
+    assert relay.last().events == {other["id"], b["id"], in_run["id"], a["id"], confirmed["id"], *(e["id"] for e in early)}

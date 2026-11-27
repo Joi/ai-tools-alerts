@@ -1789,8 +1789,9 @@ class Run:
         due renewal or step is undelivered with under two hours of life left, of each
         whose renewal after a lost checkpoint state is undelivered, and of each channel
         that lacks a journaled level reply: the checkpoint leaves them out, since listed
-        they would decay for want of an event the poster failed to send. Raises _Stop or
-        LedgerError as a step down's send does."""
+        they would decay for want of an event the poster failed to send. A level reply
+        sent before the loss is not replaced by such a renewal: see ``level_changes``.
+        Raises _Stop or LedgerError as a step down's send does."""
         try:
             self._renew()
         finally:  # also when a step's send stopped the run: what is unsent must not be vouched for
@@ -1847,6 +1848,25 @@ class Run:
         for best, e, old in steps:
             if not self._step_down(e, old):
                 lapsing(best, e)
+
+    def level_changes(self) -> list:
+        """``(root, t, u)`` for each channel root of a thread with a standing claim whose
+        level last changed before the checkpoint state was lost (p93w): ``t`` when the
+        reply was first attempted, ``u`` when the run that recorded it began. The state
+        file was the only memory that the relay acknowledged that reply, and a reader
+        counts it as a renewal of its own date; the signer leaves the root out until its
+        copy of the mirror holds the reply or a later confirmation (``signer.answered``).
+        Empty when no loss is on record. A level change after the loss is owed in the
+        new record."""
+        if self.config.checkpoint_key_file is None:
+            return []
+        hold = signer.load_owed(self.config.owed_state, self.now)["hold_until"]
+        if hold <= 0:
+            return []
+        lost = hold - signer.OWED_S
+        return [(root, max(e.changed), e.last_change) for e in self.led.entries()
+                if e.claim is not None and e.changed and max(e.changed) <= lost
+                for root in sorted({e.root_event_id, *e.channel_ids.values()})]
 
     def _step_down(self, e, old) -> bool:
         days = (self.now - old["confirmed_at"]) // 86400
@@ -2237,12 +2257,14 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
         page=rules.http_page, channels: dict | None = None,
         digest_now: bool = False, kev_catalog: dict | None = None,
         mirror_fetch=None, translate_call=None, catalog_channel=None, wording_call=None,
-        advisory_fetch=None, **translate_kw) -> tuple[int, str]:
+        advisory_fetch=None, clock=None, **translate_kw) -> tuple[int, str]:
     """One poster run. Returns (exit code, one-line summary). ``digest_now`` sends
     today's digest whatever the hour (once per date); ``kev_catalog`` replaces the
     KEV fetch with a synthetic catalog (``inputs.read_kev_file``). ``catalog_channel``:
     None reads spec/catalog-channel.json, False turns the catalog lane off, a string is
-    the channel id (q03f)."""
+    the channel id (q03f). ``clock``: the clock the sender stamps posts with; the
+    checkpoint is dated by it when it is signed (p93w, ``signer.run_checkpoint``). None:
+    the checkpoint is dated ``now``."""
     if not isinstance(config, Config):
         config = inputs.load_config(config)
     try:
@@ -2374,7 +2396,8 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                 else:
                     cp_status = signer.run_checkpoint(config, now, ssh=ssh, fetch=mirror_fetch,
                                                       root=translate_kw.get("root", TRUST_ROOT_PUBKEY),
-                                                      suppress=frozenset(r.unrenewed))
+                                                      suppress=frozenset(r.unrenewed), clock=clock,
+                                                      changes=r.level_changes())
             except Exception as e:  # noqa: BLE001 - nothing here may reach the run's exit code
                 cp_status = "error"
                 _say(f"checkpoint stopped: {type(e).__name__}")
@@ -2623,7 +2646,7 @@ def main(argv=None) -> int:
         print(f"aitools-alerts-poster: config error: {e}", file=sys.stderr)
         return 2
     code, summary = run(int(time.time()), cfg, channels=channels, digest_now=a.digest_now,
-                        kev_catalog=kev_catalog)
+                        kev_catalog=kev_catalog, clock=time.time)
     print(summary)
     return code
 
