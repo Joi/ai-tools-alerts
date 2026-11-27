@@ -98,7 +98,12 @@ and a forged relay-bot block in a real thread could shape the text a curator's
 amendment is translated from. That translation would be sent, recorded as the
 poster's own and never made again. So with a checkpoint key the pass does not run
 while the record is not started (`sent.started`): `translate_curator` returns
-`no-record`, reads nothing and calls nothing. The signer starts the record at the
+`no-record`, reads nothing and calls nothing. The read of the copy inside the
+pass is strict as well (`sent.own(strict=True)`): the pull between the question
+and the read can take two minutes, and a record lost, damaged or unreadable in
+that time, or a check that fails, must not hand the pass an unjudged copy. The
+same read of the record that would have judged raises `sent.NotStarted`, and the
+pass ends `no-record` with nothing translated (code review finding). The signer starts the record at the
 end of the same run, and the next run translates. Nothing waits for a person: a
 poster whose signer can never start the record (no certificate, no mirror) signs
 no checkpoint either, and its summary says so every run.

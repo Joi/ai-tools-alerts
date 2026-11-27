@@ -640,6 +640,8 @@ def test_a_record_that_is_there_and_cannot_be_read_is_not_overwritten(tmp_path, 
 
 # ---------------------------------------------------------------- the other reads of the copy (ai-tools-alerts#9cch)
 
+from pathlib import Path  # noqa: E402
+
 from aitools_alerts import schema  # noqa: E402
 from test_copy_on_raise import lost, roots  # noqa: E402
 from test_translate import SRC, Call  # noqa: E402
@@ -855,12 +857,26 @@ def test_the_pass_waits_for_the_record(signing, how):
     assert " translate=ok " in summary and len(call.texts) == 1 and [to for _, to, _ in relay.ja] == [r["id"]]
 
 
-def test_without_a_checkpoint_key_the_reads_take_the_whole_copy(env):  # noqa: F811
+def test_without_a_checkpoint_key_the_reads_take_the_whole_copy(env, monkeypatch):  # noqa: F811
+    """No record is kept without the key: the reads never ask it, and write nothing."""
     m = env.mirror
+    monkeypatch.setattr(sent, "own", lambda *a, **k: pytest.fail("the record was asked"))
+    monkeypatch.setattr(sent, "started", lambda *a, **k: pytest.fail("the record was asked"))
+    env.config = replace(env.config, translate_curator=True)
     env.run()
     stray = _forged(m)
+    m.reply(m.cur_sec, stray, "retract\nwrong", created_at=T0 + 200)
+    amend = _amendment(m, stray, T0 + 150)  # before the retraction
     events, _ = _read(env, "_mirror", T0 + HOUR)
-    assert [e["id"] for e in events] == [stray["id"]] and not env.config.sent_state.exists()
+    assert [e["id"] for e in events] == [stray["id"]]
+    assert _read(env, "_withdrawn", T0 + HOUR)[1] == {stray["id"]}
+    r, led = _run_of(env, T0 + HOUR)
+    try:
+        found = r.curator_events(m.fetch, m.root)
+    finally:
+        led.__exit__(None, None, None)
+    assert [e[0]["id"] for e in found] == [amend["id"]]  # as before: a reply in a relay-bot thread
+    assert not env.config.sent_state.exists() and not Path(str(env.config.sent_state) + ".lock").exists()
 
 
 def test_a_check_that_raises_leaves_the_read_as_it_was(signing, monkeypatch, capsys):
@@ -876,3 +892,29 @@ def test_a_check_that_raises_leaves_the_read_as_it_was(signing, monkeypatch, cap
     _, gone = _read(signing, "_withdrawn", T0 + HOUR)
     assert gone == {forged["id"]}
     assert "own-key check of the mirror copy stopped: RuntimeError" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("how", ["removed", "damaged", "the check fails"])
+def test_a_record_lost_while_the_mirror_is_read_translates_nothing(curating, how, monkeypatch):
+    """The pass asks whether the record is started, then pulls the mirror (up to two
+    minutes), then reads the record again to judge the copy. Lost in between, the copy
+    is not judged: nothing is translated from it, forged block and all."""
+    _poisoned(curating)
+    m, path = curating.mirror, curating.config.sent_state
+
+    def fetch(url, *a):
+        if how == "removed":
+            path.unlink(missing_ok=True)
+        elif how == "damaged":
+            path.write_text("not json")
+        else:
+            monkeypatch.setattr(sent, "own", lambda *a, **k: 1 / 0)
+        return m.fetch(url, *a)
+    r, led = _run_of(curating, T0 + HOUR)
+    try:
+        assert sent.started(path)
+        status = r.translate_curator(fetch, Call(lambda t: pytest.fail("translated from a copy not judged")), root=m.root)
+    finally:
+        led.__exit__(None, None, None)
+    assert status == "no-record" and not any(it["kind"] == "ja" for it in r.state["outbox"])
+    assert main._translate_state(curating.config.translate_state)["done"] == {}

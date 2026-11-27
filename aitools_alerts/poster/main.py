@@ -729,7 +729,8 @@ class Run:
         oldest first, from after the backfill floor. None when the mirror cannot be read.
         Read from the copy without the relay-bot events this poster did not sign (``_own``,
         9cch): a forged translation marks nothing as translated, a curator's reply in a
-        forged thread has no root here, and no forged block shapes an amended advisory."""
+        forged thread has no root here, and no forged block shapes an amended advisory.
+        Raises sent.NotStarted when, with a checkpoint key, the copy could not be judged."""
         try:
             st = State.load(self.config.mirror_dir)
             if translate.bounded(lambda: pull.fetch(self.config.translate_mirror_url, st, fetch=fetch,
@@ -740,8 +741,11 @@ class Run:
         m = st.manifest
         names = {self.channels[c]: c for c in ("feed", "critical")}  # the journal takes no other channel
         self.mirror_ids, out = set(st.events), []  # the whole copy: it only bounds the translate state
-        evs = self._own(st.events, m)
-        # What the bot has already translated, (thread root, of), so a lost translate file never reposts.
+        # strict: the record may have been lost since ``translate_curator`` asked (the pull
+        # above can take two minutes); the read that filters is the one that says so
+        evs = self._own(st.events, m, strict=True)
+        # What the bot has already translated, (thread root, of), so a lost translate file never reposts
+        # (9cch: what this poster's record holds; a translation the record does not hold counts for nothing).
         posted = {(pull._thread_ref(e), tr[1]) for e in evs.values()
                   if manifest.role_of(m, e["pubkey"]) == "relay-bot"
                   and (tr := pull.parse_translation(e["content"])) is not None and tr[0] == "ja"}
@@ -790,7 +794,10 @@ class Run:
         if tr["hold"] is not None or self.key_refused:  # c6ak: a wording 401/403 this run holds it too
             return "held"
         start = time.monotonic()  # the pass deadline covers the mirror and the replay too
-        evs = self.curator_events(fetch, root, {k for k, v in tr["done"].items() if v in ("ok", "untranslated")}, start)
+        try:
+            evs = self.curator_events(fetch, root, {k for k, v in tr["done"].items() if v in ("ok", "untranslated")}, start)
+        except sent.NotStarted:  # lost between the question above and the read of the copy
+            return "no-record"
         if evs is None:
             return "mirror-error"
         today, memo = _utc_date(self.now), {}
@@ -2008,17 +2015,24 @@ class Run:
                 roots.add(t.root_id)
         return {i.casefold() for i in m.retracted}, roots
 
-    def _own(self, events: dict, m) -> dict:
+    def _own(self, events: dict, m, strict: bool = False) -> dict:
         """9cch: the mirror copy's events without the relay-bot events this poster did
         not sign (``sent.own``), for every read of the copy outside the signer. The
         copy as it is without a checkpoint key (no record is kept), without a manifest,
-        and, with one line on stderr, when the check itself fails: no read waits on it."""
+        and, with one line on stderr, when the check itself fails: no read waits on it.
+        ``strict`` (the curator-translation pass, whose result outlives the run): with a
+        checkpoint key, sent.NotStarted is raised instead whenever the copy was not
+        judged, by an unstarted or unreadable record or by a check that failed."""
         if self.config.checkpoint_key_file is None or m is None:
             return events
         try:
-            return sent.own(self.config.sent_state, events, m, self.now)
+            return sent.own(self.config.sent_state, events, m, self.now, strict=strict)
+        except sent.NotStarted:
+            raise
         except Exception as e:  # noqa: BLE001
             _say(f"own-key check of the mirror copy stopped: {type(e).__name__}")
+            if strict:
+                raise sent.NotStarted from None
             return events
 
     def _foreign(self, root) -> list:

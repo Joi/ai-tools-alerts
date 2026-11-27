@@ -1,6 +1,6 @@
 # Run: 9cch-poster-mirror-reads
 Instruction: Read TASK-ai-tools-alerts#9cch.md in this worktree root, then run `kata show ai-tools-alerts#9cch` and follow the brief and the dispatch rules pasted after this sentence. (The dispatch rules: /do-it, starting rung floored at medium; scripts/test-gate.sh, one independent review, a pull request this session merges.)
-Stage: code-review:own-reads
+Stage: verifying
 Rung: medium (start-floor medium: default, BR1 REV1 NOV1 INT0 FC1 = 4; hard trigger none; no lens; the evaluator called it torn between light and medium and took the higher, which is also the dispatch floor)
 Last reviewed: spec 39a16f065de8615fad21fa25520cf4f8d3d667a5
 Last reviewed: plan 1a1d9343591560a5fa462fafc9cb6bc530b2b721
@@ -15,6 +15,9 @@ spec: passes: 1 · elapsed: 6 min. Fixed both SUBSTANTIVE: (1) the curator-trans
 
 Pass 1 [plan]: 0B/2S/0C/0R · fixed -/- · velocity = (—→2, escalation no)
 plan: passes: 1 · elapsed: 9 min. Fixed both SUBSTANTIVE, in the plan and in the tests: (1) the fake mirror's default checkpoint lists a forgery, so a first run adopts it: the waiting test serves no checkpoint and asserts the forged id stays out of the record; (2) the digest and copy tests attacked a thread that was not on the mirror: `_export` and `_attacked` put it there and assert the replay reads it.
+
+Pass 1 [code:own-reads]: 1B/3S/2C/0R · fixed -/- · velocity = (—→6, escalation no)
+code: whole branch at 7443e3556d67a9f3acad9ff8578e786acefa5566 (git diff origin/main...HEAD). Independent (fresheyes, gpt-6.1-sol, high): 1 BLOCKER, fixed: the pass asked whether the record was started, pulled the mirror, then judged the copy by a second read of the record; a record lost in between handed it the whole copy. The read inside the pass is now strict and ends the pass `no-record`. Same-model review beside it: 3 SUBSTANTIVE, all fixed: (1) `_own` failed open for the translation read when the check raised (the same strict read answers it); (2) README and changelog said translation waits one run without saying that a poster with no usable certificate keeps waiting; (3) the no-key test did not pin the guard (it now fails if the record is asked, and covers all three reads). 2 COSMETIC: a comment reworded; the settling test asserts on `_mirror`'s return, left as it is. The BLOCKER fix changes behaviour: one delta pass follows.
 
 ## Chunks
 - [ ] own-reads — one helper, four reads, tests, changelog

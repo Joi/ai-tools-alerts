@@ -42,7 +42,7 @@ from pathlib import Path
 from aitools_alerts import manifest, nostr, pull
 from aitools_alerts.state import write_json
 
-__all__ = ["load", "note", "holds", "started", "check", "own", "unsaid", "mark_said", "MAX_SAID"]
+__all__ = ["load", "note", "holds", "started", "check", "own", "NotStarted", "unsaid", "mark_said", "MAX_SAID"]
 
 MAX_SAID = 200  # foreign ids one digest reports; more wait for the next
 MAX_KEPT = 1000  # foreign ids no longer on the mirror that are kept until a digest has reported them
@@ -150,11 +150,22 @@ def started(path) -> bool:
         return False
 
 
-def own(path, events: dict, m, now: int, channels=None) -> dict:
+class NotStarted(Exception):
+    """The record judged nothing: it is not started, or it could not be read."""
+
+
+def own(path, events: dict, m, now: int, channels=None, strict: bool = False) -> dict:
     """``events`` ({id: event}, the poster's whole copy of the mirror) without the
-    foreign ones (``check``, run here without ``adopt``: an unstarted record judges
-    nothing and the copy comes back whole). The same mapping when none is foreign."""
-    foreign = check(path, events.values(), m, now, channels=channels)
+    foreign ones (``check``, run here without ``adopt``). The same mapping when none
+    is foreign. A record that is not started, or cannot be read, judges nothing: the
+    copy then comes back whole, or with ``strict`` NotStarted is raised, by the same
+    read of the record that would have judged (a caller that asked ``started`` first
+    may have lost the record since)."""
+    foreign = _judge(path, events.values(), m, now, None, channels)
+    if foreign is None:
+        if strict:
+            raise NotStarted
+        return events
     return {i: e for i, e in events.items() if i not in foreign} if foreign else events
 
 
@@ -168,6 +179,12 @@ def check(path, events, m, now: int, adopt=None, channels=None) -> set:
     started. Without it an unstarted record judges nothing and nothing is written.
     The record's ``foreign`` and ``said`` are brought up to date. When the record
     cannot be written, that is said on stderr and the result still stands."""
+    foreign = _judge(path, events, m, now, adopt, channels)
+    return set() if foreign is None else foreign
+
+
+def _judge(path, events, m, now: int, adopt, channels) -> set | None:
+    """``check``; None when the record judged nothing (not started and no ``adopt``)."""
     channels = pull.channel_ids() if channels is None else channels
     bots = {ev["id"] for ev in events if manifest.role_of(m, ev["pubkey"]) == "relay-bot"
             and pull._bound(ev, channels)}
@@ -179,7 +196,7 @@ def check(path, events, m, now: int, adopt=None, channels=None) -> set:
         return _check(path, bots, int(now), adopt, save=False)
 
 
-def _check(path, bots: set, now: int, adopt, save: bool = True) -> set:
+def _check(path, bots: set, now: int, adopt, save: bool = True) -> set | None:
     try:
         rec = load(path)
     except OSError:
@@ -187,7 +204,7 @@ def _check(path, bots: set, now: int, adopt, save: bool = True) -> set:
     was = json.dumps(rec, sort_keys=True)
     if rec["since"] is None:
         if adopt is None:
-            return set()
+            return None
         took = [i for i in adopt if nostr._is_hex(i, 32)]
         for i in took:
             rec["ids"].setdefault(i, now)
