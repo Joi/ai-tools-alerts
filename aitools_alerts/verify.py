@@ -10,7 +10,10 @@ Every product of a relay-bot thread gets one of three results. ``confirmed``
 and ``contradicted`` rest only on bodies that came with status 200, arrived
 whole, parsed strictly and passed ``Ruleset.read``. If any read a thread
 needs fails (a timeout, a redirect, 403, 404, 429, 5xx, a body cut short, a
-parse error, a size overrun), every product of it is ``unknown``. This module
+parse error, a size overrun), every product of it is ``unknown``. Which reads a
+thread needs: its first id's, always; for an alias listed beside a CVE first id,
+``_Run._aliases`` (nx25: a 404 for an alias never read as support is an answer, and
+an answer this reader refuses stops counting after a day). This module
 changes no level: it reports. ``lowering`` is the answer the reader applies to a
 published lowering or retraction (ai-tools-alerts#c1g2, ``pull.standing``), and
 ``claimed`` tells a level that rests on the first id's fields from one that may rest
@@ -43,7 +46,8 @@ from .state import write_json
 
 __all__ = ["KEV_URL", "HOSTS", "LIMITS", "TIMEOUT", "MAX_FETCHES", "RUN_SECONDS", "FILE", "BOT",
            "norm_id", "url_of", "default_fetch", "state_key", "judge", "summary", "load", "run",
-           "result_for", "at_level", "lowering", "claimed", "Asked", "Unsaved", "pkey", "scope_of", "narrowing"]
+           "result_for", "at_level", "lowering", "claimed", "Asked", "Unsaved", "TooLarge", "pkey", "scope_of",
+           "narrowing"]
 
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 _GHSA_URL = "https://api.github.com/advisories/"
@@ -53,19 +57,22 @@ LIMITS = {"kev": 8 << 20, "ghsa": 256 << 10, "osv": 256 << 10}
 TIMEOUT = 10.0  # one request, from the call to the last byte
 MAX_FETCHES = 10  # per run
 RUN_SECONDS = 30.0
-MAX_ALIASES = 3  # aliases of one thread that are read
+MAX_ALIASES = 3  # aliases of one thread that are read in one run
+MAX_LISTED = 8  # nx25: aliases of a CVE first id that count: the first this machine saw listed
+ALIAS_WAIT_S = 86400  # nx25: how long an alias whose answer this reader refuses holds a CVE first id unread
 MAX_NAMES = 50  # ids one response may name; more is a failed read
 MAX_CACHE_BYTES = 16 << 20
 # The most version ranges one product of one thread can have: a thread counts its first id
-# and at most MAX_ALIASES more, and one reading holds at most ruleset.MAX_PACKAGES entries.
+# and at most MAX_LISTED more, and one reading holds at most ruleset.MAX_PACKAGES entries.
 # Nothing is ever cut to it: it is only what a cache this reader wrote cannot pass.
-MAX_PAIRS = (MAX_ALIASES + 1) * ruleset.MAX_PACKAGES
+MAX_PAIRS = (MAX_LISTED + 1) * ruleset.MAX_PACKAGES
 FILE = "verify.json"
-VERSION = 5  # of the cache: raised whenever a stored value changes meaning, so nothing older is reused
+VERSION = 6  # of the cache: raised whenever a stored value changes meaning, so nothing older is reused
 BOT = "relay-bot"
 CONFIRMED, CONTRADICTED, UNKNOWN = "confirmed", "contradicted", "unknown"
 _WHYS = {CONFIRMED: ("match", "withdrawn"), CONTRADICTED: ("unsupported", "above-source", "below-source"),
          UNKNOWN: ("unread", "unauthoritative", "silent", "reading", "no-source", "off")}
+_ANSWERS = ("record", "absent", "refused", "none")  # nx25: what the last request for an alias met (``_Run._get``)
 _LEVELS = (ruleset.NONE, "notice", "high", "critical")
 _RANK = {name: i for i, name in enumerate(_LEVELS)}
 _ETAG = re.compile(r'(?:W/)?"[\x21\x23-\x7e]{1,128}"')
@@ -154,13 +161,15 @@ def _request(host: str, path: str, etag: str | None, limit: int, timeout: float,
             raise OSError("encoded body")
         chunked = (r.getheader("Transfer-Encoding") or "").strip().lower() == "chunked"
         length = (r.getheader("Content-Length") or "").strip()
-        if not chunked and (not length.isascii() or not length.isdigit() or int(length) > limit):
-            raise OSError("no usable length")  # nothing says where the body ends, or it is too long
+        if not chunked and (not length.isascii() or not length.isdigit()):
+            raise OSError("no usable length")  # nothing says where the body ends
+        if not chunked and int(length) > limit:
+            raise TooLarge()
         body = bytearray()
         while piece := r.read(65536):  # a chunk cut short raises in http.client
             body += piece
             if len(body) > limit:
-                raise OSError("too large")
+                raise TooLarge()
             left()
         if not chunked and len(body) != int(length):
             raise OSError("body cut short")  # read(n) returns early at EOF without raising
@@ -178,7 +187,8 @@ def default_fetch(url: str, etag: str | None, limit: int, timeout: float):
     connection is shut, and it is not waited for (a name lookup cannot be
     interrupted, but nothing is sent once it returns). A 200 body is returned
     only when it arrived whole (see ``_request``). The error never carries
-    text from the response."""
+    text from the response. ``TooLarge`` when a 200 states or sends more than
+    ``limit``: the source answered, with what this reader does not take (nx25)."""
     parts = urlsplit(url)
     if parts.scheme != "https" or parts.netloc not in HOSTS or parts.query or parts.fragment:
         raise OSError("refused URL")
@@ -189,6 +199,8 @@ def default_fetch(url: str, etag: str | None, limit: int, timeout: float):
     def go():
         try:
             box.append(_request(parts.netloc, parts.path, etag, limit, timeout, held, cancelled))
+        except TooLarge:
+            box.append(TooLarge)
         except Exception:  # network, TLS, protocol, framing: a failed read
             box.append(None)
 
@@ -207,6 +219,8 @@ def default_fetch(url: str, etag: str | None, limit: int, timeout: float):
         raise OSError("fetch failed")
     if not box or box[0] is None:
         raise OSError("fetch failed")
+    if box[0] is TooLarge:
+        raise TooLarge()
     return box[0]
 
 
@@ -220,6 +234,13 @@ class Unsaved(OSError):
     def __init__(self, cache: dict):
         super().__init__("the source check's cache could not be written")
         self.cache = cache
+
+
+class TooLarge(OSError):
+    """A 200 whose body is past the limit of its source."""
+
+    def __init__(self):
+        super().__init__("too large")
 
 
 class _Bad(ValueError):
@@ -455,10 +476,14 @@ class _Target:
         self.actions = [(a.verb, a.target, a.value) for a in adv.actions]
         # tavj: an asked state whose higher levels are all claimed from the first id's fields
         self.claimed = getattr(adv, "claimed", False) is True
+        # nx25: a lowering or retraction is asked about (``at_level``). Every listed alias then
+        # counts, and the state has its own key: a post's result never answers for a lowering.
+        self.asked = isinstance(adv, Asked)
+        self.others = [a for a in self.aliases if ruleset.source_of(a) != "kev"]  # its GHSA and MAL aliases
         self.key = hashlib.sha256(json.dumps(
             {"id": self.first, "aliases": sorted(self.aliases), "level": self.level, "products": self.products,
              "fixed": self.fixed, "actions": sorted(self.actions, key=repr),
-             **({"claimed": True} if self.claimed else {})},
+             **({"claimed": True} if self.claimed else {}), **({"asked": True} if self.asked else {})},
             sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
     def ids(self) -> list:
@@ -687,7 +712,8 @@ def state_key(adv) -> str:
 # ------------------------------------------------------------------ the cache
 
 def _empty(digest: str) -> dict:
-    return {"version": VERSION, "ruleset": digest, "kev": None, "sources": {}, "results": {}}
+    return {"version": VERSION, "ruleset": digest, "kev": None, "sources": {}, "results": {}, "tried": {}, "since": {},
+            "counted": {}}
 
 
 def _well_formed(c, digest: str) -> bool:
@@ -725,6 +751,18 @@ def _shape_ok(c, digest: str) -> bool:
                 or not all(isinstance(n, str) and isinstance(s, list) and len(s) == 3 and type(s[0]) is str and s[0] in _LEVELS
                            and type(s[1]) is bool and type(s[2]) is bool for n, s in r["support"].items()):
             return False
+    # nx25: per alias id [when a request for it was last made, what it met]; per CVE first
+    # id, when a run first left one of its aliases unknown, and the aliases that count
+    def cve(i):
+        return norm_id(i) == i and ruleset.source_of(i) == "kev"
+    if not isinstance(c["tried"], dict) or not isinstance(c["since"], dict) or not isinstance(c["counted"], dict) \
+            or not all(norm_id(i) == i and isinstance(v, list) and len(v) == 2 and when(v[0])
+                       and type(v[1]) is str and v[1] in _ANSWERS for i, v in c["tried"].items()) \
+            or not all(cve(i) and when(v) for i, v in c["since"].items()) \
+            or not all(cve(i) and isinstance(v, list) and len(v) <= MAX_LISTED and len(set(map(str, v))) == len(v)
+                       and all(isinstance(a, str) and norm_id(a) == a and not cve(a) for a in v)
+                       for i, v in c["counted"].items()):
+        return False
     for key, r in c["results"].items():
         if not (isinstance(key, str) and _HEX.fullmatch(key)) or not isinstance(r, dict) \
                 or set(r) - {"ranges", "whole"} != {"at", "products"} or not when(r["at"]) \
@@ -783,6 +821,8 @@ class _Run:
         self.kev: dict | None = None  # the catalog this run read: {CVE id: entries}
         self.kev_asked = self.kev_unchanged = False
         self.stated: dict | None = None  # swfe: ``ranges`` and ``whole`` of the thread last judged
+        self.how = "none"  # nx25: what the last ``_get`` met: see there
+        self.missed: set = set()  # nx25: the GHSA and MAL ids whose read the budget did not make
 
     def spent(self) -> bool:
         """The run's 30 seconds are over."""
@@ -801,18 +841,45 @@ class _Run:
         return min(TIMEOUT, left)
 
     def _get(self, url, etag, source):
-        """(status, etag, decoded body or None) or None on any failure."""
+        """(status, etag, decoded body or None) or None on any failure.
+
+        ``how`` (nx25) says what was met. ``cut``: no request was made, the run's budget
+        is spent. ``record``: a 200 that arrived whole and parsed, or a 304 to the ETag
+        sent. ``absent``: a 404, the source has no such entry. ``refused``: the source
+        answered and this reader does not take the answer: a 200 that is too large or
+        does not parse, or a 4xx other than 403, 404, 408 and 429. ``none``: no answer
+        (a timeout, a network or TLS error, a redirect, 403, 408, 429, 5xx). Whoever
+        chooses an id can arrange ``absent`` and ``refused``, never ``none``."""
         timeout = self._spend()
+        self.how = "cut" if timeout is None else "none"
         if timeout is None:
             return None
         try:
             status, tag, body = self.fetch(url, etag, LIMITS[source], timeout)
-            if status == 304:
-                return (304, None, None) if etag is not None else None
-            if status != 200 or type(body) is not bytes or len(body) > LIMITS[source]:
-                return None
-            return 200, tag, _strict(body)
+        except TooLarge:
+            self.how = "refused"
+            return None
         except Exception:  # nothing of the failure is kept or shown: its text may quote the response
+            return None
+        try:
+            if status == 304:
+                if etag is None:
+                    return None
+                self.how = "record"
+                return 304, None, None
+            if status != 200:
+                if status == 404:
+                    self.how = "absent"
+                elif type(status) is int and 400 <= status < 500 and status not in (403, 408, 429):
+                    self.how = "refused"
+                return None
+            self.how = "refused"  # a 200: what is wrong with it from here on is the answer's
+            if type(body) is not bytes or len(body) > LIMITS[source]:
+                return None
+            got = 200, tag, _strict(body)
+            self.how = "record"
+            return got
+        except Exception:
             return None
 
     def _ask_kev(self, known: set) -> None:
@@ -839,7 +906,13 @@ class _Run:
     def read(self, lookup_id: str, known_cves=frozenset()) -> dict | None:
         """What is kept of this id's read, asked for at most once a run. None:
         the read failed or was not made. A stored record is never a fallback
-        for a failed read; a 304 to its own ETag is the one way it is used."""
+        for a failed read; a 304 to its own ETag is the one way it is used.
+
+        nx25: for a GHSA or MAL id the request is remembered in ``tried``: when it was
+        made and what it met (``_get``; a body the ruleset or the endpoint's format
+        refuses is ``refused``). A 404 gives no record here, like any failed read; what
+        it means for an alias is ``_aliases``'s to say. A read the budget did not make
+        is not remembered."""
         if lookup_id in self.memo:
             return self.memo[lookup_id]
         source, sources = ruleset.source_of(lookup_id), self.cache["sources"]
@@ -857,6 +930,7 @@ class _Run:
                 rec = held
         else:
             got = self._get(url_of(lookup_id), held["etag"] if held else None, source)
+            how = self.how
             if got is not None and got[0] == 304:
                 rec = held
             elif got is not None:
@@ -864,7 +938,11 @@ class _Run:
                     fields, named = (_ghsa_reading if source == "ghsa" else _osv_reading)(got[2], lookup_id)
                     rec = _record(self.rs, source, [fields], named, got[1], self.now)
                 except (_Bad, ruleset.RulesetError, TypeError, AttributeError):
-                    rec = None
+                    rec, how = None, "refused"
+            if how == "cut":
+                self.missed.add(lookup_id)
+            else:
+                self.cache["tried"][lookup_id] = [self.now, how]
         if rec is not None:
             sources[lookup_id] = rec
         self.memo[lookup_id] = rec
@@ -884,7 +962,12 @@ class _Run:
         The catalog not listing a CVE is no authority, with one exception (tavj): for a
         claimed state (``claimed``) it is. The thread's signed claims then say the
         catalog listed this CVE for this product, this machine's whole read says it
-        does not, and nothing the thread stated rests on anything else."""
+        does not, and nothing the thread stated rests on anything else.
+
+        Which aliases of a CVE first id are read, and when the read is complete, is
+        ``_aliases``'s rule (nx25), except for a state asked about as a lowering
+        (``_Target.asked``): there every listed alias counts, at most MAX_ALIASES of
+        them, each read with a record in this run, and a 404 is a failed read."""
         self.stated = None
         first = self.read(t.first, known_cves)
         if first is None:
@@ -909,13 +992,17 @@ class _Run:
             related = sorted((a for a in t.aliases if ruleset.source_of(a) != "kev"), key=lambda a: -weight(a))
         else:
             related = [n for n in first["names"] if n != t.first] if first["lowers"] else []
-        complete = len(related) <= MAX_ALIASES
-        for a in related[:MAX_ALIASES]:
-            rec = self.read(a, known_cves)
-            if rec is None:
-                complete = False
-            elif not from_kev or (rec["lowers"] and t.first in rec["names"]):
-                records.append(rec)
+        if from_kev and not t.asked:
+            complete, whole = self._aliases(t, records, known_cves)
+        else:
+            whole = len(related) <= MAX_ALIASES
+            for a in related[:MAX_ALIASES]:
+                rec = self.read(a, known_cves)
+                if rec is None:
+                    whole = False
+                elif not from_kev or (rec["lowers"] and t.first in rec["names"]):
+                    records.append(rec)
+            complete = whole
 
         def pairs(p):
             """The version ranges the counted authorities state for scope product ``p``,
@@ -926,8 +1013,94 @@ class _Run:
                     out += [x for x in r["ranges"].get(p, []) if x not in out]
             return out
         self.stated = {"ranges": {p: pairs(p) for p in sorted({n for n in t.scope.values() if n is not None})},
-                       "whole": complete}
+                       "whole": whole}
         return {p: t.judge(p, records, complete, self.rs) for p in t.products}
+
+    def _aliases(self, t: _Target, records: list, known_cves) -> tuple:
+        """Read aliases of a CVE first id and add the records that count to ``records``;
+        returns (the read is complete, it is whole) (nx25).
+
+        The aliases that count are at most MAX_LISTED per first id: the first this machine
+        saw a thread of it list (``counted``, filled in the thread's order and kept while a
+        current thread lists them). Later signed events cannot displace one, whatever date
+        they carry, so a signer who adds aliases cannot keep one untried for good, and
+        cannot push out one this machine already counts.
+
+        An alias is, by what the cache holds for its id: tied (its stored record is an
+        authority that names the first id; it stays tied whatever a later read answers),
+        answered (its last request met a 404, the source has no such entry, or a record
+        that does not tie it: neither supports, lowers or ties anything), or unknown: the
+        last request met no answer or an answer this reader refused, or none was made.
+        ALIAS_WAIT_S after a run first left an alias of this first id unknown (``since``,
+        kept per first id: a signed change of the thread restarts nothing), an unknown
+        alias whose last request met a refused answer is waived. One that met no answer
+        never is: a signer can choose an id whose entry this reader refuses, and cannot
+        make a member's reads fail. An answer stands only as long as the last request
+        for the alias got one: a refresh that fails makes it unknown again.
+
+        Complete: no unknown alias is left that is not waived, and every tied alias
+        returned a record in this run. Nothing remembered stands in for a read of a tied
+        alias, and no deadline waives one. Whole, which a narrowing is confirmed on
+        (swfe), is the rule a lowering keeps: at most MAX_ALIASES aliases listed, each
+        read with a record in this run.
+
+        Read: every tied alias; MAX_ALIASES of the unknown ones not waived, longest
+        untried first, so those that fail every run cannot keep another from its turn;
+        and one of the waived and of the answered ones not tried for RETRY_S (an
+        advisory can come to name the CVE), in a place no other alias can take."""
+        tried, since = self.cache["tried"], self.cache["since"]
+        first, now = t.first, self.now
+        kept = self.cache["counted"].setdefault(first, [])
+        kept += [a for a in t.others if a not in kept][:MAX_LISTED - len(kept)]
+        aliases = [a for a in kept if a in t.others]
+
+        def met(a):
+            return tried[a][1] if a in tried else None
+
+        def state(a) -> str:
+            return _alias_state(self.cache, first, a)
+
+        def at(a) -> int:
+            """When ``a`` was last tried; never, for one dated after the clock."""
+            return tried[a][0] if a in tried and tried[a][0] <= now else 0
+        if since.get(first, 0) > now:
+            since[first] = now  # written while the clock was ahead: it counts from now
+        late = first in since and now - since[first] >= ALIAS_WAIT_S
+
+        def waits(a) -> bool:
+            return state(a) == "unknown" and not (late and met(a) == "refused")
+        picks = aliases  # at most MAX_ALIASES: all of them, every run, which is what ``whole`` needs
+        if len(aliases) > MAX_ALIASES:
+            def oldest(some):
+                return sorted(some, key=lambda a: (at(a), a))
+            tied = [a for a in aliases if state(a) == "tied"]
+            rest = [a for a in aliases if a not in tied and not waits(a)
+                    and (state(a) == "unknown" or now - at(a) >= RETRY_S)]
+            picks = tied + oldest(a for a in aliases if waits(a))[:MAX_ALIASES] + oldest(rest)[:1]
+        got = {a: self.read(a, known_cves) for a in picks}
+        tied = [a for a in aliases if state(a) == "tied"]
+        got.update((a, self.memo[a]) for a in tied if a not in got and a in self.memo)  # read for another thread
+        records += [got[a] for a in tied if got.get(a) is not None]
+        if any(state(a) == "unknown" and a in tried for a in aliases):
+            since.setdefault(first, now)
+        # A read the budget did not make leaves the run's reads short of what it set out to
+        # read: nothing is judged complete on them (0z4e: no old result under a new time).
+        complete = not any(waits(a) for a in aliases) and all(got.get(a) is not None for a in tied) \
+            and not any(a in self.missed for a in picks)
+        # every alias the state lists, not only those that count for the first id
+        whole = len(t.others) <= MAX_ALIASES and all(got.get(a) is not None for a in t.others)
+        return complete, whole
+
+
+def _alias_state(cache: dict, first: str, alias: str) -> str:
+    """``tied``, ``answered`` or ``unknown``: what ``alias`` is beside CVE first id ``first``
+    by what the cache holds (nx25, ``_Run._aliases``). A stored record that ties stays
+    tied; otherwise only what the last request met counts, so a record kept from an
+    earlier read is no answer once a later request was refused or met none."""
+    r = cache["sources"].get(alias)
+    if r is not None and r["lowers"] and first in r["names"]:
+        return "tied"
+    return "answered" if cache["tried"].get(alias, (0, None))[1] in ("absent", "record") else "unknown"
 
 
 def _settled(held, products: dict, asked: bool) -> dict:
@@ -1054,6 +1227,17 @@ def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=
     ids |= {n for i in list(ids) for n in cache["sources"].get(i, {}).get("names", [])}
     cache["results"] = {k: v for k, v in results.items() if k in keys}
     cache["sources"] = {i: r for i, r in cache["sources"].items() if i in ids}
+    # nx25: an alias's attempts are kept as long as its id is; an alias counts for a first
+    # id as long as a current thread of it lists it; a first id's deadline is kept as long
+    # as one that counts is unknown, by the rule the reads go by (``_alias_state``). Over
+    # every state of it: one state without such an alias must not restart the clock of another.
+    cache["tried"] = {i: v for i, v in cache["tried"].items() if i in ids}
+    lists: dict = {}
+    for t in live:
+        lists.setdefault(t.first, set()).update(t.others)
+    cache["counted"] = {i: kept for i, v in cache["counted"].items() if (kept := [a for a in v if a in lists.get(i, ())])}
+    cache["since"] = {i: at for i, at in cache["since"].items()
+                      if any(_alias_state(cache, i, a) == "unknown" for a in cache["counted"].get(i, ()))}
     try:
         write_json(Path(state_dir) / FILE, cache)
     except OSError:
