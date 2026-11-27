@@ -353,27 +353,16 @@ def test_a_withdrawn_unreviewed_advisory_lowers_nothing(env):
     assert hours(env, 1, 50) == [] and state(env)["dwell"] == {} and entries(env)[0]["level"] == "high"
 
 
-def test_a_withdrawn_reviewed_advisory_lowers_to_notice_and_stays(env):
-    post(env)
-    env.api.put(G, ghsa_json(G, withdrawn_at=WHEN))
-    assert hours(env, 1, 60) == [(25, "notice")]  # no lower state yet (ai-tools-alerts#y484): the thread stays
+def test_a_withdrawn_reviewed_advisory_with_another_reading_lowers_to_notice_and_stays(env):
+    """A withdrawn advisory moves its thread to the state ``withdrawn`` (ai-tools-alerts#kk2q,
+    tests/poster/test_withdrawn_state.py) only when every reading counted states the
+    withdrawal. Beside one that does not, it is a lowering to notice, as before."""
+    post(env, identifiers=("MAL-2026-1",))
+    env.api.put("MAL-2026-1", osv_json("MAL-2026-1", packages=(("npm", "left-pad"),)))
+    env.api.put(G, ghsa_json(G, withdrawn_at=WHEN, identifiers=("MAL-2026-1",)))
+    assert hours(env, 1, 60) == [(25, "notice")]
     (e,) = entries(env)
-    assert e["level"] == "notice" and e["advisory"]["level"] == "notice"
-
-
-def test_a_malware_advisory_withdrawn_and_published_again_returns_to_critical(env):
-    malware = dict(type="malware", packages=NO_FIX)
-    relay = post(env, fixed=None, **malware)
-    (e,) = entries(env)
-    assert e["level"] == "critical" and [a["verb"] for a in e["advisory"]["actions"]] == ["stop_using"]
-    env.api.put(G, ghsa_json(G, withdrawn_at=WHEN, **malware))
-    assert hours(env, 1, 24) == []
-    relay = run(env, 25)
-    assert levels(relay) == levels(relay, "critical") == [{"level": "notice"}]
-    env.api.put(G, ghsa_json(G, **malware))
-    relay = run(env, 26)
-    assert levels(relay) == levels(relay, "critical") == [{"level": "critical"}]
-    assert entries(env)[0]["level"] == "critical" and hours(env, 27, 30) == []
+    assert e["level"] == "notice" and e["advisory"]["level"] == "notice" and "withdrawn" not in e
 
 
 def test_kev_listing_a_critical_thread_is_remembered_and_its_later_absence_lowers_nothing(env):

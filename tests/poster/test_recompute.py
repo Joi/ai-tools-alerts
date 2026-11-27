@@ -842,6 +842,11 @@ def test_level_report_prints_bare_ids_only():
     assert text == "\n\nLowered since the last digest: CVE-2026-0001 to notice."
     assert compose.level_report([], None) == "" and compose.level_report([], None, "ja") == ""
     assert "CVE-2026-0001 (注意)" in compose.level_report([["CVE-2026-0001", "notice"]], {"due": 3}, "ja")
+    # kk2q: the state is named, in both languages; another word is still dropped
+    rows = [["CVE-2026-0001", "withdrawn"], ["CVE-2026-0002", "notice"], ["CVE-2026-0003", "none"]]
+    assert compose.level_report(rows, None) == \
+        "\n\nLowered since the last digest: CVE-2026-0001 withdrawn; CVE-2026-0002 to notice."
+    assert "CVE-2026-0001 (取り下げ); CVE-2026-0002 (注意)" in compose.level_report(rows, None, "ja")
 
 
 def test_a_kev_thread_with_no_fix_is_never_raised_to_critical_no_fix(env):
