@@ -38,7 +38,9 @@ Tests in `scripts/test-gate.sh`, all in the check itself (`tests/test_verify.py`
 - A tied alias whose read fails, or answers 404, leaves the thread `unread`, before and
   after the deadline.
 - More than three tied aliases are all read in one run and judged.
-- Aliases a reply adds after the first eight are not read and hold nothing.
+- Eight aliases count, the first this machine saw: one added later, in whatever place,
+  is not read, holds nothing and pushes none of the eight out.
+- A refresh of an answered alias that fails leaves the thread `unread`, not contradicted.
 - A read the request budget refused is not an attempt.
 - A lowering (an `Asked` state) with four aliases is `unread`, and one with an alias
   that answers 404 is `unread`, as today; no result of another state answers for it.
@@ -81,28 +83,34 @@ network or rate limit fails gets "no answer", and that never settles anything.
 
 ### What is remembered
 
-Two new keys of the cache (`verify.json`, version 6; a cache of version 5 is rebuilt
+Three new keys of the cache (`verify.json`, version 6; a cache of version 5 is rebuilt
 once, like every version before):
 
-- `tried`: per alias id, `[at, answer]`. `at`: when a request for it was last made
-  (not one the budget refused). `answer`: the kind of the last answer, `record`,
-  `absent` or `refused`, or null when none ever came; "no answer" leaves it as it was.
+- `tried`: per alias id, `[at, met]`. `at`: when a request for it was last made (not
+  one the budget refused). `met`: what that request met: `record`, `absent`, `refused`
+  or `none`.
 - `since`: per CVE first id, when a run first left one of its aliases unknown after a
   request for at least one of them.
+- `counted`: per CVE first id, the aliases that count (next section).
 
-Both are per id, not in the result: a result's key changes with every signed change of
-the thread, so a signer could otherwise restart any clock with a reply. Both are pruned
-with `sources`, to the ids of current threads.
+All are per id, not in the result: a result's key changes with every signed change of
+the thread, so a signer could otherwise restart any clock with a reply. `tried` is
+pruned with `sources`, to the ids of current threads.
 
 ### Which aliases count
 
-The first `MAX_LISTED` (8) GHSA or MAL aliases, in the order the thread listed them.
-The reader keeps a thread's aliases in the order they first appeared (`pull`: the
-root's, then each reply's), so a reply can only add behind the ones already there. An
-alias past the eighth is not read and holds nothing. A state with more than eight has
-the eight that count, in order, in its result key (plan review): two states with one
-alias set and another first eight never share a result. Without a bound, a signer who adds
-aliases faster than a run reads them keeps one untried for good.
+At most `MAX_LISTED` (8) GHSA or MAL aliases per first id: the first this machine saw
+a thread of that first id list, taken in the thread's order when the check reads it,
+and kept while a current thread still lists them. An alias that is not among them is
+not read and holds nothing.
+
+The selection is this machine's and it is sticky because the order of a thread's
+aliases is not fixed: the reader replays replies by their date, which their signer
+sets, so a later reply can put its aliases in front of earlier ones (code review). A
+selection read from the thread each time would let a signer keep an untried alias in
+front for good, and push out of the eight an alias this machine already counts. On a
+machine that first sees the thread with such replies already in it, the selection is
+the thread's order as replayed.
 
 ### Three states of an alias
 
@@ -111,9 +119,13 @@ Read from the cache, for alias `a` of first id `F`:
 - **tied**: `sources[a]` is an authority (`lowers`) that names `F`. It stays tied
   whatever its later reads answer: a 404 or a refused answer for an alias this machine
   has read as evidence is a failed read of it, as today.
-- **answered**: any other `sources[a]`, or the last answer was `absent`. The source
-  answered and did not tie it. A 404 supports nothing, lowers nothing and ties nothing.
-- **unknown**: neither.
+- **answered**: the last request for it met a 404, or a record that does not tie it.
+  The source answered and did not tie it. A 404 supports nothing, lowers nothing and
+  ties nothing.
+- **unknown**: the last request met no answer or a refused one, or none was made. An
+  answer stands only as long as the last request got one: when a refresh of an
+  answered alias fails, the alias is unknown again and holds the thread (code review:
+  an old 404 must not contradict an alert while the advisory cannot be reached).
 
 `_Run.read` returns no record for a 404, so a first id that answers 404 stays a failed
 read.
@@ -121,9 +133,9 @@ read.
 ### The deadline
 
 `ALIAS_WAIT_S` is 24 hours. Once `now - since[F]` reaches it, an unknown alias whose
-last answer was `refused` is **waived**: it no longer makes the read incomplete. An
-unknown alias with no answer is never waived: it holds the thread until the source
-answers for it. A `since` dated after the clock is set to now.
+last request met a refused answer is **waived**: it no longer makes the read
+incomplete. One whose last request met no answer is never waived, whatever it met
+before: it holds the thread until the source answers for it. A `since` dated after the clock is set to now.
 
 So what a signer can arrange (an id whose entry this reader refuses to parse) holds a
 thread for a day, and what a signer cannot arrange (this member's reads failing) is
@@ -219,9 +231,12 @@ is untouched. A release is needed for members to get it (note on ai-tools-alerts
 - An alias this reader refuses to parse is waived after a day even when it is real
   support. The issue asks for exactly this: no entry may hold a thread for good. The
   cost is a true alert shown at notice on the strength of an entry nobody could read.
-- A real advisory listed after eight others does not count. An honest thread would
-  need nine GHSA or MAL aliases; a signer who fills the first eight of its own thread
-  only weakens its own alert.
+- A real advisory outside the eight that count does not count. On a machine that has
+  read the thread before, later replies cannot put it there. On a machine that sees
+  the thread for the first time, a signer's replies dated before an honest reply can.
+- A signer who can also edit a listed advisory (refused, then readable) can drop the
+  deadline and start it again with the next alias: at most once per alias that counts,
+  so about eight days.
 - An answered alias is refreshed one per run that reads the thread, so with seven of
   them a late tie is seen after up to seven such runs.
 - A thread whose first id is a GHSA is not changed: an authority's own response that
@@ -235,3 +250,8 @@ never a failed connection (1); a tied alias stays tied through a 404 (2); one pl
 run for refreshing an answered alias (3); `asked` in the result key (4); the first
 eight aliases count (5); every tied alias is read in one run (6). Rebutted: the message
 of the review snapshot commit (7), a dangling object that is never pushed.
+
+The code review (gpt-6.1-sol and a same-model pass, on 9891088) changed two rules,
+both in the text above: the aliases that count are a selection this machine keeps, not
+the first eight of the thread as replayed; and an answer stands only while the last
+request for the alias got one.

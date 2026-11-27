@@ -625,7 +625,7 @@ def test_nothing_a_source_says_is_stored(tmp_path):
     stated = [x for r in (*cache["sources"].values(), *cache["results"].values())
               for pairs in r.get("ranges", {}).values() for x in pairs if x is not None]
     assert stated and all(x == ["<9.9.9", "9.9.9"] for x in stated)
-    assert set(cache) == {"version", "ruleset", "kev", "sources", "results", "tried", "since"}
+    assert set(cache) == {"version", "ruleset", "kev", "sources", "results", "tried", "since", "counted"}
     # ids the threads carried, and one an authoritative response named, in the exact form of an id
     assert set(cache["sources"]) == {CVE, G1, "MAL-2026-1", G2, "CVE-2026-8888"}
     scope, levels = ruleset.load().products(), {"none", "notice", "high", "critical"}
@@ -921,7 +921,8 @@ def test_a_result_that_is_not_confirmed_is_read_again_after_a_day(tmp_path):
     (("sources", G1, "names"), [[]]), (("sources", G1, "names"), [None]), (("version",), 1), (("sources", G1, "etag"), []), (("kev",), []), (("ruleset",), []), (("version",), []),
     (("results", "KEY", "products"), [["Claude Code"]]), (("sources", G1), None), (("results",), None),
     (("tried",), []), (("tried", G1), [NOW]), (("tried", G1), [NOW, True]), (("tried", "x"), [NOW, None]),
-    (("tried", G1), [NOW, "none"]),
+    (("tried", G1), [NOW, None]), (("counted",), []), (("counted", CVE), [CVE2]), (("counted", CVE), [G1, G1]),
+    (("counted", G1), [G2]), (("counted", CVE), [f"GHSA-{c * 4}-{c * 4}-{c * 4}" for c in "234567890"]),
     (("since",), None), (("since", CVE), "1"), (("since", G1), NOW),
 ])
 def test_a_cache_with_a_value_of_the_wrong_kind_is_an_empty_one_not_a_crash(tmp_path, path, value):
@@ -1063,7 +1064,7 @@ FAKE = [f"GHSA-{c * 4}-{c * 4}-{c * 4}" for c in "2345678x"]  # invented: every 
 REAL = "GHSA-zzzz-zzzz-zzzz"  # sorts after every FAKE
 KEV_OTHER = kev((CVE, "Cisco", "IOS XE"))  # the catalog lists the CVE for another vendor's product
 REFUSED = b"{"  # a 200 this reader does not take
-NO_ANSWER = {"a timeout": OSError("timed out"), "403": 403, "429": 429, "500": 500, "a redirect": 302}
+NO_ANSWER = {"a timeout": OSError("timed out"), "403": 403, "408": 408, "429": 429, "500": 500, "a redirect": 302}
 HOUR, DAY = 3600, 86400
 
 
@@ -1112,7 +1113,7 @@ def test_an_alias_that_gives_no_answer_is_never_waived(tmp_path, name):
     for at in (0, HOUR, DAY, 5 * DAY):
         go(tmp_path, [a], n, now=NOW + at)
         assert one(tmp_path, a) == ("unknown", "unread")
-    assert verify.load(tmp_path)["tried"] == {REAL: [NOW + 5 * DAY, None]}
+    assert verify.load(tmp_path)["tried"] == {REAL: [NOW + 5 * DAY, "none"]}
     go(tmp_path, [a], n.set(*malware()), now=NOW + 5 * DAY + HOUR)
     assert one(tmp_path, a) == ("confirmed", "match") and verify.load(tmp_path)["since"] == {}
 
@@ -1175,14 +1176,58 @@ def test_an_alias_listed_after_the_eighth_is_not_read_and_holds_nothing(tmp_path
     assert one(tmp_path, a) == ("contradicted", "unsupported") and gurl(REAL) not in n.urls
 
 
-def test_the_order_of_the_aliases_is_part_of_the_state_once_it_decides_which_count(tmp_path):
-    late, early = adv(id=CVE, aliases=[*FAKE, REAL], level="critical"), adv(id=CVE, aliases=[REAL, *FAKE], level="critical")
-    assert verify.state_key(late) != verify.state_key(early)
-    assert verify.state_key(adv(id=CVE, aliases=FAKE)) == verify.state_key(adv(id=CVE, aliases=FAKE[::-1]))
+def test_the_aliases_that_count_are_the_first_this_machine_saw_whatever_order_a_later_state_has(tmp_path):
+    """A reply's date is its signer's: replayed, it can put its aliases in front of the others."""
+    a = adv(id=CVE, aliases=[REAL], level="critical")
     n = net((verify.KEV_URL, KEV_OTHER), malware())
-    for run in range(4):
-        go(tmp_path, [late, early], n, now=NOW + run * HOUR)
-    assert one(tmp_path, late) == ("contradicted", "unsupported") and one(tmp_path, early) == ("confirmed", "match")
+    go(tmp_path, [a], n)
+    assert one(tmp_path, a) == ("confirmed", "match")
+    b = adv(id=CVE, aliases=[*FAKE, REAL], level="critical")  # eight invented aliases, in front
+    for run in range(1, 4):
+        cache = go(tmp_path, [b], n, now=NOW + run * HOUR)
+    assert cache["counted"] == {CVE: [REAL, *FAKE[:7]]} and gurl(FAKE[7]) not in n.urls
+    assert one(tmp_path, b) == ("confirmed", "match")  # the support this machine counts is not pushed out
+    more = [f"GHSA-{c * 4}-{c * 4}-{c * 4}" for c in "abcdefgh"]
+    c = adv(id=CVE, aliases=[*more, *FAKE, REAL], level="critical")  # and eight more, in front of those
+    asked = len(n.calls)
+    go(tmp_path, [c], n, now=NOW + 4 * HOUR)
+    assert one(tmp_path, c) == ("confirmed", "match")  # judged in its first run: no new alias counts
+    assert n.urls[asked:] == [verify.KEV_URL, gurl(REAL)]
+
+
+def test_an_alias_stops_counting_when_no_current_thread_lists_it(tmp_path):
+    a = adv(id=CVE, aliases=FAKE[:2], level="critical")
+    n = answering(REFUSED, FAKE[:2])
+    cache = go(tmp_path, [a], n)
+    assert cache["counted"] == {CVE: FAKE[:2]} and cache["since"] == {CVE: NOW} and set(cache["tried"]) == set(FAKE[:2])
+    cache = go(tmp_path, [adv(id=CVE, level="critical")], n, now=NOW + HOUR)
+    assert (cache["counted"], cache["since"], cache["tried"]) == ({}, {}, {})
+
+
+def test_an_answer_stands_only_while_the_last_request_got_one(tmp_path):
+    """A refresh that fails makes the alias unknown again: nothing is contradicted on an old 404."""
+    a = adv(id=CVE, aliases=[REAL], level="critical")
+    n = net((verify.KEV_URL, KEV_OTHER))
+    go(tmp_path, [a], n)
+    assert one(tmp_path, a) == ("contradicted", "unsupported")  # the advisory is not published yet
+    n.set(gurl(REAL), OSError("timed out"))
+    for at in (DAY, 2 * DAY, 3 * DAY):
+        go(tmp_path, [a], n, now=NOW + at)
+        assert one(tmp_path, a) == ("unknown", "unread")
+    go(tmp_path, [a], n.set(*malware()), now=NOW + 3 * DAY + HOUR)
+    assert one(tmp_path, a) == ("confirmed", "match")
+
+
+def test_a_refused_answer_followed_by_no_answer_is_not_waived(tmp_path):
+    a = adv(id=CVE, aliases=[REAL], level="critical")
+    n = answering(REFUSED, [REAL])
+    go(tmp_path, [a], n)
+    n.set(gurl(REAL), OSError("timed out"))
+    for at in (HOUR, DAY, 2 * DAY):
+        go(tmp_path, [a], n, now=NOW + at)
+        assert one(tmp_path, a) == ("unknown", "unread")
+    go(tmp_path, [a], n.set(gurl(REAL), REFUSED), now=NOW + 2 * DAY + HOUR)
+    assert one(tmp_path, a) == ("contradicted", "unsupported")  # refused again, past the deadline
 
 
 def test_a_waived_alias_never_makes_a_result_whole(tmp_path):
@@ -1256,16 +1301,19 @@ def test_an_answered_alias_is_read_again_and_can_come_to_tie_whatever_else_is_ti
 
 
 @pytest.mark.parametrize("aliases", [FAKE[:4], FAKE[:1]])
+@pytest.mark.parametrize("answer", [404, REFUSED])
 @pytest.mark.parametrize("copy_first", [True, False])
-def test_a_lowering_keeps_the_rule_that_every_listed_alias_counts(tmp_path, aliases, copy_first):
-    """And a post with the lowered state's content, judged by the new rule, never answers for it."""
+def test_a_lowering_keeps_the_rule_that_every_listed_alias_counts(tmp_path, aliases, answer, copy_first):
+    """And a post with the lowered state's content, judged by the new rule, never answers for it,
+    whichever of the two this machine read first: no 404 counts for it, and no deadline."""
     asked = verify.at_level(adv(id=CVE, aliases=aliases, level="critical"), "high")
     copy = adv(id=CVE, aliases=aliases, level="high")
     assert verify.state_key(copy) != verify.state_key(asked)
-    states = [copy, asked] if copy_first else [asked, copy]
-    n = net((verify.KEV_URL, KEV_OTHER))
-    for at in (0, HOUR, DAY, 2 * DAY):
-        go(tmp_path, states, n, now=NOW + at, recheck=states)
+    n = answering(answer, aliases)
+    for run in range(3):  # one of them alone, until the copy is judged or the lowering has been read
+        go(tmp_path, [copy if copy_first else asked], n, now=NOW + run * HOUR)
+    for at in (DAY, DAY + HOUR, 2 * DAY, 3 * DAY):
+        go(tmp_path, [copy, asked], n, now=NOW + at, recheck=[copy, asked])
         assert one(tmp_path, asked) == ("unknown", "unread")
         assert verify.lowering(asked, "high", verify.load(tmp_path), NOW + at) is None
     assert one(tmp_path, copy) == ("contradicted", "unsupported")

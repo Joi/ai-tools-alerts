@@ -6,7 +6,7 @@ Two files change behaviour: `aitools_alerts/verify.py` and `tests/test_verify.py
 
 ## Chunk 1: the check (`aitools_alerts/verify.py`, `tests/test_verify.py`)
 
-Order matters: each step leaves the suite green.
+The steps are one change: the suite is green at the end of the chunk, not after each step (the version and `MAX_PAIRS` assertions move with the last one).
 
 - [ ] Constants: `MAX_LISTED = 8`, `ALIAS_WAIT_S = 86400`, `_ANSWERS = ("record", "absent", "refused")`, `VERSION = 6`, `MAX_PAIRS = (MAX_LISTED + 1) * ruleset.MAX_PACKAGES`. `TooLarge(OSError)` in `__all__`.
 - [ ] `_request`: raise `TooLarge` when a 200 states a `Content-Length` past the limit or sends more than the limit; a missing or malformed length stays `OSError`. `default_fetch` passes `TooLarge` through its worker thread; its message carries nothing of the response.
@@ -56,6 +56,15 @@ One independent pass (gpt-6.1-sol) on snapshot ae0e972: two blockers, two substa
 - [ ] `tests/test_verify_narrowing.py`: the `MAX_PAIRS` assertion follows the constant (the one test outside `tests/test_verify.py` that changes; the acceptance line above is corrected by this).
 - [ ] Test: a tied advisory with readable ranges and one refused alias; after the deadline the post is judged, `whole` is false, `narrowing` and `narrowing(whole=True)` are None.
 - [ ] Test: `default_fetch` raises `TooLarge` for a chunked body that runs past the limit, as for a declared length.
+
+## Code review
+
+Whole branch at 9891088 (gpt-6.1-sol, and a same-model pass): two blockers. Steps added:
+
+- [ ] `counted` in the cache: per CVE first id, at most `MAX_LISTED` aliases, filled in the thread's order when the check reads it, kept while a current thread lists them. `_Target.listed` and the `listed` part of the result key go: the selection no longer depends on a state's order. Tests: eight, then sixteen, aliases put in front of a counted one change nothing; an alias no current thread lists stops counting.
+- [ ] `tried[id][1]` is what the last request met, `none` included. An alias is answered only while that is `absent` or a record; waived only while it is `refused`. Tests: a 404, then timeouts, is `unread`; a refused answer, then timeouts across the deadline, is `unread`.
+- [ ] A tied alias another thread read in the same run counts as read (`memo`).
+- [ ] The lowering test reads the post or the lowering alone first, with 404 and with refused aliases, past the deadline. `408` among the no-answer cases.
 
 ## Rollback
 
