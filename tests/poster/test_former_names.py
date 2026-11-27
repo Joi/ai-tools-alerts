@@ -220,3 +220,33 @@ def test_a_response_counts_for_a_former_name_only_when_all_its_support_for_the_n
     assert got({"mcp-server-git": ["notice", True, False], "mcp-server-fetch": ["high", True, False]}) == ("high", True, 1)
     assert got({"mcp-server-git": ["high", False, False], "mcp-server-fetch": ["notice", True, False]}) == ("none", False, 0)
     assert got({"Claude Code": ["critical", True, False]}) == ("none", False, 1)  # names none of them: not known
+
+
+Z = "GHSA-zzzz-zzzz-zzzz"
+
+
+def _member(env, product, repo, packages, fixed="1.0"):
+    """A later advisory with the thread's fix (btqg), its vendor's page and API answer."""
+    env.api.put(Z, ghsa_json(Z, packages=packages, repo=repo))
+    env.collector([finding(fid=Z, product=product, severity="high", fixed=fixed,
+                           sources=(f"https://github.com/{repo}/security/advisories/{Z}",))])
+
+
+def test_a_shared_former_name_thread_is_never_joined_by_fix(env):
+    """btqg: seven servers had "MCP servers and clients"; a git thread fixed in 1.0 says
+    nothing about a fetch advisory fixed in 1.0. The fetch advisory posts its own root."""
+    thread(env, SERVERS)
+    _member(env, "pip:mcp-server-fetch", "modelcontextprotocol/servers", FETCH["packages"])
+    code, summary, relay = env.run(now=T0)
+    assert code == 0 and "roots=1" in summary, summary
+    assert len(entries(env)) == 2 and not any(e.get("joined") for e in entries(env))
+
+
+def test_a_former_name_only_one_product_had_is_joined_by_fix(env):
+    thread(env, INSPECTOR)
+    _member(env, "npm:@modelcontextprotocol/inspector", "modelcontextprotocol/inspector",
+            [("npm", "@modelcontextprotocol/inspector", "< 1.0", "1.0")])
+    code, summary, relay = env.run(now=T0)
+    assert code == 0 and "roots=0" in summary, summary
+    (e,) = entries(env)
+    assert e["scope"] == INSPECTOR and e["joined"] == [[Z.casefold()]] and Z in e["aliases"]

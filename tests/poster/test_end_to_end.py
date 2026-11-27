@@ -144,7 +144,7 @@ def test_poster_to_member_end_to_end(world, tmp_path):
     # event; it holds the new checkpoint back, and the member stays verified on the earlier one.
     w.now += 3600
     lag = {k: list(v) for k, v in w.rows.items()}
-    w.env.collector([finding(fid="GHSA-mnop-qrst-uvwx", sources=(GHSA2,))])
+    w.env.collector([finding(fid="GHSA-mnop-qrst-uvwx", sources=(GHSA2,), fixed="2.1.1")])  # btqg: another fix
     code, summary, _ = w.poster_run()
     assert summary.endswith(" checkpoint=sent")
     newer = cp.load_checkpoint(inbox)
@@ -244,9 +244,10 @@ def test_a_year_of_one_new_high_a_day_stays_inside_every_cap(world, tmp_path, mo
         if d % 60 == 0:  # the fixture's certificate lasts 90 days: the root signs the next one
             w.cert_file.write_text(json.dumps(cp.build_cert(w.root_sec, w.man, w.ck, w.now - 3600, w.now + 90 * DAY)))
         fid = _ghsa(d + 1)
-        w.env.api.put(fid, ghsa_json(fid))
+        fix = f"2.{d + 1}.0"  # a fix of its own: an advisory with an open thread's fix joins that thread (btqg)
+        w.env.api.put(fid, ghsa_json(fid, packages=[("npm", "@anthropic-ai/claude-code", f"< {fix}", fix)]))
         stamp = time.strftime("%Y-%m-%dT%H%M%SZ", time.gmtime(w.now))
-        w.env.collector([finding(fid=fid, severity="moderate", observed=stamp[:13] + ":00:00Z")], name=stamp)
+        w.env.collector([finding(fid=fid, severity="moderate", fixed=fix, observed=stamp[:13] + ":00:00Z")], name=stamp)
         code, summary, _ = w.poster_run()
         assert code == 0 and " checkpoint=sent" in summary, (d, summary)
         w.now += 300

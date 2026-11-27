@@ -610,3 +610,17 @@ def test_an_ended_thread_past_its_life_is_sent_nothing_and_stays_listed_after_a_
     for d in (251, 300):
         relay = day(env, d, relay=PutRelay())
         assert relay.calls == [] and seen[-1] == set(), d
+
+
+def test_a_new_advisory_does_not_join_a_thread_that_has_ended(env):
+    """btqg joins a new advisory to the open thread of its fix. A thread that has ended
+    is running down: the new advisory is news and gets a root of its own."""
+    other = "GHSA-zzzz-zzzz-zzzz"
+    post(env)
+    run_down(env, 95)
+    assert entries(env)[0]["ended"] == "high" and entries(env)[0]["level"] == "high"
+    env.api.put(other, ghsa_json(other))
+    env.collector([finding(fid=other, severity="moderate")], name="2027-02-09T000000Z")
+    relay = day(env, 96)
+    assert "roots=1" in relay.summary and len(entries(env)) == 2
+    assert other.casefold() not in {i.casefold() for i in entries(env)[0]["aliases"]}
