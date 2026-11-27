@@ -689,7 +689,22 @@ def renewal_post() -> str:
     return _guard(RENEWAL)
 
 
-def level_post(prev: schema.Advisory, level: str, reason: str | None = None) -> str:
+WITHDRAWAL = "The source withdrew this advisory."
+
+
+def withdrawal_post() -> str:
+    """The withdrawal (kk2q, spec/wire.md "A withdrawal"): one fixed line and a block of
+    exactly ``{"level":"withdrawn"}``, alone in its reply like every lowering. The word
+    is no level: released readers skip the reply and keep the alert. Its claim, the
+    withdrawn reading's, travels in the event's tag."""
+    patch = {"level": wire.WITHDRAWN}
+    out = WITHDRAWAL + f"\n\n```{schema.INFO_STRING}\n{json.dumps(patch, separators=(',', ':'))}\n```\n"
+    if not wire.is_withdrawal(json.loads(schema._last_block(out))) or schema.parse_post(out) is not None:
+        raise ValueError("withdrawal does not parse back")
+    return _guard(out)
+
+
+def level_post(prev: schema.Advisory, level: str, reason: str | None = None, again: bool = False) -> str:
     """A thread reply that changes the level and nothing else: one line and a block of
     exactly ``{"level": ...}``. What justifies it travels in the event's claim tag
     (``wire.claim_tag``), never in the block. ``reason``: one more sentence on the
@@ -700,9 +715,10 @@ def level_post(prev: schema.Advisory, level: str, reason: str | None = None) -> 
     relay-bot lowering and keep the higher level; from then on they hold a higher
     level than the poster does, so a later raise can be a lowering to them too.
     Alone, a refused level change costs them nothing else. Raises ValueError unless
-    ``level`` is a known level other than the thread's."""
+    ``level`` is a known level other than the thread's. ``again`` (kk2q): the thread
+    is withdrawn, and the reply that ends that may name the level the thread kept."""
     patch = {"level": level}
-    if not isinstance(level, str) or level not in wire.LEVELS or level == prev.level:
+    if not isinstance(level, str) or level not in wire.LEVELS or (level == prev.level and not again):
         raise ValueError("level change: the level must be a known level other than the thread's")
     merged = apply_patch(prev, patch)
     line = _change_line("level", merged) + (f" {reason}" if reason else "")
@@ -714,14 +730,16 @@ def level_post(prev: schema.Advisory, level: str, reason: str | None = None) -> 
 
 def level_report(lowered, tripped, lang: str = "en") -> str:
     """The lines a digest adds for the recompute (ny5g, D15), or "": one listing the
-    ids lowered since the last digest, ``[[id, level]]``, and one while the circuit
+    ids lowered since the last digest, ``[[id, level]]`` (kk2q: or ``[id, "withdrawn"]``,
+    printed as withdrawn), and one while the circuit
     breaker holds lowerings back (``tripped``: ``{"due": n}`` or None; n is how many wait). Only a bare
     CVE or GHSA id is printed, at most 50."""
     ja = lang == "ja"
-    done = [(i, lv) for i, lv in lowered if public_id(i) and lv in wire.LEVELS]
+    done = [(i, lv) for i, lv in lowered if public_id(i) and (lv in wire.LEVELS or lv == wire.WITHDRAWN)]
     lines = []
     if done:
-        shown = "; ".join(f"{i} ({_JA_LEVEL[lv]})" if ja else f"{i} to {lv}" for i, lv in done[:50])
+        shown = "; ".join((f"{i} (取り下げ)" if ja else f"{i} withdrawn") if lv == wire.WITHDRAWN
+                          else f"{i} ({_JA_LEVEL[lv]})" if ja else f"{i} to {lv}" for i, lv in done[:50])
         more = len(done) - 50
         if ja:
             lines.append(f"前回のダイジェスト以降に引き下げ: {shown}" + (f"、ほか {more} 件" if more > 0 else "") + "。")

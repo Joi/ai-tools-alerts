@@ -12,7 +12,7 @@ import pytest
 from aitools_alerts import checkpoint as cp
 from aitools_alerts import config as member_config
 from aitools_alerts import nostr, pull
-from aitools_alerts.poster import inputs, main, sent, signer
+from aitools_alerts.poster import compose, inputs, main, sent, signer
 from aitools_alerts.state import State
 from mirror_helpers import CHANNELS, Mirror, advisory
 from test_main import T0, FakeRelay, env, finding  # noqa: F401 - env is a fixture
@@ -908,6 +908,24 @@ def _stale_root(m, cve="CVE-2026-0001", days=20):
 
 def _lapsed(m, now=T0):
     return signer.lapsed([e for evs in m.events.values() for e in evs], m.man, now)
+
+
+def test_a_withdrawn_thread_is_listed_and_left_to_decay():
+    """kk2q: the poster renews and steps nothing on a withdrawn thread, so its renewals
+    run out by design. Left out of the checkpoint it would stop decaying, and a member's
+    72-hour record of the reply would be dropped (``pull.offers`` needs the root listed).
+    A reply that names a level ends that: the thread must stand by it again."""
+    m = Mirror()
+    root = _stale_root(m)
+    assert _lapsed(m) == {root["id"]}
+    m.reply(m.bot_sec, root, compose.withdrawal_post(), created_at=T0 - 5 * 86400)
+    assert _lapsed(m) == set()
+    m.reply(m.cur_sec, root, "A curator's note, no block.", created_at=T0 - 4 * 86400)
+    assert _lapsed(m) == set()
+    prev = advisory(id="CVE-2026-0001", posted_by="relay-bot")
+    m.reply(m.bot_sec, root, compose.level_post(prev, prev.level, again=True), created_at=T0 - 3 * 86400)
+    assert _lapsed(m) == set()  # the reply's own date holds critical for 14 days
+    assert _lapsed(m, T0 + 12 * 86400) == {root["id"]}  # and then it is a thread like any other
 
 
 def test_the_signers_rule_is_the_readers_a_curator_hold_another_ids_claim_and_a_refused_block():
