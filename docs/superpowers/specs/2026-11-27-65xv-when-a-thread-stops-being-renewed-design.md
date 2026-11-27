@@ -65,6 +65,8 @@ A raise above the level a thread ended at is news (a CVE that KEV lists a year l
 
 A thread that is not enrolled (no standing claim: posted before gtw9, or a root with no reading) is never renewed today and never ends: no event is sent for it.
 
+**With the withdrawn state** (ai-tools-alerts#kk2q, which landed while this was built). A withdrawn thread is sent no renewal and no step, and the renewal pass leaves it before the ending rule, so it does not end while it is withdrawn; it decays on readers as its claims say. No candidate raises it (`plan_known`, `_clears`). The recompute's way out of the state (`recompute.leaving`) is not held to `ended`: an advisory published again is news, the reply that says so is recorded as a level change, `ended` is removed and the thread is renewed for 90 days from then.
+
 **Why 90 days, and from the last level change.** What bounds the choice is the checkpoint. With the Japanese reply an open thread costs three listed events in a channel and a daily digest two. A high is open for about 111 days at high (its last renewal, on average at day 82, and 29 days more) and 90 at notice: about 200 days. At one new high a day that is about 615 events, and the digests newer than the oldest open thread's last event about 180 more: 800 of 990. At 120 days it is 890, at 180 days 1,070. A reader that pulls daily stores about ten events for such a thread and holds it for 520 days: about 5,000 of its 20,000.
 
 The clock runs from the last level change and not from the root so that a thread raised on day 80 is not ended ten days later. It does not run from the day a fix was published, which the issue suggests: a thread with no fix would then never end, and the caps need every thread to end.
@@ -96,7 +98,7 @@ The recompute's raise is not changed: it rests on fields read in that run.
 
 ## Not in this change
 
-- The poster judges every ledger thread each run, the ended ones and those long off readers too, and reads ten advisories a run in each lane. A thread must be read once in 44 days or it is stepped down unconfirmed, so the ledger has room for about 10,000 judged threads at 24 runs a day, and the daily simulation needed 24 runs' reads. A follow-up issue: stop judging a thread that is off readers, except for a raise.
+- ai-tools-alerts#0kze: the poster judges every ledger thread each run, the ended ones and those long off readers too, and reads ten advisories a run in each lane. A thread must be read once in 44 days or it is stepped down unconfirmed, so the ledger has room for about 10,000 judged threads at 24 runs a day, and the daily simulation needed 24 runs' reads. The issue asks for a slow turn for threads that are off readers.
 - The CLI does not read `catalog.json` yet, so an advisory whose alert has ended is on no reader. ai-tools-alerts#8nb4 is where that reader is built.
 - The 90 days as a key of `spec/ruleset.json`: it is the poster's choice of when to stop sending, not something a reader computes.
 

@@ -551,3 +551,18 @@ def test_a_thread_ends_once_and_a_recorded_raise_makes_it_an_ordinary_thread_aga
     p.write_text(json.dumps(data))
     with pytest.raises(LedgerError):
         Ledger(p).__enter__()
+
+
+def test_leaving_the_withdrawn_state_makes_an_ended_thread_an_ordinary_one(tmp_path):
+    """65xv with kk2q: the withdrawal reply is a lowering and keeps ``ended``; the reply
+    that ends the withdrawal, at the same level, is news: ``ended`` goes and the 90 days
+    count from it."""
+    p = tmp_path / "l.json"
+    with Ledger(p) as led:
+        led.record_root(adv_for(cand(), "high"), "e1", {"feed": "e1"}, scope="Claude Code", exploited=False, now=T0)
+        led.set_claim("e1", "one", ["CVE-2026-0001"])
+        led.end("e1", "high")
+        e = led.record_reply("e1", adv_for(cand(), "high"), {"feed": "r1"}, now=T0 + DAY, withdrawn=True)
+        assert e.ended == "high" and e.withdrawn == ["feed"]
+        e = led.record_reply("e1", adv_for(cand(), "high"), {"feed": "r2"}, now=T0 + 2 * DAY, withdrawn=False)
+        assert e.ended is None and e.withdrawn is None and e.changed[-1] == T0 + 2 * DAY

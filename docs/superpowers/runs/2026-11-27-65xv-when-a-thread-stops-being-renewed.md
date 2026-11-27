@@ -1,6 +1,7 @@
 # Run: 65xv-when-a-thread-stops-being-renewed
 Instruction: Read TASK-ai-tools-alerts#65xv.md in this worktree root, then run `kata show ai-tools-alerts#65xv` and follow the brief and the dispatch rules (run as /do-it, starting rung floored at medium).
-Stage: verifying
+Stage: done
+Review: 89d33f0c7e0876dddb49255bfdbf086f601b49e7 fixed+delta d05c891f63c4d300d712e45a9739357a38be645b +fix aeccd5a2e1dcf6a6d5fd3310578d3f8d6fb163a1
 Rung: medium (start-floor medium: dispatch brief)
 Spec: docs/superpowers/specs/2026-11-27-65xv-when-a-thread-stops-being-renewed-design.md   Plan: docs/superpowers/plans/2026-11-27-65xv-when-a-thread-stops-being-renewed.md
 Agency project: —
@@ -53,3 +54,11 @@ The gate at that head, in a clone of the branch alone: 3369 passed, 1 skipped. T
 1. Leaving the roots of an ended thread past its life out of the checkpoint (the second half of the fix to whole-branch finding 2) shows the expired thread again on every reader that still stores it: a reader does not judge an unlisted thread. Fixed: that suppression is removed. An ended thread inside its life is still renewed once, confirmed now, and left out until then; one past its life is sent nothing and stays listed. What whole-branch finding 2 described for a thread past its life is now rebutted: it needs an acknowledged renewal the ledger never recorded, a lost checkpoint state and a mirror that withholds that renewal, all found after the ledger's life has run out, and it loses up to one TTL of a notice the poster had stopped renewing; covering it by suppression resurrects every expired alert after any lost state. The spec says so.
 2. The recovery test asserts the `suppress` argument and the sends, not a published checkpoint read by a reader, and its certificate lasts 120 days. Fixed in part: the test that ran past day 120 is replaced by one whose claim is about `suppress` and sends only (days 251 and 300), and the in-life test runs on day 111, inside the certificate. Rebutted in part: what a checkpoint does with `suppress`, and what a reader does with an unlisted root, are gtw9's and pinned by its tests (`tests/poster/test_signer.py`, `tests/test_pull.py`); the year simulation reads published checkpoints through a reader.
 No further pass (review cycle: one review, one delta).
+
+## After the reviews
+- Gate at aeccd5a2e1dcf6a6d5fd3310578d3f8d6fb163a1, in a clone of the branch alone: 3370 passed, 1 skipped.
+- `origin/main` had moved (kk2q the withdrawn state, m729 the record of what the poster signed, p93w the checkpoint's date, 53fy, aabw): merged at 3d376b8. Seven files conflicted. Resolved by keeping both sides; where they meet: a withdrawn thread leaves the renewal pass before the ending rule; `plan_known` and `_clears` refuse a withdrawn thread first, then ask `_may_rise`; `recompute.judge` and `raised` take the way out of the withdrawn state before `_rises`; `record_reply` removes `ended` on any level change that is not a lowering or a withdrawal, the reply that ends a withdrawal among them (a test in `tests/poster/test_ledger.py`). One test from main expected a thread listed with every renewal after a lost state; it now expects the root and the standing renewal. Not reviewed again: the review cycle allows one review and one delta.
+- Gate at 4d5d4288410d33d10f1b53456a20ab9a81c9fc2a: 3640 passed, 1 skipped.
+- Follow-up filed: ai-tools-alerts#0kze (a slow turn for threads that are off readers).
+- Size: about 700 changed lines of code, tests, wire rules and changelog, over the 600-line guide. The listing rule and the ending rule are safe only together: listing alone still fills the checkpoint in under two years, ending alone leaves room for 60 days of renewals. The tests are over half of it.
+- Skip temptations: none acted on. The same-model Stage 1 review was launched and stopped on the seat's usage limit; it was not relaunched after the independent pass had reported.
