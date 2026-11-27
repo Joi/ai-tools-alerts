@@ -64,6 +64,10 @@ class Match:
     actions_allowed: list[Action]
     reason: str
     product: Product | None = None  # the matched product; None: upgrades stay notify-only
+    # 53fy: the member's source check read the advisory whole and no range of it states the
+    # product's ``fixed`` (``verify.fixed_stated``; set by the CLI). The match stands as it
+    # is; its upgrade carries no version.
+    fixed_contradicted: bool = False
 
 
 @dataclass(frozen=True)
@@ -245,7 +249,8 @@ def plan(m: Match, config: Config) -> Plan:
                and p.name.lower() in aliases and _owns(p.ecosystem, m.installed)
                and (p.affected is not None or p.fixed is not None)
                and versions.check(m.installed.version, p.affected, p.fixed) is True)
-    fixed = p.fixed if p is not None else None
+    # 53fy: a ``fixed`` the source contradicts is no version to send anyone to
+    fixed = p.fixed if p is not None and not m.fixed_contradicted else None
     for a in m.actions_allowed:
         ready = (trusted and a.verb in schema.VERBS and a.verb in opted
                  and a in m.adv.actions and _concerns(a, p.ecosystem, aliases))
@@ -258,12 +263,18 @@ def plan(m: Match, config: Config) -> Plan:
     return Plan(notify=True, auto_apply=auto, prepare=prepare)
 
 
-def describe(action: Action) -> str:
-    """A one-line, notify-only description of an action (never a command)."""
+NOT_THE_ADVISORYS = "the fixed version given is not the advisory's"
+
+
+def describe(action: Action, fixed_contradicted: bool = False) -> str:
+    """A one-line, notify-only description of an action (never a command).
+    ``fixed_contradicted``: of the match it was planned for (53fy); it says why an
+    upgrade has no version."""
     if action.verb not in schema.VERBS:
         return f"unknown action {action.verb!r} (notify only)"
     if action.verb == "upgrade":
         return (f"upgrade {action.target} to {action.value} or later"
-                if action.value else f"upgrade {action.target} (no fixed version given)")
+                if action.value else f"upgrade {action.target} ({NOT_THE_ADVISORYS})" if fixed_contradicted
+                else f"upgrade {action.target} (no fixed version given)")
     text = f"{action.verb.replace('_', ' ')}: {action.target}"
     return f"{text} (recommended: {action.value})" if action.value else text

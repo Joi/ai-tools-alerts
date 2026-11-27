@@ -66,6 +66,10 @@ NOTICE = "notice"
 SUPPORT_GAP_S = verify.FRESH_S
 UNSUPPORTED_LINE = "source check: the source does not support {id} for {name}"
 LOST_LINE = "source check: the source has not supported {id} for {name} for more than 48 hours"
+# 53fy: a relay-bot entry whose ``fixed`` no range of the advisory states (``verify.fixed_stated``)
+# still matches and interrupts; its upgrade is shown with no version
+FIXED_LINE = "source check: the fixed version {id} gives for {name} is not the advisory's: no upgrade version is shown"
+CORRECTION_LINE = "Correction: the fixed version this alert gave is not the advisory's; no upgrade version is shown"
 OUTDATED_TAIL = ("It judges no level until it is upgraded: no source check, no computed expiry; "
                  "alerts are shown as posted. See the README to upgrade.")
 
@@ -268,7 +272,12 @@ def _tr(t: Entry, s: config.Settings) -> str | None:
     return t.translations.get(s.lang) if s.lang != "en" else None
 
 
-def _title(t: Entry, s: config.Settings) -> str:
+def _title(t: Entry, s: config.Settings, plain: bool = False) -> str:
+    """``plain`` (53fy): for an entry with a match whose ``fixed`` the source contradicts,
+    the id stands for the title, translated or not: a title is the signer's prose and
+    can name that version."""
+    if plain:
+        return notify.plain_title(t.adv)
     tr = _tr(t, s)
     return pull.translation_title(tr, t.adv.id) if tr else t.adv.title
 
@@ -318,7 +327,94 @@ def _matches(a, st: State) -> tuple[list, list]:
                for t in threads]
     by_adv = {id(t.adv): t for t in threads}
     _note_support(a, st, threads)
-    return _shown(a, st, threads, [(by_adv[id(m.adv)], m) for m in ms])
+    threads, pairs = _shown(a, st, threads, [(by_adv[id(m.adv)], m) for m in ms])
+    return threads, _flag(a, st, pairs)
+
+
+# ------------------------------------------------- 53fy: a fixed version the advisory does not state
+
+def _flag(a, st: State, pairs: list, fresh: dict | None = None) -> list:
+    """``pairs`` with ``Match.fixed_contradicted`` set on each match whose product's
+    ``fixed`` no range of the advisory states (``verify.fixed_stated`` is False), and
+    cleared on every other. From the source-check results on disk, or from ``fresh``, the
+    results this command's own source check returned (they may not have been written).
+
+    Nothing is flagged where this CLI verifies nothing (``_results`` is None:
+    ``verify = "off"``, a CLI the trust root calls too old or out of date), whatever
+    ``fresh`` holds: a too-old CLI still reads sources. Nor an entry shown at notice
+    because no source supports its product (0z4e, ``published``): no range is counted
+    for it, and its ``adv`` carries a level nobody published."""
+    s = getattr(a, "settings", None)
+    cache = _results(a, st, s) if s is not None else None
+    if cache is not None and fresh is not None:
+        cache = fresh
+    return [(t, replace(m, fixed_contradicted=cache is not None and not t.published and m.product is not None
+                        and verify.fixed_stated(t.adv, m.product, cache) is False)) for t, m in pairs]
+
+
+def _correction_key(root_id: str, product, fixed) -> str:
+    """What ``seen.json`` holds, beside the root ids, for "the member was told that this
+    root's ``fixed`` for this product is not the advisory's": a hash no event id equals
+    by chance (as ``pull.narrow_key`` sits beside root ids in ``State.refused``)."""
+    return hashlib.sha256(json.dumps(["fixed-correction", root_id, verify.pkey(product), fixed]).encode("utf-8")).hexdigest()
+
+
+def _flagged(pairs: list) -> dict:
+    """{root id: the correction keys of the flagged matches of its entry}, for every root
+    of an entry with a flagged match. An entry in it is shown with no translation and
+    with its id for its title, for any of its matches: both belong to the entry, are the
+    signer's prose, and can name the version of the flagged product."""
+    out: dict = {}
+    for t, m in pairs:
+        for r in t.root_ids if m.fixed_contradicted else ():
+            key = _correction_key(r, m.product, m.product.fixed)
+            if key not in out.setdefault(r, []):
+                out[r].append(key)
+    return out
+
+
+def _corrections(st: State, pairs: list) -> list:
+    """The (entry, match) pairs a correction is due for: a critical this machine was
+    notified of (it is seen), matched as more than "may apply", whose ``fixed`` was found
+    not to be the advisory's after that, and nobody was told yet. ``run`` notifies before
+    it reads a source, so the notification of a critical whose ``fixed`` a reply just
+    raised names the raised version; without this it would be the only word sent."""
+    out, told = [], set()
+    for t, m in pairs:
+        if t.adv.level != "critical" or m.reason == check.MAY_APPLY or not m.fixed_contradicted or not _seen(t, st):
+            continue
+        keys = {_correction_key(r, m.product, m.product.fixed) for r in t.root_ids}
+        if st.seen.isdisjoint(keys) and told.isdisjoint(keys):
+            told |= keys
+            out.append((t, m))
+    return out
+
+
+def _correct(st: State, s: config.Settings, due: list) -> int:
+    """Send each due correction once, under the state lock like ``_notify``, and remember
+    it in ``seen.json``. A correction is no interrupt of its own: no slot, no exit 2.
+    One no channel accepted is due again at the next ``run`` or ``notify``: status 1.
+    With no channel configured nothing is said here: ``_notify`` reports that."""
+    if not due or not s.notify:
+        return 0
+    status = 0
+    with st.locked():
+        for t, m in due:
+            keys = {_correction_key(r, m.product, m.product.fixed) for r in t.root_ids}
+            if not st.seen.isdisjoint(keys):
+                continue  # sent already, by a concurrent run
+            text = f"{CORRECTION_LINE}\n{notify.format_text(t.adv, m)}"
+            accepted = False
+            for ch in s.notify:
+                r = notify.send(ch, text, s)
+                print(f"{ch}: {r.detail}")
+                accepted = accepted or r.accepted
+            if accepted:
+                st.seen.update(keys)
+                st.save_seen()
+            else:
+                status = 1
+    return status
 
 
 # ------------------------------------------------- 0z4e: the memory of support
@@ -723,11 +819,12 @@ def _source_check(a, st: State, s: config.Settings, threads: list, pairs: list, 
         return None
 
 
-def _source_lines(a, st: State, s: config.Settings, threads: list) -> list[str]:
+def _source_lines(a, st: State, s: config.Settings, threads: list, fresh: dict | None = None) -> list[str]:
     """One line per product whose source contradicts the post, from the cache.
     Printed: the id as verify.norm_id returned it, a scope product name or a former one, and
     level words. A CLI the trust root calls too old prints none: its ruleset
-    and scope file may be the ones that are wrong."""
+    and scope file may be the ones that are wrong. ``fresh``: the results this
+    command's own source check returned, for the 53fy line (``_flag``)."""
     cache = _cache(a, st, s)
     if _min_cli(a, st) is not None or _ruleset_outdated(a, st) is not None:
         return []
@@ -752,6 +849,10 @@ def _source_lines(a, st: State, s: config.Settings, threads: list) -> list[str]:
     for t in threads:
         ident = verify.norm_id(t.adv.id)
         found = {} if t.published else verify.result_for(t.adv, cache) or {}
+        # 53fy: every entry the thread shows, matched here or not
+        for p in () if t.published or ident is None else t.adv.products:
+            if known(name := verify.scope_of(p)) and verify.fixed_stated(t.adv, p, fresh or cache) is False:
+                out.append(FIXED_LINE.format(id=ident, name=name))
         # 0z4e: every product of the judged state, with or without a result on disk now
         both = {verify.pkey(p): verify.scope_of(p) for p in (*t.adv.products, *(t.judged.products if t.judged else ()))}
         for name, key in sorted((name, key) for key, name in both.items() if known(name)):
@@ -827,7 +928,7 @@ def cmd_verify(a, st: State, s: config.Settings) -> int:
         if said:
             print(f"source check: {len(said)} narrowings asked about: {said.count(True)} confirmed, "
                   f"{said.count(False)} contradicted, {said.count(None)} not settled")
-    for line in _source_lines(a, st, s, threads):
+    for line in _source_lines(a, st, s, threads, got):
         print(line)
     return 0
 
@@ -842,7 +943,7 @@ def _match_json(t, m, cache=None, judged: bool = True) -> dict:
             "translations": dict(t.translations), "source_check": _check_json(t, m, cache, judged),
             "lowering_refused": t.refused, "lowering_waits": t.waiting,
             "narrowing_refused": t.narrow_refused, "narrowing_waits": t.narrow_waiting,
-            "published_level": t.published}
+            "published_level": t.published, "fixed_contradicted": m.fixed_contradicted}
 
 
 def _unverified(a, st: State) -> str | None:
@@ -922,9 +1023,13 @@ def cmd_check(a, st: State, s: config.Settings, source_lines: bool = True) -> in
         print(UNVERIFIED_LINE.format(reason=reason))
         if reason == "checkpoint out of date":
             print(STALE_LINE.format(since=_stale_since(a, st)))
+    flagged = _flagged(pairs)  # 53fy: such an entry is listed by its id, here and in the held line
+
+    def plain(t) -> bool:
+        return not flagged.keys().isdisjoint(t.root_ids)
     for t, m in pairs:
         ver = m.installed.version or "unknown version"
-        print(f"{t.adv.level.upper()}: {_title(t, s)} [{m.installed.name} {ver}: {m.reason}] "
+        print(f"{t.adv.level.upper()}: {_title(t, s, plain(t))} [{m.installed.name} {ver}: {m.reason}] "
               f"(id {t.adv.id}, {_thread_ref(t)}{_published(t)})")
     cache = _results(a, st, s)
     loose = [t.adv.id for t, m in pairs if _result(t, m, cache) == verify.UNKNOWN]
@@ -932,7 +1037,7 @@ def cmd_check(a, st: State, s: config.Settings, source_lines: bool = True) -> in
         print(UNVERIFIED_LINE_IDS.format(ids=", ".join(dict.fromkeys(loose))))
     once = {t.root_id: t for t, _ in pairs}  # an entry matched through two installations is said once
     for t in {t.root_id: t for t, _ in _interrupts(a, st, s, pairs)[1]}.values():
-        print(HELD_LINE.format(n=MAX_UNVERIFIED, title=_title(t, s), id=t.adv.id))
+        print(HELD_LINE.format(n=MAX_UNVERIFIED, title=_title(t, s, plain(t)), id=t.adv.id))
     for t in _unjudged(a, st, s, pairs):
         print(UNJUDGED_LINE.format(id=t.adv.id))
     for t in once.values():
@@ -1182,11 +1287,17 @@ def _reserve(st: State, pending: list, held: list, grants: list) -> tuple[list, 
             held + [x for x in pending if x[0].root_id in denied])
 
 
-def _notify(st: State, s: config.Settings, pending, loose=frozenset()) -> int:
+def _notify(st: State, s: config.Settings, pending, loose=frozenset(), flagged=None) -> int:
     """Send each pending advisory once, under the state lock: a concurrent
     run waits, then re-reads seen and skips what this one already sent. Every
     root of an advisory is marked seen; one seen root makes it seen. An unverified
-    alert (its roots are in ``loose``) says so in the last line of its text."""
+    alert (its roots are in ``loose``) says so in the last line of its text.
+
+    ``flagged`` (53fy, ``_flagged`` of the command's pairs): an entry in it is sent with
+    no translation, whichever match the text describes, and once it is accepted every
+    flagged match of the entry counts as told: no correction follows a notification
+    that named no version."""
+    flagged = flagged or {}
     if not pending:
         return 0
     if not s.notify:
@@ -1197,7 +1308,8 @@ def _notify(st: State, s: config.Settings, pending, loose=frozenset()) -> int:
         for t, m in pending:
             if _seen(t, st):
                 continue  # sent already (by this run, or a concurrent one)
-            text = notify.format_text(t.adv, m, _tr(t, s))
+            told = {k for r in t.root_ids for k in flagged.get(r, ())}
+            text = notify.format_text(t.adv, m, None if told else _tr(t, s), plain=bool(told))
             if not loose.isdisjoint(t.root_ids):
                 text += f"\n{NOT_VERIFIED}"
             accepted = False
@@ -1207,6 +1319,7 @@ def _notify(st: State, s: config.Settings, pending, loose=frozenset()) -> int:
                 accepted = accepted or r.accepted
             if accepted:
                 st.seen.update(t.root_ids)
+                st.seen.update(told)
                 st.save_seen()
             else:
                 status = 1
@@ -1214,8 +1327,11 @@ def _notify(st: State, s: config.Settings, pending, loose=frozenset()) -> int:
 
 
 def cmd_notify(a, st: State, s: config.Settings) -> int:
-    pending, held, grants, loose = _interrupts(a, st, s)
-    return _notify(st, s, _reserve(st, pending, held, grants)[0], loose)  # loose roots that end up held are not sent
+    _, pairs = _matches(a, st)
+    pending, held, grants, loose = _interrupts(a, st, s, pairs)
+    # loose roots that end up held are not sent
+    status = _notify(st, s, _reserve(st, pending, held, grants)[0], loose, _flagged(pairs))
+    return _correct(st, s, _corrections(st, pairs)) or status  # 53fy
 
 
 def cmd_plan(a, st: State, s: config.Settings) -> int:
@@ -1233,13 +1349,17 @@ def cmd_plan(a, st: State, s: config.Settings) -> int:
     reason = _unverified(a, st)
     if reason:  # completeness is not established: a retraction may be missing
         print(UNVERIFIED_LINE.format(reason=reason))
+    flagged = _flagged(pairs)
     for t, m in hits:
         p = check.plan(m, cfg)
         if reason:
             p = replace(p, auto_apply=[], prepare=[*p.auto_apply, *p.prepare])
-        print(f"{t.adv.level.upper()}: {_title(t, s)} [{m.installed.name} "
+        # 53fy: no translation and no title for an entry one of whose matches has a ``fixed``
+        # the source contradicts: they are the signer's prose and can name that version
+        plain = not flagged.keys().isdisjoint(t.root_ids)
+        print(f"{t.adv.level.upper()}: {_title(t, s, plain)} [{m.installed.name} "
               f"{m.installed.version or 'unknown version'}] posted by {t.adv.posted_by}{_published(t)}")
-        tr = _tr(t, s)  # quoted with "> ": translated text, never a section or a command
+        tr = None if plain else _tr(t, s)  # quoted with "> ": translated text, never a section or a command
         for line in (tr.split("\n")[1:] if tr else []):
             print(f"    > {line}".rstrip())
         print(_source_line(t.adv))
@@ -1249,11 +1369,13 @@ def cmd_plan(a, st: State, s: config.Settings) -> int:
                 continue
             print(f"  {title}:")
             for x in actions:
-                print(f"    {check.describe(x)}")
+                print(f"    {check.describe(x, m.fixed_contradicted)}")
                 if x.verb == "upgrade" and m.product is not None:
                     argv = upgrade_command(m.product.ecosystem, x.value)
                     if argv:
                         print(f"      command: {shlex.join(argv)}")
+                    elif not x.value and m.fixed_contradicted:
+                        print(f"      {check.NOT_THE_ADVISORYS}: notify only, no command")
                     elif not x.value:
                         print("      no fixed version given: notify only, no command")
                     else:
@@ -1284,12 +1406,19 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
     elif not a.quiet:
         a.json = False
         cmd_check(a, st, s, source_lines=False)  # printed below, once the sources are read
-    def send(them, loose) -> int:
+    def send(them, loose, pairs) -> int:
         if a.quiet or a.json:
             with contextlib.redirect_stdout(io.StringIO()):
-                return _notify(st, s, them, loose)
-        return _notify(st, s, them, loose)
-    status = send(pending, loose)
+                return _notify(st, s, them, loose, _flagged(pairs))
+        return _notify(st, s, them, loose, _flagged(pairs))
+    def correct(pairs, fresh=None) -> int:  # 53fy
+        due = _corrections(st, _flag(a, st, pairs, fresh))
+        if a.quiet or a.json:
+            with contextlib.redirect_stdout(io.StringIO()):
+                return _correct(st, s, due)
+        return _correct(st, s, due)
+    status = send(pending, loose, pairs)
+    got = None
     if not a.json:  # the hourly job's form; the hook runs --json and must read no source.
         # After the notification: a critical never waits for a source.
         got = _source_check(a, st, s, threads, pairs, a.asked)
@@ -1307,16 +1436,19 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
             if a.asked or changed:
                 threads, pairs = _matches(a, st)
             tried = {r for t, _ in pending for r in t.root_ids}
+            pairs = _flag(a, st, pairs, got)  # 53fy: by what this run just read, written or not
             again, held, grants, loose = _interrupts(a, st, s, pairs)
             again, held = _reserve(st, again, held, grants)
             late = [x for x in again if tried.isdisjoint(x[0].root_ids)]
-            status = send(late, loose) or status
+            status = send(late, loose, pairs) or status
             pending = pending + late
             if not a.quiet and before != levels():
                 print("After the source check:")  # what was listed above is no longer what stands
                 cmd_check(a, st, s, source_lines=False)
-        for line in () if a.quiet else _source_lines(a, st, s, threads):
+        for line in () if a.quiet else _source_lines(a, st, s, threads, got):
             print(line)
+    # 53fy: a critical this machine was notified of whose fixed version the source contradicts
+    status = correct(pairs, got) or status
     if a.json:
         print(json.dumps(out, indent=2))
     return EXIT_UNSEEN_CRITICAL if pending else status
