@@ -420,7 +420,7 @@ def test_hermes_tag_on_head(tmp_path):
     r = GitRunner(tags="v0.9.0\nv0.10.0\nv2026.1.5\nv0.24.0-rc1\nv01.2.3\nv1.2\n")
     assert hermes_version(tmp_path, r) == "0.10.0"
     assert r.git_runs() == [("git", "--no-optional-locks", "--no-lazy-fetch", "-c", "core.fsmonitor=false", f"--git-dir={proj / '.git'}",
-                             "tag", "--points-at", "HEAD", "--list", "--sort=refname", "--no-column", "v[0-9]*")]
+                             "tag", "--points-at", "HEAD", "--list", "--no-sort", "--sort=refname", "--no-column", "v[0-9]*")]
 
 
 @pytest.mark.parametrize("tags", ["", "v2026.1.5\n", "v0.24.0-rc1\n", None])
@@ -457,6 +457,17 @@ def test_hermes_stamp_beats_project_version(tmp_path):
     assert hermes_version(tmp_path, GitRunner()) == "0.24.1"
 
 
+def _git_reads():
+    """True when git takes --no-lazy-fetch (2.45 on); an older one refuses
+    it, and the Hermes read then gives no version by design."""
+    if shutil.which("git") is None:
+        return False
+    return subprocess.run(["git", "--no-lazy-fetch", "version"], capture_output=True).returncode == 0
+
+
+needs_git = pytest.mark.skipif(not _git_reads(), reason="git missing or older than 2.45")
+
+
 def _git(cwd, *args):
     subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
                     "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", *args],
@@ -470,7 +481,7 @@ def _repo(path, tag):
     _git(path, "tag", "-a", tag, "-m", tag)
 
 
-@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+@needs_git
 def test_hermes_real_repository(tmp_path, monkeypatch):
     proj = hermes_home(tmp_path)
     _repo(proj, "v0.23.0")
@@ -492,7 +503,7 @@ def test_hermes_real_repository(tmp_path, monkeypatch):
     assert read() is None
 
 
-@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+@needs_git
 @pytest.mark.parametrize("dotgit", ["dir", "file"])
 def test_hermes_broken_git_never_reads_an_enclosing_repository(tmp_path, dotgit):
     _repo(tmp_path, "v0.30.0")  # the home directory is itself a repository
@@ -506,15 +517,41 @@ def test_hermes_broken_git_never_reads_an_enclosing_repository(tmp_path, dotgit)
     assert hermes_version(tmp_path, None) is None
 
 
-@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+FAKE_GPG = """#!/bin/sh
+for a in "$@"; do [ "$a" = "--verify" ] && { touch "$(dirname "$0")/verified"; exit 1; }; done
+cat >/dev/null
+printf '%s\\n' '-----BEGIN PGP SIGNATURE-----' 'x' '-----END PGP SIGNATURE-----'
+printf '\\n[GNUPG:] SIG_CREATED D 1 8 00 0 X\\n' >&2
+"""
+
+
+@needs_git
 def test_hermes_tag_read_ignores_sort_and_column_config(tmp_path):
+    gpg = tmp_path / "bin" / "gpg"
+    gpg.parent.mkdir()
+    gpg.write_text(FAKE_GPG)
+    gpg.chmod(0o755)
     proj = hermes_home(tmp_path)
-    _repo(proj, "v0.23.0")
-    _git(proj, "tag", "-a", "v0.23.1", "-m", "again")
-    _git(proj, "config", "tag.sort", "*signature:grade")
-    _git(proj, "config", "column.tag", "always")
-    _git(proj, "config", "gpg.program", str(tmp_path / "no-such-verifier"))
+    proj.mkdir(exist_ok=True)
+    _git(proj, "init", "-q")
+    _git(proj, "-c", f"gpg.program={gpg}", "commit", "-q", "-S", "--allow-empty", "-m", "signed")
+    _git(proj, "tag", "-a", "v0.23.0", "-m", "a")
+    _git(proj, "tag", "-a", "v0.23.1", "-m", "b")
+    for key, value in (("tag.sort", "*signature:grade"), ("column.tag", "always"), ("gpg.program", str(gpg))):
+        _git(proj, "config", key, value)
+    # the check is live: a configured sort alone does run the verifier
+    subprocess.run(["git", "tag", "--points-at", "HEAD", "--list", "--sort=refname"],
+                   cwd=proj, capture_output=True)
+    assert (gpg.parent / "verified").exists()
+    (gpg.parent / "verified").unlink()
     assert hermes_version(tmp_path, None) == "0.23.1"
+    assert not (gpg.parent / "verified").exists()
+
+
+def test_hermes_git_refused_is_no_version(tmp_path):
+    """An older git refuses --no-lazy-fetch: the runner gets a failure."""
+    hermes_home(tmp_path, git=True)
+    assert hermes_version(tmp_path, lambda argv: None) is None
 
 
 def test_read_is_bounded_and_regular_only(tmp_path):

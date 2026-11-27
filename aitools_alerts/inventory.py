@@ -250,10 +250,11 @@ def _hermes_stamp(root: Path, runner: Runner) -> str | None:
 
 def _hermes_tag(root: Path, runner: Runner) -> str | None:
     """The highest stable release tag that points at HEAD, or None."""
-    lines = _hermes_git(root, runner, "tag", "--points-at", "HEAD", "--list", "--sort=refname",
+    lines = _hermes_git(root, runner, "tag", "--points-at", "HEAD", "--list", "--no-sort", "--sort=refname",
                          "--no-column", "v[0-9]*")
-    # --sort and --no-column override tag.sort (a signature sort would run a
-    # verifier) and column.tag (several tags on one line).
+    # --no-sort drops tag.sort (a signature sort would run a verifier; a
+    # --sort alone only adds a key after it), --no-column drops column.tag
+    # (several tags on one line).
     found = []
     for line in lines or ():
         tag = line.strip()
