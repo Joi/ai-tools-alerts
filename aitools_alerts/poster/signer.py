@@ -474,7 +474,10 @@ def run_checkpoint(config, now: int, *, ssh=None, fetch=None, root: str = TRUST_
     if res.error == FULL and m is not None and st.manifest_root == root:
         # m729: foreign events kept from earlier pulls must not hold the store at its limit.
         # They are removed and the pull is made once more (one export alone cannot fill it).
-        strays = sent.check(config.sent_state, st.events.values(), m, now)
+        # A record not yet started is started here from the ledger and the owed list alone
+        # (no served checkpoint has been read yet): the strict side, and the only way on.
+        strays = sent.check(config.sent_state, st.events.values(), m, now,
+                            adopt={o["id"] for o in rec["owed"]} | set(known))
         if strays:
             st.accept(root, m, {i: e for i, e in st.events.items() if i not in strays})
             st.save_events()
@@ -498,7 +501,12 @@ def run_checkpoint(config, now: int, *, ssh=None, fetch=None, root: str = TRUST_
     try:  # the number of the checkpoint the mirror serves, when this key signed it: a floor for ours
         cp = cpt.load_checkpoint(served(base + "checkpoint.json"))
         if cpt.verify_checkpoint(cp, cert):
-            published, listed = cp.seq, set(cp.events)  # and what this poster last vouched for (m729)
+            published = cp.seq
+            # m729: and what this poster last vouched for, to start the sent record from. Only a
+            # checkpoint of the current manifest that is still fresh: an old one, served again
+            # after the record was lost, must not bring back what later checkpoints left out.
+            if cpt.checkpoint_problem(cp, m, now) is None and now <= cpt.fresh_until(cp):
+                listed = set(cp.events)
     except (OSError, cpt.CheckpointError):  # none served or malformed: no floor from it
         pass
     # What the mirror serves right now: the events in the fetched files whose own signature

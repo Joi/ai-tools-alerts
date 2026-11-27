@@ -526,3 +526,53 @@ def test_a_digest_item_may_name_the_foreign_ids_it_reported():
     assert inputs._item_ok({**good, "adv": {**adv, "foreign": ["ab" * 32, "cd" * 32]}})
     for bad in ([], ["ab" * 32, "ab" * 32], ["xyz"], "ab" * 32, [1], ["ab" * 32] * 0 + [f"{i:064x}" for i in range(201)]):
         assert not inputs._item_ok({**good, "adv": {**adv, "foreign": bad}})
+
+
+# ---------------------------------------------------------------- from the code review
+
+def test_an_old_checkpoint_served_again_starts_nothing(signing):
+    """A checkpoint from before the record existed lists a forged post. Later checkpoints
+    leave it out. The record is lost and the mirror serves the old checkpoint again: it is
+    stale, so nothing is taken from it."""
+    m = signing.mirror
+    real = on_mirror(m, "A real alert", T0 - 500)
+    forged = _forged(m, when=T0 - 400)
+    old = m.checkpoint(now=T0 - 300)  # this key vouched for both, once
+    signing.run(relay=PutRelay())
+    sent.check(signing.config.sent_state, [], m.man, T0)  # (the record exists)
+    rec = json.loads(signing.config.sent_state.read_text())
+    del rec["ids"][forged["id"]]  # as an upgraded poster that never took it
+    signing.config.sent_state.write_text(json.dumps(rec))
+    _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + HOUR)
+    assert ",foreign=1" in summary and forged["id"] not in ssh.last().events
+    signing.config.sent_state.unlink()
+    m.stored_checkpoint = old
+    _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + 3 * 86400)
+    assert forged["id"] not in ssh.last().events and ",foreign=" in summary
+    assert forged["id"] not in json.loads(signing.config.sent_state.read_text())["ids"]
+    assert real["id"] in ssh.last().events or real["id"] in json.loads(signing.config.sent_state.read_text())["foreign"]
+
+
+def test_a_full_store_does_not_keep_an_unstarted_record_from_starting(signing, monkeypatch):
+    m = signing.mirror
+    signing.collector([finding()])
+    signing.run(relay=PutRelay())  # the poster's own posts: in the ledger and owed
+    old = [_forged(m, n, when=T0 + n) for n in range(1, 7)]
+    signing.run(relay=PutRelay(), now=T0 + HOUR)
+    signing.config.sent_state.unlink()  # lost, with the store about to be full
+    monkeypatch.setattr(pull, "MAX_STORED_EVENTS", len(_stored(signing)) + 1)
+    for e in old:
+        m.events["feed.json"].remove(e)
+    new = [_forged(m, n, when=T0 + n) for n in range(10, 13)]
+    _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + 2 * HOUR)
+    assert _token(summary).startswith("sent") and ",foreign=" in summary
+    assert not {e["id"] for e in old + new} & ssh.last().events
+
+
+def test_the_record_is_made_durable_before_note_returns(tmp_path, monkeypatch):
+    synced = []
+    real = sent.os.fsync
+    monkeypatch.setattr(sent.os, "fsync", lambda fd: (synced.append(sent.os.fstat(fd).st_mode), real(fd))[1])
+    sent.note(tmp_path / "sent.json", "ab" * 32, NOW)
+    import stat
+    assert any(stat.S_ISDIR(mode) for mode in synced)  # the directory entry, not only the file

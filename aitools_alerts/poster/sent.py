@@ -19,7 +19,7 @@ nothing is judged before. ``foreign``: the relay-bot events of the last check th
 ``ids`` does not hold. ``said``: those a delivered digest has reported.
 
 The record starts from what the caller hands over (``check(adopt=)``: the ids the
-poster's own served checkpoint lists, the ledger's and the owed ones), never from
+poster's own served checkpoint lists while that checkpoint is fresh, the ledger's and the owed ones), never from
 what is on the mirror. A record that is lost or unreadable starts the same way, so
 losing it cannot make the poster vouch for an event it had left out.
 
@@ -98,7 +98,14 @@ def _locked(path):
 
 
 def _save(path, rec: dict) -> None:
+    """Write the record and make the replacement durable: a send follows a ``note``, and
+    a machine that stops must not come back with the record from before it."""
     write_json(Path(path), rec)
+    fd = os.open(os.path.dirname(os.fspath(path)) or ".", os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def note(path, event_id, now: int) -> None:
