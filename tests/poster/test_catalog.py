@@ -10,6 +10,7 @@ import test_main
 from aitools_alerts import schema
 from aitools_alerts.poster import catalog, inputs, main, signer, transport
 from aitools_alerts.poster.ledger import Ledger
+from advisories import ghsa_json
 from test_signer import PutRelay, signing  # noqa: F401 - the checkpoint fixture
 from test_main import CHANNELS, MAC, SYNTHETIC, T0, FakeRelay, at, chans, finding
 
@@ -86,6 +87,63 @@ def test_a_fix_learned_posts_a_new_catalog_root(env):
     assert code == 0 and [c[:2] for c in relay.calls if c[0] == "catalog"] == [("catalog", None)]
     (b,) = blocks(relay)
     assert b.products[0].fixed == "2.1.1"  # a root with the whole current block, never a reply
+
+
+def test_a_withdrawn_thread_is_not_catalogued_again_until_it_returns(env):
+    """kk2q: the ledger keeps a withdrawn thread's level; the catalog announces nothing
+    of it, neither a block that waited unsent nor one a fix changed."""
+    gid = finding()["id"]
+    env.api.put(gid, ghsa_json(gid))  # high by its fields; its prose a notice, so it can be withdrawn
+    env.collector([finding(severity="moderate")])
+    code, summary, relay = run(env, relay=FakeRelay("ok", "fail"))  # the alert posted; its catalog root did not
+    assert summary.endswith(" catalog=0/1"), summary
+    with Ledger(env.config.ledger) as led:
+        led._state()["entries"][0]["withdrawn"] = ["feed"]
+        led._save()
+    env.api.put(gid, ghsa_json(gid, withdrawn_at="2026-11-06T00:00:00Z"))
+    env.collector([finding(severity="moderate", fixed="2.1.1")])  # a fix learned while withdrawn: a reply in the thread, no catalog root
+    code, summary, relay = run(env, now=T0 + 3600)
+    assert code == 0 and summary.endswith(" catalog=0/0") and not [c for c in relay.calls if c[0] == "catalog"], summary
+    env.api.put(gid, ghsa_json(gid))  # published again: the recompute ends the state
+    code, summary, relay = run(env, now=T0 + 7200)
+    assert "withdrawn" not in env.ledger()[0][0]
+    assert summary.endswith(" catalog=1/0") and [b.products[0].fixed for b in blocks(relay)] == ["2.1.1"], summary
+
+
+def test_a_withdrawn_key_stays_out_when_an_older_snapshot_merges_after(tmp_path):
+    """Two runs' passes can merge in either order (the catalog lock is not the ledger's)."""
+    adv = catalog._valid({
+        "id": "GHSA-abcd-efgh-ijkl", "aliases": [], "level": "high", "advisory_severity": None, "title": "t",
+        "products": [{"name": "Claude Code", "ecosystem": "claude-code", "affected": None, "fixed": "2.1.0"}],
+        "actions": [], "sources": [{"url": "https://github.com/advisories/GHSA-abcd-efgh-ijkl", "published_at": None}],
+        "posted_by": "relay-bot", "posted_at": 1, "expires_at": None})
+    assert adv is not None
+    path, k = tmp_path / "known.json", catalog.key("Claude Code", adv["id"])
+    assert catalog.remember(path, {k: adv}, at=10) == 1
+    assert catalog.remember(path, {k: None}, at=30) == 0  # withdrawn
+    assert catalog.remember(path, {k: adv}, at=20) == 0   # the older run's snapshot, merged late
+    assert json.loads(path.read_text())["gone"] == {k: 30}
+    assert catalog.remember(path, {k: adv}, at=40) == 1   # it left the state: catalogued anew
+    assert "gone" not in json.loads(path.read_text())
+
+
+def test_a_withdrawn_thread_that_no_longer_starts_at_its_level_still_leaves_the_inventory():
+    """An out product's thread starts at high only; lowered to notice and then withdrawn,
+    its earlier block must still be taken out."""
+    from types import SimpleNamespace
+    adv = {"id": "CVE-2026-0001", "aliases": [], "level": "notice", "advisory_severity": None, "title": "t",
+           "products": [{"name": "Git", "ecosystem": "git", "affected": None, "fixed": "2.50.0"}],
+           "actions": [], "sources": [{"url": "https://github.com/git/git/security/advisories/GHSA-abcd-efgh-ijkl",
+                                       "published_at": None}],
+           "posted_by": "relay-bot", "posted_at": 1, "expires_at": None}
+    out = next(e for e in schema.load_scope() if not main.rules.starts(e, "notice") and main.rules.starts(e, "high"))
+    adv["products"][0].update(name=out.name, ecosystem=out.ecosystem)
+    assert catalog._valid(adv) is not None
+    entry = SimpleNamespace(scope=out.name, level="notice", advisory=adv, withdrawn=["feed"])
+    led = SimpleNamespace(entries=lambda: [entry])
+    assert catalog.snapshot(led, []) == {catalog.key(out.name, adv["id"]): None}
+    entry.withdrawn = None
+    assert catalog.snapshot(led, []) == {}  # not withdrawn: a notice of an out product starts nothing, as before
 
 
 def test_a_held_notice_posts_to_the_catalog_and_not_to_feed(env):
