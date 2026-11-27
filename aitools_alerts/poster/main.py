@@ -126,6 +126,7 @@ PASS_DEADLINE = 300  # seconds of curator translation per run (the ledger lock i
 WORDING_CALLS = 4  # model calls for headlines a run (c6ak): roots are high or critical, about one a day
 WORDING_SECONDS = 60  # no wording call starts after this many seconds of them in a run
 MAX_RUN_PAGES = 40  # authoritative pages fetched per run; a candidate past it waits for the next
+RETIRE_PAGES = 10  # z360: new pages a run may read judging a retired thread's ids; the rest wait
 RETRY_DAYS = 7  # 3qyq: a candidate whose advisory the API did not give is admitted again this long
 # jsje: a run settles what used to wait for `resolve`.
 SETTLE_SKEW = 600  # an event dated this long before the attempt is still its delivery (a clock step)
@@ -198,6 +199,7 @@ class Run:
         # kk2q: thread roots whose withdrawal this run recorded in some channel. No reply
         # that ends the state follows in the same run: the two could carry one second.
         self.withdrew: set[str] = set()
+        self.gone: frozenset = frozenset()  # z360: the stored manifest's retracted ids, case-folded
 
     def save(self):
         inputs.save_state(self.config.state, self.state)
@@ -1293,7 +1295,8 @@ class Run:
         w, key = self.state["waiting"], self._seen_key(scope.name, ids, f"{scope.name}|{c.id.casefold()}")
         # A KEV entry is exempt: the day CISA lists it is the news, whatever the advisory's age.
         if level != "notice" and not test and c.exploited is not True and published is not None \
-                and seen - published > AGE_LIMIT:
+                and seen - published > AGE_LIMIT and self.led.released_ids().isdisjoint(_fold(ids)):
+            # z360: not for an id a retired thread released: it was news when its group posted
             level = "notice"  # 0dvh: old news when first seen goes to the digest, never a root
             self.n["aged"] += 1
             if not rules.starts(scope, level):  # wa6n: an out product's old news goes nowhere
@@ -1993,6 +1996,105 @@ class Run:
                 roots.add(t.root_id)
         return {i.casefold() for i in m.retracted}, roots
 
+    # ------------------------------------------------------------ partial retraction (z360)
+
+    def retire(self, root=TRUST_ROOT_PUBKEY) -> None:
+        """Release the still-valid ids of every thread the manifest's retraction hides.
+
+        A fix group (faxq) is one root: retracting one member hides the others with it,
+        and their sightings find the hidden thread. From the poster's own copy of the
+        mirror as the last pull left it (no fetch here), a thread is retired when the
+        reader hides it because of the manifest: retracted under the stored manifest
+        and not under the same one with no retracted ids (``pull.threads_from``, the
+        reader's own rule; a curator's retraction is not one). Each other id the
+        thread's advisory publishes is judged once, by its own repository advisory
+        page: released when that page is structured and assigns no retracted id, kept
+        when a page answers otherwise (the retracted advisory's own CVE), and left for
+        the next run when no page could be read. On doubt the retraction wins.
+
+        A released id goes into the state's deferred list as a pointer candidate
+        (saved), then leaves the thread's identity in the ledger (``Ledger.release``),
+        so the run plans it like any deferred candidate: admitted from its own page,
+        grouped by fix with the other survivors, and posted as a new root. Sets
+        ``gone`` for the run. Never raises for an unreadable copy: nothing changes."""
+        try:
+            st = State.load(self.config.mirror_dir)
+            m = st.accepted(root)
+        except (ValueError, OSError):
+            return
+        if m is None or not m.retracted:
+            return
+        self.gone = frozenset(i.casefold() for i in m.retracted)
+        events = list(st.events_for(root).values())
+        try:
+            hidden = {t.root_id for t in pull.threads_from(events, m) if t.retracted}
+            hidden -= {t.root_id for t in pull.threads_from(events, replace(m, retracted=())) if t.retracted}
+        except Exception as e:  # noqa: BLE001 - a damaged copy never stops the run
+            _say(f"retired threads not read: {type(e).__name__}")
+            return
+        start, pointers, judged = len(self.pages), [], []
+        for e in self.led.entries():
+            if hidden.isdisjoint({e.root_event_id, *e.channel_ids.values()}):
+                continue
+            done = _fold((e.split or {}).get("released", ())) | _fold((e.split or {}).get("kept", ()))
+            mine = _fold(e.aliases)
+            ids = [i for i in [e.advisory.get("id"), *(e.advisory.get("aliases") or ())]
+                   if isinstance(i, str) and i.casefold() in mine and i.casefold() not in self.gone | done
+                   and candidates.BOT_ID.fullmatch(i) and not compose.is_synthetic(i)]
+            released, kept = [], []
+            for i in ids:
+                if i.casefold() in _fold(released + kept):
+                    continue  # decided with another id of its advisory
+                if len(self.pages) - start >= RETIRE_PAGES:
+                    break
+                verdict = self._judge_id(e, i)
+                if verdict is None:
+                    continue  # no page read: the next run tries again
+                ok, assigned, pointer = verdict
+                same = [x for x in ids if x.casefold() in assigned | {i.casefold()}]
+                (released if ok else kept).extend(same)
+                if ok:
+                    pointers.append(pointer)
+            if released or kept:
+                judged.append((e, released, kept))
+        if not judged:
+            return
+        have = {(d["product_text"], d["id"].casefold()) for d in self.state["deferred"]}
+        for c in pointers:
+            if (c.product_text, c.id.casefold()) not in have:
+                self.state["deferred"].append(c.to_dict())
+        self.save()  # the pointers first: a run that stops before the ledger write repeats it
+        for e, released, kept in judged:
+            self.led.release(e.root_event_id, released, kept)
+            _say(f"{e.root_event_id[:12]} retired: released {', '.join(released) or '-'};"
+                 f" kept {', '.join(kept) or '-'}")
+
+    def _judge_id(self, e, i):
+        """(released, the ids the page assigns, the pointer) for id ``i`` of retired thread
+        ``e``, or None when no page could be read. The thread's product, under its name
+        or a former one; a former name several entries share tries each."""
+        names = rules._default_index().values()
+        scopes = [s for s in names if s.name == e.scope] or [s for s in names if e.scope in getattr(s, "formerly", ())]
+        urls = sorted((s for s in e.advisory.get("sources") or () if isinstance(s, dict) and isinstance(s.get("url"), str)),
+                      key=lambda s: urlsplit(s["url"]).path.rstrip("/").rsplit("/", 1)[-1].casefold() != i.casefold())
+        retry, answered = False, None
+        for scope in scopes:
+            text = next((x for x in scope.match if (r := rules.scope_of(x)) is not None and r.name == scope.name), None)
+            if text is None:
+                continue
+            c = candidates.Candidate(
+                id=i, aliases=(), product_text=text, advisory_severity=None, local_level_hint=None,
+                exploited=False, trojanized=False, injection_exec=False, fixed=None, affected=None,
+                sources=tuple(candidates.Source(s["url"], s.get("published_at")) for s in urls), observed_at=None)
+            ev = rules.evidence(c, scope, self.page)
+            assigned = frozenset(x.casefold() for x in ev.ids)
+            if ev.ok and ev.structured and i.casefold() in assigned and assigned.isdisjoint(self.gone):
+                return True, assigned, c
+            if ev.ok:
+                answered = answered or (False, assigned, None)
+            retry = retry or ev.retry
+        return None if answered is None and retry else answered or (False, frozenset(), None)
+
     def _foreign(self, root) -> list:
         """m729: the ids of the relay-bot events this poster did not sign that no digest has
         reported, after a check of the mirror copy the digest just pulled, so one that
@@ -2407,6 +2509,7 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
             merged, english_ok = None, False  # merged: set once the old deferred list is folded in
             try:
                 r.expire_withheld()  # jsje: first, so nothing below waits behind what a person used to settle
+                r.retire(translate_kw.get("root", TRUST_ROOT_PUBKEY))  # z360: before deferred is read
                 r.settle(root=translate_kw.get("root", TRUST_ROOT_PUBKEY), fetch=mirror_fetch)
                 kev_out: dict = {}
                 cands, marks, status = gather(config, state, now, kev_fetch, skipped, kev_catalog, kev_out)
@@ -2435,6 +2538,11 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                 # h340: only what an authoritative source states goes on, each candidate
                 # judged alone, before a merge could lend it another's sources.
                 pairs = [(a, scope) for c, scope in pairs if (a := r.admit(c, scope)) is not None]
+                if r.gone:  # z360: a root naming a retracted id is hidden by every reader
+                    kept = [(a, scope) for a, scope in pairs if r.gone.isdisjoint(_fold([a.id, *a.aliases]))]
+                    if len(kept) < len(pairs):
+                        skipped["retracted, not planned"] += len(pairs) - len(kept)
+                    pairs = kept
                 if review:
                     led.add_review(review, now=now)
                 # faxq: in flight, an id joins no fix group (that send would record the group's ids)

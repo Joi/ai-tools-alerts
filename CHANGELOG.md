@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+Retracting one advisory of a grouped alert no longer hides the others (ai-tools-alerts#z360). Since ai-tools-alerts#faxq one relay-bot post covers every advisory of a product that one release fixes. A reader hides a post when any id it carries is in the trust manifest's `retracted` list, so retracting one advisory hid the rest, which are still true, and the relay bot never posted them again. Readers are unchanged: they cannot tell one advisory's CVE from a second advisory in the same post, and hiding by every id is what keeps a stolen key from escaping a retraction by dropping an alias.
+
+- **The relay bot posts the others again.** Each run reads the manifest from its own copy of the mirror (as its last pull left it; the daily digest pulls it). For a post readers hide because of the manifest, and not a curator's retraction, each other id is checked once against its own repository advisory page. An id whose page assigns no retracted id is released from the hidden post and posted in a new one, grouped by fix with the other released ids, at the level their own sources give. An id whose page assigns a retracted id (the retracted advisory's own CVE) stays with the hidden post. An id no page could be read for is tried again next run. A released advisory is not old news: the seven-day age limit does not demote it.
+- **Nothing retracted is planned.** An advisory any of whose ids the manifest retracts starts no post.
+- **Not covered.** A grouped notice waiting for the digest is dropped whole when one of its advisories is retracted, as before (ai-tools-alerts#9je7).
+- **Operators.** The ledger entry of such a post holds `split` (the ids released and kept). An older poster refuses that ledger: revert only while no entry holds `split`. No wire format, schema, manifest, ruleset or CLI change.
+
 The poster leaves out of its checkpoint any relay-bot post it did not send (design review of 2026-11-23, finding D14, ai-tools-alerts#m729). The key that signs alerts exists on more than one machine; the checkpoint key exists only on the poster. Until now the poster's checkpoint listed every post on the mirror signed with a key the manifest names, so a post made with a stolen relay-bot key reached every member under the poster's own signature. Revoking the key takes the trust root and a person. This takes neither.
 
 - **Written down before the send.** With `checkpoint_key_file` set, the poster records the id of every event it signs in `<ledger>.sent.json` (a lock file, `<ledger>.sent.json.lock`, sits beside it) before a byte of the request is written. A record that cannot be written means the post is not sent in that run.

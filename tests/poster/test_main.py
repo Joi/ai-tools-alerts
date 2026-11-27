@@ -2663,3 +2663,120 @@ def test_a_cve_assigned_after_the_digest_is_not_listed_again(env):
     env.collector([finding(severity=None, aliases=("CVE-2026-7777",))])
     code, summary, _ = env.run(now=at(9, 10))
     assert code == 0 and "candidates=1 " in summary and " old=0 " in summary and env.state()["held"] == []
+
+
+# ------------------------------------- z360: retracting one member of a fix group
+
+from aitools_alerts import pull  # noqa: E402
+
+ZURL = REPO + GHSA_Z
+
+
+def _on_mirror(env, relay, at_):
+    """The roots ``relay`` sent, as the relay bot's events on the test mirror. A real
+    relay's event id is the mirror event's: the ledger is given those ids."""
+    out, text = [], env.config.ledger.read_text()
+    for c, eid in zip(relay.calls, relay.ids):
+        if c[1] is None:
+            out.append(env.mirror.post(env.mirror.bot_sec, c[2], created_at=at_, files=(f"{c[0]}.json",)))
+            text = text.replace(eid, out[-1]["id"])
+    env.config.ledger.write_text(text)
+    return out
+
+
+def _retract(env, relay, ids, at_=T0 + 60):
+    """The sent roots on the mirror, the manifest retracting ``ids``, and the poster's copy
+    pulled (the daily digest pulls it)."""
+    roots = _on_mirror(env, relay, at_)
+    env.mirror.publish_manifest(retracted=ids)
+    code, summary, _ = env.run(now=at(5, 9))
+    assert code == 0 and "digest=1" in summary, summary
+    return roots
+
+
+def test_retracting_one_member_reposts_the_others(env):
+    """Acceptance: the manifest retracts one advisory of a two-advisory root. The next run
+    posts the other as a root of its own, and a member's reader shows it."""
+    env.collector([finding(), finding(fid=GHSA_Z)])
+    code, summary, relay = env.run()
+    assert "roots=1" in summary
+    (old,) = _retract(env, relay, ["ghsa-ABCD-efgh-ijkl"])
+    code, summary, relay = env.run(now=at(5, 10))
+    assert code == 0 and "roots=1" in summary, summary
+    ((ch, to, text),) = relay.calls
+    assert (ch, to) == ("feed", None) and "Covers 1 advisory: GHSA-zzzz-zzzz-zzzz" in text.split("\n")
+    assert "abcd" not in text.casefold()
+    (new,) = _on_mirror(env, relay, T0 + 120)
+    threads = {t.root_id: t for t in pull.threads_from(env.mirror.events["feed.json"], env.mirror.man)}
+    assert threads[old["id"]].retracted and not threads[new["id"]].retracted
+    assert threads[new["id"]].adv.id == GHSA_Z  # the member's CLI holds it
+    first, second = env.ledger()[0]
+    assert first["split"] == {"released": [GHSA_Z], "kept": []} and GHSA_Z not in first["aliases"]
+    assert second["aliases"] == [GHSA_Z]
+    env.collector([finding(), finding(fid=GHSA_Z)])  # sighted again: the retracted one starts nothing
+    code, summary, relay = env.run(now=at(5, 11))
+    assert code == 0 and "roots=0" in summary and relay.calls == [], summary
+
+
+def test_a_single_advisory_retracted_by_its_ghsa_stays_hidden_under_its_cve(env):
+    """Its own page assigns the CVE with the retracted GHSA: the CVE is kept, no root."""
+    env.collector([finding(aliases=("CVE-2026-0001",))])
+    code, summary, relay = env.run()
+    assert "roots=1" in summary
+    _retract(env, relay, ["GHSA-abcd-efgh-ijkl"])
+    env.collector([finding(fid="CVE-2026-0001")])  # a sighting under the CVE
+    code, summary, relay = env.run(now=at(5, 10))
+    assert code == 0 and "roots=0" in summary and relay.calls == [], summary
+    (e,), _ = env.ledger()
+    assert e["split"] == {"released": [], "kept": ["CVE-2026-0001"]} and "CVE-2026-0001" in e["aliases"]
+
+
+def test_a_survivor_whose_page_fails_is_released_by_a_later_run(env):
+    env.collector([finding(), finding(fid=GHSA_Z)])
+    _, _, relay = env.run()
+    _retract(env, relay, ["GHSA-abcd-efgh-ijkl"])
+    env.pages.put(ZURL, "", status=503)
+    code, summary, relay = env.run(now=at(5, 10))
+    assert code == 0 and "roots=0" in summary and "split" not in env.ledger()[0][0]
+    del env.pages.fixed[ZURL]
+    code, summary, relay = env.run(now=at(5, 11))
+    assert code == 0 and "roots=1" in summary and GHSA_Z in relay.calls[0][2]
+
+
+def test_an_old_survivor_still_posts_a_root(env):
+    """0dvh is for news first seen late; a survivor was news when its group posted, which
+    the group's newest member made (faxq)."""
+    old = finding(fid=GHSA_Z)
+    old["sources"][0]["published_at"] = "2026-09-01T00:00:00Z"
+    new = finding()
+    new["sources"][0]["published_at"] = "2026-11-04T00:00:00Z"
+    env.collector([new, old])
+    code, summary, relay = env.run()
+    assert "roots=1" in summary and "aged=0" in summary
+    _retract(env, relay, ["GHSA-abcd-efgh-ijkl"])
+    code, summary, relay = env.run(now=at(5, 10))
+    assert code == 0 and "roots=1" in summary and "aged=0" in summary, summary
+
+
+def test_a_relay_bot_alias_in_the_retracted_list_retires_nothing(env):
+    """The reader never lets a relay-bot reply's alias pull a thread into the list, so
+    neither does the poster."""
+    env.collector([finding()])
+    _, _, relay = env.run()
+    (root,) = _on_mirror(env, relay, T0 + 60)
+    env.mirror.reply(env.mirror.bot_sec, root, env.mirror.patch_text(aliases=["CVE-2026-9999"]), created_at=T0 + 70)
+    env.mirror.publish_manifest(retracted=["CVE-2026-9999"])
+    env.run(now=at(5, 9))
+    code, summary, relay = env.run(now=at(5, 10))
+    assert code == 0 and relay.calls == [] and "split" not in env.ledger()[0][0]
+
+
+def test_an_advisory_already_retracted_is_never_planned(env, capsys):
+    """Every reader hides a root naming a retracted id: such a candidate is not planned."""
+    env.mirror.publish_manifest(retracted=["GHSA-zzzz-zzzz-zzzz"])
+    code, summary, _ = env.run(now=at(5, 9))  # the digest pulls the poster's copy
+    assert code == 0 and "digest=1" in summary
+    env.collector([finding(fid=GHSA_Z)])
+    code, summary, relay = env.run(now=at(5, 10))
+    assert code == 0 and "roots=0" in summary and relay.calls == [], summary
+    assert "retracted, not planned=1" in capsys.readouterr().err

@@ -93,6 +93,10 @@ class Entry:
     # show. By channel, so that a channel the reply that ends the state never reached is
     # still known to lack it. Absent when no channel is.
     withdrawn: list | None = None
+    # z360: the thread is hidden by a manifest retraction of one of its ids. Its other ids,
+    # each judged once by its own advisory page: "released" (left this thread's identity,
+    # to be posted anew) or "kept" (still this thread's). Absent until a run judged one.
+    split: dict | None = None
 
     @property
     def listed(self) -> int:
@@ -137,7 +141,13 @@ def _entry_ok(e) -> bool:
             and ("root_ids" not in e or (_strs(e["root_ids"]) and bool(e["root_ids"]) and "claim" in e))
             and ("withdrawn" not in e or (_strs(e["withdrawn"]) and bool(e["withdrawn"])
                                           and e["withdrawn"] == sorted(set(e["withdrawn"]))
-                                          and set(e["withdrawn"]) <= set(e["channel_ids"]))))
+                                          and set(e["withdrawn"]) <= set(e["channel_ids"])))
+            and ("split" not in e or _split_ok(e["split"])))
+
+
+def _split_ok(v) -> bool:
+    return isinstance(v, dict) and set(v) == {"released", "kept"} \
+        and all(isinstance(v[k], list) and all(isinstance(i, str) and i for i in v[k]) for k in v)
 
 
 def _pending_ok(p) -> bool:
@@ -320,11 +330,31 @@ class Ledger:
     def add_ids(self, root_event_id: str, ids) -> Entry:
         """Learn more ids for a thread without a post (identity is not capped)."""
         e = self._entry(root_event_id)
-        merged = _union(e["aliases"], ids)
+        merged = _identity(e, ids)
         if merged != e["aliases"]:
             e["aliases"] = merged
             self._save()
         return Entry(**e)
+
+    def release(self, root_event_id: str, released, kept) -> Entry:
+        """z360: record the judgement of a retired thread's ids. ``released`` leave its
+        identity (never its last id), so a candidate naming one finds no thread and starts
+        its own; ``kept`` stay. Both are remembered in ``split``, so no id is judged twice."""
+        e = self._entry(root_event_id)
+        out = _keys(released)
+        rest = [a for a in e["aliases"] if a.casefold() not in out]
+        if not rest:
+            raise LedgerError(f"{root_event_id}: a thread keeps at least one id")
+        old = e.get("split") or {"released": [], "kept": []}
+        new = {"released": _union(old["released"], released), "kept": _union(old["kept"], kept)}
+        if rest != e["aliases"] or new != old:
+            e["aliases"], e["split"] = rest, new
+            self._save()
+        return Entry(**e)
+
+    def released_ids(self) -> set[str]:
+        """Every id a retired thread has released (z360), case-folded."""
+        return {i.casefold() for e in self._state()["entries"] for i in (e.get("split") or {}).get("released", ())}
 
     def forget_unpublished(self) -> int:
         """Drop what threads learned from records nobody confirmed: every id that is not
@@ -423,7 +453,7 @@ class Ledger:
         urls = {s["url"] for s in new["sources"]}
         if any(x["url"] in urls for x in e.get("learned_sources", [])):
             e["learned_sources"] = [x for x in e["learned_sources"] if x["url"] not in urls]
-        e["aliases"] = _union(e["aliases"], [adv.id, *adv.aliases, *ids])
+        e["aliases"] = _identity(e, [adv.id, *adv.aliases, *ids])
         e.update(level=adv.level, advisory=asdict(adv), last_change=now,
                  exploited=e["exploited"] or exploited is True)
         e["replies"].append(dict(reply_ids))
@@ -526,6 +556,13 @@ def _listed_fields(adv: dict):
 
 
 # ---------------------------------------------------------------- alias merge
+
+
+def _identity(e: dict, ids) -> list[str]:
+    """The entry's ids with ``ids`` added, except those it released (z360): a released id
+    belongs to the thread posted for it, never again to the hidden one."""
+    gone = _keys((e.get("split") or {}).get("released", ()))
+    return _union(e["aliases"], (i for i in ids if not (isinstance(i, str) and i.casefold() in gone)))
 
 
 def _union(a, b) -> list[str]:
