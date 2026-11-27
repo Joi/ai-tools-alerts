@@ -2,7 +2,7 @@ import pytest
 import dataclasses
 from pathlib import Path
 
-from aitools_alerts import check, versions
+from aitools_alerts import check, ruleset, schema, versions
 from aitools_alerts.check import Config
 from aitools_alerts.inventory import Installed, Inventory
 from aitools_alerts.schema import Action, Advisory, Product, Source
@@ -469,3 +469,38 @@ def test_an_entry_that_is_no_scope_product_does_not_hide_one_that_is(order):
     assert [m.product.name for m in ms] == list(order)
     same = check.match([adv([Product(n, "mcp", "*", "0.7.0") for n in ("MCP-Server-Git", "mcp-server-git")], [])], there)
     assert [m.product.name for m in same] == ["MCP-Server-Git"]
+
+
+# ---------------------------------------------------------------- former product names (aabw)
+
+@pytest.mark.parametrize("name, ecosystem, want", [
+    ("MCP servers and clients", "mcp", "MCP servers and clients"), ("mcp SERVERS and clients", "mcp", "MCP servers and clients"),
+    ("MCP Inspector", "mcp", "MCP Inspector"), ("MCP TypeScript SDK", "mcp", "MCP TypeScript SDK"),
+    ("MCP Python SDK", "mcp", "MCP Python SDK"),
+    ("MCP Inspector", "skill", None), ("MCP Inspector", "claude-code", None),  # another ecosystem's entry of that name
+    ("MCP", "mcp", None), ("MCP Inspector ", "mcp", None), ("mcp-server-git", "mcp", None),  # a current name is scope_name's
+    ("", "mcp", None), (None, "mcp", None), ("MCP Inspector", None, None),
+])
+def test_a_former_name_is_found_whole_under_its_entries_ecosystem(name, ecosystem, want):
+    assert check.former_name(name, ecosystem) == want
+    if want is not None:
+        assert check.scope_name(name, ecosystem) is None  # the two never answer for one name
+
+
+def test_every_former_name_of_the_scope_file_is_found_and_stands_for_its_entries():
+    rs = ruleset.load()
+    old = {f: {e.name for e in schema.load_scope() if f in e.formerly} for e in schema.load_scope() for f in e.formerly}
+    assert len(old) == 4 and len(old["MCP servers and clients"]) == 7
+    for name, entries in old.items():
+        assert check.former_name(name, "mcp") == name and rs.stands_for(name) == entries
+        assert not rs.stands_for(name) & {name} and name not in rs.products()
+
+
+def test_a_former_name_two_ecosystems_share_is_not_found(monkeypatch):
+    """Which products a name stands for must not depend on the entry asked."""
+    entries = [schema.ScopeEntry("a", "mcp", "channel", ["a"], formerly=("Old One",)),
+               schema.ScopeEntry("b", "skill", "channel", ["b"], formerly=("Old One",)),
+               schema.ScopeEntry("c", "mcp", "channel", ["c"], formerly=("Old Two", "old two"))]
+    monkeypatch.setattr(schema, "load_scope", lambda: entries)
+    assert check.former_name("Old One", "mcp") is None and check.former_name("Old One", "skill") is None
+    assert check.former_name("old two", "mcp") is None  # two former names that differ in case only

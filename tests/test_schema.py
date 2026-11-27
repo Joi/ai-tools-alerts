@@ -527,3 +527,29 @@ def test_reserved_id_title_is_marked_by_the_reader():
     assert len(long) == 300 and long.startswith("SYNTHETIC TEST: x")
     real = {**valid_block(), "id": "CVE-2026-0010", "aliases": ["CVE-2099-0010"], "title": "Real"}
     assert schema.validate(real).title == "Real"
+
+
+def test_entries_that_share_a_former_name_are_one_kind_of_product(tmp_path):
+    """aabw: a former name stands for every entry that lists it, so those entries share
+    ecosystem, class, channel_if and authority, and the name has one spelling. The
+    shipped file's seven entries under "MCP servers and clients" do."""
+    raw = json.loads((SPEC / "scope.json").read_text(encoding="utf-8"))
+    seven = [i for i, e in enumerate(raw["entries"]) if e.get("formerly") == ["MCP servers and clients"]]
+    assert len(seven) == 7
+
+    def load(change):
+        data = json.loads(json.dumps(raw))
+        change(data["entries"][seven[1]])
+        path = tmp_path / "scope.json"
+        path.write_text(json.dumps(data))
+        return load_scope(path)
+    assert len(load(lambda e: None)) == len(load_scope())  # the control
+    for change in (lambda e: e.update(formerly=["mcp servers and clients"]),  # another spelling
+                   lambda e: e.update(authority=["github.com/modelcontextprotocol/inspector/"]),
+                   lambda e: e.update(authority=[]), lambda e: e.pop("authority"),
+                   lambda e: e.update({"class": "catalog"}),
+                   lambda e: e.update({"class": "catalog", "channel_if": "code-execution"}),
+                   lambda e: e.update(ecosystem="skill")):
+        with pytest.raises(ValueError):
+            load(change)
+
