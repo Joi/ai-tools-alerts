@@ -851,7 +851,7 @@ def _source_lines(a, st: State, s: config.Settings, threads: list, fresh: dict |
         found = {} if t.published else verify.result_for(t.adv, cache) or {}
         # 53fy: every entry the thread shows, matched here or not
         for p in () if t.published or ident is None else t.adv.products:
-            if (name := verify.scope_of(p)) in scope and verify.fixed_stated(t.adv, p, fresh or cache) is False:
+            if known(name := verify.scope_of(p)) and verify.fixed_stated(t.adv, p, fresh or cache) is False:
                 out.append(FIXED_LINE.format(id=ident, name=name))
         # 0z4e: every product of the judged state, with or without a result on disk now
         both = {verify.pkey(p): verify.scope_of(p) for p in (*t.adv.products, *(t.judged.products if t.judged else ()))}
