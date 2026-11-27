@@ -1,9 +1,10 @@
 # Run: p93w-checkpoint-dated-when-signed
 Instruction: Read TASK-ai-tools-alerts#p93w.md in this worktree root, then run `kata show ai-tools-alerts#p93w` and follow the brief and the dispatch rules pasted after this sentence. (Run as /do-it, starting rung floored at medium. The task file was empty; the issue text is the brief.)
-Stage: code-review:delta
+Stage: done (the gate at the final head, the pull request and the merge are on the kata issue: a commit after the gated head would not have been gated)
 Rung: heavy (start-floor heavy: hard-trigger, BR1 REV1 NOV1 INT2 FC2 = 7; the dispatch brief floors at medium). The evaluator's cause: the diff edits `signer.run_checkpoint`, which reads the checkpoint key and checks its certificate, and changes the time that certificate check is judged by. It called the reading literal, not clear-cut; the rung is not the executor's to lower. Lens: "No wire format, schema, manifest, ruleset or state file shape changes."
 Last reviewed: spec 0e4db468139b09a1189ec60463da2a75d0d480e3 (whole), 7fad14f418c0bc3c8d03e95d4fb993d471c0fdad (delta)
-Last reviewed: code 36359b31e720275f6a9a94cf74efda8ce4c66641 (whole branch, after the merge of main)
+Last reviewed: code 36359b31e720275f6a9a94cf74efda8ce4c66641 (whole branch, after the merge of main), 786d2d85376a148995beba665a1f5711dd5f22a1 (delta)
+Review: 36359b31e720275f6a9a94cf74efda8ce4c66641 fixed+delta 786d2d85376a148995beba665a1f5711dd5f22a1 +fix (this commit: one test assertion and this record)
 Last reviewed: plan 44ee3275c31788b2dba12f1306c772504493395b (whole), 8088a0c137beb09775c681a49a478a5e6d3169ee (delta)
 Spec: docs/superpowers/specs/2026-11-27-p93w-checkpoint-dated-when-signed-design.md   Plan: docs/superpowers/plans/2026-11-27-p93w-checkpoint-dated-when-signed.md
 Agency project: none (the agency tools are not available in this session; the plan is executed directly)
@@ -17,6 +18,7 @@ Pass 2 [spec]: 2B/0S/1C/0R · fixed 3/3 prior · velocity ↓ (4→3, escalation
 Pass 1 [plan]: 2B/0S/0C/0R · fixed -/- · velocity = (—→2, escalation no)
 Pass 2 [plan]: 0B/0S/0C/0R · fixed 2/2 prior · velocity ↓ (2→0, escalation no)
 Pass 1 [code:whole-branch]: 3B/2S/3C/0R · fixed -/- · velocity = (—→8, escalation no)
+Pass 2 [code:whole-branch]: 1B/0S/0C/0R · fixed 5/5 prior · velocity ↓ (8→1, escalation no)
 
 ## Chunks
 - [x] signer: the checkpoint is dated at the signing time; level changes from before a lost state file
@@ -52,7 +54,14 @@ Same-model reviewer beside it: 2 SUBSTANTIVE, 3 COSMETIC.
 6. COSMETIC, not fixed: `changed` is written by the first channel recorded, so a first channel's reply settled late from the mirror can be dated before `t` with no clock fault (an unknown send, then a refused repeat). Same safe side as finding 2.
 7. COSMETIC. Docstrings: fixed. Test gaps: a ledger failure gives `checkpoint=error` (test added); a curator's level reply does not count (test added).
 
+## Code delta, `--since 36359b31` at 786d2d85 (fresheyes, run 20261127-215349-3bfb33; round 2 of three): 1 BLOCKER
+1. A new test compared the owed ids in insertion order; the signer saves them sorted by id, and the ids come from random keys, so the test failed about half the time. Fixed: compared sorted. Not reviewed again. The two standing rebuttals (a reply dated before `t`; `u` moving with ordinary replies) were not re-raised.
+
+Gate: `scripts/test-gate.sh` exit 0 at 36359b31 in a clone holding this branch alone (public scan clean, 3426 passed, 1 skipped). The run at the final head is on the kata issue.
+
 ## Notes
+- Skip-temptations: none acted on. The evaluator's heavy floor cost two extra passes (spec and plan deltas); both found or confirmed something.
+- A directive arrived mid-run with the brief the empty task file should have carried (kata comments on the issue): main was merged before the code review, the limit is three review rounds, the rollout note is on ai-tools-alerts#5fry.
 - The tests were drafted while the spec and plan reviews ran, and the plan's whole review was launched beside the spec's delta, to keep inside the wall-clock limit; no code under `aitools_alerts/` changed before the plan's first pass returned. The code was written while the plan's delta ran, to the plan as fixed.
 - The repository has no `.repoman-managed` marker and no row in the repoman registry: the ending is a pull request this session merges (global rule for unmanaged repos), and the gate is `scripts/test-gate.sh` in a clone that holds this branch alone (the shared clone's public scan reads other sessions' refs).
 - Prior work read: ai-tools-alerts#r0ra (both decided comments), ai-tools-alerts#gtw9 (the decided comment, the close-out, its spec lines 88 to 92 and its run record's "left open").

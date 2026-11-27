@@ -1013,7 +1013,7 @@ def test_a_post_of_this_run_the_mirror_already_shows_is_listed_or_nothing_is_sig
     signer.record_sent(signing.config.owed_state, same["id"], 100, None, T0)
     monkeypatch.setattr(signer, "MAX_LISTED", 7)
     status, relay = _sign(signing, clock=lambda: T0 + 90)
-    assert status == "too-large" and relay.puts == [] and owed_ids(signing) == [sent["id"], same["id"]]
+    assert status == "too-large" and relay.puts == [] and sorted(owed_ids(signing)) == sorted([sent["id"], same["id"]])
     monkeypatch.setattr(signer, "MAX_LISTED", 8)
     status, relay = _sign(signing, clock=lambda: T0 + 90)
     assert status == "sent" and {sent["id"], same["id"]} <= relay.last().events
