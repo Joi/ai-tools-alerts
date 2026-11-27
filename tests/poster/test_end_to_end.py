@@ -143,7 +143,7 @@ def test_poster_to_member_end_to_end(world, tmp_path):
     # event; it holds the new checkpoint back, and the member stays verified on the earlier one.
     w.now += 3600
     lag = {k: list(v) for k, v in w.rows.items()}
-    w.env.collector([finding(fid="GHSA-mnop-qrst-uvwx", sources=(GHSA2,))])
+    w.env.collector([finding(fid="GHSA-mnop-qrst-uvwx", sources=(GHSA2,), fixed="2.1.1")])  # btqg: another fix
     code, summary, _ = w.poster_run()
     assert summary.endswith(" checkpoint=sent")
     newer = cp.load_checkpoint(inbox)

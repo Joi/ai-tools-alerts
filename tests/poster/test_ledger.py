@@ -395,7 +395,8 @@ def test_the_withdrawn_state_is_kept_by_channel_beside_the_level(tmp_path):  # k
 @pytest.mark.parametrize("bad", [{"lowered": 1}, {"floor": "severe"}, {"floor": None}, {"changed": [1.5]},
                                  {"changed": list(range(51))}, {"changed": 3},
                                  {"withdrawn": True}, {"withdrawn": []}, {"withdrawn": "feed"}, {"withdrawn": ["critical"]},
-                                 {"withdrawn": ["feed", "feed"]}, {"withdrawn": None}])
+                                 {"withdrawn": ["feed", "feed"]}, {"withdrawn": None},
+                                 {"joined": False}, {"joined": 1}, {"joined": None}])  # btqg: True or absent
 def test_a_ledger_with_a_malformed_recompute_key_is_refused(tmp_path, bad):  # ny5g
     path = tmp_path / "l.json"
     with Ledger(path) as led:
@@ -405,6 +406,23 @@ def test_a_ledger_with_a_malformed_recompute_key_is_refused(tmp_path, bad):  # n
     path.write_text(json.dumps(data))
     with pytest.raises(LedgerError, match="malformed"):
         Ledger(path).__enter__()
+
+
+def test_a_joined_thread_keeps_the_mark_and_loads_again(tmp_path):  # btqg
+    path = tmp_path / "l.json"
+    with Ledger(path) as led:
+        led.record_root(adv_for(cand()), "r1", {"feed": "r1"}, scope="Claude Code", exploited=False, now=T0)
+        assert led.thread("r1").joined is None
+        e = led.add_ids("r1", ["GHSA-zzzz-zzzz-zzzz"], joined=True)
+        assert e.joined is True and "GHSA-zzzz-zzzz-zzzz" in e.aliases
+        led.add_ids("r1", ["CVE-2026-0002"])  # a later id learned plainly leaves the mark
+    with Ledger(path) as led:
+        assert led.thread("r1").joined is True
+    with Ledger(tmp_path / "m.json") as led:  # the mark alone, no new id, is still saved
+        led.record_root(adv_for(cand()), "r1", {"feed": "r1"}, scope="Claude Code", exploited=False, now=T0)
+        led.add_ids("r1", [], joined=True)
+    with Ledger(tmp_path / "m.json") as led:
+        assert led.thread("r1").joined is True
 
 
 # ---------------------------------------------------------------- faxq: one release, one post

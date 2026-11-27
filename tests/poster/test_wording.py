@@ -242,7 +242,7 @@ def test_an_auth_failure_holds_until_cleared_and_posts_go_on(word):
     assert relay.calls[0][2].startswith(f"HIGH: {TITLE}\n")
     tr = json.loads(word.config.translate_state.read_text())
     assert tr["hold"]["why"] == "wording: http 401"
-    word.collector([finding(fid="GHSA-mnop-qrst-uvwx")])
+    word.collector([finding(fid="GHSA-mnop-qrst-uvwx", fixed="2.1.1")])  # btqg: another fix, another thread
     code, summary, relay = word.run(wording_call=lambda s, t: pytest.fail("called while held"))
     assert code == 0 and "roots=1" in summary and summary.endswith(" wording=held")
     assert main.clear_hold(word.config)[0] == 0
@@ -266,7 +266,7 @@ def test_an_unreadable_translate_state_or_failed_hold_write_never_stops_a_post(w
 
     def refused(s, t):
         raise translate.AuthError("http 403")
-    word.collector([finding(fid="GHSA-mnop-qrst-uvwx")])
+    word.collector([finding(fid="GHSA-mnop-qrst-uvwx", fixed="2.1.1")])  # btqg: another fix, another thread
     code, summary, relay = word.run(wording_call=Call(refused))
     assert code == 0 and "roots=1" in summary and summary.endswith(" wording=held")
 

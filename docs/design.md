@@ -71,7 +71,7 @@ Items outside both tiers do not post.
 
 ### Post format
 
-One advisory is one thread, and advisories for one product that one release fixes, seen in one poster run, are one thread too (ai-tools-alerts#faxq): their ids are the root's `id` and `aliases`. The root post is the advisory; later news (fix shipped, now exploited, level raised) is a reply in the thread. The thread root event id is the stable advisory id for agents. Merging: CVE, GHSA and vendor ids are aliases of one advisory; a candidate matching an existing alias becomes a reply, never a new root.
+One advisory is one thread, and advisories for one product that one release fixes, seen in one poster run, are one thread too (ai-tools-alerts#faxq): their ids are the root's `id` and `aliases`. One seen in a later run joins that open thread with no root of its own (ai-tools-alerts#btqg): a reply only when the thread's range must widen to cover it, never a level change, and its own root instead when it alone rates higher or is exploited where the thread is not, or the thread is withdrawn, retracted, expired, full, or filed under a shared former name. The root post is the advisory; later news (fix shipped, now exploited, level raised) is a reply in the thread. The thread root event id is the stable advisory id for agents. Merging: CVE, GHSA and vendor ids are aliases of one advisory; a candidate matching an existing alias becomes a reply, never a new root.
 
 Each root post has a human body on top and a fenced JSON block at the end:
 

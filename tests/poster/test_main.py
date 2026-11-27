@@ -376,7 +376,7 @@ def test_resolve_not_delivered_refuses_when_the_journal_says_sent(env):
 
 
 def test_resolve_delivered_refuses_what_would_not_record(env):
-    env.collector([finding(fid="GHSA-zzzz-zzzz-zzzz")])
+    env.collector([finding(fid="GHSA-zzzz-zzzz-zzzz", fixed="2.1.1")])  # btqg: another fix, another thread
     env.run()
     known = env.ledger()[0][0]["root_event_id"]
     it = _unknown_root(env)
@@ -752,9 +752,9 @@ def test_reply_keeps_its_thread_when_ids_bridge_two_threads(env):
 def test_widened_root_never_starts_a_second_thread(env):
     env.collector([finding(fid="CVE-2026-1111", sources=(GHSA2,))])
     env.run()
-    env.collector([finding()])
+    env.collector([finding(fixed="2.1.1")])  # btqg: another fix, so a root of its own
     env.run(now=T0 + 3600, relay=FakeRelay("unknown"))  # a new root for the GHSA: unknown
-    env.collector([finding(aliases=("CVE-2026-1111",))])  # the GHSA is the CVE's thread after all
+    env.collector([finding(aliases=("CVE-2026-1111",), fixed="2.1.1")])  # the GHSA is the CVE's thread after all
     env.run(now=T0 + 7200)
     with Ledger(env.config.ledger) as led:
         (p,) = led._state()["pending"]
@@ -2663,3 +2663,164 @@ def test_a_cve_assigned_after_the_digest_is_not_listed_again(env):
     env.collector([finding(severity=None, aliases=("CVE-2026-7777",))])
     code, summary, _ = env.run(now=at(9, 10))
     assert code == 0 and "candidates=1 " in summary and " old=0 " in summary and env.state()["held"] == []
+
+
+# ---------------------------------------------------------------- btqg: a later member joins the thread of its fix
+
+A = "GHSA-abcd-efgh-ijkl"
+
+
+def _thread(env):
+    (e,) = env.ledger()[0]
+    return e
+
+
+def _edit(env, change):
+    with Ledger(env.config.ledger) as led:
+        change(led._state()["entries"][0])
+        led._save()
+
+
+def _down(url, timeout=None):
+    raise OSError("mirror unreachable")
+
+
+def test_a_later_advisory_with_the_threads_fix_joins_it(env):
+    """Acceptance: no root; its ids and sources are learned; nothing else changed, no reply."""
+    env.collector([finding()])
+    assert "roots=1" in env.run()[1]
+    env.collector([finding(fid=GHSA_Z)])
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "roots=0" in summary and "replies=0" in summary and relay.calls == [], summary
+    e = _thread(env)
+    assert GHSA_Z in e["aliases"] and e["joined"] is True
+    assert [x["url"] for x in e["learned_sources"]] == [REPO + GHSA_Z]
+    assert e["advisory"]["id"] == A and e["advisory"]["aliases"] == []  # published by the next real reply
+    env.collector([finding(fid=GHSA_Z)])  # seen again: the thread's, by its ids now
+    code, summary, relay = env.run(now=T0 + 7200)
+    assert code == 0 and "roots=0" in summary and relay.calls == []
+
+
+def test_a_joined_member_that_widens_the_range_replies_and_names_itself(env):
+    env.collector([finding(affected=">=2.0,<2.1.0")])
+    env.run()
+    env.collector([finding(fid=GHSA_Z, affected="<2.1.0")])
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "roots=0" in summary and "replies=1" in summary, summary
+    ((ch, reply_to, text),) = relay.calls
+    e = _thread(env)
+    assert ch == "feed" and reply_to == e["root_event_id"]
+    assert e["advisory"]["products"][0]["affected"] == "<2.1.0" and e["advisory"]["products"][0]["fixed"] == "2.1.0"
+    assert GHSA_Z in e["advisory"]["aliases"] and GHSA_Z in text and e["level"] == "high"
+    # one member sighted alone again never narrows what the join widened
+    env.collector([finding(affected=">=2.0,<2.1.0")])
+    code, summary, relay = env.run(now=T0 + 7200)
+    assert code == 0 and "replies=0" in summary and relay.calls == []
+    assert _thread(env)["advisory"]["products"][0]["affected"] == "<2.1.0"
+
+
+def test_a_joined_member_with_no_range_leaves_the_range_not_stated(env):
+    env.collector([finding(affected="<2.1.0")])
+    env.run()
+    env.collector([finding(fid=GHSA_Z, affected=None)])
+    code, summary, _ = env.run(now=T0 + 3600)
+    assert code == 0 and "roots=0" in summary and "replies=1" in summary, summary
+    assert _thread(env)["advisory"]["products"][0]["affected"] is None
+
+
+def test_a_member_before_the_join_reply_never_narrows_the_range(env):
+    """The join's ids are not yet published (no reply): the thread still keeps the group
+    range rule (``Entry.joined``), so a narrower sighting of the first member sends nothing."""
+    env.collector([finding()])
+    env.run()
+    env.collector([finding(fid=GHSA_Z)])
+    env.run(now=T0 + 3600)
+    env.collector([finding(fid=GHSA_Z, affected=">=2.0,<2.1.0")])
+    code, summary, relay = env.run(now=T0 + 7200)
+    assert code == 0 and "replies=0" in summary and relay.calls == []
+    assert _thread(env)["advisory"]["products"][0]["affected"] is None
+
+
+def test_an_exploited_member_posts_its_own_root(env):
+    """3qyq: the thread's level and mark rest on its first id, which nothing ties to the
+    member: a KEV-listed advisory with the same fix is louder, and starts its own thread."""
+    env.collector([finding()])
+    env.run()
+    cve = "CVE-2026-0002"  # its own advisory (GHSA-mnop's page), fixed in 2.1.0, listed by KEV
+    env.kev.catalog = {"vulnerabilities": [kev_item(cve)]}
+    env.collector([finding(fid=cve, sources=(GHSA2,))])
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and [(c[0], c[1]) for c in relay.calls] == [("critical", None), ("feed", None)], summary
+    entries, _ = env.ledger()
+    assert len(entries) == 2 and not any(e.get("joined") for e in entries)
+    assert next(e for e in entries if A in e["aliases"])["level"] == "high"
+
+
+def test_a_member_whose_own_source_rates_it_higher_posts_its_own_root(env):
+    env.collector([finding()])
+    env.run()
+    env.api.put(GHSA_Z, ghsa_json(GHSA_Z, type="malware"))  # alone: critical on its own fields
+    env.collector([finding(fid=GHSA_Z)])
+    code, summary, relay = env.run(now=T0 + 3600)
+    assert code == 0 and "roots=" in summary and any(c[1] is None for c in relay.calls), summary
+    assert len(env.ledger()[0]) == 2
+
+
+def test_a_member_waits_while_the_thread_has_a_send_in_flight_and_joins_after(env):
+    """Busy is asked by the thread's ids and root, not the member's; the waiting item
+    learns none of the member's ids (its send would record them past the join), and the
+    member joins, with the group range rule, once the send is settled."""
+    env.collector([finding()])
+    env.run()
+    env.collector([finding(affected=">=2.0,<2.1.0")])  # a range correction: a reply
+    code, _, _ = env.run(now=T0 + 3600, relay=FakeRelay("unknown"))
+    assert code == 1
+    (it,) = [o for o in env.state()["outbox"] if o["kind"] == "reply"]
+    env.collector([finding(fid=GHSA_Z, affected="<2.1.0")])
+    code, summary, relay = env.run(now=T0 + 7200)
+    assert "busy=0" not in summary and "roots=0" in summary and not [c for c in relay.calls if c[1] is None], summary
+    out = env.state()["outbox"]
+    assert len({o["key"] for o in out}) == len(out)
+    assert all(GHSA_Z.casefold() not in {i.casefold() for i in o["ids"]} for o in out)
+    assert GHSA_Z in [d["id"] for d in env.state()["deferred"]]
+    inputs.load_state(env.config.state, T0 + 7200, env.config.backfill_days)  # the journal still loads
+    assert main.resolve(T0 + 7300, env.config, it["key"], delivered="ab" * 32)[0] == 0
+    e = _thread(env)
+    assert GHSA_Z not in e["aliases"] and e["advisory"]["products"][0]["affected"] == ">=2.0,<2.1.0"
+    code, summary, relay = env.run(now=T0 + 10800)  # the deferred member, re-admitted
+    assert code == 0 and "roots=0" in summary and "replies=1" in summary, summary
+    e = _thread(env)
+    assert e["joined"] is True and e["advisory"]["products"][0]["affected"] == "<2.1.0"
+
+
+@pytest.mark.parametrize("how", ["retracted id", "member retracted", "withdrawn", "expired", "mirror down"])
+def test_a_member_never_joins_a_thread_that_is_withdrawn_or_unknown(env, how):
+    env.collector([finding()])
+    env.run()
+    kw = {}
+    if how == "retracted id":
+        env.mirror.publish_manifest(retracted=[A.lower()])
+    elif how == "member retracted":
+        env.mirror.publish_manifest(retracted=[GHSA_Z.lower()])
+    elif how == "withdrawn":
+        _edit(env, lambda e: e.update(withdrawn=["feed"]))
+    elif how == "expired":
+        _edit(env, lambda e: e["advisory"].update(expires_at=T0 + 60))
+    else:
+        kw["mirror_fetch"] = _down
+    env.collector([finding(fid=GHSA_Z)])
+    code, summary, relay = env.run(now=T0 + 3600, **kw)
+    assert code == 0 and "roots=1" in summary, summary
+    entries, _ = env.ledger()
+    assert len(entries) == 2 and not any(e.get("joined") for e in entries)
+
+
+def test_a_full_thread_is_not_joined(env):
+    """The one-block cap (an id and 50 aliases): a member past it would never be named."""
+    env.collector([finding()])
+    env.run()
+    _edit(env, lambda e: e["aliases"].extend(f"CVE-2026-{9000 + i}" for i in range(50)))
+    env.collector([finding(fid=GHSA_Z)])
+    code, summary, _ = env.run(now=T0 + 3600)
+    assert code == 0 and "roots=1" in summary, summary
+    assert len(env.ledger()[0]) == 2

@@ -93,6 +93,10 @@ class Entry:
     # show. By channel, so that a channel the reply that ends the state never reached is
     # still known to lack it. Absent when no channel is.
     withdrawn: list | None = None
+    # btqg: an advisory a later run saw with this thread's fixed version joined it (no root
+    # of its own). A sighting of any member then follows the fix group's range rule, which
+    # never narrows, even before a reply has published the joined ids. True or absent.
+    joined: bool | None = None
 
     @property
     def listed(self) -> int:
@@ -137,7 +141,8 @@ def _entry_ok(e) -> bool:
             and ("root_ids" not in e or (_strs(e["root_ids"]) and bool(e["root_ids"]) and "claim" in e))
             and ("withdrawn" not in e or (_strs(e["withdrawn"]) and bool(e["withdrawn"])
                                           and e["withdrawn"] == sorted(set(e["withdrawn"]))
-                                          and set(e["withdrawn"]) <= set(e["channel_ids"]))))
+                                          and set(e["withdrawn"]) <= set(e["channel_ids"])))
+            and ("joined" not in e or e["joined"] is True))
 
 
 def _pending_ok(p) -> bool:
@@ -317,12 +322,15 @@ class Ledger:
             self._save()
         return Entry(**e)
 
-    def add_ids(self, root_event_id: str, ids) -> Entry:
-        """Learn more ids for a thread without a post (identity is not capped)."""
+    def add_ids(self, root_event_id: str, ids, joined: bool = False) -> Entry:
+        """Learn more ids for a thread without a post (identity is not capped). ``joined``
+        (btqg): they are an advisory that joined the thread by its fix."""
         e = self._entry(root_event_id)
         merged = _union(e["aliases"], ids)
-        if merged != e["aliases"]:
+        if merged != e["aliases"] or (joined and e.get("joined") is not True):
             e["aliases"] = merged
+            if joined:
+                e["joined"] = True
             self._save()
         return Entry(**e)
 
@@ -538,14 +546,21 @@ def _union(a, b) -> list[str]:
     return out
 
 
+def fix_key_of(fixed) -> str | None:
+    """The fix key of a stated fixed version: the version as the schema states it, a
+    leading v ignored; None for no fix or an unexpressible one."""
+    fixed = fixed[1:] if isinstance(fixed, str) and fixed[:1] in ("v", "V") else fixed
+    if not isinstance(fixed, str) or not schema._FIXED.fullmatch(fixed):
+        return None
+    return f"\0fix:{fixed}"  # NUL: never an id
+
+
 def _fix_key(c) -> set[str]:
     """faxq: advisories of one product fixed by one release are one post. The key is
-    the fixed version as the schema states it; none for no fix, an unexpressible one,
-    or a synthetic id (never grouped with a real advisory)."""
-    fixed = c.fixed[1:] if isinstance(c.fixed, str) and c.fixed[:1] in ("v", "V") else c.fixed
-    if not isinstance(fixed, str) or not schema._FIXED.fullmatch(fixed) or schema.is_synthetic(c.id):
-        return set()
-    return {f"\0fix:{fixed}"}  # NUL: never an id
+    the fixed version as the schema states it (``fix_key_of``); none for no fix, an
+    unexpressible one, or a synthetic id (never grouped with a real advisory)."""
+    key = fix_key_of(c.fixed)
+    return set() if key is None or schema.is_synthetic(c.id) else {key}
 
 
 def _components(items, keys_of) -> list[list]:
@@ -621,7 +636,10 @@ def merge(pairs, ledger: Ledger | None = None, groups: dict | None = None, settl
     return out
 
 
-def _chunks(members, cap: int = 51) -> list[list]:
+BLOCK_IDS = 51  # an id and at most 50 aliases: what one block names
+
+
+def _chunks(members, cap: int = BLOCK_IDS) -> list[list]:
     """A fix group cut so each part's ids fit one block (an id and at most 50 aliases):
     a member left out of the block would be recorded as posted and never named."""
     out, ids = [], set()

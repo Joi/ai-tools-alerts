@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+An advisory that a release already announced fixes no longer gets an alert of its own (ai-tools-alerts#btqg). Since ai-tools-alerts#faxq, advisories for one product that one release fixes are one alert when one poster run sees them together. One seen in a later run still posted its own alert, telling members again to make the upgrade they were already told to make. Now it joins the open alert of that fix. That alert learns its ids and sources and sends no reply, unless it must widen its range to cover the new advisory: then one reply states the wider range and names the new ids. A join never raises an alert or marks it exploited. Its level rests on its first advisory, which a member's source check reads and which says nothing about the newcomer. So an advisory that alone rates higher, or that KEV lists where the alert has no listing, posts its own alert as before. Other cases that post their own alert as before:
+
+- the alert of that fix is withdrawn, or the mirror shows it retracted or expired;
+- one of the newcomer's ids is retracted;
+- the poster cannot read the mirror that run;
+- the newcomer's ids would push the alert past the 50 aliases one post can name;
+- the alert is filed under a former name that several products share.
+
+A newcomer waits while the alert has a send in flight, and joins in the run after that send is settled. Operators: the ledger entry of a joined alert holds `"joined": true`, and an older poster refuses that ledger. Going back: `jq 'del(.entries[].joined)'` on the ledger, with no run in progress. No wire format, schema, manifest, ruleset or scope file changes.
+
 The poster leaves out of its checkpoint any relay-bot post it did not send (design review of 2026-11-23, finding D14, ai-tools-alerts#m729). The key that signs alerts exists on more than one machine; the checkpoint key exists only on the poster. Until now the poster's checkpoint listed every post on the mirror signed with a key the manifest names, so a post made with a stolen relay-bot key reached every member under the poster's own signature. Revoking the key takes the trust root and a person. This takes neither.
 
 - **Written down before the send.** With `checkpoint_key_file` set, the poster records the id of every event it signs in `<ledger>.sent.json` (a lock file, `<ledger>.sent.json.lock`, sits beside it) before a byte of the request is written. A record that cannot be written means the post is not sent in that run.

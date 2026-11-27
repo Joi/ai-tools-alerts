@@ -198,6 +198,8 @@ class Run:
         # kk2q: thread roots whose withdrawal this run recorded in some channel. No reply
         # that ends the state follows in the same run: the two could carry one second.
         self.withdrew: set[str] = set()
+        # btqg: the mirror a join by fix reads (``_gone``): (trust root, fetch), set by ``run``.
+        self.mirror = (TRUST_ROOT_PUBKEY, None)
 
     def save(self):
         inputs.save_state(self.config.state, self.state)
@@ -660,9 +662,8 @@ class Run:
         is unsent there (``yields``), so the drain does not send a lowering only for the
         same run to raise it."""
         for c, scope in merged:
-            ids = [c.id, *c.aliases]
-            scope = self._former(scope, ids)
-            self._clears(c, scope, self.led.lookup(ids, scope=scope.name))
+            scope, entry, _ = self._thread_for(c, scope)  # btqg: a joined member's too
+            self._clears(c, scope, entry)
 
     def _queue_ja(self, it):
         """Journal a recorded item's Japanese reply, to this channel's root (of: names a reply)."""
@@ -1002,17 +1003,19 @@ class Run:
         if old is None or new["checked_at"] >= old["checked_at"]:
             self.led.set_claim(root, it["claim"], None if e.claim is not None else ids)
 
-    def busy(self, ids, scope, passing=False) -> bool:
+    def busy(self, ids, scope, passing=False, learn=True) -> bool:
         """True when this advisory has journaled work or a send in flight. Its ids are
         learned by the overlapping items, so a later candidate under any of them waits too.
-        ``passing``: asked for a raise, which passes over the work it will replace (yields)."""
+        ``passing``: asked for a raise, which passes over the work it will replace (yields).
+        ``learn=False`` (btqg, a member joining by its fix): the items learn nothing, or
+        their send would record it into the thread past the join's checks."""
         want, root = _fold(ids), getattr(self.led.lookup(ids, scope=scope), "root_event_id", None)
         hits = [it for it in self.state["outbox"] + self._withheld_items()  # withheld: until expire_withheld
                 if it["kind"] != "ja" and it["scope"] == scope and (_fold(it["ids"]) & want or root and it["root"] == root)
                 and not (passing and self._passing(it))]
-        for it in hits:
+        for it in hits if learn else ():
             it["ids"] = list(dict.fromkeys(it["ids"] + [i for i in ids if i.casefold() not in _fold(it["ids"])]))
-        if hits:
+        if hits and learn:
             self.save()
         return bool(hits) or bool(self.led.pending_for(ids))
 
@@ -1210,9 +1213,76 @@ class Run:
             return ruleset.load().action_cap, "no-action"
         return level, reason
 
-    def one(self, c, scope):
+    def _gone(self):
+        """btqg: (retracted ids, withdrawn thread roots) as the mirror says now
+        (``_withdrawn``), pulled once a run, the first time a candidate could join a
+        thread by its fix; None when the pull failed, and no join this run."""
+        if not hasattr(self, "_gone_now"):
+            try:
+                self._gone_now = self._withdrawn(*self.mirror)
+            except (translate.CallError, OSError, ValueError) as err:  # StateError is a ValueError
+                _say(f"join by fix held: {err}")
+                self._gone_now = None
+        return self._gone_now
+
+    def _fix_thread(self, c, scope):
+        """btqg: (scope, entry) of the open thread whose fixed version is c's, for a
+        candidate with no thread of its own, or None. Under the product's name or a former
+        one (wa6n), the oldest; never a synthetic thread, a withdrawn one (kk2q), one the
+        mirror shows retracted or expired, or any thread for a candidate whose own id is
+        retracted (a reader retracts a whole thread for any one of its ids). A former name
+        another scope entry also lists does not say which product its thread is about
+        (``_scope_named``): none under it. Nor a thread whose ids and c's pass the one-block
+        cap (``ledger._chunks``): a member past it would be learned and never named."""
+        key = ledger.fix_key_of(c.fixed)
+        if key is None or self.is_synthetic(c):
+            return None
+        index = rules._default_index().values()
+        names = (scope.name, *(n for n in getattr(scope, "formerly", ())
+                               if len({s.name for s in index if n in getattr(s, "formerly", ())}) == 1))
+        mine = _fold([c.id, *c.aliases])
+        found = [e for e in self.led.entries()
+                 if e.scope in names and not e.withdrawn and not compose.is_synthetic(e.advisory.get("id"))
+                 and ledger.fix_key_of((e.advisory.get("products") or [{}])[0].get("fixed")) == key
+                 and len(_fold(e.aliases) | mine) <= ledger.BLOCK_IDS]
+        if not found:
+            return None
+        gone = self._gone()
+        if gone is None:
+            return None  # the mirror cannot say: the candidate posts on its own, never waits for it
+        ids, roots = gone
+        if not ids.isdisjoint(mine):
+            return None
+        for e in found:
+            if compose.withdrawn(schema.validate(e.advisory), ids, self.now) \
+                    or not roots.isdisjoint({e.root_event_id, *e.channel_ids.values()}):
+                continue
+            return (scope if e.scope == scope.name else replace(scope, name=e.scope, formerly=())), e
+        return None
+
+    def _thread_for(self, c, scope):
+        """(scope, thread entry or None, joined): c's own thread, else (btqg) the open
+        thread of its fix (``_fix_thread``). The thread's level and exploited mark rest on
+        its first id (3qyq), which no source ties to c: a candidate that alone rates above
+        the thread's level, or is exploited where the thread is not, joins nothing and
+        posts its own root, so a join never changes either."""
         ids = [c.id, *c.aliases]
         scope = self._former(scope, ids)
+        entry = self.led.lookup(ids, scope=scope.name)
+        if entry is not None:
+            return scope, entry, False
+        got = self._fix_thread(c, scope)
+        if got is None:
+            return scope, None, False
+        joined, e = got
+        alone = self._rate(c, scope, None)[1]
+        if RANK[alone] > RANK[e.level] or (c.exploited is True and not e.exploited):
+            return scope, None, False
+        return joined, e, True
+
+    def one(self, c, scope):
+        ids = [c.id, *c.aliases]
+        scope = own = self._former(scope, ids)
         entry = self.led.lookup(ids, scope=scope.name)
         # jsje: a raise never waits behind lower-priority work on its own thread
         if self.busy(ids, scope.name) and not (self._clears(c, scope, entry)
@@ -1220,6 +1290,16 @@ class Run:
             self.n["busy"] += 1
             self.defer([(c, scope)])  # its update (a fix, a promotion) is planned once the send resolves
             return
+        joined = False
+        if entry is None:
+            scope, entry, joined = self._thread_for(c, scope)
+        if joined:  # btqg: the thread's work counts, found by its ids and root, not by c's
+            both = [*entry.aliases, *ids]
+            if self.busy(both, scope.name, learn=False) and not (
+                    self._clears(c, scope, entry) and not self.busy(both, scope.name, passing=True, learn=False)):
+                self.n["busy"] += 1
+                self.defer([(c, own)])  # kept under its own id; it joins once the thread's send resolves
+                return
         c, level, reason = self._rate(c, scope, entry)
         # 9kgk: a fix the thread already states counts as this candidate's (plan_known keeps it)
         was = (entry.advisory.get("products") or [{}])[0].get("fixed") if entry is not None else None
@@ -1243,7 +1323,7 @@ class Run:
             return
         try:
             items = self.plan_new(c, scope, level, reason, ids, floor) if entry is None \
-                else self.plan_known(c, scope, level, reason, ids, entry)
+                else self.plan_known(c, scope, level, reason, ids, entry, joined)
         except ValueError:  # compose refused something: the whole advisory is withheld
             self.n["withheld"] += 1
             return
@@ -1406,7 +1486,10 @@ class Run:
         self.save()
         self.n["held"] += 1
 
-    def plan_known(self, c, scope, level, reason, ids, entry):
+    def plan_known(self, c, scope, level, reason, ids, entry, joined=False):
+        """An update of ``entry``'s thread from candidate c. ``joined`` (btqg): c has no
+        id of the thread and joined it by its fix (``_thread_for``): the thread keeps its
+        fix and headline, and its range widens to cover c's."""
         prev = schema.validate(entry.advisory)
         level, reason = self._thread_level(level, reason, entry)
         # kk2q: nor does a candidate move a withdrawn thread: the recompute ends that state, by
@@ -1416,12 +1499,12 @@ class Run:
         was = prev.products[0]
         stored = _fold(entry.aliases)
         fresh = [i for i in dict.fromkeys(ids) if i.casefold() not in stored and i != prev.id]
-        if fresh:  # identity is learned whether or not a reply can say so (the 50-alias cap)
-            self.led.add_ids(entry.root_event_id, fresh)
-        title = compose.source_title(c)
+        if fresh or joined:  # identity is learned whether or not a reply can say so (the 50-alias cap)
+            self.led.add_ids(entry.root_event_id, fresh, joined=joined)
+        title = (entry.source_title or compose.source_title(c)) if joined else compose.source_title(c)
         if title and not entry.source_title:  # learned late: the digest carries it; no reply says it
             self.led.learn_title(entry.root_event_id, title)
-        own_fix = compose.schema_fixed(c.fixed) is not None
+        own_fix = compose.schema_fixed(c.fixed) is not None and not joined  # btqg: one fix by the key
         older = versions.parse(compose.schema_fixed(c.fixed)), versions.parse(was.fixed)
         if own_fix and None not in older and older[0] < older[1]:
             # faxq: a member of a fix group sighted again says its own, older fix; the thread
@@ -1447,10 +1530,14 @@ class Run:
             # a range the schema cannot say is kept raw when none is known: no "not stated" (0dvh)
             # faxq: one member's sighting never narrows a fix group's range, which covers them
             # all; a range that differs widens it to everything before the fix
-            affected=_group_range(was, c, c.fixed if own_fix else was.fixed) if compose.covers(prev)[0] not in (0, 1)
+            # btqg: so does a thread a member joined by its fix, before a reply names it;
+            # the member joining widens it to cover the member's own
+            affected=_join_range(was, c) if joined
+            else _group_range(was, c, c.fixed if own_fix else was.fixed) if compose.covers(prev)[0] not in (0, 1)
+            or entry.joined
             else c.affected if compose.schema_affected(c.affected) else (was.affected or c.affected),
             sources=tuple(prev.sources) + tuple(extra),
-            source_title=compose.source_title(c) or entry.source_title)  # faxq: a copy's headline
+            source_title=title or entry.source_title)  # faxq: a copy's headline; btqg: the thread's when joined
         text, new = compose.root_post(k, (level, reason), scope, posted_at=prev.posted_at)
         changes = {}
         if RANK[level] > RANK[prev.level]:
@@ -2177,6 +2264,19 @@ def _group_range(was, c, fixed) -> str | None:
     return f"<{fixed}" if fixed else None
 
 
+def _join_range(was, c) -> str | None:
+    """btqg: a thread's range once advisory c joined it by its fix: one that covers both.
+    The thread's when they agree, none stated when either states none (c's unknown range
+    may be any), else everything before the thread's fix."""
+    new = compose.schema_affected(c.affected)
+    if new is None or was.affected is None:
+        return None
+    if new == was.affected:
+        return was.affected
+    fixed = compose.schema_fixed(was.fixed)
+    return f"<{fixed}" if fixed else None
+
+
 def _published(sources) -> int | None:
     """When the primary source (the one a post names) was published, if it says: read from
     the input's own timestamp, which the wire form may drop (a space before the time)."""
@@ -2443,6 +2543,7 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                 merged = ledger.merge(pairs, led, r.groups, settled=settled,  # BEFORE level_for
                                       loud=lambda c, scope: rules.evidence_rank(r._tied(c), scope))
                 r.observe(kev_out)
+                r.mirror = (translate_kw.get("root", TRUST_ROOT_PUBKEY), mirror_fetch)  # btqg: _gone
                 r.make_way(merged)
                 r.drain()
                 for i, (c, scope) in enumerate(merged):

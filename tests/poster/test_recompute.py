@@ -514,7 +514,7 @@ def test_an_unknown_read_in_a_run_that_stopped_early_still_breaks_the_wait(env):
     recompute. The next complete read must not take those two hours."""
     post(env)
     assert hours(env, 1, 23) == []
-    env.collector([finding()], name="2026-11-07T000000Z")  # another advisory, whose root fails to send
+    env.collector([finding(fixed="2.1.1")], name="2026-11-07T000000Z")  # another advisory, whose root fails to send (btqg: another fix)
     relay = one(env, 24, kev=down(503), relay=FakeRelay("fail"), code=1)
     assert state(env)["dwell"][entry(env)["root_event_id"]] ["last"] is None
     assert hours(env, 25, 26) == []  # 22 + 0 + 1
@@ -527,7 +527,7 @@ def test_what_an_interrupted_run_read_about_one_thread_is_kept(env):
     gone again. The read of hour 24 broke the wait although the run never got further."""
     post(env)
     assert hours(env, 1, 23) == []
-    env.collector([finding()], name="2026-11-07T000000Z")
+    env.collector([finding(fixed="2.1.1")], name="2026-11-07T000000Z")  # btqg: another fix, another thread
     renamed = {**kev_item(CVE), "vendorProject": "Anthropic PBC", "product": "Claude"}
     one(env, 24, (renamed,), relay=FakeRelay("fail"), code=1)
     assert hours(env, 25, 26) == [] and hours(env, 27, 27) == [(27, "notice")]
@@ -536,7 +536,7 @@ def test_what_an_interrupted_run_read_about_one_thread_is_kept(env):
 def test_a_run_that_stopped_after_reading_it_listed_starts_the_wait_over(env):
     post(env)
     assert hours(env, 1, 23) == []
-    env.collector([finding()], name="2026-11-07T000000Z")
+    env.collector([finding(fixed="2.1.1")], name="2026-11-07T000000Z")  # btqg: another fix, another thread
     one(env, 24, BACK, relay=FakeRelay("fail"), code=1)
     assert state(env)["dwell"] == {}
     assert hours(env, 25, 48) == [] and hours(env, 49, 49) == [(49, "notice")]
