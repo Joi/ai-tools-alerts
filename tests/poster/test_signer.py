@@ -905,6 +905,151 @@ def _stale_root(m, cve="CVE-2026-0001", days=20):
                        tags=[_claim(T0 - days * 86400, cve=cve)], files=("feed.json",))
 
 
+# ---------------------------------------------------------------- what is listed of a thread (ai-tools-alerts#65xv)
+
+DAY = 86400
+
+
+def _level(m, events, at):
+    """The level a reader of exactly ``events`` shows their one thread at, at ``at``."""
+    from aitools_alerts import ruleset
+    (t,) = pull.threads_from(list(events), m.man)
+    return ruleset.load().level_at(t.adv.level, [(c, k) for c, k, _ in t.renewals], at)
+
+
+def _claimed_root(m, at, level="critical", cve="CVE-2026-0001"):
+    return m.root_post(m.bot_sec, advisory(id=cve, level=level, posted_by="relay-bot"), created_at=at,
+                       tags=[_claim(at, cve=cve)], files=("feed.json",))
+
+
+def _ids(events):
+    return {e["id"] for e in events}
+
+
+def test_a_checkpoint_lists_a_thread_without_its_superseded_renewals():
+    """A root, its Japanese reply, ten renewals a day apart and a level reply: listed
+    are the root, the Japanese reply, the level reply and the newest renewal, and a
+    reader of those shows what a reader of every event shows, at every date."""
+    m = Mirror()
+    root = _claimed_root(m, T0, level="high")
+    ja = m.reply(m.bot_sec, root, "lang: ja\n\nja text", created_at=T0 + 5)
+    rens = [_renewal(m, root, T0 + d * DAY) for d in range(1, 11)]
+    raised = m.post(m.bot_sec, m.patch_text(level="critical"), created_at=T0 + 4 * DAY + 50,
+                    tags=[["e", root["id"], "", "root"], _claim(T0 + 4 * DAY)])
+    whole = [root, ja, *rens, raised]
+    kept = signer.slim(whole, m.man)
+    assert _ids(kept) == _ids([root, ja, raised, rens[-1]])
+    for d in (0, 5, 15, 24, 25, 40, 60, 101, 120):
+        assert _level(m, kept, T0 + d * DAY) == _level(m, whole, T0 + d * DAY)
+    assert _level(m, kept, T0 + 15 * DAY) == "critical" and set(_win(m, now=T0 + 11 * DAY)) == _ids(kept)
+
+
+def test_an_unconfirmed_renewal_and_a_confirmed_one_are_both_listed_when_neither_covers_the_other():
+    m = Mirror()
+    root = _claimed_root(m, T0)
+    confirmed = _renewal(m, root, T0 + 3 * DAY)  # confirmed and checked on day 3
+    covered = _renewal(m, root, T0 + 2 * DAY, confirmed=T0)  # confirmed day 0, checked day 2
+    checked = _renewal(m, root, T0 + 6 * DAY, confirmed=T0)  # checked later, confirmed earlier
+    assert _ids(signer.slim([root, confirmed, covered, checked], m.man)) == _ids([root, confirmed, checked])
+
+
+@pytest.mark.parametrize("same_times", [False, True])
+def test_a_renewal_that_names_another_id_stands_for_nothing(same_times):
+    """Under the bot's key, a reply whose claim names an id the thread never held, with
+    later times or with the very times of the renewal the reader counts (and the lower
+    event id, which is the one the frontier takes for a pair). The reader counts
+    neither: the thread is listed whole, and shows critical on day 20."""
+    m = Mirror()
+    root = _claimed_root(m, T0)
+    at = T0 + (7 if same_times else 20) * DAY
+    for n in range(200):
+        valid = _renewal(m, root, T0 + 7 * DAY, text=f"Sources checked. {n}")
+        forged = m.post(m.bot_sec, f"Sources checked: {n}", created_at=at,
+                        tags=[["e", root["id"], "", "root"], _claim(at, cve="CVE-2026-9999")])
+        if not same_times or forged["id"] < valid["id"]:
+            break
+    last = m.reply(m.bot_sec, root, "lang: ja\n\nja text", created_at=at + 1)  # the newest event: neither is kept for being that
+    whole = [root, valid, forged, last]
+    assert forged["id"] in _ids(signer._frontier(whole[1:], m.man)) and valid["id"] not in _ids(signer._frontier(whole[1:], m.man))
+    assert signer.slim(whole, m.man) == whole
+    assert _level(m, whole, T0 + 20 * DAY) == "critical"
+    assert _level(m, [e for e in whole if e is not valid], T0 + 20 * DAY) == "high"  # what the frontier alone would give
+
+
+def test_a_must_listed_thread_keeps_its_raise(monkeypatch):
+    """A high root, a raise to critical and a later renewal, which makes the raise's own
+    date redundant. With an owed reply and no room for the whole thread, the root is
+    still listed with the raise: a reader of the listed events shows critical."""
+    m = Mirror()
+    root = _claimed_root(m, T0, level="high")
+    for i in range(30):
+        m.reply(m.bot_sec, root, f"note {i}", created_at=T0 + 10 + i)
+    raised = m.reply(m.bot_sec, root, m.patch_text(level="critical"), created_at=T0 + DAY)
+    newest = _renewal(m, root, T0 + 2 * DAY)
+    assert _ids(signer._frontier([raised, newest], m.man)) == {newest["id"]}
+    monkeypatch.setattr(signer, "MAX_LISTED", 10)
+    owed = [{"id": "a" * 64, "bytes": 10, "since": T0, "root": root["id"]}]
+    got = set(_win(m, owed, now=T0 + 3 * DAY))
+    assert got == {"a" * 64, root["id"], raised["id"], newest["id"]}
+    assert _level(m, [e for e in m.events["feed.json"] if e["id"] in got], T0 + 3 * DAY) == "critical"
+
+
+def test_a_must_listed_thread_whose_frontier_a_reader_does_not_count_is_listed_as_any_thread(monkeypatch):
+    """The frontier of this thread is a claim about another id. Root and frontier would
+    read as high on day 20; the set is the slim thread instead, and with no room for
+    that nothing is signed."""
+    m = Mirror()
+    root = _claimed_root(m, T0)
+    valid = _renewal(m, root, T0 + 7 * DAY)
+    at = T0 + 20 * DAY
+    m.post(m.bot_sec, "Sources checked.", created_at=at, tags=[["e", root["id"], "", "root"], _claim(at, cve="CVE-2026-9999")])
+    owed = [{"id": "a" * 64, "bytes": 10, "since": T0, "root": root["id"]}]
+    monkeypatch.setattr(signer, "MAX_LISTED", 4)
+    assert valid["id"] in _win(m, owed, now=at)
+    monkeypatch.setattr(signer, "MAX_LISTED", 3)
+    assert _win(m, owed, now=at) is None
+
+
+def test_the_newest_event_of_a_thread_is_always_listed():
+    """A reader's retention counts from the newest event it holds. A renewal alone that
+    is the newest event stays listed though a backdated reply covers its times, on a
+    thread whose root carries no claim too, and a reader of the listed events still
+    holds the thread 401 days after its root."""
+    m = Mirror()
+    root = on_mirror(m, "Posted before claims", T0, sec=m.bot_sec)
+    late = m.post(m.bot_sec, "Sources checked. No change to this alert.", created_at=T0 + 399 * DAY,
+                  tags=[["e", root["id"], "", "root"], _claim(T0, T0)])  # its times: day 0, day 0
+    backdated = _renewal(m, root, T0 + DAY)  # dated day 1, and covers them
+    whole = list(m.events["feed.json"])
+    assert late["id"] not in _ids(signer._frontier(whole[1:], m.man)) and backdated["id"] in _ids(signer._frontier(whole[1:], m.man))
+    kept = signer.slim(whole, m.man)
+    assert _ids(kept) == _ids(whole)
+    held = pull._retain({e["id"]: e for e in kept}, T0 + 401 * DAY, pull.PullResult())
+    assert root["id"] in held
+
+
+def test_a_thread_without_its_root_is_listed_as_it_is():
+    m = Mirror()
+    root = _claimed_root(m, T0)
+    replies = [_renewal(m, root, T0 + d * DAY) for d in (1, 2, 3)]
+    assert signer.slim(replies, m.man) == replies
+
+
+def test_three_hundred_renewed_threads_fit_one_checkpoint():
+    """300 claimed roots with three renewals each, 1,200 events where a checkpoint
+    lists 990: every root is listed with its newest renewal and nothing else."""
+    m = Mirror()
+    want = set()
+    for i in range(300):
+        root = _claimed_root(m, T0 + i, cve=f"CVE-2026-{1000 + i}")
+        rens = [m.post(m.bot_sec, "Sources checked. No change to this alert.", created_at=T0 + d * DAY + i,
+                       tags=[["e", root["id"], "", "root"], _claim(T0 + d * DAY + i, cve=f"CVE-2026-{1000 + i}")])
+                for d in (1, 2, 3)]
+        want |= {root["id"], rens[-1]["id"]}
+    got = _win(m, now=T0 + 4 * DAY)
+    assert len(m.events["feed.json"]) == 1200 and set(got) == want and len(got) == 600
+
+
 def _lapsed(m, now=T0):
     return signer.lapsed([e for evs in m.events.values() for e in evs], m.man, now)
 
