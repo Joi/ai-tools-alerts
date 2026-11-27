@@ -10,6 +10,12 @@ enters the inventory from them. No command, argument, environment value or
 URL does. A path a config names is only read (bounded, and only a
 ``package.json`` or a directory listing), never executed; nothing is
 started for an MCP server. ``collect`` never raises.
+
+The Hermes probes are the only argvs that carry a path: the Hermes install
+directory's ``.git`` under the home directory, given to ``git --git-dir`` (no
+repository search) to read which
+release tag names its HEAD. Every ``git`` argv runs with the caller's
+``GIT_*`` variables removed.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ import json
 import os
 import plistlib
 import re
+import stat
 import subprocess
 import tomllib
 import unicodedata
@@ -33,6 +40,7 @@ MAX_NAME_CHARS = 200
 MAX_ARGS = 64
 MAX_ARG_CHARS = 4096
 MAX_DIST_INFO = 4096
+MAX_STAMP_BYTES = 64 * 1024
 
 Runner = Callable[[tuple], "str | None"]
 
@@ -87,10 +95,19 @@ COMPONENT_TOOLS: dict[str, tuple[str, tuple[str, ...], re.Pattern]] = {
 
 
 def default_runner(argv: tuple) -> str | None:
-    """Run one fixed argv; stdout (stderr if stdout is empty), or None."""
+    """Run one fixed argv; stdout (stderr if stdout is empty), or None.
+
+    A ``git`` argv runs with no inherited ``GIT_*`` variable: a ``GIT_DIR``,
+    ``GIT_CONFIG_*`` or object-directory variable from a hook would point
+    it at another repository. It fetches nothing (a partial clone would
+    fetch a missing object) and never prompts."""
+    env = None
+    if argv and argv[0] == "git":
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        env.update(GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0")
     try:
         r = subprocess.run(list(argv), capture_output=True, text=True,
-                           errors="replace", timeout=5,
+                           errors="replace", timeout=5, env=env,
                            stdin=subprocess.DEVNULL, check=False)
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
@@ -141,10 +158,30 @@ def collect_cursor(apps_dirs: list[Path], name: str) -> Installed | None:
     return None
 
 
-def collect_hermes(home: Path, name: str) -> Installed | None:
-    """Hermes from the pyproject.toml of its default install. ``hermes
-    --version`` is not run: it checks for updates over the network."""
-    path = home / ".hermes" / "hermes-agent" / "pyproject.toml"
+# Upstream's stable release (hermes_cli/update_channel.py STABLE_TAG_RE),
+# without its ``v``; and the update mechanisms an install stamp may name
+# (hermes_cli/steward.py UPDATE_MECHANISMS).
+_HERMES_RELEASE = re.compile(r"(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+_HERMES_MECHANISMS = frozenset({"self", "app-installer", "electron-updater", "external", "microsoft-store"})
+# --no-lazy-fetch (git 2.45 on): a partial clone fetches no missing object; an
+# older git refuses the option, and the read gives no version.
+_GIT = ("git", "--no-optional-locks", "--no-lazy-fetch", "-c", "core.fsmonitor=false")
+_SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def collect_hermes(home: Path, name: str, runner: Runner = default_runner) -> Installed | None:
+    """Hermes's default install, ``~/.hermes/hermes-agent``.
+
+    ``hermes --version`` is not run: it checks for updates over the network.
+    Since 0.23 ``pyproject.toml`` says 0.0.0 and the release comes from an
+    install stamp or a git tag (upstream hermes_cli/version_info.py). The
+    version is, in order: the stamp's, the project file's when it is not a
+    placeholder, a release tag on HEAD. Only an exact release is a version:
+    a reading too high hides an alert for code that has the flaw, and one
+    too low hides an alert whose range has a lower bound, so a checkout
+    between releases has no version (the match may apply)."""
+    root = home / ".hermes" / "hermes-agent"
+    path = root / "pyproject.toml"
     raw = _read(path)
     if raw is None:
         return None
@@ -154,24 +191,94 @@ def collect_hermes(home: Path, name: str) -> Installed | None:
         return None
     if not isinstance(project, dict) or project.get("name") != "hermes-agent":
         return None
-    # Since 0.23 the file says 0.0.0 and the release comes from git or an
-    # install stamp: a placeholder is no version (the match may apply),
-    # never one that would read as below every affected range.
-    version = versions.normalize(project.get("version"))
+    version = _hermes_stamp(root, runner)
     if version is None:
-        return None
-    if set(re.sub(r"[^0-9]", "", version)) <= {"0"}:
-        version = None
+        version = versions.normalize(project.get("version"))
+        if version is not None and set(re.sub(r"[^0-9]", "", version)) <= {"0"}:
+            version = None
+    if version is None:
+        version = _hermes_tag(root, runner)
     return Installed(name=name, version=version, path=str(path))
 
 
-def _read(path: Path) -> bytes | None:
+def _hermes_git(root: Path, runner: Runner, *args: str) -> list[str] | None:
+    """The output lines of one git read in the install, or None when it
+    fails or reaches the output cap (a line past it may be missing)."""
+    if not (root / ".git").exists():
+        return None
+    # --git-dir, not -C: git searches no parent directory, so a broken
+    # .git cannot hand the read to a repository the home directory is in.
+    out = runner(_GIT + (f"--git-dir={root / '.git'}",) + args)
+    if not isinstance(out, str) or len(out) >= MAX_OUTPUT_CHARS:
+        return None
+    return out.splitlines()
+
+
+def _hermes_stamp(root: Path, runner: Runner) -> str | None:
+    """The release an install stamp names, when the stamp says the code is
+    exactly that release: distance 0, not dirty, and, in a git checkout,
+    HEAD is the stamp's commit. Upstream's other rules apply too: a commit
+    that is not all zeros, a known update mechanism, not a light payload."""
+    raw = _read(root / "install-stamp.json", MAX_STAMP_BYTES)
+    if raw is None:
+        return None
     try:
-        if not path.is_file() or path.stat().st_size > MAX_CONFIG_BYTES:
+        data = json.loads(raw.decode("utf-8-sig"))
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    commit, base, distance = data.get("commit"), data.get("baseVersion"), data.get("distance")
+    if not isinstance(commit, str) or not commit or set(commit) == {"0"}:
+        return None
+    mechanism = data.get("updateMechanism")
+    if not isinstance(mechanism, str) or mechanism not in _HERMES_MECHANISMS or data.get("payload") == "light":
+        return None
+    if not isinstance(base, str) or not _HERMES_RELEASE.fullmatch(base) or set(base) <= {"0", "."}:
+        return None
+    if not ((type(distance) is int and distance == 0) or distance == "0"):
+        return None
+    if "dirty" in data and data["dirty"] is not False:
+        return None
+    if (root / ".git").exists():
+        lines = _hermes_git(root, runner, "rev-parse", "HEAD")
+        head = lines[0].strip() if lines else None
+        if head is None or not _SHA.fullmatch(head) or head != commit:
             return None
-        return path.read_bytes()
+    return base
+
+
+def _hermes_tag(root: Path, runner: Runner) -> str | None:
+    """The highest stable release tag that points at HEAD, or None."""
+    lines = _hermes_git(root, runner, "tag", "--points-at", "HEAD", "--list", "--sort=refname",
+                         "--no-column", "v[0-9]*")
+    # --sort and --no-column override tag.sort (a signature sort would run a
+    # verifier) and column.tag (several tags on one line).
+    found = []
+    for line in lines or ():
+        tag = line.strip()
+        m = _HERMES_RELEASE.fullmatch(tag[1:]) if tag.startswith("v") else None
+        if m:
+            found.append(tuple(int(x) for x in m.groups()))
+    return ".".join(map(str, max(found))) if found else None
+
+
+def _read(path: Path, limit: int = MAX_CONFIG_BYTES) -> bytes | None:
+    """A regular file's bytes, or None when it is not one or is over
+    ``limit``. One open, never blocking (a FIFO swapped in), and never more
+    than ``limit + 1`` bytes read, whatever the file grows to."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except (OSError, ValueError):
+        return None
+    try:
+        with os.fdopen(fd, "rb") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                return None
+            data = f.read(limit + 1)
     except OSError:
         return None
+    return None if len(data) > limit else data
 
 
 def _json(path: Path):
@@ -518,7 +625,7 @@ def collect(home: Path | None = None, runner: Runner | None = None,
     for name, (eco, argv, rx) in COMPONENT_TOOLS.items():
         add(eco, _probe, argv, rx, runner, name)
     add("cursor", collect_cursor, apps_dirs, names.get("cursor", "Cursor"))
-    add("hermes", collect_hermes, home, names.get("hermes", "Hermes"))
+    add("hermes", collect_hermes, home, names.get("hermes", "Hermes"), runner)
     add("skill", collect_skills, home)
     add("mcp", collect_mcp, home)
     return Inventory(products=products)
