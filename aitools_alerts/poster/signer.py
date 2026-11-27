@@ -508,10 +508,12 @@ def run_checkpoint(config, now: int, *, ssh=None, fetch=None, root: str = TRUST_
         cp = cpt.load_checkpoint(served(base + "checkpoint.json"))
         if cpt.verify_checkpoint(cp, cert):
             published = cp.seq
-            # m729: and what this poster last vouched for, to start the sent record from. Only a
-            # checkpoint of the current manifest that is still fresh: an old one, served again
-            # after the record was lost, must not bring back what later checkpoints left out.
-            if cpt.checkpoint_problem(cp, m, now) is None and now <= cpt.fresh_until(cp):
+            # m729: and what this poster last vouched for, to start the sent record from. Only
+            # the checkpoint this poster signed last (none numbered below its own count), of
+            # the current manifest and still fresh: an older one, served again after the record
+            # was lost, must not bring back what later checkpoints left out.
+            if (cp.seq >= rec["last_seq"] and cpt.checkpoint_problem(cp, m, now) is None
+                    and now <= cpt.fresh_until(cp)):
                 listed = set(cp.events)
     except (OSError, cpt.CheckpointError):  # none served or malformed: no floor from it
         pass

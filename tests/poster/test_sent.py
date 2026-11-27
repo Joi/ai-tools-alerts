@@ -547,10 +547,16 @@ def test_an_old_checkpoint_served_again_starts_nothing(signing):
     assert ",foreign=1" in summary and forged["id"] not in ssh.last().events
     signing.config.sent_state.unlink()
     m.stored_checkpoint = old
+    # still fresh, and older than the poster's own count: nothing is taken from it
+    _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + 2 * HOUR)
+    assert forged["id"] not in ssh.last().events and ",foreign=" in summary
+    assert forged["id"] not in json.loads(signing.config.sent_state.read_text())["ids"]
+    signing.config.sent_state.unlink()
+    m.stored_checkpoint = old
     _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + 3 * 86400)
     assert forged["id"] not in ssh.last().events and ",foreign=" in summary
     assert forged["id"] not in json.loads(signing.config.sent_state.read_text())["ids"]
-    assert real["id"] in ssh.last().events or real["id"] in json.loads(signing.config.sent_state.read_text())["foreign"]
+    assert real["id"] in ssh.last().events
 
 
 def test_a_full_store_does_not_keep_an_unstarted_record_from_starting(signing, monkeypatch):
@@ -576,3 +582,57 @@ def test_the_record_is_made_durable_before_note_returns(tmp_path, monkeypatch):
     sent.note(tmp_path / "sent.json", "ab" * 32, NOW)
     import stat
     assert any(stat.S_ISDIR(mode) for mode in synced)  # the directory entry, not only the file
+
+
+def test_a_note_whose_sync_failed_is_made_durable_by_the_retry(tmp_path, monkeypatch):
+    import stat
+    path, real, fail, dirs = tmp_path / "sent.json", sent.os.fsync, [True], []
+
+    def fsync(fd):
+        if stat.S_ISDIR(sent.os.fstat(fd).st_mode):
+            if fail[0]:
+                raise OSError(5, "Input/output error")
+            dirs.append(fd)
+        return real(fd)
+    monkeypatch.setattr(sent.os, "fsync", fsync)
+    with pytest.raises(OSError):
+        sent.note(path, "ab" * 32, NOW)
+    assert "ab" * 32 in _rec(path)["ids"] and dirs == []  # replaced, and not known to be durable
+    fail[0] = False
+    sent.note(path, "ab" * 32, NOW)
+    assert len(dirs) == 1  # the retry does not return before the directory is synced
+
+
+def test_an_event_that_left_the_mirror_before_the_digest_is_still_said(signing):
+    m = signing.mirror
+    signing.run(relay=PutRelay())
+    forged = _forged(m)
+    _, summary, _ = signing.run(relay=PutRelay(), now=T0 + HOUR)
+    assert ",foreign=1" in summary
+    m.events["feed.json"].remove(forged)
+    signing.run(relay=PutRelay(), now=T0 + 2 * HOUR)  # this run drops it from the stored copy
+    _, summary, relay = signing.run(relay=PutRelay(), now=at(5, 9))
+    assert "foreign" not in summary  # nothing on the mirror to leave out
+    (digest,) = [c[2] for c in relay.calls if c[2].startswith("Daily digest")]
+    assert LINE["en"] in digest
+    _, _, relay = signing.run(relay=PutRelay(), now=at(6, 9))
+    assert all(LINE["en"] not in c[2] for c in relay.calls)
+    rec = json.loads(signing.config.sent_state.read_text())
+    assert rec["foreign"] == {} and rec["said"] == []
+
+
+def test_a_record_that_is_there_and_cannot_be_read_is_not_overwritten(tmp_path, monkeypatch):
+    path = tmp_path / "sent.json"
+    sent.note(path, "ab" * 32, NOW)
+    real = open
+
+    def denied(p, *a, **k):
+        if str(p) == str(path):
+            raise PermissionError(13, "Permission denied")
+        return real(p, *a, **k)
+    monkeypatch.setattr("builtins.open", denied)
+    with pytest.raises(OSError):
+        sent.note(path, "cd" * 32, NOW)
+    assert sent.holds(path) == set()
+    monkeypatch.undo()
+    assert set(_rec(path)["ids"]) == {"ab" * 32}

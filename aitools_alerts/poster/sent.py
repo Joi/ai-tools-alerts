@@ -16,7 +16,8 @@ The record, ``Config.sent_state``:
 started. Never pruned: a root can leave the poster's copy of the mirror and return
 with a new reply. ``since``: when the record was started; None until then, and
 nothing is judged before. ``foreign``: the relay-bot events of the last check that
-``ids`` does not hold. ``said``: those a delivered digest has reported.
+``ids`` does not hold, and those of earlier checks that left the mirror before a
+digest reported them. ``said``: those a delivered digest has reported.
 
 The record starts from what the caller hands over (``check(adopt=)``: the ids the
 poster's own served checkpoint lists while that checkpoint is fresh, the ledger's and the owed ones), never from
@@ -42,6 +43,7 @@ from aitools_alerts.state import write_json
 __all__ = ["load", "note", "holds", "check", "unsaid", "mark_said", "MAX_SAID"]
 
 MAX_SAID = 200  # foreign ids one digest reports; more wait for the next
+MAX_KEPT = 1000  # foreign ids no longer on the mirror that are kept until a digest has reported them
 MAX_BYTES = 64 << 20
 _KEYS = {"since", "ids", "foreign", "said"}
 
@@ -64,14 +66,14 @@ def _times(v) -> bool:
 
 def load(path) -> dict:
     """The record; an empty one (nothing started) when the file is missing, and, with
-    one line on stderr, when it is unreadable or of another shape."""
+    one line on stderr, when it is not a record. Raises OSError when the file is there
+    and cannot be read: that may pass, and must not be answered by writing an empty
+    record over it."""
     try:
         with open(path, "rb") as f:
             data = f.read(MAX_BYTES + 1)
     except FileNotFoundError:
         return _empty()
-    except OSError:
-        data = None
     try:
         rec = json.loads(data.decode("utf-8")) if data is not None and len(data) <= MAX_BYTES else None
     except (UnicodeDecodeError, ValueError, RecursionError):
@@ -101,6 +103,10 @@ def _save(path, rec: dict) -> None:
     """Write the record and make the replacement durable: a send follows a ``note``, and
     a machine that stops must not come back with the record from before it."""
     write_json(Path(path), rec)
+    _sync_dir(path)
+
+
+def _sync_dir(path) -> None:
     fd = os.open(os.path.dirname(os.fspath(path)) or ".", os.O_RDONLY)
     try:
         os.fsync(fd)
@@ -118,13 +124,18 @@ def note(path, event_id, now: int) -> None:
         if event_id not in rec["ids"]:
             rec["ids"][event_id] = int(now)
             _save(path, rec)
+        else:  # written by an earlier call that may have failed before it was durable
+            _sync_dir(path)
 
 
 def holds(path) -> set:
     """The recorded ids, for settling a send whose outcome is unknown by its id. Empty
     for a record that is missing, unreadable or not started: nothing is then settled
     from the mirror, and never by text alone, which a thief can copy."""
-    rec = load(path)
+    try:
+        rec = load(path)
+    except OSError:
+        return set()
     return set(rec["ids"]) if rec["since"] is not None else set()
 
 
@@ -166,7 +177,12 @@ def _check(path, bots: set, now: int, adopt, save: bool = True) -> set:
             _say(f"sent record {path}: started with {len(took)} ids "
                  "(the served checkpoint, the ledger, the owed list)")
     foreign = bots - set(rec["ids"])
-    rec["foreign"] = {i: rec["foreign"].get(i, now) for i in sorted(foreign)}
+    # One that left the mirror before any digest reported it is kept until one has: the
+    # line is owed for it all the same (the newest MAX_KEPT of them).
+    said = set(rec["said"])
+    owed = sorted((i for i in rec["foreign"] if i not in foreign and i not in said and i not in rec["ids"]),
+                  key=lambda i: (rec["foreign"][i], i))[-MAX_KEPT:]
+    rec["foreign"] = {i: rec["foreign"].get(i, now) for i in sorted(foreign | set(owed))}
     rec["said"] = [i for i in rec["said"] if i in foreign]
     if save and json.dumps(rec, sort_keys=True) != was:
         _save(path, rec)
