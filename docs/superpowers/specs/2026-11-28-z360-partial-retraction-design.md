@@ -65,6 +65,24 @@ copy is missing or unreadable.
    the stored manifest's `retracted` list is dropped (`skipped["retracted"]`): a root
    with such an id is hidden by every reader.
 
+Added after the whole-branch review:
+
+- Both thread sets are taken as `pull.standing` has them now, so a curator's retraction
+  whose 14-day hold lapsed no longer masks the manifest's.
+- Only a thread whose ledger ids include a retracted one is judged; a thread hidden by a
+  curator's alias the poster never held is left as it is (no release could keep an id).
+- Ids compare by their base (a thread key's slug dropped, as `rules.evidence` reads
+  them): a retracted `GHSA-...:slug` keeps its bare GHSA and CVE; a survivor whose
+  primary is a thread key is released.
+- A released id takes with it every ledger id (learned ones too) its page assigns.
+- GHSA ids are judged before CVEs; a CVE reads first the sources named for it, then
+  those named for a retracted id. A source past the per-candidate page cap is no
+  answer (kept), not a retry. The work starts at a different place each hour.
+- A pointer replaces any deferred row for the same id (its sources are proven).
+- The 0dvh exemption is for a root whose lead id was released, read once a run.
+- "Kept" includes "no source confirms it" (a 404 included): the retraction wins.
+- A failed ledger write for one thread is reported and the run goes on.
+
 Former scope names: the entry's product is `rules.scope_named(name, former=True)`; when
 several current entries list that former name, each is tried and the first whose
 structured page binds the id to its product is used. The pointer's product text is the

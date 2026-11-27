@@ -2780,3 +2780,82 @@ def test_an_advisory_already_retracted_is_never_planned(env, capsys):
     code, summary, relay = env.run(now=at(5, 10))
     assert code == 0 and "roots=0" in summary and relay.calls == [], summary
     assert "retracted, not planned=1" in capsys.readouterr().err
+
+
+def test_a_curator_alias_in_the_retracted_list_retires_nothing(env, capsys):
+    """Review: a reader hides the thread, but by an id the poster never held. Its own ids
+    are not judged, and the run is not stopped (a release of every id would be refused)."""
+    env.collector([finding(), finding(fid=GHSA_Z)])
+    _, _, relay = env.run()
+    (root,) = _on_mirror(env, relay, T0 + 60)
+    env.mirror.reply(env.mirror.cur_sec, root, env.mirror.patch_text(aliases=["CVE-2026-8888"]), created_at=T0 + 70)
+    env.mirror.publish_manifest(retracted=["CVE-2026-8888"])
+    env.run(now=at(5, 9))
+    capsys.readouterr()
+    code, summary, relay = env.run(now=at(5, 10))
+    assert code == 0 and relay.calls == [] and "split" not in env.ledger()[0][0], summary
+    assert "retired" not in capsys.readouterr().err  # no id of it was judged
+
+
+def test_a_learned_id_leaves_with_its_advisory(env):
+    """Review: a CVE the ledger learned with no reply goes with the advisory its page
+    assigns it to; left behind, it would pull the survivor back to the hidden thread."""
+    env.collector([finding(), finding(fid=GHSA_Z)])
+    _, _, relay = env.run()
+    (root,) = _retract(env, relay, ["GHSA-abcd-efgh-ijkl"])
+    with Ledger(env.config.ledger) as led:
+        led.add_ids(root["id"], ["CVE-2026-0002"])
+    env.pages.add([finding(fid=GHSA_Z, aliases=("CVE-2026-0002",))])  # its page now names the CVE
+    code, summary, relay = env.run(now=at(5, 10))
+    assert code == 0 and "roots=1" in summary and "CVE-2026-0002" in relay.calls[0][2], summary
+    first, second = env.ledger()[0]
+    assert "CVE-2026-0002" not in first["aliases"] and "CVE-2026-0002" in second["aliases"]
+
+
+def test_a_run_stopped_before_the_ledger_write_repeats_the_release(env, monkeypatch):
+    env.collector([finding(), finding(fid=GHSA_Z)])
+    _, _, relay = env.run()
+    _retract(env, relay, ["GHSA-abcd-efgh-ijkl"])
+    real = Ledger.release
+
+    def once(self, *a, **kw):
+        monkeypatch.setattr(Ledger, "release", real)
+        raise LedgerError("disk full")
+    monkeypatch.setattr(Ledger, "release", once)
+    code, summary, relay = env.run(now=at(5, 10))
+    assert code == 0 and "roots=0" in summary and "split" not in env.ledger()[0][0], summary
+    code, summary, relay = env.run(now=at(5, 11))
+    assert code == 0 and "roots=1" in summary and GHSA_Z in relay.calls[0][2], summary
+    code, summary, relay = env.run(now=at(5, 12))
+    assert relay.calls == [] and len(env.ledger()[0]) == 2
+
+
+def test_a_page_that_keeps_failing_never_starves_another_thread(env, monkeypatch):
+    """Review: the work starts at another place each hour."""
+    monkeypatch.setattr(main, "RETIRE_PAGES", 1)
+    env.collector([finding(), finding(fid=GHSA_Z),
+                   finding(fid="GHSA-mnop-qrst-uvwx", fixed="3.0"), finding(fid="GHSA-yyyy-yyyy-yyyy", fixed="3.0")])
+    code, summary, relay = env.run()
+    assert "roots=2" in summary, summary
+    _retract(env, relay, ["GHSA-abcd-efgh-ijkl", "GHSA-mnop-qrst-uvwx"])
+    env.pages.put(ZURL, "", status=503)  # for good
+    posted = []
+    for hour in (10, 11):
+        code, summary, relay = env.run(now=at(5, hour))
+        posted += [c[2] for c in relay.calls if c[1] is None]
+    assert any("GHSA-yyyy-yyyy-yyyy" in t for t in posted) and not any(GHSA_Z in t for t in posted)
+
+
+def test_a_scoped_retraction_keeps_its_bare_ids_and_frees_a_scoped_survivor(env):
+    """Review: ids compare by their base. The retracted CVE-or-GHSA's bare form is never
+    released, and a survivor whose primary is a thread key is."""
+    a, z = "GHSA-abcd-efgh-ijkl:claude-code", GHSA_Z + ":claude-code"
+    env.collector([finding(fid=a, sources=(GHSA,)), finding(fid=z, sources=(ZURL,))])
+    code, summary, relay = env.run()
+    assert "roots=1" in summary, summary
+    _retract(env, relay, [a])
+    code, summary, relay = env.run(now=at(5, 10))
+    assert code == 0 and "roots=1" in summary, summary
+    text = relay.calls[0][2]
+    assert GHSA_Z in text and "abcd" not in text.casefold()
+    assert all("abcd" not in i.casefold() for i in env.ledger()[0][1]["aliases"])
