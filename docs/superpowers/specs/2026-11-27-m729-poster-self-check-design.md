@@ -47,7 +47,7 @@ So an id is on disk before the relay can hold the event, for every kind of send 
 
 `Run._delivery` finds an unknown send on the mirror by its text, channel, thread and claim. A thief can copy the text of a post and sign it again, so text is not proof of who signed.
 
-`transport.SendResult` gains `signed`: the id of the event that send signed, set by `Relay.send` on the outcome `unknown` only. `Run.deliver` stores it in the journal item (`it["signed"]`, a list, one id per attempt; `inputs._item_ok` accepts the key). When an item has `signed`, `_delivery` takes only a mirror event whose id is in it. An item without the key (one journaled before this change, or sent by a sender that reports none) is matched by text as today; that remainder is stated under "Limits".
+Since every id is recorded before its send, the sent record is that proof, and it needs nothing from the run that made the send: no result returned, no journal save, so a run that dies mid-request loses nothing. When `checkpoint_key_file` is set, the record is started (`since` is set) and the item's first attempt is not earlier than `since`, `_delivery` takes only a mirror event whose id the record holds (`sent.holds`). An attempt made before `since` (journaled by the poster before this change) is matched by text as today; that remainder is stated under "Limits". The journal item gains no key.
 
 ### The start
 
@@ -71,7 +71,7 @@ What that costs. On the first run after the upgrade the served checkpoint lists 
 
 Two callers:
 
-1. `signer.run_checkpoint`, once the certificate and the served checkpoint are read and before anything is settled or listed, with `adopt`. From there it works on its copy without the foreign events: `settle_gone`, `settle_owed`, `_later`, `lapsed` and `window` get the filtered events. The foreign ids join `suppress`, so a thread whose root is foreign is left out whole, and an owed entry whose `root` is foreign is not listed (it stays owed until its time runs out). A foreign renewal cannot make a real one redundant, and a foreign level reply does not count in `lapsed`. A foreign event the mirror no longer serves is removed from the poster's stored copy in the same save as the events given up, so the store holds no more foreign events than the mirror's two capped files serve (criterion 5). The summary token gains `,foreign=N`.
+1. `signer.run_checkpoint`, once the certificate and the served checkpoint are read and before anything is settled or listed, with `adopt`. From there it works on its copy without the foreign events: `settle_gone`, `settle_owed`, `_later`, `lapsed` and `window` get the filtered events. The foreign ids join `suppress`, so a thread whose root is foreign is left out whole, and an owed entry whose `root` is foreign is not listed (it stays owed until its time runs out). A foreign renewal cannot make a real one redundant, and a foreign level reply does not count in `lapsed`. A foreign event the mirror no longer serves is removed from the poster's stored copy in the same save as the events given up. And when the pull itself reports the store full (`state limit reached`), which is where a run would otherwise stop with `no-mirror` before any of this: every foreign event is removed from the stored copy (a check with no `adopt`) and the pull is made once more. So foreign events cannot hold the store at its limit from one run to the next, nor within a run that pulls several times (criterion 5). The summary token gains `,foreign=N`.
 2. `Run.digest`, after its own mirror pull (`_withdrawn`), with no `adopt`: a foreign event that arrived since the last run is said in today's digest, not tomorrow's. Any exception here is said on stderr and the digest goes on with what the record holds.
 
 ### The digest line
@@ -87,12 +87,12 @@ The digest's journal item carries the ids it reported (`adv["foreign"]`, at most
 
 | File | Change |
 |---|---|
-| `aitools_alerts/poster/sent.py` | new: `load`, `note`, `check`, `unsaid`, `mark_said`, the lock |
-| `aitools_alerts/poster/transport.py` | `Relay(on_signed=)`, `SendResult.signed` |
+| `aitools_alerts/poster/sent.py` | new: `load`, `note`, `holds`, `check`, `unsaid`, `mark_said`, the lock |
+| `aitools_alerts/poster/transport.py` | `Relay(on_signed=)` |
 | `aitools_alerts/poster/signer.py` | `run_checkpoint(known=)` calls the check and works on the filtered copy; header text |
-| `aitools_alerts/poster/main.py` | `relay_sender` passes `on_signed`; `_owed` notes; `deliver` journals `signed`; `_delivery` by id; `digest` runs the check, passes `foreign`, journals the ids; `_record` marks them said; `run` passes `known` |
+| `aitools_alerts/poster/main.py` | `relay_sender` passes `on_signed`; `_owed` notes; `_delivery` by recorded id; `digest` runs the check, passes `foreign`, journals the ids; `_record` marks them said; `run` passes `known` |
 | `aitools_alerts/poster/ledger.py` | `Ledger.event_ids()` |
-| `aitools_alerts/poster/inputs.py` | `Config.sent_state`, in the path checks; the item key `signed`; the digest item's `foreign` |
+| `aitools_alerts/poster/inputs.py` | `Config.sent_state`, in the path checks; the digest item's `foreign` |
 | `aitools_alerts/poster/compose.py` | the line, en and ja |
 | `tests/poster/test_sent.py` and the existing poster tests | see "Tests" |
 | `README.md`, `CHANGELOG.md` | what the poster now does, the summary token, the limits |
@@ -100,13 +100,13 @@ The digest's journal item carries the ids it reported (`adv["foreign"]`, at most
 ### Tests
 
 - The record: the start takes `adopt` and nothing else; nothing is judged before it; a relay-bot event not in `ids` is foreign, a curator's and one outside the alert channels never; `note` ends it; the first-seen time is kept; `said` is dropped when the event is recorded or leaves the mirror; `ids` is never pruned; a damaged file and one of another shape start again from `adopt` only; a failed write returns the set; two writers under the lock lose no id.
-- `Relay`: `on_signed` gets the id before the connection is made; when it raises, no connection is made and the outcome is `failed`; `signed` is set on `unknown` only.
-- `run_checkpoint`: a foreign root is in no checkpoint and the token says `foreign=1`; a foreign reply in a real thread is left out and the thread is still listed; a curator reply to a foreign root is not listed, nor an owed reply to it; a foreign renewal does not keep a lapsed thread listed; the first run takes what the served checkpoint lists, and with no checkpoint of this key served it takes the ledger's and the owed ids only; after the record is deleted, a foreign event that had been left out is still left out (criterion 6); a foreign event the mirror stops serving leaves the stored copy; a foreign event never changes the token from `sent`.
+- `Relay`: `on_signed` gets the id before the connection is made; when it raises, no connection is made and the outcome is `failed`.
+- `run_checkpoint`: a foreign root is in no checkpoint and the token says `foreign=1`; a foreign reply in a real thread is left out and the thread is still listed; a curator reply to a foreign root is not listed, nor an owed reply to it; a foreign renewal does not keep a lapsed thread listed; the first run takes what the served checkpoint lists, and with no checkpoint of this key served it takes the ledger's and the owed ids only; after the record is deleted, a foreign event that had been left out is still left out (criterion 6); a foreign event the mirror stops serving leaves the stored copy; a store at its limit with foreign events is cleared and the run signs; a foreign event never changes the token from `sent`.
 - Acceptance, end to end: a member state pulls the mirror with that checkpoint, and `pull.advisories` holds the real alert and not the forged one.
-- Settling: an unknown send whose item holds `signed` is settled by that id and never by a copy of its text under another id, with both on the mirror; the copy is foreign.
+- Settling: an unknown send is settled by the id the record holds and never by a copy of its text under another id, with both on the mirror, also when the run died before the send returned; the copy is foreign.
 - A renewal with an unknown outcome that the mirror shows is not foreign. A run that dies after a send (before `_record`) has the id on disk.
 - The digest carries the line once, in both languages, on a quiet day and on a day with alerts; the next digest does not; a digest that was not delivered says it again.
-- The path check refuses a config whose sent record is another of its files. A journal with an item carrying `signed`, and a digest item carrying `foreign`, loads; a malformed one is refused.
+- The path check refuses a config whose sent record is another of its files. A journal with a digest item carrying `foreign` loads; a malformed one is refused.
 
 ## Alternatives considered
 
@@ -123,13 +123,13 @@ The digest's journal item carries the ids it reported (`adv["foreign"]`, at most
 
 Only the poster changes; no wire format, schema, manifest, ruleset or reader code. The checkpoint lists fewer events only when a relay-bot event is not in the record. The risk is the reverse of the feature: a real post taken for foreign is left out of checkpoints. Criterion 4 and the recording before the send are the guard; the summary token (`foreign=N`) shows it in the hourly log.
 
-Rollback: revert the merge. An older poster ignores `<ledger>.sent.json`. It refuses a journal that holds an item with `signed` or a digest item with `foreign`: going back needs the outbox free of both (no send with an unknown outcome in flight, no digest waiting), the same kind of step as `dropped` (ai-tools-alerts#jsje).
+Rollback: revert the merge. An older poster ignores `<ledger>.sent.json`. It refuses a journal that holds a digest item with `foreign`: going back needs the outbox free of one (no digest waiting), the same kind of step as `dropped` (ai-tools-alerts#jsje).
 
 ## Limits, stated
 
 - Whoever holds the checkpoint key and the relay-bot key together is not stopped by this.
 - A reader older than 0.1.6 knows no checkpoint and applies the forged event, as it applies anything the mirror serves.
-- A send with an unknown outcome that was journaled before the upgrade has no `signed` and is settled by text, as today: for the three days such an item can wait, a copy of its text under another id can be settled in its place. The copy says what the poster meant to say. No item made after the upgrade has this gap.
+- A send with an unknown outcome that was attempted before the record was started is settled by text, as today: for the three days such an item can wait, a copy of its text under another id can be settled in its place. The copy says what the poster meant to say. No send made after the start has this gap.
 - A renewal sent in the last run before the upgrade whose outcome was unknown and that the mirror first shows after the first upgraded run is in none of the start's sources and reads as foreign: one redundant renewal left out, and one line in a digest. The window is the mirror's export lag after one run; installing between runs avoids it.
 - A holder of the relay-bot key can still fill the mirror's capped channel files and push real events out of them. That is true today of any key that may post; it is not made worse, and the poster's own store no longer grows with it.
 - The poster's other reads of its mirror copy (the digest's list of withdrawn threads, the recompute's reader view, the curator-translation pass, which would translate a curator's reply in a forged thread) still read a foreign event. A forged retraction can keep a real thread out of one digest. Filed as a follow-up; not in this branch.
@@ -142,3 +142,5 @@ None that block. Assumes: one poster per relay-bot key set, as `signer.py` alrea
 ## Review
 
 Pass 1 (fresheyes, gpt-6.1-sol, commit 6d99ae2): four blockers, three substantive. Fixed here: settling by text could record a thief's copy as sent (now by id); ownership was recorded after the send (now before it, in the transport); a lost record took a new baseline from the mirror (now from the served checkpoint, the ledger and the owed list only); foreign events could fill the poster's store (now removed once the mirror stops serving them); pruning by age could disown a returning root (no pruning); an owed reply to a foreign root was listed (now left out). Rebutted: the pre-upgrade unknown renewal (see "Limits": a one-run window at install, one redundant event, no member effect).
+
+Pass 2, the delta (fresheyes, gpt-6.1-sol, `--since 6d99ae2`, head 7a483a2): two major findings, both fixed here with no further pass. A run that dies mid-send left an item with no signed id, settled by text: settling now asks the sent record, which holds the id before the send, and the journal item gains no key. Foreign events could fill the store within one slow run before the cleanup ran: a pull that reports the store full now clears the foreign events and pulls once more.
