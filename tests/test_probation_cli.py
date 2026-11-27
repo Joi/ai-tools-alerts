@@ -98,6 +98,7 @@ def test_an_alert_that_took_a_slot_before_the_probation_is_held_once_it_begins(f
     assert cli.main(["pull"]) == 0
     status, data = run_json(capsys)
     assert status == cli.EXIT_UNSEEN_CRITICAL and len(data["unseen_critical"]) == 2 and len(data["held_critical"]) == 1
+    assert m.events["feed.json"][0]["id"] in data["unseen_critical"]  # the one that is no fabrication holds a slot
     n.set(verify.KEV_URL, ELSEWHERE)
     assert cli.main(["verify"]) == 0 and list(record()["since"]) == [m.bot]
     status, data = run_json(capsys)  # the two fabrications show at notice; the third is the key's and unverified
@@ -247,6 +248,32 @@ def test_a_supported_product_beside_a_never_supported_one_is_a_strike(feed, monk
     use(monkeypatch, Net().set(verify.KEV_URL, kev((CVE, "OpenAI", "Codex"))))
     assert cli.main(["pull"]) == 0 and cli.main(["verify"]) == 0
     assert len(record()["strikes"][m.bot]) == 1
+
+
+def test_a_command_run_with_the_clock_set_back_does_not_end_a_probation(feed, sent, monkeypatch, capsys):
+    m, n = fabricated(feed, monkeypatch)
+    began = record()["since"][m.bot]
+    real = verify.time.time()
+    clock_at(monkeypatch, real - 40 * DAY)  # a machine that starts before its time is set
+    assert cli.main(["check"]) == 0
+    clock_at(monkeypatch, real)
+    root = third(m)
+    n.set(gurl(G1), DOWN)
+    status, data = run_json(capsys)
+    assert status == 0 and data["held_critical"] == [root["id"]] and sent["texts"] == []
+    assert record()["since"] == {m.bot: began}
+
+
+def test_support_read_earlier_and_gone_is_not_a_strike(feed, monkeypatch, capsys):
+    feed([bot(id=CVE, level="critical"), bot(id=CVE2, level="critical")], ALL)
+    n = use(monkeypatch, Net().set(verify.KEV_URL, kev((CVE, "Anthropic", "Claude Code"), (CVE2, "Anthropic", "Claude Code"))))
+    assert cli.main(["pull"]) == 0 and cli.main(["verify"]) == 0
+    assert all(e[0] is not None for names in State.load().supported["threads"].values() for e in names.values())
+    n.set(verify.KEV_URL, ELSEWHERE)  # the catalog stops listing them for this product
+    clock_at(monkeypatch, verify.time.time() + 2 * DAY)
+    assert cli.main(["verify"]) == 0
+    gone = [e[1] for names in State.load().supported["threads"].values() for e in names.values()]
+    assert len(gone) == 2 and all(g is not None for g in gone) and record() == no_probation()
 
 
 @pytest.mark.parametrize("case", ["above-source", "unread", "curator", "off"])
@@ -402,10 +429,13 @@ def test_the_two_latest_strikes_are_kept_whatever_number_is_found():
     assert wide["strikes"][KEY][0][1] == roots[:MAX_STRIKE_ROOTS]
 
 
-def test_a_time_written_while_the_clock_was_ahead_counts_from_now():
+def test_a_time_ahead_of_the_clock_counts_as_now_and_is_kept_as_written():
     ahead = {"strikes": {KEY: [[NOW + 5 * DAY, [A]], [NOW + 9 * DAY, [B]]]}, "since": {KEY: NOW + 9 * DAY}}
-    got = step(ahead, [])
-    assert got == {"strikes": {KEY: [[NOW, [A]], [NOW, [B]]]}, "since": {KEY: NOW}}
+    assert step(ahead, []) == ahead
+    # so one command with the clock set back does not end a probation, or drop a strike
+    rec = {"strikes": {KEY: [[NOW - DAY, [A]]]}, "since": {KEY2: NOW}}
+    back = step(rec, [], NOW - 40 * DAY)
+    assert back == rec and step(back, [], NOW) == rec
     st = State(dir=Path("."), probation=ahead)
     assert cli._on_probation(st, KEY, NOW) and not cli._on_probation(st, KEY2, NOW)
     assert not cli._on_probation(State(dir=Path("."), probation={"strikes": {}, "since": {KEY: NOW - cli.PROBATION_S}}), KEY, NOW)
@@ -442,14 +472,20 @@ def test_a_key_on_probation_cannot_lower_another_relay_bot_key_s_thread_unchecke
     for i, ident in enumerate((CVE, CVE2)):  # the second key fabricates twice
         m.root_post(sec2, bot(id=ident, level="critical"), created_at=T0 + 110 + i)
     low = m.post(sec2, m.patch_text(level="notice"), created_at=T0 + 300, tags=[["e", root["id"], "", "root"]])
+    # and the other way round: a thread the second key started, lowered by the first key
+    theirs = m.root_post(sec2, bot(id=G2, level="critical"), created_at=T0 + 120)
+    low2 = m.post(m.bot_sec, m.patch_text(level="notice"), created_at=T0 + 301, tags=[["e", theirs["id"], "", "root"]])
     serve(m, reader_clock, C0)
-    use(monkeypatch, Net().set(verify.KEV_URL, ELSEWHERE).set(gurl(G1), DOWN))
+    use(monkeypatch, Net().set(verify.KEV_URL, ELSEWHERE).set(gurl(G1), DOWN).set(gurl(G2), DOWN))
     assert levels(capsys)[G1] == "critical" and cli.main(["verify"]) == 0
     assert list(record()["since"]) == [bot2]  # the strikes are the second key's: its roots
     serve(m, reader_clock, C0 + WAIT)
-    assert levels(capsys)[G1] == "critical" and State.load().lowerings == {low["id"]: C0 + WAIT}
+    got = levels(capsys)
+    assert (got[G1], got[G2]) == ("critical", "critical")
+    assert State.load().lowerings == {low["id"]: C0 + WAIT, low2["id"]: C0 + WAIT}
     serve(m, reader_clock, C0 + WAIT + 5 * DAY)
-    assert levels(capsys)[G1] == "critical"
+    got = levels(capsys)
+    assert (got[G1], got[G2]) == ("critical", "critical")
 
 
 def test_a_probation_another_command_began_holds_an_alert_this_one_was_about_to_report(feed, sent, monkeypatch, capsys):
@@ -497,6 +533,8 @@ def test_the_72_hours_start_at_the_first_checkpoint_after_the_probation_however_
     # a command before any pull: the stored checkpoint is the one of day 26, from before the end
     assert level() == "critical" and record()["since"] == {m.bot: C0}
     assert State.load().lowerings == {low["id"]: C0 + 26 * DAY}
+    out = out_of(capsys, ["check"])[1]  # the probation is over by the clock: no line for it, and no wait yet
+    assert "probation: poster key" not in out and "published and not verified" not in out
     serve(m, reader_clock, C0 + 31 * DAY)
     assert levels(capsys)[G1] == "critical"  # five days of checkpoints since the last command: not a wait
     assert State.load().lowerings == {low["id"]: C0 + 31 * DAY} and record()["since"] == {}
@@ -557,3 +595,33 @@ def test_a_narrowing_this_machine_confirms_applies_during_probation(feed, monkey
     assert fixed(capsys)[G1] == "99.0.0"
     n.set(gurl(G1), ghsa())  # the advisory states the narrowed range
     assert cli.main(["verify"]) == 0 and fixed(capsys)[G1] == "9.9.9" and list(record()["since"]) == [m.bot]
+
+
+# ---------------------------------------------------------------- found by the review of the code
+
+@pytest.mark.parametrize("channels", ["one", "none"])
+def test_a_probation_begun_after_the_reservation_keeps_the_alert_from_being_sent(feed, sent, monkeypatch, capsys, channels):
+    """The send has its own lock, taken after ``_reserve`` gave its up: probation is read
+    again there, and the alert is reported as held, in the JSON and in the exit status."""
+    m = feed([bot(id=G1, level="critical")], 'verify = "off"\n' + ("notify = []\n" if channels == "none" else ""))
+    reserve = cli._reserve
+
+    def then_probation(st, *args):
+        got = reserve(st, *args)
+        other = State.load()  # a concurrent command records the key's second strike
+        other.probation = {"strikes": {}, "since": {m.bot: int(verify.time.time())}}
+        other.save_unverified()
+        return got
+    monkeypatch.setattr(cli, "_reserve", then_probation)
+    (root,) = m.events["feed.json"]
+    status, data = run_json(capsys)
+    assert status == 0 and data["unseen_critical"] == [] and data["held_critical"] == [root["id"]]
+    assert sent["texts"] == [] and State.load().seen == set()
+    monkeypatch.setattr(cli, "_reserve", reserve)
+    assert out_of(capsys, ["notify"])[0] == 0 and sent["texts"] == []
+
+
+def test_without_a_probation_the_send_is_as_before(feed, sent, monkeypatch, capsys):
+    feed([bot(id=G1, level="critical")], 'verify = "off"\n')
+    status, data = run_json(capsys)
+    assert status == cli.EXIT_UNSEEN_CRITICAL and len(data["unseen_critical"]) == 1 and len(sent["texts"]) == 1

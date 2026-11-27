@@ -548,11 +548,14 @@ def _probation_step(record: dict, found: list, now: int) -> dict:
     that young, and one that has run out is left for ``_note_offers`` to remove, which
     starts the waits of the key's lowerings in the same write.
 
-    Every stored time is cut to ``now``: one written while the clock was ahead counts from
-    now."""
+    A stored time is compared as ``min(time, now)`` and kept as it was written. One
+    written while the clock was ahead counts as now until the clock reaches it. None is
+    cut and written back: a single command run while the clock was set back (a machine
+    that starts before its time is set) would otherwise date a probation in the past
+    and end it, which is the open side."""
     strikes: dict = {}
     for key, ss in record["strikes"].items():
-        live = [[min(at, now), list(roots)] for at, roots in ss if min(at, now) > now - STRIKE_WINDOW_S]
+        live = [[at, list(roots)] for at, roots in ss if min(at, now) > now - STRIKE_WINDOW_S]
         if live:
             strikes[key] = live
     fresh: dict = {}
@@ -568,9 +571,9 @@ def _probation_step(record: dict, found: list, now: int) -> dict:
     for key in {*strikes, *fresh}:
         ss = [s for s in strikes.get(key, []) if id(s) not in replaced] + fresh.get(key, [])
         out[key] = sorted(ss, key=lambda s: (s[0], sorted(s[1])))[-MAX_STRIKES:]
-    since = {key: min(at, now) for key, at in record["since"].items()}
+    since = dict(record["since"])
     for key, ss in out.items():
-        if len(ss) >= MAX_STRIKES and not since.get(key, -PROBATION_S) > now - PROBATION_S:
+        if len(ss) >= MAX_STRIKES and not min(since.get(key, -PROBATION_S), now) > now - PROBATION_S:
             since[key] = ss[-1][0]
     return {"strikes": out, "since": since}
 
@@ -1435,7 +1438,7 @@ def _reserve(st: State, pending: list, held: list, grants: list, loose=frozenset
             held + [x for x in pending if x[0].root_id in denied])
 
 
-def _notify(st: State, s: config.Settings, pending, loose=frozenset(), flagged=None) -> int:
+def _notify(st: State, s: config.Settings, pending, loose=frozenset(), flagged=None, withheld=None) -> int:
     """Send each pending advisory once, under the state lock: a concurrent
     run waits, then re-reads seen and skips what this one already sent. Every
     root of an advisory is marked seen; one seen root makes it seen. An unverified
@@ -1444,11 +1447,32 @@ def _notify(st: State, s: config.Settings, pending, loose=frozenset(), flagged=N
     ``flagged`` (53fy, ``_flagged`` of the command's pairs): an entry in it is sent with
     no translation, whichever match the text describes, and once it is accepted every
     flagged match of the entry counts as told: no correction follows a notification
-    that named no version."""
+    that named no version.
+
+    cftg: an unverified alert whose poster key is on probation in the record as it is
+    under this lock is not sent and not marked seen: a probation another command began
+    after ``_reserve`` counts. Its root ids are added to ``withheld`` (a set), so the
+    caller reports it as held and not as an interrupt. With no channel configured the
+    same is decided under a lock of its own."""
     flagged = flagged or {}
+    withheld = set() if withheld is None else withheld
+
+    def barred(t) -> bool:  # under the lock
+        if loose.isdisjoint(t.root_ids) or not _on_probation(st, _poster(t, st), int(time.time())):
+            return False
+        withheld.update(t.root_ids)
+        return True
     if not pending:
         return 0
     if not s.notify:
+        try:
+            if not loose.isdisjoint(r for t, _ in pending for r in t.root_ids):
+                with st.locked():
+                    pending = [(t, m) for t, m in pending if not barred(t)]
+        except OSError:
+            pass
+        if not pending:
+            return 0
         _err("no notify channel configured")
         return 1
     status = 0
@@ -1456,6 +1480,8 @@ def _notify(st: State, s: config.Settings, pending, loose=frozenset(), flagged=N
         for t, m in pending:
             if _seen(t, st):
                 continue  # sent already (by this run, or a concurrent one)
+            if barred(t):
+                continue
             told = {k for r in t.root_ids for k in flagged.get(r, ())}
             text = notify.format_text(t.adv, m, None if told else _tr(t, s), plain=bool(told))
             if not loose.isdisjoint(t.root_ids):
@@ -1554,11 +1580,13 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
     elif not a.quiet:
         a.json = False
         cmd_check(a, st, s, source_lines=False)  # printed below, once the sources are read
+    withheld: set = set()  # cftg: what a probation begun since ``_reserve`` kept from being sent
+
     def send(them, loose, pairs) -> int:
         if a.quiet or a.json:
             with contextlib.redirect_stdout(io.StringIO()):
-                return _notify(st, s, them, loose, _flagged(pairs))
-        return _notify(st, s, them, loose, _flagged(pairs))
+                return _notify(st, s, them, loose, _flagged(pairs), withheld)
+        return _notify(st, s, them, loose, _flagged(pairs), withheld)
     def correct(pairs, fresh=None) -> int:  # 53fy
         due = _corrections(st, _flag(a, st, pairs, fresh))
         if a.quiet or a.json:
@@ -1597,7 +1625,10 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
             print(line)
     # 53fy: a critical this machine was notified of whose fixed version the source contradicts
     status = correct(pairs, got) or status
+    pending = [x for x in pending if x[0].root_id not in withheld]  # held, not an interrupt
     if a.json:
+        out["held_critical"] = sorted({*out["held_critical"], *(r for r in out["unseen_critical"] if r in withheld)})
+        out["unseen_critical"] = [r for r in out["unseen_critical"] if r not in withheld]
         print(json.dumps(out, indent=2))
     return EXIT_UNSEEN_CRITICAL if pending else status
 

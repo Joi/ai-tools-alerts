@@ -18,13 +18,16 @@ spec — pass 2, the delta (fresheyes, gpt-6.1-sol, `--since 7504c03`, head 16ba
 Last reviewed: plan acbf73b23c0144c73a92d0c39b649f410791c206
 Pass 1 [plan]: 2B/0S/0C/0R · fixed -/- · velocity = (—→2, escalation no)
 plan — pass 1 (fresheyes, gpt-6.1-sol, acbf73b, FRESHEYES_DONE REASON=-). Both fixed in the next commit: the plan worded the rebuilt-record guard of `_strikes` without `is not None` (the code had it; the plan now says it); no test covered a narrowing during probation (three tests added: not applied and no wait shown, the wait starting at the checkpoint after the end, a confirmed narrowing applying; two mutations added). Neither fix changed what the code does, so no delta. plan — passes: 1 · elapsed: about 5 min.
+Last reviewed: code 6134002 (whole branch, `git diff origin/main...6134002`)
+Pass 1 [code:whole-branch]: 1B/2S/5C/0R · fixed -/- · velocity = (—→8, escalation no)
+code — pass 1, Stage 2 (fresheyes, gpt-6.1-sol, 6134002, FRESHEYES_DONE REASON=-): one BLOCKER, a probation begun between `_reserve` and `_notify` did not stop the send. Fixed in the next commit: `_notify` reads the probation again under its own lock (and under one of its own with no channel configured), and `run` reports such an alert as held, in the JSON and in the exit status. Stage 1 (same-model subagent, 6134002): 0 blockers, 3 substantive (the same send-lock gap; no test for "supported earlier and no longer"; one command with the clock set back ended a probation), 5 cosmetic. All fixed in the same commit: stored times are compared against the clock and kept as written, never cut and written back; tests for the lost-support case, the root's key barring, the slot test's premise, what `check` says between the clock's end and the checkpoint after it; the spec says which `gone` dates a strike. Nothing rebutted beyond the standing one (ai-tools-alerts#ex8f). The BLOCKER fix changed behaviour: the one delta runs `--since 6134002`.
 
 ## Chunks
-- [ ] the record of strikes and probations (`state.py`), the step that writes it and the two places it bites (`cli.py`), tests
-- [ ] docs: CHANGELOG, README
+- [x] the record of strikes and probations (`state.py`), the step that writes it and the two places it bites (`cli.py`), tests (1282536; review fixes in the commit after 6134002)
+- [x] docs: CHANGELOG, README (6134002)
 
 ## Notes
-- Mutation check (a script in the scratchpad, each change restored after): ten changes to `cli.py`, one per rule (the probation test in `_interrupts`, the bar on a lowering, the reply's signer, the split of a strike, the record ending the bar, the checkpoint's time ending it, the two halves of the bar on a narrowing, the denial in `_reserve`, strikes kept without their alert); each makes its named test in `tests/test_probation_cli.py` fail.
+- Mutation check (a script in the scratchpad, each change restored after): sixteen changes to `cli.py`, one per rule (the probation test in `_interrupts`, the bar on a lowering, the reply's signer and the root's, the split of a strike, the record ending the bar, the checkpoint's time ending it, the two halves of the bar on a narrowing, the denial in `_reserve`, the three parts of the recheck at the send, `last` in the strike test, times written back, strikes kept without their alert); each makes its named test in `tests/test_probation_cli.py` fail.
 - Follow-up filed: ai-tools-alerts#ex8f (count a strike, a slot and a held raise against the signer of the reply; needs `pull` to keep signers per thread).
 - Skip temptation: the code and its tests were written in the working tree while the spec's reviews ran, and changed with each finding; nothing of it was committed before the plan's review.
 - Spec, plan and this record were edited by scripts with exact-match replacements, each asserted to occur once, not with the Edit tool the skill names.
