@@ -16,7 +16,7 @@ The poster dates its checkpoint when it signs it (ai-tools-alerts#p93w, from the
 
 A reader does not refuse a checkpoint that lists an event dated after it. This is what releases 0.1.8 to 0.3.0 do, now stated in `spec/wire.md` and tested on each of them: the event is admitted, its claim waits for a checkpoint dated at or after it, and the thread keeps its level meanwhile. No reader code changes.
 
-After a lost checkpoint state file, a thread whose level changed before the loss is left out of checkpoints until the poster's copy of the mirror holds that level reply, or a renewal confirmed after it was sent. The state file was the only memory that the relay had acknowledged the reply, and the renewal sent after a loss does not replace it when no source confirms. The times come from the ledger. Such a thread keeps its level on the readers that hold it.
+After a lost checkpoint state file, a thread whose level changed before the loss is left out of checkpoints until the poster's copy of the mirror holds that level reply, or a renewal confirmed after the poster last recorded a reply of the thread. (A reply dated before its own run began, after a clock set back, is not recognised; such a thread waits for a confirmation or its next level change.) The state file was the only memory that the relay had acknowledged the reply, and the renewal sent after a loss does not replace it when no source confirms. The times come from the ledger. Such a thread keeps its level on the readers that hold it.
 
 What an operator should know. Checkpoints are dated up to a few minutes later than before. No state file, ledger, wire format, schema, manifest or ruleset changes shape, so the 0.3.0 poster reads what this one writes.
 

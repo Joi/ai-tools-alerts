@@ -382,6 +382,15 @@ def test_a_level_change_of_a_thread_with_no_claim_is_not_passed(signing, monkeyp
     assert e["changed"] == [T0] and "claim" not in e and seen[-1] == []
 
 
+def test_a_ledger_that_cannot_give_the_level_changes_means_no_checkpoint_is_signed(signing, monkeypatch):
+    def broken(self):
+        raise main.LedgerError("unreadable")
+    monkeypatch.setattr(main.Run, "level_changes", broken)
+    relay = PutRelay()
+    code, summary, _ = signing.run(relay=relay)
+    assert code == 0 and summary.endswith(" checkpoint=error") and relay.puts == []
+
+
 def test_the_runs_clock_reaches_the_signer(signing):
     relay = PutRelay()
     env_code, summary, _ = signing.run(relay=relay, clock=lambda: T0 + 30)

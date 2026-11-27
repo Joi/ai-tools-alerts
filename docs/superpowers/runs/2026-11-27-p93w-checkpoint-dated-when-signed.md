@@ -1,8 +1,9 @@
 # Run: p93w-checkpoint-dated-when-signed
 Instruction: Read TASK-ai-tools-alerts#p93w.md in this worktree root, then run `kata show ai-tools-alerts#p93w` and follow the brief and the dispatch rules pasted after this sentence. (Run as /do-it, starting rung floored at medium. The task file was empty; the issue text is the brief.)
-Stage: code-review:whole-branch
+Stage: code-review:delta
 Rung: heavy (start-floor heavy: hard-trigger, BR1 REV1 NOV1 INT2 FC2 = 7; the dispatch brief floors at medium). The evaluator's cause: the diff edits `signer.run_checkpoint`, which reads the checkpoint key and checks its certificate, and changes the time that certificate check is judged by. It called the reading literal, not clear-cut; the rung is not the executor's to lower. Lens: "No wire format, schema, manifest, ruleset or state file shape changes."
 Last reviewed: spec 0e4db468139b09a1189ec60463da2a75d0d480e3 (whole), 7fad14f418c0bc3c8d03e95d4fb993d471c0fdad (delta)
+Last reviewed: code 36359b31e720275f6a9a94cf74efda8ce4c66641 (whole branch, after the merge of main)
 Last reviewed: plan 44ee3275c31788b2dba12f1306c772504493395b (whole), 8088a0c137beb09775c681a49a478a5e6d3169ee (delta)
 Spec: docs/superpowers/specs/2026-11-27-p93w-checkpoint-dated-when-signed-design.md   Plan: docs/superpowers/plans/2026-11-27-p93w-checkpoint-dated-when-signed.md
 Agency project: none (the agency tools are not available in this session; the plan is executed directly)
@@ -15,6 +16,7 @@ Pass 2 [spec]: 2B/0S/1C/0R · fixed 3/3 prior · velocity ↓ (4→3, escalation
 
 Pass 1 [plan]: 2B/0S/0C/0R · fixed -/- · velocity = (—→2, escalation no)
 Pass 2 [plan]: 0B/0S/0C/0R · fixed 2/2 prior · velocity ↓ (2→0, escalation no)
+Pass 1 [code:whole-branch]: 3B/2S/3C/0R · fixed -/- · velocity = (—→8, escalation no)
 
 ## Chunks
 - [x] signer: the checkpoint is dated at the signing time; level changes from before a lost state file
@@ -37,6 +39,18 @@ Pass 2 [plan]: 0B/0S/0C/0R · fixed 2/2 prior · velocity ↓ (2→0, escalation
 2. The compatibility test could not tell a held claim from one counted at once (the renewal held critical either way). Fixed: a third case whose late claim does not hold critical: critical under the earlier checkpoint, high under the next.
 
 Plan delta (fresheyes, run 20261127-213057-232bc7): passed, no findings.
+
+## Code review, whole branch at 36359b31 (round 1 of the brief's three)
+Fresheyes (gpt-6.1-sol high, run 20261127-214501-e8bc95): 3 BLOCKER.
+1. BLOCKER. `answered` took any well-formed claim confirmed after `u`, also one about an advisory the thread never held, which a reader does not count. Fixed: the renewals are the reader's own (`pull.threads_from`); test with a claim of another id.
+2. BLOCKER as raised; fixed in the statements, not in the code. A level reply dated before `t` (a clock set back before the send) is never recognised, so a thread at notice whose source never confirms stays out of checkpoints although its reply is served. The spec's delta review had the opposite finding (an allowance before `t` can take an earlier reply for the missing one), and listing a root without its reply is the worse error. `spec/wire.md` and the changelog now say what is recognised.
+3. BLOCKER. Stamps are whole seconds: a post sent in the second the run began was settled at once and left the must-list. Fixed: what may be settled is dated strictly before the run's start; tests for a root and a level reply sent in that second.
+
+Same-model reviewer beside it: 2 SUBSTANTIVE, 3 COSMETIC.
+4. SUBSTANTIVE. A raise to critical copies the root into the critical channel; no level reply exists under that copy, so after a loss it waited for a confirmation that a blocked source never gives. Fixed: a relay-bot root dated at or after `t` states the level itself (`answered`); test.
+5. SUBSTANTIVE. `spec/wire.md` and the changelog said "confirmed after it was sent"; the code asks for a confirmation after the run that last recorded any reply of the thread. Fixed in the text; the design's "at most its level's life" corrected.
+6. COSMETIC, not fixed: `changed` is written by the first channel recorded, so a first channel's reply settled late from the mirror can be dated before `t` with no clock fault (an unknown send, then a refused repeat). Same safe side as finding 2.
+7. COSMETIC. Docstrings: fixed. Test gaps: a ledger failure gives `checkpoint=error` (test added); a curator's level reply does not count (test added).
 
 ## Notes
 - The tests were drafted while the spec and plan reviews ran, and the plan's whole review was launched beside the spec's delta, to keep inside the wall-clock limit; no code under `aitools_alerts/` changed before the plan's first pass returned. The code was written while the plan's delta ran, to the plan as fixed.

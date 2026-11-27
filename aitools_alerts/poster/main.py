@@ -2262,8 +2262,9 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
     today's digest whatever the hour (once per date); ``kev_catalog`` replaces the
     KEV fetch with a synthetic catalog (``inputs.read_kev_file``). ``catalog_channel``:
     None reads spec/catalog-channel.json, False turns the catalog lane off, a string is
-    the channel id (q03f). ``clock``: the clock the sender stamps posts with; the
-    checkpoint is dated by it when it is signed (p93w, ``signer.run_checkpoint``). None:
+    the channel id (q03f). ``clock``: the signer's clock, which must be the one the sender
+    stamps posts with (``main`` passes ``time.time``); the checkpoint is dated by it
+    when it is signed (p93w, ``signer.run_checkpoint``). None:
     the checkpoint is dated ``now``."""
     if not isinstance(config, Config):
         config = inputs.load_config(config)

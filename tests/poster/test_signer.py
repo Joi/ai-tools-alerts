@@ -1009,15 +1009,18 @@ def test_a_post_of_this_run_the_mirror_already_shows_is_listed_or_nothing_is_sig
         _thread(m, f"Corrected {i}", T0 - 500 + i, retract_at=T0 - 400 + i)
     sent = on_mirror(m, "Posted forty seconds into the run", T0 + 40, sec=m.bot_sec)
     signer.record_sent(signing.config.owed_state, sent["id"], 100, None, T0)
-    monkeypatch.setattr(signer, "MAX_LISTED", 6)
-    status, relay = _sign(signing, clock=lambda: T0 + 90)
-    assert status == "too-large" and relay.puts == [] and owed_ids(signing) == [sent["id"]]
+    same = on_mirror(m, "Posted in the second the run began", T0, sec=m.bot_sec)  # stamps are whole seconds
+    signer.record_sent(signing.config.owed_state, same["id"], 100, None, T0)
     monkeypatch.setattr(signer, "MAX_LISTED", 7)
-    status, relay = _sign(signing, clock=lambda: T0 + 91)
-    assert status == "sent" and sent["id"] in relay.last().events and len(relay.last().events) == 7
+    status, relay = _sign(signing, clock=lambda: T0 + 90)
+    assert status == "too-large" and relay.puts == [] and owed_ids(signing) == [sent["id"], same["id"]]
+    monkeypatch.setattr(signer, "MAX_LISTED", 8)
+    status, relay = _sign(signing, clock=lambda: T0 + 90)
+    assert status == "sent" and {sent["id"], same["id"]} <= relay.last().events
 
 
-def test_a_level_reply_of_this_run_is_not_made_redundant_by_its_own_date(signing, monkeypatch):
+@pytest.mark.parametrize("sent_at", [T0 + 40, T0])  # the second: sent in the second the run began
+def test_a_level_reply_of_this_run_is_not_made_redundant_by_its_own_date(signing, monkeypatch, sent_at):
     """A level reply is owed with the run's time as the renewal a reader counts. The
     mirror already shows it, dated later in the run: that must not settle it, or its
     thread would leave the must-list of the very checkpoint that should carry it."""
@@ -1026,7 +1029,7 @@ def test_a_level_reply_of_this_run_is_not_made_redundant_by_its_own_date(signing
         _thread(m, f"Corrected {i}", T0 - 500 + i, retract_at=T0 - 400 + i)
     root = m.root_post(m.bot_sec, advisory(id="CVE-2026-0001", posted_by="relay-bot", level="high"),
                        created_at=T0 - 5 * DAY, tags=[_claim(T0 - 5 * DAY)], files=("feed.json",))
-    raised = m.post(m.bot_sec, m.patch_text(level="critical"), created_at=T0 + 40, tags=[["e", root["id"], "", "root"]])
+    raised = m.post(m.bot_sec, m.patch_text(level="critical"), created_at=sent_at, tags=[["e", root["id"], "", "root"]])
     signer.record_sent(signing.config.owed_state, raised["id"], 100, root["id"], T0, renewal=(T0, T0))
     monkeypatch.setattr(signer, "MAX_LISTED", 7)  # six for the corrected threads: the reply and its root do not fit
     status, relay = _sign(signing, clock=lambda: T0 + 90)
@@ -1076,11 +1079,22 @@ def test_a_level_change_from_before_a_lost_state_keeps_its_root_out_until_its_re
     early = [renewal(a, T0 - 5 * DAY, T0 - 100), renewal(a, t + 3600, T0 - 95), renewal(a, u, T0 - 90)]
     in_run, before = level_reply(b, t + 5), level_reply(c, t - 300)
     assert signer.answered(b["id"], t, u, [in_run], m.man) and not signer.answered(c["id"], t, u, [before], m.man)
-    assert not signer.answered(a["id"], t, u, early + [in_run], m.man)
+    assert not signer.answered(a["id"], t, u, [a, *early, in_run], m.man)
+    other_id = m.post(m.bot_sec, "Sources checked. No change to this alert.", created_at=T0 - 80,  # confirmed after u,
+                      tags=[["e", a["id"], "", "root"], _claim(u + 3600, T0 - 80, cve="CVE-2026-9999")])  # of another advisory
+    copy = m.root_post(m.bot_sec, advisory(id="CVE-2026-0001", posted_by="relay-bot"), created_at=t + 9,
+                       tags=[_claim(t, cve="CVE-2026-0001")], files=())  # the root a raise copies into another channel
+    assert signer.answered(copy["id"], t, u, [copy], m.man)  # it states the level itself: no reply under it
+    assert not signer.answered(a["id"], t, u, [a], m.man)  # a root from before the change does not
+    cur = m.post(m.cur_sec, m.patch_text(level="critical"), created_at=t + 5, tags=[["e", a["id"], "", "root"]], files=())
+    assert not signer.answered(a["id"], t, u, [a, cur], m.man)  # a curator's level is not the bot's reply
+    assert pull._renewal(other_id, "relay-bot") is not None  # well formed, and no renewal of this thread to a reader
+    assert not signer.answered(a["id"], t, u, [a, *early, other_id], m.man)
     status, relay = _sign(signing, changes=changes)
     assert status == "sent,threads_suppressed=2" and relay.last().events == {other["id"], b["id"], in_run["id"]}
     confirmed = renewal(a, u + 3600, T0 - 50)
-    assert signer.answered(a["id"], t, u, [confirmed], m.man)
+    assert signer.answered(a["id"], t, u, [a, confirmed], m.man) and not signer.answered(a["id"], t, u, [confirmed], m.man)
     status, relay = _sign(signing, changes=changes)
     assert status == "sent,threads_suppressed=1"
-    assert relay.last().events == {other["id"], b["id"], in_run["id"], a["id"], confirmed["id"], *(e["id"] for e in early)}
+    assert relay.last().events == {other["id"], b["id"], in_run["id"], a["id"], confirmed["id"], other_id["id"],
+                                   *(e["id"] for e in early)}

@@ -266,27 +266,31 @@ def lapsed(events, m, now: int, channels=None) -> set:
     return out
 
 
-def answered(root, t: int, u: int, events, m) -> bool:
+def answered(root, t: int, u: int, events, m, channels=None) -> bool:
     """Whether ``events`` hold what stands in for the level reply the ledger records for
     the thread under ``root`` (ai-tools-alerts#p93w). The state file that remembered the
     reply was lost; the ledger keeps ``t``, the start of the run that first attempted it,
     and ``u``, the start of the run that recorded it (a later run when it was sent again).
     The reply is dated from ``t`` on and was sent before any run after ``u`` began. So:
     a relay-bot reply to ``root`` whose block names a level (a reader counts it from its
-    own date, ``renewals_of``) dated at or after ``t``: the reply, or a later one. Or a
-    relay-bot reply whose claim a reader takes as a renewal, confirmed after ``u``: the
-    reader that lacks the level reply loses no life by it. A renewal confirmed earlier,
-    whatever it checked since, may be older than the reply and does not count."""
-    for ev in events:
-        if pull._thread_ref(ev) != root or manifest.role_of(m, ev["pubkey"]) != "relay-bot":
-            continue
+    own date, ``renewals_of``) dated at or after ``t``: the reply, or a later one. Or
+    ``root`` itself is a relay-bot event dated at or after ``t``: a copy the change made
+    in another channel, which states the level in its own block and has no level reply
+    under it. Or a renewal the reader counts for that thread, confirmed after ``u``: the reader that
+    lacks the level reply loses no life by it. Which renewals count is the reader's
+    answer (``pull.threads_from``): a claim about an id the thread never held is none.
+    A renewal confirmed earlier, whatever it checked since, may be older than the reply
+    and does not count. A reply dated before ``t`` (the clock was set back before it was
+    sent) is not recognised: the root stays out, which is the safe side."""
+    channels = pull.channel_ids() if channels is None else channels
+    mine = [ev for ev in events if (ev["id"] == root or pull._thread_ref(ev) == root)
+            and manifest.role_of(m, ev["pubkey"]) is not None and pull._bound(ev, channels)]
+    for ev in mine:
         named = (pull._patch(ev["content"]) or {}).get("level")
-        if isinstance(named, str) and named in pull._RANK and ev["created_at"] >= t:
+        if (manifest.role_of(m, ev["pubkey"]) == "relay-bot" and ev["created_at"] >= t
+                and (ev["id"] == root or (isinstance(named, str) and named in pull._RANK))):
             return True
-        rn = pull._renewal(ev, "relay-bot")
-        if rn is not None and rn[1] > u:
-            return True
-    return False
+    return any(c > u for th in pull.threads_from(mine, m) if th.root_id == root for c, _, _ in th.renewals)
 
 
 def settle_owed(owed: list, present, now: int, later: dict | None = None) -> tuple[list, int, set]:
@@ -453,7 +457,7 @@ def run_checkpoint(config, now: int, *, ssh=None, fetch=None, root: str = TRUST_
     here on everything is judged by it and the checkpoint is dated with it: the hold
     after a lost state, the mirror pull, the certificate, what is given up after
     OWED_S, ``lapsed``, the window and the number. One thing keeps the run's start:
-    what ``settle_owed`` may settle (see there). None: the signing time is ``now``.
+    what ``settle_owed`` may settle (the comment at its call says why). None: the signing time is ``now``.
     The date is never raised to a post's date: after a clock set back that would date
     the checkpoint ahead of the true time, which readers refuse.
 
@@ -530,14 +534,16 @@ def run_checkpoint(config, now: int, *, ssh=None, fetch=None, root: str = TRUST_
         st.accept(root, m, {i: e for i, e in st.events.items() if i not in give_up})
         st.save_events()
     rec = {**rec, "gone": gone}
-    # An acknowledged post stays owed until the poster holds it dated no later than this
-    # run began: a post of this run is owed, and so on the must-list, in this run's
+    # An acknowledged post stays owed until the poster holds it dated before this run
+    # began: a post of this run is owed, and so on the must-list, in this run's
     # checkpoint even when the mirror already shows it. Settled at once it would be an
     # ordinary thread, which ``window`` leaves out when it does not fit whole (p93w). The
     # same for the renewals that may replace an owed one: a level reply of this run, owed
     # with the run's time, is not made redundant by its own date.
     # gtw9: a renewal neither the mirror nor a later renewal has replaced keeps its thread out.
-    before = [e for e in st.events.values() if e["created_at"] <= start]
+    # Strictly before: stamps are whole seconds, and a post sent in the run's first second
+    # is a post of this run.
+    before = [e for e in st.events.values() if e["created_at"] < start]
     owed, dropped, hidden = settle_owed(rec["owed"], {e["id"] for e in before}, now, _later(before, m))
     suppress = suppress | hidden
     # p93w: and no root whose level reply was forgotten with a lost state file, until it is held.
