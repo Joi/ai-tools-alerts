@@ -73,9 +73,11 @@ now runs first). The thread must:
   every reader (the reader marks a thread retracted when any of its ids is; z360).
 - have room: the thread's known ids (`Entry.aliases`, its first id among them) and the
   candidate's together are at most 51, the one-block cap `ledger._chunks` keeps for a
-  fix group (an id and 50 aliases). A member past it would be learned and never
-  named. A full thread is not joined, and the second chunk of a group split by the cap
-  never joins the first's thread.
+  fix group (an id and 50 aliases). A thread's ids stay what one block could name,
+  and no thread grows without bound. A full thread is not joined. A later chunk of a
+  group split by the cap joins the first chunk's thread only when the two fit one block.
+- the candidate's own advisory reading is in hand (`_judged`): a candidate with a GHSA
+  id whose reading failed this run would rate quieter than it is. It posts alone.
 - If the mirror pull fails, no join this run: the candidate goes on as today and
   posts its own root. It is not deferred: an alert is not held behind the mirror.
 
@@ -106,7 +108,9 @@ passing rule (`_clears`) is asked with the chosen thread.
 
 ### Planning
 
-`plan_known(..., joined=True)`:
+`plan_known(..., joined=True)`, for the join and for every later sighting of a joined
+advisory (`Entry.member`), so a run that stopped between learning the join and
+journaling its widening widens on the next sighting:
 
 - the fixed version is the thread's (equal by the key; this avoids a `v1.2` to `1.2`
   change);
@@ -115,19 +119,31 @@ passing rule (`_clears`) is asked with the chosen thread.
   unknown, so the cover is none stated (the in-run group rule), unlike a re-sighting
   of the same advisory, where no range is missing data (`_group_range`);
 - the source title (a copy's headline, the digest line) stays the thread's;
-- the member's ids are learned with `Ledger.add_ids(..., joined=True)`, which also
-  sets `Entry.joined`;
-- everything else is plan_known as it is. The level and the exploited mark cannot
-  change (the louder rule). A range change replies; ids and sources alone are learned
-  and send nothing; the reply that is sent publishes the joined ids, and the sources
-  while the thread has fewer than 20 (the cap every thread has).
+- the member's ids are learned with `Ledger.add_ids(..., joined=True)`, into its group
+  in `Entry.joined`, and are never published (no reply's aliases carry them);
+- on the joined thread a KEV reading counts only for a CVE the first id's source ties
+  to it (`sources.tied`), as GHSA readings already do (`_tied`);
+- everything else is plan_known as it is. A range change replies; ids and sources
+  alone are learned and send nothing; the reply that is sent lists the joined sources
+  while the thread has fewer than 20 (the cap every thread has). The upstream severity
+  word stays the thread's.
 
-### `Entry.joined`
+### `Entry.joined` and leaving
 
-True once a member joined by fix. On a later sighting of any member of the thread,
-plan_known uses the group range rule (`_group_range`) even when the published Covers
-count is one (the join's ids may not have been published yet), so one member's
-narrower range never narrows the thread. `_entry_ok` accepts it as `True` only.
+A list of groups, one per joined advisory: its ids, case-folded and sorted. A later
+id of the same advisory goes into its group. `Entry.member(ids)` names the group a
+sighting is of: some id of it and none of the thread's own ids.
+
+A joined advisory is found by its ids on every later sighting, so the join's checks
+run again there (code review): when its own reading is in hand (`_judged`) and it now
+rates above the thread or is exploited where the thread is not (`_louder`), the group
+leaves (`Ledger.unjoin`: its ids are dropped from the thread) and the sighting is
+planned as a new advisory, which posts its own root. Its ids were never published, so
+no reader holds them in the thread. Its listed sources stay listed in the thread.
+
+On a sighting of the thread's own advisory, plan_known uses the group range rule
+(`_group_range`) while the thread has a joined advisory, though the published Covers
+count is one, so its narrower range never narrows the thread.
 
 ## Alternatives considered
 
@@ -140,6 +156,17 @@ narrower range never narrows the thread. `_entry_ok` accepts it as `True` only.
 - **Join a louder member anyway** and let the thread rise on its evidence. The
   member's check reads the first id and would find the level unsupported (3qyq), so
   every reader would count it unverified. Rejected, for a KEV listing too.
+- **Join on incomplete evidence.** A newcomer with a GHSA id whose own advisory
+  reading is not in hand (a failed read, a spent share) would be judged quieter than it
+  is, and once joined it is never read for the level again. Rejected: it posts alone.
+- **A joined member's later KEV listing** passes `_tied`, which filters GHSA readings
+  only. On a joined thread, a KEV reading counts only for a CVE the first id's source
+  ties to it (`sources.tied`), and the exploited mark falls with it. In-run fix groups
+  keep the older rule; yd1y carries that.
+- **Publish the joined ids with the next reply** (the 8ke5 rule for learned ids, and the
+  first build). A published member cannot leave: every reader holds its id in the
+  thread, and a retraction of it hides the whole thread (z360). Rejected: the poster
+  keeps them for routing only, and the thread's range covers the member.
 - **Busy learns the member's ids** as it does for an overlapping candidate. The
   thread's next reply would record them, skipping the join's checks. Rejected.
 - **Decide group-ness from the ledger's full id set** instead of a new field. Changes
@@ -155,10 +182,15 @@ narrower range never narrows the thread. `_entry_ok` accepts it as `True` only.
 
 Poster only; no reader, wire or schema change. A joined member changes what a run
 posts: one root fewer, possibly one reply more. A ledger written by this release can
-carry `"joined": true`; an older poster refuses a ledger with an unknown field
+carry `joined`; an older poster refuses a ledger with an unknown field
 (`_entry_ok`), as with kk2q's `withdrawn`. Rollback: revert the merge commit; before
-running an older poster on a ledger this one wrote, delete the `joined` keys
-(`jq 'del(.entries[].joined)'`). No release in this session (5fry takes a note).
+running an older poster on a ledger this one wrote, with no run in progress, delete
+the `joined` keys and replace the file (`jq 'del(.entries[].joined)' ledger.json >
+ledger.json.new && mv ledger.json.new ledger.json`). What that loses: the older poster
+reads a joined advisory's ids as the thread's own, so the joined advisory never gets a
+root of its own, and a later narrower sighting of the first advisory narrows the range
+again (the pre-btqg rule). Accepted for a rollback, which
+puts back the older behaviour; the release session decides whether to take it. No release in this session (5fry takes a note).
 
 ## Open questions
 

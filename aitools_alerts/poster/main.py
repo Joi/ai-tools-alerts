@@ -1188,6 +1188,17 @@ class Run:
         """(the candidate, its level, the reason) against its thread; ``entry`` is None
         for a new one."""
         c = self._tied(c, entry)  # 3qyq: only readings the source ties to the post's first id
+        if entry is not None and entry.joined:
+            # btqg: so too a KEV listing, on a thread an advisory joined by its fix: a member's
+            # check reads the CVEs its first id names, so a joined advisory's own listing
+            # neither raises the thread nor marks it exploited (``one`` lets a louder one out).
+            first = recompute.lookup_id(entry.advisory.get("id"))
+            kev = [r for r in c.readings if r[0] == "kev"]
+            keep = [r for r in kev if sources.tied(first, json.loads(r[1]).get("cve_id"), self._admit_read,
+                                                   recompute.published_aliases(entry))]
+            if len(keep) < len(kev):
+                c = replace(c, readings=tuple(r for r in c.readings if r[0] != "kev" or r in keep),
+                            exploited=c.exploited if keep else False)
         if entry is not None and entry.lowered and c.exploited is True \
                 and not any(r[0] == "kev" for r in c.readings):
             # ny5g: on a lowered thread the recompute holds the KEV level. A mark that no
@@ -1233,7 +1244,7 @@ class Run:
         retracted (a reader retracts a whole thread for any one of its ids). A former name
         another scope entry also lists does not say which product its thread is about
         (``_scope_named``): none under it. Nor a thread whose ids and c's pass the one-block
-        cap (``ledger._chunks``): a member past it would be learned and never named."""
+        cap (``ledger.BLOCK_IDS``): a thread's ids stay what one block could name."""
         key = ledger.fix_key_of(c.fixed)
         if key is None or self.is_synthetic(c):
             return None
@@ -1253,8 +1264,8 @@ class Run:
         ids, roots = gone
         if not ids.isdisjoint(mine):
             return None
-        for e in found:
-            if compose.withdrawn(schema.validate(e.advisory), ids, self.now) \
+        for e in found:  # every id the thread holds, published or learned
+            if compose.withdrawn(schema.validate(e.advisory), ids, self.now) or not ids.isdisjoint(_fold(e.aliases)) \
                     or not roots.isdisjoint({e.root_event_id, *e.channel_ids.values()}):
                 continue
             return (scope if e.scope == scope.name else replace(scope, name=e.scope, formerly=())), e
@@ -1270,19 +1281,29 @@ class Run:
         scope = self._former(scope, ids)
         entry = self.led.lookup(ids, scope=scope.name)
         if entry is not None:
-            return scope, entry, False
+            return scope, entry, entry.member(ids) is not None  # a joined advisory sighted again
         got = self._fix_thread(c, scope)
         if got is None:
             return scope, None, False
         joined, e = got
-        alone = self._rate(c, scope, None)[1]
-        if RANK[alone] > RANK[e.level] or (c.exploited is True and not e.exploited):
+        if not self._judged(c) or self._louder(c, scope, e):
             return scope, None, False
         return joined, e, True
 
-    def one(self, c, scope):
+    def _judged(self, c) -> bool:
+        """btqg: c's own advisory reading is in hand this run, or c has no GHSA id to read.
+        Without it (a read failed, a share spent) what c alone supports is unknown."""
+        return not any(i.casefold().startswith("ghsa-") for i in (c.id, *c.aliases)) \
+            or any(r[0] == "ghsa" for r in self._tied(c).readings)
+
+    def _louder(self, c, scope, e) -> bool:
+        """btqg: c alone rates above thread e, or is exploited where e is not. A thread's
+        level and mark rest on its first id (3qyq), which no source ties to c."""
+        return RANK[self._rate(c, scope, None)[1]] > RANK[e.level] or (c.exploited is True and not e.exploited)
+
+    def one(self, c, named):
         ids = [c.id, *c.aliases]
-        scope = own = self._former(scope, ids)
+        scope = own = self._former(named, ids)
         entry = self.led.lookup(ids, scope=scope.name)
         # jsje: a raise never waits behind lower-priority work on its own thread
         if self.busy(ids, scope.name) and not (self._clears(c, scope, entry)
@@ -1291,9 +1312,17 @@ class Run:
             self.defer([(c, scope)])  # its update (a fix, a promotion) is planned once the send resolves
             return
         joined = False
-        if entry is None:
+        if entry is not None and entry.member(ids) is not None:
+            joined = True  # btqg: a joined advisory sighted again keeps the join's rules
+            if self._judged(c) and self._louder(c, scope, entry):
+                # it now supports more than the thread can say: it leaves and posts alone
+                self.led.unjoin(entry.root_event_id, ids)
+                scope = own = self._former(named, ids)
+                entry, joined = None, False
+        elif entry is None:
             scope, entry, joined = self._thread_for(c, scope)
-        if joined:  # btqg: the thread's work counts, found by its ids and root, not by c's
+        # btqg: joining now: the thread's work counts, found by its ids and root, not by c's
+        if joined and self.led.lookup(ids, scope=scope.name) is None:
             both = [*entry.aliases, *ids]
             if self.busy(both, scope.name, learn=False) and not (
                     self._clears(c, scope, entry) and not self.busy(both, scope.name, passing=True, learn=False)):
@@ -1487,9 +1516,10 @@ class Run:
         self.n["held"] += 1
 
     def plan_known(self, c, scope, level, reason, ids, entry, joined=False):
-        """An update of ``entry``'s thread from candidate c. ``joined`` (btqg): c has no
-        id of the thread and joined it by its fix (``_thread_for``): the thread keeps its
-        fix and headline, and its range widens to cover c's."""
+        """An update of ``entry``'s thread from candidate c. ``joined`` (btqg): c is an
+        advisory that joins the thread by its fix, or one that did (``Entry.member``): the
+        thread keeps its fix and headline, its range widens to cover c's, and c's ids are
+        learned and never published (so it can leave, ``one``)."""
         prev = schema.validate(entry.advisory)
         level, reason = self._thread_level(level, reason, entry)
         # kk2q: nor does a candidate move a withdrawn thread: the recompute ends that state, by
@@ -1500,7 +1530,8 @@ class Run:
         stored = _fold(entry.aliases)
         fresh = [i for i in dict.fromkeys(ids) if i.casefold() not in stored and i != prev.id]
         if fresh or joined:  # identity is learned whether or not a reply can say so (the 50-alias cap)
-            self.led.add_ids(entry.root_event_id, fresh, joined=joined)
+            self.led.add_ids(entry.root_event_id, ids if joined else fresh, joined=joined)
+        hidden = set().union(*map(set, entry.joined or ())) | (_fold(ids) if joined else set())  # btqg
         title = (entry.source_title or compose.source_title(c)) if joined else compose.source_title(c)
         if title and not entry.source_title:  # learned late: the digest carries it; no reply says it
             self.led.learn_title(entry.root_event_id, title)
@@ -1523,7 +1554,7 @@ class Run:
                 seen_urls.add(s.url)
                 extra.append(s)
         unpublished = [i for i in dict.fromkeys([*ids, *entry.aliases])
-                       if i.casefold() not in prev_ids and compose.public_id(i)]
+                       if i.casefold() not in prev_ids and compose.public_id(i) and i.casefold() not in hidden]
         k = replace(  # the thread's identity and everything already known, plus what is new
             c, id=prev.id, aliases=tuple(prev.aliases) + tuple(unpublished),
             fixed=c.fixed if own_fix else was.fixed,
@@ -1557,7 +1588,7 @@ class Run:
             # its Japanese action turns urgent, 4yr1).
             self.led.learn_sources(entry.root_event_id, compose._sources(extra))  # publishable ones only
             changes = {}
-        if changes and new.advisory_severity not in (None, prev.advisory_severity):
+        if changes and not joined and new.advisory_severity not in (None, prev.advisory_severity):
             changes["advisory_severity"] = new.advisory_severity  # 0dvh: never a reply on its own
         copies = [ch for ch in CHANNELS_FOR[level] if ch not in entry.channel_ids and not entry.withdrawn]
         # hh5s: what this candidate's readings say of the thread, for a level change and

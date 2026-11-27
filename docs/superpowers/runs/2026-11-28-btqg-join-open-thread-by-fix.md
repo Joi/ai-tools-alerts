@@ -17,6 +17,23 @@ Pass 1 [spec]: 4B/1S/1C/0R · fixed -/- · velocity = (—→6, escalation no)  
   - S a group's level rests on its first id through withdrawal/renewal: rebutted, pre-existing for every faxq group; follow-up filed
   - C the snapshot's commit message: rebutted, a dangling review snapshot, never on the branch
   passes: 1 · elapsed: ~20 min
+Pass 1 [plan]: 1B/6S/2C/0R · fixed -/- · velocity = (—→9, escalation no)   (fresheyes gpt-6.1-sol high, at 4a9293f, REASON=-; run beside the code review)
+  - B a joined member's retraction while only the ledger holds it: the thread's learned ids are checked too (fixed, test)
+  - S tests missing: mirror-retracted thread by root and by copy; Entry.joined's own effect; the exploited guard alone; equal range (fixed, tests; each mutation-checked)
+  - S rollback command printed and replaced nothing (fixed: jq to a file and mv)
+  - S busy test settles through resolve, not a later run (rebutted: deferral and settlement are the generic, tested paths; resolve stands for the settle that jsje's tests cover)
+  - S rollback loses the range rule for joined threads (rebutted: accepted and written down; a rollback puts back the older behaviour, the release session decides)
+  - C plan text: `joined` passed on; `was.affected` (code already right; plan fixed)
+Pass 1 [code:join]: 3B/3S/2C/0R · fixed -/- · velocity = (—→8, escalation no)   (Stage 1 same-model subagent ∥ Stage 2 fresheyes gpt-6.1-sol high, whole branch origin/main...4a9293f, REASON=-)
+  - B (S2) once joined, a member's later louder evidence (its GHSA, a KEV listing) was absorbed: joined ids kept as groups, never published; a louder sighting leaves (unjoin) and posts alone (fixed, tests)
+  - B (S2) a run stopped between the join and journaling the widening lost it: every sighting of a joined member keeps the join's range rule (fixed, test)
+  - B (S1) a failed read of the newcomer's own advisory let a louder one join for good: no join without its reading (`_judged`) (fixed, test)
+  - S (S1) a joined member's later KEV listing raised the thread: KEV readings tied to the first id on a joined thread, and the leave rule (fixed, test)
+  - S (S1) retraction check skipped learned ids (fixed with the plan B above)
+  - S (S1) mirror-root path untested; a joined reply replaced the upstream severity word (fixed: tests; the word stays the thread's)
+  - C (S1) spec's chunk claim false (fixed); two test nits (fixed)
+  - S1 also: learn_floor takes a joined member's prose floor (rebutted: the in-run group does the same; the floor only stops a lowering, the safe direction)
+  passes: 1 · BLOCKER fixes changed behaviour: one delta (fresheyes --since 4a9293f) follows
 
 ## Chunks
 - [ ] join — Run.one finds the open thread of the candidate's fix; plan_known widens its range; ledger `joined`

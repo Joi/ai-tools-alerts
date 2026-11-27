@@ -249,4 +249,4 @@ def test_a_former_name_only_one_product_had_is_joined_by_fix(env):
     code, summary, relay = env.run(now=T0)
     assert code == 0 and "roots=0" in summary, summary
     (e,) = entries(env)
-    assert e["scope"] == INSPECTOR and e["joined"] is True and Z in e["aliases"]
+    assert e["scope"] == INSPECTOR and e["joined"] == [[Z.casefold()]] and Z in e["aliases"]

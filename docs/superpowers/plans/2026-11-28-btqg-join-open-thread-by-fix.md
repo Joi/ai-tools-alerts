@@ -54,6 +54,7 @@ File: `aitools_alerts/poster/main.py`
       Order inside `_thread_for`: the own-id busy check must come before `_fix_thread`,
       so `one` calls own-id busy, then `_thread_for` only when not busy. (make_way calls
       `_thread_for` without the busy check, as it calls `_clears` today.)
+- [ ] `one` passes it on: `self.plan_known(c, scope, level, reason, ids, entry, joined)`.
 - [ ] `plan_known(c, scope, level, reason, ids, entry, joined=False)`:
       - `own_fix = False` when joined (the thread's fix stands; equal by key);
       - `fresh` learned with `add_ids(root, fresh, joined=joined)`; when joined and
@@ -63,7 +64,7 @@ File: `aitools_alerts/poster/main.py`
       - `source_title=entry.source_title or compose.source_title(c)` when joined; the
         `learn_title` line unchanged (it only fills an empty title).
 - [ ] `_join_range(was, c, fixed)` (module level, beside `_group_range`): member range
-      `compose.schema_affected(c.affected)`; None or thread None -> None; equal -> was;
+      `compose.schema_affected(c.affected)`; None or thread None -> None; equal -> `was.affected`;
       else `<fixed` when `compose.schema_fixed(fixed)`, else None.
 
 ### Task 4: tests, `tests/poster/test_main.py` (section "btqg: a later member joins")
@@ -82,6 +83,11 @@ File: `aitools_alerts/poster/main.py`
 - [ ] range: A `>=2.0,<2.1.0`, Z `<2.1.0` -> one reply, range `<2.1.0`; Z with no range
       -> reply, range None; then A alone `>=2.0,<2.1.0` again -> no reply, range kept.
 - [ ] full: a thread holding 51 ids is not joined.
+- [ ] (plan review) a member's retraction after a join with no reply keeps a third
+      advisory out; a thread retracted on the mirror, by its root or by a channel copy,
+      is not joined; an exploited member of an unexploited critical posts its own root;
+      a joined member with the thread's own range sends nothing; a sighting before the
+      join's reply never narrows (`Entry.joined`, the Covers count still one).
 - [ ] former name (`tests/poster/test_former_names.py`): a fetch advisory fixed in 1.0
       never joins a git thread under "MCP servers and clients"; an inspector advisory
       joins the "MCP Inspector" thread.
@@ -95,10 +101,29 @@ File: `aitools_alerts/poster/main.py`
 - Acceptance: the Task 4 tests pass; the existing suite passes.
 
 ### Rollback
-Revert the merge commit. A ledger with `"joined": true` is refused by an older poster;
-`jq 'del(.entries[].joined)'` before running one.
+Revert the merge commit. A ledger with `"joined": true` is refused by an older poster.
+Before running one, with no run in progress: `jq 'del(.entries[].joined)' ledger.json >
+ledger.json.new && mv ledger.json.new ledger.json`. What that loses is in the spec.
 
 ### Docs
 - CHANGELOG.md Unreleased: one line.
 - docs/design.md, the post format / group by fix paragraph: one sentence on the
   later-run join (check where faxq wrote its line).
+
+## Amendment after the code review (round 1, at 4a9293f)
+
+Recorded in the run manifest; the spec's "`Entry.joined` and leaving" section is the
+design.
+- [ ] `Entry.joined` is a list of groups (case-folded, sorted ids of each joined
+      advisory); `Entry.member(ids)`; `add_ids(..., joined=True)` merges into the group
+      it shares an id with; `Ledger.unjoin(root, ids)` drops the group's ids; the h340
+      `forget_unpublished` drops `joined` with the ids it drops.
+- [ ] `plan_known`: joined ids never go into a reply's aliases (`hidden`); every
+      sighting of a joined advisory takes `joined=True` (the join's range rule).
+- [ ] `one`: a sighting of a joined advisory whose reading is in hand (`_judged`) and
+      that is `_louder` than the thread leaves it (`unjoin`) and is planned new.
+- [ ] `_thread_for`: no join without the candidate's own reading (`_judged`).
+- [ ] `_rate`: on a joined thread, KEV readings tied to the first id only.
+- [ ] Tests: leaves when its advisory later reads louder; leaves when KEV lists it
+      later; a stopped run's join still widens; an unread advisory posts alone; ledger
+      groups and unjoin.
