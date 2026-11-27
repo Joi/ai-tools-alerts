@@ -59,6 +59,9 @@ Same-model reviewer beside it: 2 SUBSTANTIVE, 3 COSMETIC.
 
 Gate: `scripts/test-gate.sh` exit 0 at 36359b31 in a clone holding this branch alone (public scan clean, 3426 passed, 1 skipped). The run at the final head is on the kata issue.
 
+## Second merge of main, before the pull request (ai-tools-alerts#kk2q had landed: the poster sends the withdrawal)
+Conflicts: `tests/test_wire_compat.py` (main keeps v0.3.0 in `WITHDRAWAL_READERS`; the new test runs on both lists) and one paragraph of `spec/wire.md` (both sentences kept). One change of behaviour made in the merge and reviewed by no pass: `Run.level_changes` does not pass a thread in the state `withdrawn`. Since kk2q a withdrawal writes `Entry.changed`; it names no level, so `signer.answered` would never find its reply, and the poster renews nothing there, so the thread would have stayed out of checkpoints, against kk2q's own rule that such a thread is listed. Test: `tests/poster/test_renew.py::test_a_withdrawn_thread_is_not_passed`.
+
 ## Notes
 - Skip-temptations: none acted on. The evaluator's heavy floor cost two extra passes (spec and plan deltas); both found or confirmed something.
 - A directive arrived mid-run with the brief the empty task file should have carried (kata comments on the issue): main was merged before the code review, the limit is three review rounds, the rollout note is on ai-tools-alerts#5fry.

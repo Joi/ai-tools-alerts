@@ -357,6 +357,25 @@ def test_a_level_reply_sent_again_by_a_later_run_is_passed_with_both_times(signi
     assert seen[-1] and all(c[1:] == (T0 + 44 * DAY, T0 + 46 * DAY) for c in seen[-1])
 
 
+def test_a_withdrawn_thread_is_not_passed(signing):
+    """Its last change is the withdrawal (ai-tools-alerts#kk2q): no level, no renewal on
+    a reader, and nothing the poster would send to end the wait. Asked of the ledger
+    directly: a run would itself move the thread out of a state set by hand."""
+    from types import SimpleNamespace
+    env = signing
+    critical(env, relay=PutRelay())
+    env.config.owed_state.unlink()
+    now = T0 + DAY
+    signer.save_owed(env.config.owed_state, signer.load_owed(env.config.owed_state, now))  # the loss, on record
+    with main.Ledger(env.config.ledger) as led:
+        run = SimpleNamespace(config=env.config, now=now, led=led)
+        entry = led._state()["entries"][0]
+        entry.update(changed=[T0 + 60], withdrawn=["critical", "feed"])
+        assert main.Run.level_changes(run) == []
+        entry.pop("withdrawn")  # the same entry out of that state is passed, for both its roots
+        assert [c[1:] for c in main.Run.level_changes(run)] == [(T0 + 60, entry["last_change"])] * 2
+
+
 def test_a_thread_whose_level_never_changed_is_not_passed(signing, monkeypatch):
     env = signing
     critical(env, relay=PutRelay())

@@ -246,7 +246,8 @@ def lapsed(events, m, now: int, channels=None) -> set:
     it. A thread the checkpoint does not list keeps its level on a reader. At
     notice the thread is listed and leaves readers: that is the one decay the
     poster intends (it posts every step above it before the level's life
-    ends). Raises when the ruleset cannot be loaded: readers with a sound one
+    ends). So is a thread whose standing offer is the relay bot's withdrawal
+    (kk2q): the poster renews and steps nothing there. Raises when the ruleset cannot be loaded: readers with a sound one
     would expire what this could not judge, so nothing is signed."""
     from aitools_alerts import ruleset
     channels = pull.channel_ids() if channels is None else channels
@@ -257,6 +258,11 @@ def lapsed(events, m, now: int, channels=None) -> set:
     for t in pull.threads_from(usable, m):
         t = pull.standing(t, now)
         if t.retracted or t.enrolled_at is None or t.curated or t.adv.expires_at is not None:
+            continue
+        if t.offered == pull.WITHDRAWN:
+            # kk2q: the bot's last word is the withdrawal, below notice. The poster renews
+            # and steps nothing there, so the thread is listed and leaves readers, as one
+            # at notice does. Unlisted, a member's wait for the reply would start over.
             continue
         level = t.adv.level
         if t.offered in pull._RANK and pull._RANK[t.offered] < pull._RANK[level]:

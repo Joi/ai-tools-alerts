@@ -26,7 +26,8 @@ from aitools_alerts.state import State
 from mirror_helpers import CHANNELS, advisory, mirror_now, released_reader
 
 RELEASED = ("v0.1.4", "v0.1.5", "v0.1.6", "v0.1.7")
-CLAIM_READERS = ("v0.1.8", "v0.2.0", "v0.2.1", "v0.3.0")  # they compute expiry from the claim tag (r0ra)
+CLAIM_READERS = ("v0.1.8", "v0.2.0", "v0.2.1")  # they compute expiry from the claim tag (r0ra)
+WITHDRAWAL_READERS = ("v0.3.0",)  # they read a relay-bot withdrawal (y484) and hide nothing unchecked
 REPO = Path(__file__).resolve().parents[1]
 MONTH = 30 * 86400
 # What a member is shown: the active threads at a given time, and which of them match
@@ -323,7 +324,7 @@ def test_a_relay_bot_withdrawal_is_refused_by_every_released_reader(tmp_path, ta
     nowhere; unchecked it is a lowering to notice after 72 hours, never a hiding."""
     m, now = mirror_now()
     root = m.root_post(m.bot_sec, advisory(posted_by="relay-bot"), created_at=now - 3600)
-    text = f"Withdrawn by its source.\n\n```{schema.INFO_STRING}\n" + '{"level":"withdrawn"}\n```\n'
+    text = compose.withdrawal_post()  # as the poster sends it (ai-tools-alerts#kk2q)
     # with the claim of the withdrawn reading, level "none", as a level change carries its claim (hh5s)
     reply = m.post(m.bot_sec, text, created_at=now - 3000,
                    tags=[["e", root["id"], "", "root"], claim("AITA-TEST-0001", "none", now - 3000)])
@@ -344,6 +345,73 @@ def test_a_relay_bot_withdrawal_is_refused_by_every_released_reader(tmp_path, ta
     assert later.adv.level == "notice"  # unchecked: a lowering, as the poster of 3qyq sends for a withdrawn advisory
     (never,) = pull.active([t], at + 10 * MONTH, None, None, since=since)
     assert never.adv.level == "notice"
+
+
+# ---------------------------------------------------------------- the poster's withdrawal and its end (kk2q)
+
+GHSA = "GHSA-abcd-efgh-ijkl"
+
+
+def ghsa_claim(at, withdrawn_at=None):
+    """The claim tag the poster's own builder makes for the thread's GitHub reading."""
+    fields = {"ghsa_id": GHSA, "type": "malware", "withdrawn_at": withdrawn_at, "repository": "anthropics/claude-code",
+              "severity": "critical", "cvss_vector": None, "cwes": ["CWE-506"],
+              "packages": [{"ecosystem": "npm", "name": "@anthropic-ai/claude-code", "range": "<= 9.9.9",
+                            "first_patched": None}]}
+    text = rules.claim_text([("ghsa", fields)], [GHSA], "Claude Code", at)
+    obj = json.loads(text)
+    assert ruleset.check_claim(obj, "Claude Code") == "ok"
+    assert obj["level"] == ("none" if withdrawn_at else "critical")
+    return [wire.CLAIM_TAG, text]
+
+
+@pytest.mark.parametrize("claimed", (False, True), ids=("unclaimed-root", "claimed-root"))
+@pytest.mark.parametrize("tag", RELEASED + CLAIM_READERS + WITHDRAWAL_READERS)
+def test_the_posters_withdrawal_and_the_reply_that_ends_it_on_every_released_reader(tmp_path, tag, claimed):
+    """The events as the poster signs them (ai-tools-alerts#kk2q): a root, the withdrawal
+    (``compose.withdrawal_post``, with the claim of the withdrawn reading), then the
+    level reply that ends it, naming the level the thread kept. Every released reader
+    shows the alert at its level after each; v0.3.0 and this reader hold the withdrawal
+    as the thread's standing offer and hide nothing without the member's own check."""
+    m, now = mirror_now()
+    t = now - 3600
+    prev = advisory(id=GHSA, posted_by="relay-bot")
+    root = poster_event(m, schema.render_post(prev, "Body line."), t, claim=ghsa_claim(t) if claimed else None)
+    gone = poster_event(m, compose.withdrawal_post(), t + 100, reply_to=root["id"], claim=ghsa_claim(t + 100, "2026-11-06T00:00:00Z"))
+    assert wire.claim_of(gone)["level"] == "none" and wire.is_withdrawal(json.loads(schema._last_block(gone["content"])))
+    live = {GHSA: ["critical", ["99.0.0"], True]}
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    assert released(tmp_path / "a", tag, m, now)[str(now)] == live
+    assert this_reader(m, now, tmp_path / "a")[str(now)] == live
+    (t1,) = pull.advisories(State.load(tmp_path / "a" / "this-reader"))
+    assert (t1.offered, t1.offered_by) == (pull.WITHDRAWN, gone["id"])
+    confirms = lambda adv, level, stated=(): True  # noqa: E731 - the member's own check, when it confirms
+    assert pull.active([t1], None, None, confirms) == []  # hidden only then
+    back = poster_event(m, compose.level_post(prev, prev.level, again=True), t + 200, reply_to=root["id"],
+                        claim=ghsa_claim(t + 200))
+    assert json.loads(schema._last_block(back["content"])) == {"level": "critical"}
+    assert released(tmp_path / "b", tag, m, now)[str(now)] == live
+    assert this_reader(m, now, tmp_path / "b")[str(now)] == live
+    (t2,) = pull.advisories(State.load(tmp_path / "b" / "this-reader"))
+    assert t2.offered is None and t2.adv.level == "critical"
+    assert [x.adv.level for x in pull.active([t2], None, None, confirms)] == ["critical"]  # the withdrawal is over
+
+
+def test_a_withdrawal_and_its_end_read_by_date_which_is_why_no_run_sends_both():
+    """A reader orders a thread's replies by (created_at, id). Dated apart, the later
+    reply decides; in one second the ids would, either way round. The poster therefore
+    sends no reply that ends a withdrawal in the run that recorded it
+    (tests/poster/test_withdrawn_state.py), and its runs are an hour apart."""
+    def offered(gone_at, back_at):
+        m, now = mirror_now()
+        prev = advisory(id=GHSA, posted_by="relay-bot")
+        root = poster_event(m, schema.render_post(prev, "Body line."), now - 3600)
+        poster_event(m, compose.withdrawal_post(), now - gone_at, reply_to=root["id"])
+        poster_event(m, compose.level_post(prev, prev.level, again=True), now - back_at, reply_to=root["id"])
+        (t,) = pull.threads_from([e for evs in m.events.values() for e in evs], m.man)
+        return t.offered
+    assert offered(200, 100) is None and offered(100, 200) == pull.WITHDRAWN
 
 
 # ---------------------------------------------------------------- the poster's own events (hh5s)
@@ -481,7 +549,7 @@ def head_view(st) -> list:
     return [at, {t.adv.id: t.adv.level for t in pull.active(pull.advisories(st), at, listed)}]
 
 
-@pytest.mark.parametrize("tag", CLAIM_READERS)
+@pytest.mark.parametrize("tag", CLAIM_READERS + WITHDRAWAL_READERS)  # v0.1.8 to v0.3.0
 def test_an_event_dated_after_the_checkpoint_that_lists_it_is_admitted_and_its_claim_waits(tmp_path, tag):
     """The rule of spec/wire.md for an event dated after its checkpoint (ai-tools-alerts#p93w),
     on every reader that computes expiry and on this one. The checkpoint is not refused

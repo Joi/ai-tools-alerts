@@ -195,6 +195,9 @@ class Run:
         # replace (yields). They stay where they are until the raise is journaled (enqueue).
         self.passed: dict[str, tuple] = {}
         self.unrenewed: set[str] = set()  # gtw9: roots this run's checkpoint leaves out (renew)
+        # kk2q: thread roots whose withdrawal this run recorded in some channel. No reply
+        # that ends the state follows in the same run: the two could carry one second.
+        self.withdrew: set[str] = set()
 
     def save(self):
         inputs.save_state(self.config.state, self.state)
@@ -236,6 +239,15 @@ class Run:
     def _tag(it):
         """The claim tag a journal item is sent with, or None."""
         return [wire.CLAIM_TAG, it["claim"]] if it.get("claim") else None
+
+    @staticmethod
+    def _patch(it) -> dict:
+        """What a reply item's block says on the wire ({} when it has none that reads)."""
+        try:
+            patch = json.loads(schema._last_block(it["text"]))
+        except (TypeError, ValueError, KeyError):
+            return {}
+        return patch if isinstance(patch, dict) else {}
 
     @staticmethod
     def _stated(entry, adv, also=()) -> list:
@@ -600,7 +612,8 @@ class Run:
             if not isinstance(patch, dict) or not patch:
                 return False
             if set(patch) == {"level"}:  # the raise is a level reply in every channel: it says the level last
-                return patch["level"] in RANK and RANK[patch["level"]] < RANK[level]
+                # kk2q: a withdrawal is below every level, and the raise ends it on every reader
+                return wire.is_withdrawal(patch) or (patch["level"] in RANK and RANK[patch["level"]] < RANK[level])
             if not set(patch) <= minor or "tried" in it or it.get("retried"):
                 return False
             # Ids and sources only. The thread's lists only grow, so one it already holds in
@@ -626,6 +639,8 @@ class Run:
         """A candidate that raises its thread supersedes the lower-priority work in the
         thread's way (``yields``); one that would not raise supersedes nothing."""
         if entry is None or self.is_synthetic(c) or compose.is_synthetic(entry.advisory.get("id")):
+            return False
+        if entry.withdrawn:  # kk2q: plan_known raises no withdrawn thread; the recompute does
             return False
         level = self._thread_level(*self._rate(c, scope, entry)[1:], entry)[0]
         return RANK[level] > RANK[entry.level] and self.yields(entry, level)
@@ -906,14 +921,20 @@ class Run:
             e = self._entry(it)
             if not any(r.get(ch) == eid for r in e.replies):
                 adv = schema.validate(it["adv"])
-                if it.get("retried") or "tried" in it:
+                patch = self._patch(it)
+                gone = wire.is_withdrawal(patch)  # kk2q: the state, not a level; the thread's advisory stays
+                if gone:
+                    adv = schema.validate(e.advisory)
+                    self.withdrew.add(e.root_event_id)
+                elif it.get("retried") or "tried" in it:
                     # jsje: sent, or settled, long after it was planned; the thread may have
                     # recorded other replies since. What it says on the wire is applied to
                     # the thread as it is now: its snapshot would undo them.
                     adv = compose.parse_reply(it["text"], schema.validate(e.advisory)) or adv
                 m = candidates.BOT_ID.fullmatch(adv.id)
-                low = [m.group(1) if m else adv.id, adv.level]
-                if RANK[adv.level] < RANK[e.level]:  # ny5g: a lowering, recorded for its first channel
+                low = [m.group(1) if m else adv.id, wire.WITHDRAWN if gone else adv.level]
+                # ny5g: a lowering, recorded for its first channel (kk2q: so is entering the state)
+                if (not e.withdrawn) if gone else RANK[adv.level] < RANK[e.level]:
                     if low not in self.rc["lowered"]:  # for the digest; once, though a replay comes here again
                         self.rc["lowered"] = (self.rc["lowered"] + [low])[-recompute.MAX_LOWERED:]
                     recompute.note(self.rc, e.root_event_id, self.now)  # the breaker counts what was sent, once
@@ -921,7 +942,8 @@ class Run:
                 # gtw9: the level counts from the attempt's time, also when a later run records it
                 at = [p["at"] for p in self.led.pending_entries() if p["key"] == it["key"]] + [it.get("tried", self.now)]
                 self.led.record_reply(e.root_event_id, adv, {ch: eid}, now=self.now, exploited=it["exploited"],
-                                      ids=it["ids"], changed_at=min(at))
+                                      ids=it["ids"], changed_at=min(at),
+                                      withdrawn=True if gone else False if "level" in patch else None)
             self._stand(e.root_event_id, it)
         else:  # digest: acknowledge exactly the notices and ledger cutoff it was built from
             snap = set(it["adv"]["held"])
@@ -1372,7 +1394,9 @@ class Run:
     def plan_known(self, c, scope, level, reason, ids, entry):
         prev = schema.validate(entry.advisory)
         level, reason = self._thread_level(level, reason, entry)
-        if RANK[level] <= RANK[entry.level]:  # a run never lowers a level; a curator does
+        # kk2q: nor does a candidate move a withdrawn thread: the recompute ends that state, by
+        # a reply that names the level alone, from what this candidate taught (floor, KEV).
+        if entry.withdrawn or RANK[level] <= RANK[entry.level]:  # a run never lowers a level; a curator does
             level, reason = entry.level, None
         was = prev.products[0]
         stored = _fold(entry.aliases)
@@ -1433,7 +1457,7 @@ class Run:
             changes = {}
         if changes and new.advisory_severity not in (None, prev.advisory_severity):
             changes["advisory_severity"] = new.advisory_severity  # 0dvh: never a reply on its own
-        copies = [ch for ch in CHANNELS_FOR[level] if ch not in entry.channel_ids]
+        copies = [ch for ch in CHANNELS_FOR[level] if ch not in entry.channel_ids and not entry.withdrawn]
         # hh5s: what this candidate's readings say of the thread, for a level change and
         # (ROOT_CLAIMS) for a copy, a root in its channel. Each is chosen among the ids its
         # own event leaves the thread with: a copy states them all, a level-only reply none new.
@@ -1483,17 +1507,31 @@ class Run:
                       for ch in entry.channel_ids]
         return items
 
-    def _level_items(self, entry, level, claim=None, reason=None):
+    def _withdrawal_items(self, entry, claim=None):
+        """The withdrawal (kk2q, ``compose.withdrawal_post``), one reply for each channel
+        the thread has a root in, with the claim of the withdrawn reading. It is a level
+        reply to the journal (the same key), so what holds for an unsent lowering holds
+        for it; its ``adv`` is the thread's advisory, which it does not change."""
+        prev = schema.validate(entry.advisory)
+        text = compose.withdrawal_post()
+        return [self._item("reply", entry.scope, entry.aliases, ch, text, key_id=f"{prev.id}#level",
+                           adv=asdict(prev), exploited=entry.exploited, root=entry.root_event_id, claim=claim)
+                for ch in entry.channel_ids]
+
+    def _level_items(self, entry, level, claim=None, reason=None, channels=None):
         """A level change and nothing else (``compose.level_post``), one reply for each
         channel the thread has a root in, each with the claim the change rests on
         (``_claim``; None: no reading states it). No Japanese copy: the digest reports it. A
         channel of the new level the thread has no root in gets its copy from ``copies``,
-        which is a root there. ``reason``: a sentence for the reply's line (gtw9)."""
+        which is a root there. ``reason``: a sentence for the reply's line (gtw9). On a
+        withdrawn thread the level may be the one the thread kept (kk2q). ``channels``:
+        only these of the thread's channels (kk2q: the ones still withdrawn)."""
         prev = schema.validate(entry.advisory)
-        text = compose.level_post(prev, level, reason)
+        text = compose.level_post(prev, level, reason, again=bool(entry.withdrawn))
         return [self._item("reply", entry.scope, entry.aliases, ch, text, key_id=f"{prev.id}#level",
                            adv=asdict(replace(prev, level=level)), exploited=entry.exploited,
-                           root=entry.root_event_id, claim=claim) for ch in entry.channel_ids]
+                           root=entry.root_event_id, claim=claim)
+                for ch in entry.channel_ids if channels is None or ch in channels]
 
     def drop_unsent_lowerings(self):
         """Before the journal drains: a lowering no channel has yet is not sent on the
@@ -1503,14 +1541,17 @@ class Run:
         channel has it when the relay acknowledged it (journaled as sent, though the
         ledger may not say so yet: a run that stopped between the two), when its outcome
         is unknown or was when the attempt expired (``tried``), or when the ledger already
-        holds the lower level."""
+        holds the lower level. A withdrawal (kk2q) is such a lowering until the ledger
+        marks the thread withdrawn."""
         level_items = [it for it in self.state["outbox"] if it["kind"] == "reply" and "#level:" in it["key"]]
         had = {it["root"] for it in level_items if it["sent"] is not None or self.led.has_pending(it["key"])
                or "tried" in it}  # jsje: sent once with an unknown outcome, since expired
         gone = []
         for it in level_items:
             e = self.led.thread(it["root"])
-            if it["root"] not in had and (e is None or RANK[it["adv"]["level"]] < RANK[e.level]):
+            lowers = e is None or (not e.withdrawn if wire.is_withdrawal(self._patch(it))
+                                   else RANK[it["adv"]["level"]] < RANK[e.level])
+            if it["root"] not in had and lowers:
                 gone.append(it)
         if gone:
             self._drop(gone)
@@ -1627,7 +1668,8 @@ class Run:
         # that shares an id), and nothing is sent on top of work in flight.
         found = [v for root, v in self.verdicts.items()
                  if root in live and not self.busy(v[0].aliases, v[0].scope, passing=v[1] == "raise")]
-        raises = [(e, level) for e, kind, level in found if kind == "raise"]
+        # kk2q: a thread whose withdrawal this run recorded is not brought back by this run
+        raises = [(e, level) for e, kind, level in found if kind == "raise" and e.root_event_id not in self.withdrew]
         due = recompute.select([(e, level) for e, kind, level in found
                                 if kind == "due" and recompute.quiet(e, self.now)], len(self.known & live), st, self.now)
         self.save_rc()
@@ -1637,15 +1679,22 @@ class Run:
         for root in st["exploited"]:
             if root in live:
                 self.led.mark_exploited(root)
-        for e, level in raises + due:
+        for e, level, raising in [(*x, True) for x in raises] + [(*x, False) for x in due]:
             try:
                 ids = self._stated(e, schema.validate(e.advisory))
-                items = self._level_items(e, level, self._claim(self.readings.get(e.root_event_id, ()), ids, e.scope))
+                claim = self._claim(self.readings.get(e.root_event_id, ()), ids, e.scope)
+                only = None
+                if e.withdrawn and set(e.withdrawn) != set(e.channel_ids) and RANK[level] <= RANK[e.level]:
+                    # kk2q: some channel is no longer (or never was) withdrawn and stands at the
+                    # ledger's level. The others join it there; a fall from it is a lowering's.
+                    level, only = e.level, e.withdrawn
+                items = self._withdrawal_items(e, claim) if level == wire.WITHDRAWN \
+                    else self._level_items(e, level, claim, channels=only)
             except ValueError:  # compose refused it: this thread's change is withheld
                 self.n["withheld"] += 1
                 continue
             # its wait stays until the ledger shows the level: see drop_unsent_lowerings
-            self.enqueue(items, self.passed.pop(e.root_event_id, None) if (e, level) in raises else None)
+            self.enqueue(items, self.passed.pop(e.root_event_id, None) if raising else None)
         self.copies(trust_root, fetch)
 
     @staticmethod
@@ -1683,7 +1732,8 @@ class Run:
         this run. Either is tried again by the next run."""
         want = []
         for e in self.led.entries():
-            missing = [ch for ch in CHANNELS_FOR.get(e.level, ()) if ch not in e.channel_ids]
+            # kk2q: a withdrawn thread keeps its level in the ledger and is announced nowhere
+            missing = [ch for ch in CHANNELS_FOR.get(e.level, ()) if ch not in e.channel_ids and not e.withdrawn]
             scope = self._scope_named(e.scope) if missing and not compose.is_synthetic(e.advisory.get("id")) else None
             if scope is not None and not self.busy(e.aliases, e.scope):
                 want.append((e, scope, missing))
@@ -1819,6 +1869,11 @@ class Run:
             old = self._parsed(e.claim)
             if old is None or compose.is_synthetic(e.advisory.get("id")) or self.now < old["checked_at"]:
                 continue
+            if e.withdrawn:
+                # kk2q: no renewal and no step. A step names a level, which ends the withdrawal
+                # on every reader; the thread decays there as its claims say, and the
+                # checkpoint keeps listing it (``signer.lapsed``).
+                continue
             fresh, text = self._confirming(e, old)
             life = self._life(e, rs, old["confirmed_at"], old["checked_at"])
             best = self._life(e, rs, self.now if fresh else old["confirmed_at"], self.now)
@@ -1857,7 +1912,10 @@ class Run:
         counts it as a renewal of its own date; the signer leaves the root out until its
         copy of the mirror holds the reply or a later confirmation (``signer.answered``).
         Empty when no loss is on record. A level change after the loss is owed in the
-        new record."""
+        new record. A thread in the state ``withdrawn`` (kk2q) is not passed: its last
+        change is the withdrawal, which names no level and renews nothing on a reader, so
+        a reader that lacks it loses no life; and the poster neither renews nor steps the
+        thread there, so nothing would end the wait (``signer.lapsed`` lists it too)."""
         if self.config.checkpoint_key_file is None:
             return []
         hold = signer.load_owed(self.config.owed_state, self.now)["hold_until"]
@@ -1865,7 +1923,7 @@ class Run:
             return []
         lost = hold - signer.OWED_S
         return [(root, max(e.changed), e.last_change) for e in self.led.entries()
-                if e.claim is not None and e.changed and max(e.changed) <= lost
+                if e.claim is not None and not e.withdrawn and e.changed and max(e.changed) <= lost
                 for root in sorted({e.root_event_id, *e.channel_ids.values()})]
 
     def _step_down(self, e, old) -> bool:
@@ -1951,7 +2009,8 @@ class Run:
             except ValueError:
                 self.n["withheld"] += 1
                 continue
-            if gone_roots.isdisjoint({e.root_event_id, *e.channel_ids.values()}):  # else its thread is withdrawn
+            # else its thread is withdrawn: by a curator or expiry, or (kk2q) by its source
+            if gone_roots.isdisjoint({e.root_event_id, *e.channel_ids.values()}) and not e.withdrawn:
                 led_items.append((adv, (e.posted_at, e.root_event_id)))
                 if adv.products:
                     titles[(adv.id, adv.products[0].name)] = e.source_title
