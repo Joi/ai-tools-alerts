@@ -490,6 +490,17 @@ def load_scope(path: Path | None = None, domains: dict | None = None) -> list[Sc
     for i, e in enumerate(entries):
         if set(e.formerly) & names:
             _fail(f"scope.entries[{i}].formerly", "names a product of this file")
+    # aabw: a former name stands for every entry that lists it, to the poster and to a
+    # member's check alike. So the entries sharing one are one kind of product (one
+    # ecosystem, class, channel_if and authority: one reading then gives each of them the
+    # same authority), and a name has one spelling.
+    former: dict = {}
+    for i, e in enumerate(entries):
+        for f in e.formerly:
+            kind = (f, e.ecosystem, e.scope_class, e.channel_if, e.authority)
+            if former.setdefault(f.lower(), kind) != kind:
+                _fail(f"scope.entries[{i}].formerly", "shares a former name with an entry of another "
+                      "ecosystem, class, channel_if or authority, or spells it another way")
     return entries
 
 

@@ -7,7 +7,7 @@ import json
 import pytest
 
 from aitools_alerts import ruleset, schema, wire
-from aitools_alerts.poster import inputs, main, signer
+from aitools_alerts.poster import compose, inputs, main, signer
 
 from advisories import ghsa_json
 from test_advisory_recompute import (CVE, G, NO_FIX, WEAK, WHEN, entries, post, run)
@@ -41,7 +41,7 @@ def claim(tag, at, level=None, source=None):
 def level_claims(relay):
     """The claim tag of each level-only reply a run sent, in order."""
     return [c for (ch, reply, text), c in zip(relay.calls, relay.claims)
-            if reply is not None and text.startswith("Level is now")]
+            if reply is not None and text.startswith(("Level is now", compose.WITHDRAWAL))]  # kk2q: the withdrawal too
 
 
 # ---------------------------------------------------------------- roots and copies
@@ -140,7 +140,8 @@ def test_a_withdrawal_and_the_raise_after_it_each_carry_their_claim_in_every_cha
     for h in range(1, 25):
         run(env, h)
     relay = run(env, 25)
-    assert levels(relay) == levels(relay, "critical") == [{"level": "notice"}]
+    assert [(ch, json.loads(schema._last_block(text))) for ch, _, text in sorted(relay.calls)] == \
+        [("critical", {"level": "withdrawn"}), ("feed", {"level": "withdrawn"})]  # kk2q: the state, in each channel
     a, b = level_claims(relay)
     assert a == b and claim(a, T0 + 25 * HOUR, "none")["fields"]["withdrawn_at"] == WHEN  # true, and no renewal to a reader
     env.api.put(G, ghsa_json(G, **malware))

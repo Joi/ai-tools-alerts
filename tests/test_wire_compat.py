@@ -27,6 +27,7 @@ from mirror_helpers import CHANNELS, advisory, mirror_now, released_reader
 
 RELEASED = ("v0.1.4", "v0.1.5", "v0.1.6", "v0.1.7")
 CLAIM_READERS = ("v0.1.8", "v0.2.0", "v0.2.1")  # they compute expiry from the claim tag (r0ra)
+WITHDRAWAL_READERS = ("v0.3.0",)  # they read a relay-bot withdrawal (y484) and hide nothing unchecked
 REPO = Path(__file__).resolve().parents[1]
 MONTH = 30 * 86400
 # What a member is shown: the active threads at a given time, and which of them match
@@ -314,6 +315,30 @@ def test_what_the_format_does_not_avoid_a_reader_before_0_1_7_applies_a_narrowin
     assert released(tmp_path, tag, m, now)[str(now)] == {"AITA-TEST-0001": ["critical", ["1.0.0"], False]}
 
 
+RAISED = [asdict(Product("Claude Code", "claude-code", "<99.5.0", "99.5.0"))]
+
+
+@pytest.mark.parametrize("tag", ("v0.1.7", "v0.1.8", "v0.2.0", "v0.2.1"))
+def test_a_relay_bot_widening_of_fixed_shows_the_same_on_every_reader(tmp_path, tag):
+    """A reply that raises ``fixed`` is a widening, joined at once by every reader from
+    0.1.7 on and by this one (ai-tools-alerts#53fy): the thread, its level, the raised
+    ``fixed`` and the match are the same everywhere. What this reader adds is local, from
+    its own read of the source (``verify.fixed_stated``): a flag, and an upgrade with no
+    version. Nothing on the wire says so, and with no source read nothing differs."""
+    m, now = mirror_now()
+    was = [Product("Claude Code", "claude-code", "<1.0.0", "1.0.0")]  # the installed 2.0.0 is outside it
+    root = m.root_post(m.bot_sec, advisory(posted_by="relay-bot", products=was), created_at=now - 3600)
+    m.post(m.bot_sec, m.patch_text(products=RAISED), created_at=now - 3000, tags=[["e", root["id"], "", "root"]])
+    wide = {"AITA-TEST-0001": ["critical", ["99.5.0"], True]}
+    assert released(tmp_path, tag, m, now)[str(now)] == wide
+    assert this_reader(m, now, tmp_path)[str(now)] == wide
+    (t,) = pull.advisories(State.load(tmp_path / "this-reader"))
+    assert t.narrowed is None  # a widening is no published narrowing: nothing waits, nothing is asked as one
+    (hit,) = check.match([t.adv], INV)
+    assert hit.fixed_contradicted is False
+    assert [a.value for a in check.plan(hit, check.Config()).prepare if a.verb == "upgrade"] == ["99.5.0"]
+
+
 @pytest.mark.parametrize("tag", RELEASED + CLAIM_READERS)
 def test_a_relay_bot_withdrawal_is_refused_by_every_released_reader(tmp_path, tag):
     """The withdrawal (ai-tools-alerts#y484) is a reply whose block is exactly
@@ -323,7 +348,7 @@ def test_a_relay_bot_withdrawal_is_refused_by_every_released_reader(tmp_path, ta
     nowhere; unchecked it is a lowering to notice after 72 hours, never a hiding."""
     m, now = mirror_now()
     root = m.root_post(m.bot_sec, advisory(posted_by="relay-bot"), created_at=now - 3600)
-    text = f"Withdrawn by its source.\n\n```{schema.INFO_STRING}\n" + '{"level":"withdrawn"}\n```\n'
+    text = compose.withdrawal_post()  # as the poster sends it (ai-tools-alerts#kk2q)
     # with the claim of the withdrawn reading, level "none", as a level change carries its claim (hh5s)
     reply = m.post(m.bot_sec, text, created_at=now - 3000,
                    tags=[["e", root["id"], "", "root"], claim("AITA-TEST-0001", "none", now - 3000)])
@@ -344,6 +369,73 @@ def test_a_relay_bot_withdrawal_is_refused_by_every_released_reader(tmp_path, ta
     assert later.adv.level == "notice"  # unchecked: a lowering, as the poster of 3qyq sends for a withdrawn advisory
     (never,) = pull.active([t], at + 10 * MONTH, None, None, since=since)
     assert never.adv.level == "notice"
+
+
+# ---------------------------------------------------------------- the poster's withdrawal and its end (kk2q)
+
+GHSA = "GHSA-abcd-efgh-ijkl"
+
+
+def ghsa_claim(at, withdrawn_at=None):
+    """The claim tag the poster's own builder makes for the thread's GitHub reading."""
+    fields = {"ghsa_id": GHSA, "type": "malware", "withdrawn_at": withdrawn_at, "repository": "anthropics/claude-code",
+              "severity": "critical", "cvss_vector": None, "cwes": ["CWE-506"],
+              "packages": [{"ecosystem": "npm", "name": "@anthropic-ai/claude-code", "range": "<= 9.9.9",
+                            "first_patched": None}]}
+    text = rules.claim_text([("ghsa", fields)], [GHSA], "Claude Code", at)
+    obj = json.loads(text)
+    assert ruleset.check_claim(obj, "Claude Code") == "ok"
+    assert obj["level"] == ("none" if withdrawn_at else "critical")
+    return [wire.CLAIM_TAG, text]
+
+
+@pytest.mark.parametrize("claimed", (False, True), ids=("unclaimed-root", "claimed-root"))
+@pytest.mark.parametrize("tag", RELEASED + CLAIM_READERS + WITHDRAWAL_READERS)
+def test_the_posters_withdrawal_and_the_reply_that_ends_it_on_every_released_reader(tmp_path, tag, claimed):
+    """The events as the poster signs them (ai-tools-alerts#kk2q): a root, the withdrawal
+    (``compose.withdrawal_post``, with the claim of the withdrawn reading), then the
+    level reply that ends it, naming the level the thread kept. Every released reader
+    shows the alert at its level after each; v0.3.0 and this reader hold the withdrawal
+    as the thread's standing offer and hide nothing without the member's own check."""
+    m, now = mirror_now()
+    t = now - 3600
+    prev = advisory(id=GHSA, posted_by="relay-bot")
+    root = poster_event(m, schema.render_post(prev, "Body line."), t, claim=ghsa_claim(t) if claimed else None)
+    gone = poster_event(m, compose.withdrawal_post(), t + 100, reply_to=root["id"], claim=ghsa_claim(t + 100, "2026-11-06T00:00:00Z"))
+    assert wire.claim_of(gone)["level"] == "none" and wire.is_withdrawal(json.loads(schema._last_block(gone["content"])))
+    live = {GHSA: ["critical", ["99.0.0"], True]}
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    assert released(tmp_path / "a", tag, m, now)[str(now)] == live
+    assert this_reader(m, now, tmp_path / "a")[str(now)] == live
+    (t1,) = pull.advisories(State.load(tmp_path / "a" / "this-reader"))
+    assert (t1.offered, t1.offered_by) == (pull.WITHDRAWN, gone["id"])
+    confirms = lambda adv, level, stated=(): True  # noqa: E731 - the member's own check, when it confirms
+    assert pull.active([t1], None, None, confirms) == []  # hidden only then
+    back = poster_event(m, compose.level_post(prev, prev.level, again=True), t + 200, reply_to=root["id"],
+                        claim=ghsa_claim(t + 200))
+    assert json.loads(schema._last_block(back["content"])) == {"level": "critical"}
+    assert released(tmp_path / "b", tag, m, now)[str(now)] == live
+    assert this_reader(m, now, tmp_path / "b")[str(now)] == live
+    (t2,) = pull.advisories(State.load(tmp_path / "b" / "this-reader"))
+    assert t2.offered is None and t2.adv.level == "critical"
+    assert [x.adv.level for x in pull.active([t2], None, None, confirms)] == ["critical"]  # the withdrawal is over
+
+
+def test_a_withdrawal_and_its_end_read_by_date_which_is_why_no_run_sends_both():
+    """A reader orders a thread's replies by (created_at, id). Dated apart, the later
+    reply decides; in one second the ids would, either way round. The poster therefore
+    sends no reply that ends a withdrawal in the run that recorded it
+    (tests/poster/test_withdrawn_state.py), and its runs are an hour apart."""
+    def offered(gone_at, back_at):
+        m, now = mirror_now()
+        prev = advisory(id=GHSA, posted_by="relay-bot")
+        root = poster_event(m, schema.render_post(prev, "Body line."), now - 3600)
+        poster_event(m, compose.withdrawal_post(), now - gone_at, reply_to=root["id"])
+        poster_event(m, compose.level_post(prev, prev.level, again=True), now - back_at, reply_to=root["id"])
+        (t,) = pull.threads_from([e for evs in m.events.values() for e in evs], m.man)
+        return t.offered
+    assert offered(200, 100) is None and offered(100, 200) == pull.WITHDRAWN
 
 
 # ---------------------------------------------------------------- the poster's own events (hh5s)
@@ -443,3 +535,81 @@ def test_a_renewed_thread_and_its_step_down_never_show_lower_on_a_released_reade
     assert mine[str(now)][CVE][0] == "critical"  # the step is an offer this reader has not applied yet
     if tag in RELEASED:
         assert theirs[str(now + MONTH)][CVE][0] == "critical"  # they refuse a relay-bot lowering for good
+
+
+# What a member is shown under the checkpoint the reader holds: its date (the clock expiry
+# is judged by) and each thread's level. Written against the modules as v0.1.8 has them.
+HEAD_DUMP = """
+import json
+from aitools_alerts import pull
+from aitools_alerts.state import State
+st = State.load()
+at, listed = pull.head_clock(st)
+print(json.dumps([at, {t.adv.id: t.adv.level for t in pull.active(pull.advisories(st), at, listed)}]))
+"""
+
+
+def late_feed(renewed=True, checked_after=None):
+    """(mirror, clock): a claimed critical root 20 days old, whose own claim holds critical
+    for 14 days and high to day 30, and a checkpoint dated ten minutes ago that lists it.
+    ``renewed``: also a renewal dated five minutes ago, after that checkpoint, which lists
+    it too: what a poster to 0.3.0 signs after a run that posted (it dates the checkpoint
+    at the start of its run), and what a later poster signs when its clock was set back.
+    ``checked_after``: the renewal's claim was checked that long after the root (not five
+    minutes ago), so a day gives a claim that holds critical to day 15 and no longer."""
+    m, now = mirror_now()
+    t0 = now - 20 * DAY
+    root = poster_event(m, schema.render_post(advisory(id=CVE, posted_by="relay-bot"), "Body line."), t0, claim=kev_claim(t0))
+    ids = [root["id"]]
+    if renewed:
+        checked = wire.claim_tag({**json.loads(kev_claim(t0)[1]), "checked_at": t0 + checked_after if checked_after else now - 300})
+        ids.append(poster_event(m, compose.renewal_post(), now - 300, reply_to=root["id"], claim=checked)["id"])
+    m.checkpoint(ids=ids, now=now - 600)
+    return m, now
+
+
+def head_view(st) -> list:
+    at, listed = pull.head_clock(st)
+    return [at, {t.adv.id: t.adv.level for t in pull.active(pull.advisories(st), at, listed)}]
+
+
+@pytest.mark.parametrize("tag", CLAIM_READERS + WITHDRAWAL_READERS)  # v0.1.8 to v0.3.0
+def test_an_event_dated_after_the_checkpoint_that_lists_it_is_admitted_and_its_claim_waits(tmp_path, tag):
+    """The rule of spec/wire.md for an event dated after its checkpoint (ai-tools-alerts#p93w),
+    on every reader that computes expiry and on this one. The checkpoint is not refused
+    and the event is admitted. While the checkpoint the reader holds is dated before
+    the renewal, the thread is not judged: it shows critical, where the root's claim
+    alone, judged at that time, gives high (the control: the same root with no renewal).
+    Under the next checkpoint, dated after the renewal, the thread is judged with the
+    renewal counted and shows critical by it. A third feed tells that hold from a reader
+    that counts the late claim at once: its late claim holds critical to day 15 only, so
+    the thread shows critical while the claim waits and high once it is counted."""
+    def both(m, now, name):
+        st = State.load(tmp_path / f"this-{name}")
+        run = released_reader(tmp_path / name, tag=tag)
+
+        def pulled():
+            res = pull.fetch("https://mirror.example.invalid/", st, fetch=m.fetch, root_pubkey=m.root, now=now)
+            assert res.error is None, res.error
+            got = run("pull", "--mirror-url", m.write(tmp_path / name), root=m.root)
+            assert got.returncode == 0 and "unverified" not in got.stderr, (got.stdout, got.stderr)
+            out = run.py(HEAD_DUMP, root=m.root)
+            assert out.returncode == 0, out.stderr
+            return head_view(st), json.loads(out.stdout)
+        return pulled
+    for name in ("control", "late", "short"):
+        (tmp_path / name).mkdir()
+    m, now = late_feed(renewed=False)
+    assert both(m, now, "control")() == ([now - 600, {CVE: "high"}],) * 2
+    m, now = late_feed()
+    pulled = both(m, now, "late")
+    assert pulled() == ([now - 600, {CVE: "critical"}],) * 2  # held: the renewal is dated after the checkpoint
+    m.checkpoint(now=now - 100)
+    assert pulled() == ([now - 100, {CVE: "critical"}],) * 2  # judged, the renewal counted
+    rs = ruleset.load()
+    assert rs.level_at("critical", [(now - 20 * DAY, now - 20 * DAY)], now - 100) == "high"  # without it: decayed
+    m, now = late_feed(checked_after=DAY)
+    pulled = both(m, now, "short")
+    assert pulled() == ([now - 600, {CVE: "critical"}],) * 2  # not judged: counted now, this claim would give high
+    m.checkpoint(now=now - 100)
+    assert pulled() == ([now - 100, {CVE: "high"}],) * 2  # judged, and the claim does not hold critical

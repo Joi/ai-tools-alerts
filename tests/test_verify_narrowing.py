@@ -273,7 +273,7 @@ def test_a_run_cut_short_keeps_what_it_read_to_refuse_and_confirms_nothing(tmp_p
 
 def test_max_pairs_is_the_product_of_the_two_limits():
     from aitools_alerts import ruleset
-    assert verify.MAX_PAIRS == (verify.MAX_ALIASES + 1) * ruleset.MAX_PACKAGES
+    assert verify.MAX_PAIRS == (verify.MAX_LISTED + 1) * ruleset.MAX_PACKAGES  # nx25: the first id and every tied alias
 
 
 def test_off_a_failed_read_and_a_curator_s_thread_give_none(tmp_path):

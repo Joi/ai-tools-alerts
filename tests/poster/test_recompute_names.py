@@ -6,13 +6,12 @@ with the fake relay, KEV fetch and advisory API."""
 
 import pytest
 
-from aitools_alerts import schema
 from aitools_alerts.poster import catalog as catalog_lane
 from aitools_alerts.poster import main, recompute, rules
 from aitools_alerts.poster.ledger import Ledger
 
 from advisories import ghsa_json
-from test_main import APPLE, FakeKEV, INSPECTOR, T0, env, finding  # noqa: F401  (env is a fixture)
+from test_main import APPLE, FakeKEV, T0, env, finding  # noqa: F401  (env is a fixture)
 from test_recompute import _kev_with_its_fix, catalog, hours, levels, post  # noqa: F401  (an autouse fixture)
 
 HOUR = 3600
@@ -146,19 +145,3 @@ def test_a_thread_whose_product_left_the_scope_file_is_not_judged(env, monkeypat
     assert entries(env)[0]["level"] == "high" and len(env.api.calls) == asked  # not read at all
     env.api.put(G, ghsa_json(G, type="malware", **HERMES))  # nor raised
     assert sent(env, 31, 33) == [] and len(env.api.calls) == asked
-
-
-def test_a_thread_under_a_former_name_is_not_judged(env):
-    """Decided in zmg2: no member's check can confirm a level for a former name
-    (``verify.judge``: no-source), and the name stands for more than one product."""
-    old = schema.ScopeEntry("MCP Inspector", "mcp", "channel", ["mcp inspector"],
-                            authority=("github.com/modelcontextprotocol/inspector/",))
-    fid = "GHSA-4fc4-wcmh-4g86"
-    posted(env, fid, "npm:@modelcontextprotocol/inspector", old, "1.0.3", INSPECTOR)
-    inspector = dict(packages=[("npm", "@modelcontextprotocol/inspector", "< 1.0.3", "1.0.3")],
-                     repo="modelcontextprotocol/inspector")
-    env.api.put(fid, ghsa_json(fid, withdrawn_at=WHEN, **inspector))  # would lower it
-    assert sent(env, 0, 30) == [] and state(env)["dwell"] == {} and env.api.calls == []
-    env.api.put(fid, ghsa_json(fid, type="malware", **inspector))  # would raise it
-    assert sent(env, 31, 33) == [] and env.api.calls == []
-    assert [(e["scope"], e["level"]) for e in entries(env)] == [("MCP Inspector", "high")]

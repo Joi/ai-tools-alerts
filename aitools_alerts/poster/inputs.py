@@ -46,6 +46,7 @@ _STATE_KEYS = {"schema_version", "since", "heartbeat", "collector", "kev_since",
 MAX_WAITING = 2000  # 0dvh: first sight of a held high, per scope and id
 GATE = 1  # h340: everything unpublished in the state was admitted by an authoritative source
 MAX_DIGEST_IDS = 10  # the event ids of the last digests sent, oldest first
+MAX_FOREIGN = 200  # m729: the foreign event ids one digest reports (sent.MAX_SAID)
 WEEK = re.compile(r"\d{4}-W\d{2}")  # qwpw: the ISO week of the last weekly summary sent
 _TOKYO = _dt.timezone(_dt.timedelta(hours=9))
 
@@ -164,6 +165,15 @@ class Config:
         return self.ledger.with_name(self.ledger.name + ".checkpoint.json")
 
     @property
+    def sent_state(self) -> Path:
+        """Every event id this poster signed, and the relay-bot events it did not (m729)."""
+        return self.ledger.with_name(self.ledger.name + ".sent.json")
+
+    @property
+    def sent_lock(self) -> Path:
+        return self.ledger.with_name(self.ledger.name + ".sent.json.lock")
+
+    @property
     def recompute_state(self) -> Path:
         """The last good KEV copy and each thread's wait before a lowering (ny5g; never the journal)."""
         return self.ledger.with_name(self.ledger.name + ".recompute.json")
@@ -190,7 +200,7 @@ class Config:
     def check_paths(self) -> None:
         """The ledger, its lock, the journal and the KEV cache are four distinct files."""
         files = [self.ledger, self.ledger.with_name(self.ledger.name + ".lock"), self.state, self.kev_cache,
-                 self.translate_state, self.owed_state, self.recompute_state]
+                 self.translate_state, self.owed_state, self.recompute_state, self.sent_state, self.sent_lock]
         if self.checkpoint_key_file is not None:  # a cache write must never land on the key
             files.append(self.checkpoint_key_file)
         files.append(self.mirror_dir)
@@ -198,7 +208,7 @@ class Config:
         real = [os.path.realpath(p).casefold() for p in files]
         mirror = real[-1] + os.sep  # the mirror directory holds its own state files and lock
         if len(set(real)) != len(real) or any(r.startswith(mirror) for r in real[:-1]):
-            raise ConfigError("ledger, ledger lock, state, kev_cache, the translation, checkpoint and recompute files "
+            raise ConfigError("ledger, ledger lock, state, kev_cache, the translation, checkpoint, recompute and sent files "
                               "and the checkpoint key file must differ")
 
 
@@ -208,7 +218,8 @@ class Config:
         lane alone (q03f): a catalog path never stops alert work."""
         own = [self.catalog_known, self.catalog_state, self.catalog_lock]
         others = [self.ledger, self.ledger.with_name(self.ledger.name + ".lock"), self.state, self.kev_cache,
-                  self.translate_state, self.owed_state, self.recompute_state, self.mirror_dir]
+                  self.translate_state, self.owed_state, self.recompute_state, self.sent_state, self.sent_lock,
+                  self.mirror_dir]
         if self.checkpoint_key_file is not None:
             others.append(self.checkpoint_key_file)
         real = [os.path.realpath(p).casefold() for p in own + others]
@@ -475,7 +486,10 @@ def _item_ok(it) -> bool:
         return False  # a reply names its thread's root; a root or digest names none
     if kind == "digest":
         return (it["scope"] is None and _date_ok(it["date"]) and isinstance(adv, dict)
-                and set(adv) - {"week", "dropped"} == {"held", "cutoff", "roots"} and type(adv["cutoff"]) is int
+                and set(adv) - {"week", "dropped", "foreign"} == {"held", "cutoff", "roots"} and type(adv["cutoff"]) is int
+                and ("foreign" not in adv or (isinstance(adv["foreign"], list) and 0 < len(adv["foreign"]) <= MAX_FOREIGN  # m729
+                                              and len(set(map(str, adv["foreign"]))) == len(adv["foreign"])
+                                              and all(isinstance(i, str) and _HEX64.fullmatch(i) for i in adv["foreign"])))
                 and ("week" not in adv or week_ok(adv["week"]))
                 and ("dropped" not in adv or (type(adv["dropped"]) is int and adv["dropped"] > 0))  # jsje
                 and isinstance(adv["held"], list) and all(isinstance(k, str) for k in adv["held"])

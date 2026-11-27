@@ -307,6 +307,126 @@ def test_a_renewal_pass_that_raises_costs_the_run_its_exit_code_and_nothing_else
     assert code == 0 and relay.calls == []  # nothing is sent again
 
 
+# ---------------------------------------------------------------- a level change and a lost state (ai-tools-alerts#p93w)
+
+def _changes_seen(monkeypatch):
+    seen, real = [], signer.run_checkpoint
+    monkeypatch.setattr(signer, "run_checkpoint", lambda *a, **k: (seen.append(sorted(k["changes"])), real(*a, **k))[1])
+    return seen
+
+
+def test_after_a_lost_state_a_level_change_made_before_it_is_passed_to_the_signer(signing, monkeypatch):
+    """The checkpoint state held the only memory of an acknowledged level reply. After its
+    loss the run gives the signer what the ledger still knows: each channel root of a
+    claimed thread whose level last changed before the loss, when the reply was first
+    attempted and when the run that recorded it began. A later level change is owed in
+    the new record, so the thread is passed no more."""
+    env = signing
+    critical(env, relay=PutRelay())
+    seen = _changes_seen(monkeypatch)
+    relay = day(env, 44, kev=BLOCKED, relay=PutRelay())  # the step down, acknowledged in both channels
+    (e,) = entries(env)
+    at = T0 + 44 * DAY
+    assert len(steps(relay)) == 2 and e["level"] == "high" and (e["changed"][-1], e["last_change"]) == (at, at)
+    assert seen[-1] == []  # the record is whole: the reply is owed there
+    env.config.owed_state.unlink()
+    day(env, 44, kev=BLOCKED, hours=1, relay=PutRelay())
+    roots = sorted({e["root_event_id"], *e["channel_ids"].values()})
+    assert len(roots) == 2 and seen[-1] == [(r, at, at) for r in roots]
+    day(env, 50, kev=BLOCKED, relay=PutRelay())  # and on every run after the hold, while nothing later replaces it
+    assert seen[-1] == [(r, at, at) for r in roots]
+    relay = day(env, 73, kev=BLOCKED, hours=12, relay=PutRelay())  # high has run its 30 days: the next step
+    assert len(steps(relay)) == 2 and entries(env)[0]["level"] == "notice" and seen[-1] == []
+
+
+def test_a_level_reply_sent_again_by_a_later_run_is_passed_with_both_times(signing, monkeypatch):
+    """The first send of a step had no answer and the mirror showed it two days later. The
+    ledger dates the change from the attempt; the reply may be as late as the run that
+    recorded it, so a confirmation counts only when it is later than that run began."""
+    from aitools_alerts.poster import sent as sent_record
+    from test_settle import show
+    env = signing
+    critical(env, relay=PutRelay())
+    seen = _changes_seen(monkeypatch)
+    relay = day(env, 44, kev=BLOCKED, relay=PutRelay("unknown"))
+    ev = show(env, relay.calls[0], when=T0 + 44 * DAY + 5)
+    # m729: with a checkpoint key a send is settled by its recorded id; the real sender writes it down first
+    sent_record.note(env.config.sent_state, ev["id"], T0 + 44 * DAY)
+    day(env, 46, kev=BLOCKED, relay=PutRelay())
+    (e,) = entries(env)
+    assert e["level"] == "high" and (e["changed"][-1], e["last_change"]) == (T0 + 44 * DAY, T0 + 46 * DAY)
+    env.config.owed_state.unlink()
+    day(env, 46, kev=BLOCKED, hours=1, relay=PutRelay())
+    assert seen[-1] and all(c[1:] == (T0 + 44 * DAY, T0 + 46 * DAY) for c in seen[-1])
+
+
+def test_a_withdrawn_thread_is_not_passed(signing):
+    """Its last change is the withdrawal (ai-tools-alerts#kk2q): no level, no renewal on
+    a reader, and nothing the poster would send to end the wait. Asked of the ledger
+    directly: a run would itself move the thread out of a state set by hand."""
+    from types import SimpleNamespace
+    env = signing
+    critical(env, relay=PutRelay())
+    env.config.owed_state.unlink()
+    now = T0 + DAY
+    signer.save_owed(env.config.owed_state, signer.load_owed(env.config.owed_state, now))  # the loss, on record
+    with main.Ledger(env.config.ledger) as led:
+        run = SimpleNamespace(config=env.config, now=now, led=led)
+        entry = led._state()["entries"][0]
+        entry.update(changed=[T0 + 60], withdrawn=["critical", "feed"])
+        assert main.Run.level_changes(run) == []
+        entry.pop("withdrawn")  # the same entry out of that state is passed, for both its roots
+        assert [c[1:] for c in main.Run.level_changes(run)] == [(T0 + 60, entry["last_change"])] * 2
+
+
+def test_a_thread_whose_level_never_changed_is_not_passed(signing, monkeypatch):
+    env = signing
+    critical(env, relay=PutRelay())
+    seen = _changes_seen(monkeypatch)
+    env.config.owed_state.unlink()
+    day(env, 1, relay=PutRelay())
+    assert seen[-1] == [] and "changed" not in entries(env)[0]
+
+
+def test_a_level_change_of_a_thread_with_no_claim_is_not_passed(signing, monkeypatch):
+    env = signing
+    monkeypatch.setattr(main, "ROOT_CLAIMS", False)  # as every thread posted before roots carried claims
+    kev_fixed(env)
+    day(env, 0, relay=PutRelay())
+    monkeypatch.setattr(main, "ROOT_CLAIMS", True)
+    seen = _changes_seen(monkeypatch)
+    with main.Ledger(env.config.ledger) as led:  # a level change on record, as a raise or a lowering leaves it
+        led._state()["entries"][0]["changed"] = [T0]
+        led._save()
+    env.config.owed_state.unlink()
+    day(env, 1, kev=BLOCKED, relay=PutRelay())
+    (e,) = entries(env)
+    assert e["changed"] == [T0] and "claim" not in e and seen[-1] == []
+
+
+def test_a_ledger_that_cannot_give_the_level_changes_means_no_checkpoint_is_signed(signing, monkeypatch):
+    def broken(self):
+        raise main.LedgerError("unreadable")
+    monkeypatch.setattr(main.Run, "level_changes", broken)
+    relay = PutRelay()
+    code, summary, _ = signing.run(relay=relay)
+    assert code == 0 and summary.endswith(" checkpoint=error") and relay.puts == []
+
+
+def test_the_runs_clock_reaches_the_signer(signing):
+    relay = PutRelay()
+    env_code, summary, _ = signing.run(relay=relay, clock=lambda: T0 + 30)
+    assert summary.endswith(" checkpoint=sent") and relay.last().created_at == T0 + 30
+
+
+def test_the_poster_command_dates_checkpoints_by_the_machines_clock(monkeypatch, tmp_path):
+    import time
+    got = {}
+    monkeypatch.setattr(main, "run", lambda now, cfg, **kw: (got.update(kw), (0, "ok"))[1])
+    monkeypatch.setattr(main.inputs, "load_config", lambda path: type("C", (), {"check_relay": lambda self: None})())
+    assert main.main(["run", "--config", str(tmp_path / "poster.toml")]) == 0 and got["clock"] is time.time
+
+
 # ---------------------------------------------------------------- a thread ends (ai-tools-alerts#65xv)
 
 def run_down(env, last, first=1, **kw):

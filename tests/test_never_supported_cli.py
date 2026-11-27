@@ -245,7 +245,7 @@ def supported_then_withdrawn(feed, monkeypatch, capsys):
     """A confirmed critical; a day later this machine reads that the source withdrew it.
     Returns (the fetch, the time of that read)."""
     feed([bot(id=G1, level="critical")])
-    n = use(monkeypatch, Net().set(gurl(G1), ghsa(type="malware")))
+    n = use(monkeypatch, Net().set(gurl(G1), ghsa(type="malware", fixed="99.0.0")))  # the fixed version bot() posts
     start = verify.time.time()
     assert out_of(capsys, ["run"])[0] == cli.EXIT_UNSEEN_CRITICAL  # notified, then read and confirmed
     assert memory()[1:] == [None, None]
@@ -270,7 +270,7 @@ def test_support_lost_yesterday_keeps_the_level_and_is_flagged_only_past_48_hour
     n.set(gurl(G1), DOWN)  # a failed read does not end the line
     clock_at(monkeypatch, gone + 3 * DAY + 180)
     assert lost in out_of(capsys, ["run"])[1]
-    n.set(gurl(G1), ghsa(type="malware"))  # the source supports it again
+    n.set(gurl(G1), ghsa(type="malware", fixed="99.0.0"))  # the source supports it again
     clock_at(monkeypatch, gone + 4 * DAY + 240)
     assert "source check:" not in out_of(capsys, ["run"])[1] and memory()[1:] == [None, None]
 
@@ -687,3 +687,18 @@ def test_a_respelled_product_is_shown_at_notice_like_the_scope_name(feed, sent, 
     status, out, _ = out_of(capsys, ["run"])
     assert status == 0 and sent["texts"] == [] and FLAG in out
     assert memory("claude code")[0] is None and memory("claude code")[1] is not None
+
+
+def test_a_thread_under_a_former_product_name_has_its_source_line(feed, monkeypatch, capsys):
+    """aabw: a former name is judged (it stands for the products that list it), so what
+    the check finds for it is said, by that name in the scope file's spelling. Before,
+    its result was ``no-source`` and it had no line."""
+    old = "MCP servers and clients"
+    a = advisory(posted_by="relay-bot", id=G1, level="high", products=[Product(old.lower(), "mcp", "<99.0.0", "99.0.0")],
+                 actions=[Action("upgrade", old.lower(), "99.0.0")])
+    feed([a], 'verify = "all"\n')
+    gone = ghsa(pkgs=(("pip", "mcp-server-git"),), withdrawn_at=WITHDRAWN)  # names one of the seven, and supports nothing
+    use(monkeypatch, Net().set(gurl(G1), gone))
+    assert cli.main(["pull"]) == 0 and cli.main(["verify"]) == 0
+    out = out_of(capsys, ["check"])[1]
+    assert f"source check: the source does not support {G1} for {old}\n" in out and out.count("source check:") == 1

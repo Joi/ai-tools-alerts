@@ -4,7 +4,7 @@ import json
 import logging
 
 import pytest
-from dataclasses import replace
+from dataclasses import asdict, replace
 
 from aitools_alerts.poster import compose, ledger, rules
 from aitools_alerts.poster.candidates import Candidate, Source
@@ -358,8 +358,44 @@ def test_a_level_change_is_counted_once_and_a_lowering_marks_the_thread(tmp_path
         assert merged.exploited is True
 
 
+def test_the_withdrawn_state_is_kept_by_channel_beside_the_level(tmp_path):  # kk2q
+    with Ledger(tmp_path / "l.json") as led:
+        adv = adv_for(cand(), "critical")
+        led.record_root(adv, "r1", {"feed": "r1", "critical": "r2"}, scope="Claude Code", exploited=False, now=T0)
+        assert led.thread("r1").withdrawn is None
+        led.record_reply("r1", adv, {"feed": "a1"}, now=T0 + 10, withdrawn=True)
+        e = led.thread("r1")
+        assert (e.level, e.advisory, e.withdrawn, e.lowered, e.changed) == ("critical", asdict(adv), ["feed"], True, [T0 + 10])
+        led.record_reply("r1", adv, {"critical": "a2"}, now=T0 + 11, withdrawn=True)  # the other channel: counted once
+        e = led.thread("r1")
+        assert e.withdrawn == ["critical", "feed"] and e.changed == [T0 + 10]
+        led.record_reply("r1", replace(adv, title="other"), {"feed": "a3"}, now=T0 + 12)  # no level in it: the state stays
+        assert led.thread("r1").withdrawn == ["critical", "feed"] and led.thread("r1").changed == [T0 + 10]
+        # a reply that names a level ends it in its channel, at the kept level too, and is a change
+        led.record_reply("r1", adv, {"feed": "a4"}, now=T0 + 20, withdrawn=False)
+        e = led.thread("r1")
+        assert e.withdrawn == ["critical"] and e.level == "critical" and e.changed == [T0 + 10, T0 + 20]
+        led.record_reply("r1", adv, {"critical": "a5"}, now=T0 + 20, withdrawn=False)  # the same run: counted once
+        e = led.thread("r1")
+        assert e.withdrawn is None and e.changed == [T0 + 10, T0 + 20] and e.lowered is True
+        # sent to one channel by a later run (it was refused there before): its own change
+        led.record_reply("r1", adv, {"feed": "b1"}, now=T0 + 30, withdrawn=True)
+        led.record_reply("r1", adv, {"critical": "b2"}, now=T0 + 30, withdrawn=True)
+        led.record_reply("r1", replace(adv, level="high"), {"feed": "b3"}, now=T0 + 40, withdrawn=False)
+        assert led.thread("r1").changed[-2:] == [T0 + 30, T0 + 40] and led.thread("r1").level == "high"  # one time, not two
+        led.record_reply("r1", replace(adv, level="high"), {"critical": "b4"}, now=T0 + 50, withdrawn=False)
+        e = led.thread("r1")
+        assert e.withdrawn is None and e.changed[-2:] == [T0 + 40, T0 + 50]
+        led.record_reply("r1", replace(adv, level="high"), {"feed": "b5"}, now=T0 + 60, withdrawn=False)  # not withdrawn: nothing
+        assert led.thread("r1").changed[-1] == T0 + 50
+    with Ledger(tmp_path / "l.json") as led:  # it loads again, with and without the key
+        assert led.thread("r1").withdrawn is None
+
+
 @pytest.mark.parametrize("bad", [{"lowered": 1}, {"floor": "severe"}, {"floor": None}, {"changed": [1.5]},
-                                 {"changed": list(range(51))}, {"changed": 3}])
+                                 {"changed": list(range(51))}, {"changed": 3},
+                                 {"withdrawn": True}, {"withdrawn": []}, {"withdrawn": "feed"}, {"withdrawn": ["critical"]},
+                                 {"withdrawn": ["feed", "feed"]}, {"withdrawn": None}])
 def test_a_ledger_with_a_malformed_recompute_key_is_refused(tmp_path, bad):  # ny5g
     path = tmp_path / "l.json"
     with Ledger(path) as led:

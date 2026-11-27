@@ -280,7 +280,7 @@ def test_a_third_unverified_critical_from_one_key_is_listed_and_does_not_interru
     # its source confirms it: it interrupts in the run that reads the source, and says nothing of "not verified"
     waiting = next(e for e in m.events["feed.json"] if e["id"] == held[0])
     ident = next(i for i in THREE if i in waiting["content"])
-    use(monkeypatch, Net().set(gurl(ident), ghsa(ident, type="malware")))
+    use(monkeypatch, Net().set(gurl(ident), ghsa(ident, type="malware", fixed="99.0.0")))  # the fixed version bot() posts
     status, out, _ = out_of(capsys, ["run"])
     assert status == cli.EXIT_UNSEEN_CRITICAL and len(sent["texts"]) == 3 and cli.NOT_VERIFIED not in sent["texts"][2]
     assert out_of(capsys, ["run"])[0] == 0 and len(State.load().seen) == 3
@@ -327,7 +327,7 @@ def test_a_copy_of_a_post_confirmed_earlier_is_not_confirmed_with_it(feed, sent,
     """A result belongs to the published state, not to the post. After the source withdrew,
     new roots that copy the confirmed state must not each pass as checked."""
     m = feed([bot(id=G1, level="critical")])
-    use(monkeypatch, Net().set(gurl(G1), ghsa(type="malware")))
+    use(monkeypatch, Net().set(gurl(G1), ghsa(type="malware", fixed="99.0.0")))  # the fixed version bot() posts
     assert out_of(capsys, ["run"])[0] == cli.EXIT_UNSEEN_CRITICAL  # notified unverified, then read and confirmed
     for i in range(4):  # the same state, another title: another alert to the reader
         m.root_post(m.bot_sec, bot(id=G1, level="critical", title=f"Invented copy {i}"), created_at=T0 + 200 + i)
@@ -890,3 +890,39 @@ def test_a_widening_reply_under_a_name_that_cannot_be_judged_does_not_silence_a_
     status, data = run_json(capsys)
     assert status == cli.EXIT_UNSEEN_CRITICAL and len(data["unseen_critical"]) == 1
     assert "mcp-server-git" in [d["product"]["name"] for d in data["matches"]]
+
+
+@pytest.mark.parametrize("package", ["npm:mcp-remote", "pypi:mcp-server-fetch", "pypi:mcp-server-git", None])
+def test_a_match_on_a_former_product_name_is_shown_and_never_interrupts_as_confirmed(feed, sent, monkeypatch, capsys,
+                                                                                    package):
+    """aabw. "MCP servers and clients" stands for seven products and once matched any MCP
+    server; an installation matches it by its configured key. The thread's level is
+    judged, and here the source confirms the critical, for mcp-server-git. That is not a
+    confirmation for this installation, whatever its package: the alert is still shown
+    (an old alert about this very server must not disappear), and it does not interrupt,
+    as before this change."""
+    from aitools_alerts import inventory
+    from aitools_alerts.inventory import Installed, Inventory
+    old = "MCP servers and clients"
+    inv = Inventory(products={"mcp": [Installed("some-server", "0.1.0", "/invented/mcp.json", package=package, server=old)]})
+    monkeypatch.setattr(inventory, "collect", lambda *a, **k: inv)
+    from dataclasses import replace
+    from aitools_alerts.schema import Action, Product
+    a = replace(bot(id=G1, level="critical"), products=[Product(old, "mcp", "<1.0", None)],
+                actions=[Action("stop_using", old, None)])
+    feed([a], ALL, ruleset_pin=exact_pin())
+    malware = ghsa(pkgs=(("pip", "mcp-server-git"),), type="malware")
+    for v in malware["vulnerabilities"]:
+        v["first_patched_version"] = None
+    use(monkeypatch, Net().set(gurl(G1), malware))
+    assert cli.main(["pull"]) == 0 and cli.main(["verify"]) == 0
+    (r,) = verify.result_for(a, verify.load(State.load().dir)).values()
+    assert (r["result"], r["why"], r["source"]) == ("confirmed", "match", "critical")  # the thread's level is confirmed
+    status, data = run_json(capsys)
+    assert status == 0 and data["unseen_critical"] == [] and data["held_critical"] == []
+    (d,) = data["matches"]
+    assert d["reason"] == "affected" and d["source_check"] == {"result": "unknown", "why": "no-source", "source_level": None}
+    status, out, _ = out_of(capsys, ["run"])
+    assert status == 0 and sent["texts"] == [] and State.load().interrupts == {}
+    assert "CRITICAL: " in out and cli.UNJUDGED_LINE.format(id=G1) in out
+
