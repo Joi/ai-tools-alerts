@@ -157,7 +157,7 @@ def test_a_crash_in_the_check_is_one_fixed_line_and_the_same_exit_status(feed, m
 
 def test_published_below_the_source_is_flagged(feed, monkeypatch, capsys):
     feed([bot(level="high")])
-    use(monkeypatch, Net().set(gurl(G1), ghsa(type="malware")))
+    use(monkeypatch, Net().set(gurl(G1), ghsa(type="malware", fixed="99.0.0")))  # the fixed version bot() posts
     status, out, _ = out_of(capsys, ["run"])
     line = f"source check: {G1} is published at high for Claude Code; the source supports critical\n"
     assert status == 0 and line in out

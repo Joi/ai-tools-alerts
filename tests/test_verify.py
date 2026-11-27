@@ -44,8 +44,9 @@ def adv(id=G1, aliases=(), level="high", products=("Claude Code",), **kw):
                     products=[Product(n, e, "<99.0.0", "99.0.0") for n, e in pairs], **kw)
 
 
-def ghsa(i=G1, pkgs=(CC,), type="reviewed", cve=None, high=True, **over):
-    """An api.github.com/advisories response. ``high``: fields the ruleset reads as high."""
+def ghsa(i=G1, pkgs=(CC,), type="reviewed", cve=None, high=True, fixed="9.9.9", **over):
+    """An api.github.com/advisories response. ``high``: fields the ruleset reads as high.
+    ``fixed``: the first patched version of every package; the range is everything below it."""
     obj = {"ghsa_id": i, "cve_id": cve, "type": type, "severity": "high", "withdrawn_at": None,
            "summary": f"{SENTINEL}-1", "description": f"{SENTINEL}-2", "source_code_location": f"https://{SENTINEL}-3/",
            "repository_advisory_url": None, f"{SENTINEL}-4": f"{SENTINEL}-5",
@@ -53,8 +54,8 @@ def ghsa(i=G1, pkgs=(CC,), type="reviewed", cve=None, high=True, **over):
            "cvss_severities": {"cvss_v3": {"vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", "score": 9.8},
                                "cvss_v4": {"vector_string": None, "score": 0.0}},
            "cwes": [{"cwe_id": "CWE-78", "name": f"{SENTINEL}-6"}] if high else [],
-           "vulnerabilities": [{"package": {"ecosystem": e, "name": n}, "vulnerable_version_range": "< 9.9.9",
-                                "first_patched_version": "9.9.9", "vulnerable_functions": []} for e, n in pkgs]}
+           "vulnerabilities": [{"package": {"ecosystem": e, "name": n}, "vulnerable_version_range": f"< {fixed}",
+                                "first_patched_version": fixed, "vulnerable_functions": []} for e, n in pkgs]}
     obj.update(over)
     return obj
 

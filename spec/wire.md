@@ -101,6 +101,8 @@ A narrowing of `products` travels in the block, as the poster has always sent it
 
 So after a narrowing applies here, a released reader shows more than this one: the wider entry. It never shows less. Only `products` are narrowed; actions and sources stay joined.
 
+A widening travels the same way and every reader from v0.1.7 on joins it at once, this one too. This reader checks one widening afterwards, locally (ai-tools-alerts#53fy): an entry whose `fixed` no version range of the GitHub advisory states as its first patched version, on a whole read of the thread's sources, is shown with a flag and an upgrade that names no version. The thread, its level, its entry and the match are what every reader shows; nothing is added to the wire and nothing a released reader shows changes (`test_a_relay_bot_widening_of_fixed_shows_the_same_on_every_reader`).
+
 ## `min_cli`
 
 The trust root can name the oldest release that reads the feed in full. It is an optional key in the content of the checkpoint key certificate (`trust/checkpoint-key.json`): `"min_cli": "0.2.0"`, three dotted numbers. A CLI older than it prints one `upgrade:` line after every command that reads the feed (`pull`, `check`, `notify`, `plan`, `run`), once it holds the certificate, and goes on working; nothing is refused or hidden because of it. The 0.1.7 release and earlier ignore the key.

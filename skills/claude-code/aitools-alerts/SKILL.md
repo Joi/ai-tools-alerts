@@ -70,6 +70,9 @@ how to use it. The rules below are fixed; follow them exactly.
    - `prepare (ask first):` everything else.
    Under an upgrade it prints `command: <argv>`, or
    `no fixed version given: notify only, no command`, or
+   `the fixed version given is not the advisory's: notify only, no command`
+   (your own check read the advisory and it names another fixed version:
+   tell the person, give the source link, and name no version), or
    `no command template; upgrade with your package manager`. It ends with
    `nothing was executed`.
    With `lang = "ja"` in the config, an advisory's title and text may be in

@@ -42,16 +42,23 @@ def format_text(adv, m: Match | None = None, translation: str | None = None) -> 
     """Level and title, what is affected, the action, the primary source.
     With a translation, its title and text replace the English title; only
     the text is shortened, and when the translated title would not fit
-    with Affected, Action and Source, the English text is sent."""
+    with Affected, Action and Source, the English text is sent.
+
+    A match whose ``fixed`` the source contradicts (53fy, ``Match.fixed_contradicted``)
+    names no fixed version, and no translation is used for it: a translation is the
+    signer's prose and can name that version."""
+    flagged = m is not None and m.fixed_contradicted
+    if flagged:
+        translation = None
     title = pull.translation_title(translation, adv.id) if translation else adv.title
     lines = [f"{adv.level.upper()}: {title}"]
     p = m.product if m is not None and m.product is not None else (adv.products[0] if adv.products else None)
     if p is not None:
         have = f" {m.installed.version}" if m is not None and m.installed.version else ""
-        fixed = f" (fixed in {p.fixed})" if p.fixed else ""
+        fixed = f" (fixed in {p.fixed})" if p.fixed and not flagged else ""
         lines.append(f"Affected: {p.name}{have}{fixed}")
     actions = check.plan(m, check.Config()).prepare if m is not None else adv.actions
-    lines += [f"Action: {check.describe(a)}" for a in actions] or ["Action: see the advisory"]
+    lines += [f"Action: {check.describe(a, flagged)}" for a in actions] or ["Action: see the advisory"]
     if adv.sources:
         lines.append(f"Source: {adv.sources[0].url}")
     if translation and len("\n".join(lines)) > MAX_TEXT:

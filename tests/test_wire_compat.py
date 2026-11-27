@@ -314,6 +314,30 @@ def test_what_the_format_does_not_avoid_a_reader_before_0_1_7_applies_a_narrowin
     assert released(tmp_path, tag, m, now)[str(now)] == {"AITA-TEST-0001": ["critical", ["1.0.0"], False]}
 
 
+RAISED = [asdict(Product("Claude Code", "claude-code", "<99.5.0", "99.5.0"))]
+
+
+@pytest.mark.parametrize("tag", ("v0.1.7", "v0.1.8", "v0.2.0", "v0.2.1"))
+def test_a_relay_bot_widening_of_fixed_shows_the_same_on_every_reader(tmp_path, tag):
+    """A reply that raises ``fixed`` is a widening, joined at once by every reader from
+    0.1.7 on and by this one (ai-tools-alerts#53fy): the thread, its level, the raised
+    ``fixed`` and the match are the same everywhere. What this reader adds is local, from
+    its own read of the source (``verify.fixed_stated``): a flag, and an upgrade with no
+    version. Nothing on the wire says so, and with no source read nothing differs."""
+    m, now = mirror_now()
+    was = [Product("Claude Code", "claude-code", "<1.0.0", "1.0.0")]  # the installed 2.0.0 is outside it
+    root = m.root_post(m.bot_sec, advisory(posted_by="relay-bot", products=was), created_at=now - 3600)
+    m.post(m.bot_sec, m.patch_text(products=RAISED), created_at=now - 3000, tags=[["e", root["id"], "", "root"]])
+    wide = {"AITA-TEST-0001": ["critical", ["99.5.0"], True]}
+    assert released(tmp_path, tag, m, now)[str(now)] == wide
+    assert this_reader(m, now, tmp_path)[str(now)] == wide
+    (t,) = pull.advisories(State.load(tmp_path / "this-reader"))
+    assert t.narrowed is None  # a widening is no published narrowing: nothing waits, nothing is asked as one
+    (hit,) = check.match([t.adv], INV)
+    assert hit.fixed_contradicted is False
+    assert [a.value for a in check.plan(hit, check.Config()).prepare if a.verb == "upgrade"] == ["99.5.0"]
+
+
 @pytest.mark.parametrize("tag", RELEASED + CLAIM_READERS)
 def test_a_relay_bot_withdrawal_is_refused_by_every_released_reader(tmp_path, tag):
     """The withdrawal (ai-tools-alerts#y484) is a reply whose block is exactly

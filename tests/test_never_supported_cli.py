@@ -245,7 +245,7 @@ def supported_then_withdrawn(feed, monkeypatch, capsys):
     """A confirmed critical; a day later this machine reads that the source withdrew it.
     Returns (the fetch, the time of that read)."""
     feed([bot(id=G1, level="critical")])
-    n = use(monkeypatch, Net().set(gurl(G1), ghsa(type="malware")))
+    n = use(monkeypatch, Net().set(gurl(G1), ghsa(type="malware", fixed="99.0.0")))  # the fixed version bot() posts
     start = verify.time.time()
     assert out_of(capsys, ["run"])[0] == cli.EXIT_UNSEEN_CRITICAL  # notified, then read and confirmed
     assert memory()[1:] == [None, None]
@@ -270,7 +270,7 @@ def test_support_lost_yesterday_keeps_the_level_and_is_flagged_only_past_48_hour
     n.set(gurl(G1), DOWN)  # a failed read does not end the line
     clock_at(monkeypatch, gone + 3 * DAY + 180)
     assert lost in out_of(capsys, ["run"])[1]
-    n.set(gurl(G1), ghsa(type="malware"))  # the source supports it again
+    n.set(gurl(G1), ghsa(type="malware", fixed="99.0.0"))  # the source supports it again
     clock_at(monkeypatch, gone + 4 * DAY + 240)
     assert "source check:" not in out_of(capsys, ["run"])[1] and memory()[1:] == [None, None]
 

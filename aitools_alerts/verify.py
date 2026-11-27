@@ -15,7 +15,8 @@ changes no level: it reports. ``lowering`` is the answer the reader applies to a
 published lowering or retraction (ai-tools-alerts#c1g2, ``pull.standing``), and
 ``claimed`` tells a level that rests on the first id's fields from one that may rest
 on a reading (ai-tools-alerts#tavj). ``narrowing`` is the answer to a published narrowing of
-products, range or fixed version (ai-tools-alerts#swfe).
+products, range or fixed version (ai-tools-alerts#swfe), and ``fixed_stated`` says whether
+a source states the fixed version an entry shows (ai-tools-alerts#53fy).
 
 Nothing a response says is printed. What is stored from one: levels and
 booleans the ruleset computed, an ETag of an ETag's shape, the ids the
@@ -43,7 +44,8 @@ from .state import write_json
 
 __all__ = ["KEV_URL", "HOSTS", "LIMITS", "TIMEOUT", "MAX_FETCHES", "RUN_SECONDS", "FILE", "BOT",
            "norm_id", "url_of", "default_fetch", "state_key", "judge", "summary", "load", "run",
-           "result_for", "at_level", "lowering", "claimed", "Asked", "Unsaved", "pkey", "scope_of", "narrowing"]
+           "result_for", "at_level", "lowering", "claimed", "Asked", "Unsaved", "pkey", "scope_of", "narrowing",
+           "fixed_stated"]
 
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 _GHSA_URL = "https://api.github.com/advisories/"
@@ -676,6 +678,45 @@ def narrowing(adv, products, cache: dict | None, now: float, shown=None, *, whol
             settled = False
         settled = settled and comparable  # rule 3
     return True if (settled or whole) and held["whole"] and 0 <= now - held["at"] <= FRESH_S else None
+
+
+def fixed_stated(adv, product, cache: dict | None) -> bool | None:
+    """Whether a source states the ``fixed`` version of ``product``, an entry of thread state
+    ``adv`` as it is shown, as a first patched version (ai-tools-alerts#53fy). From the
+    cached result only. A relay-bot reply that raises ``fixed`` is joined at once (a
+    widening fails open), and ``check.plan`` sends the upgrade to it: False here is what
+    takes the version out of that upgrade.
+
+    False: the thread's reads were whole, its authorities state at least one version
+    range for the product's scope product, this reader can compare every one of them,
+    and none gives ``fixed`` as its first patched version (``versions.parse`` of both,
+    as ``_states`` compares them). True: one does, on whatever read.
+
+    None, nothing known: no cache (``verify = "off"``), a post no relay bot signed, an
+    entry with no ``fixed``, a product that is no scope product, a state with no result
+    (a reply that changes ``fixed`` is a new state: ``_Target.key``), a read that was
+    not whole (an unread alias may be the advisory that states it; a failed read leaves
+    ``whole`` False, ``_entry``), no range (the catalog states none), and a range this
+    reader cannot compare (an OSV entry's), and a product the sources support at no
+    level (a withdrawn advisory). No age limit: the result of a relay-bot
+    match is read again daily (``cli._source_check``)."""
+    if cache is None or adv.posted_by != BOT or product.fixed is None:
+        return None
+    t = _Target(adv)
+    held = cache["results"].get(t.key) if t.first is not None else None
+    name = scope_of(product)
+    if held is None or "ranges" not in held or name is None:
+        return None
+    items = held["ranges"].get(name, [])
+    want = versions.parse(product.fixed)
+    if want is not None and any(x is not None and x[1] is not None and versions.parse(x[1]) == want for x in items):
+        return True
+    # only a source that supports the product contradicts its ``fixed``: a withdrawn advisory
+    # still lists its ranges, and what it no longer supports is 0z4e's question, not this one
+    r = held["products"].get(pkey(product))
+    if r is None or r["source"] in (None, ruleset.NONE):
+        return None
+    return False if items and None not in items and held["whole"] is True else None
 
 
 def state_key(adv) -> str:
