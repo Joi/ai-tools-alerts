@@ -73,7 +73,9 @@ def test_a_raise_on_a_thread_with_both_channels_sends_no_copy(env):
     env.api.put(G, ghsa_json(G, withdrawn_at=WHEN, **malware))
     for h in range(1, 25):
         run(env, h)
-    assert levels(run(env, 25)) == [{"level": "notice"}]
+    gone = run(env, 25)  # kk2q: the withdrawal, one reply in each channel
+    assert [json.loads(schema._last_block(text)) for _, _, text in gone.calls] == [{"level": "withdrawn"}] * 2
+    assert {ch for ch, _, _ in gone.calls} == {"feed", "critical"}
     env.api.put(G, ghsa_json(G, **malware))
     relay = run(env, 26)
     assert all(reply is not None for _, reply, _ in relay.calls) and len(relay.calls) == 2

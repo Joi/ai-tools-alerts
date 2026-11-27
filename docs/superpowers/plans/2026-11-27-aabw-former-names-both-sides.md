@@ -63,7 +63,7 @@ Spec: `docs/superpowers/specs/2026-11-27-aabw-former-names-both-sides-design.md`
 
 ### Acceptance (the issue's)
 
-- A thread under "MCP Inspector" whose advisory is withdrawn is lowered by the bot under ny5g's rules and a member's check confirms it: the first poster test, case `MCP Inspector`.
+- A thread under "MCP Inspector" whose advisory is withdrawn is lowered by the bot under ny5g's rules and a member's check confirms it: the first poster test, case `MCP Inspector`. Since the merge of kk2q the bot's move is the withdrawal, below notice, under the same rules; the test holds that and the member's confirmation of it (spec, "After the merge of main at `d40fef5`").
 - A thread under "MCP servers and clients" is handled by the chosen rule, with a test: the same test's second case and the four tests after it.
 
 ### Added by the code review

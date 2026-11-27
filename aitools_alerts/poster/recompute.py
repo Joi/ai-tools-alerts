@@ -34,8 +34,12 @@ evidence moves a level:
   within a day (``select``).
 
 A level that rests on a reading of prose is never recomputed below it (the
-ledger's ``floor``), and ``notice`` is the lowest result: there is no withdrawn
-state and no retraction here. Nothing in this module sends or fetches.
+ledger's ``floor``), and ``notice`` is the lowest level. Below it there is one state,
+``withdrawn`` (ai-tools-alerts#kk2q; spec/wire.md "A withdrawal"): every advisory
+reading counted states the withdrawal, nothing supports the product, no KEV entry
+lists a CVE of the thread and its prose floor is notice. It is reached as a lowering
+is, under every rule above, and left as a raise is, in the run that reads the cause
+(``leaving``). There is no retraction here. Nothing in this module sends or fetches.
 """
 
 from __future__ import annotations
@@ -46,7 +50,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from aitools_alerts import ruleset
+from aitools_alerts import ruleset, wire
 from aitools_alerts.poster import inputs, sources
 from aitools_alerts.poster.candidates import BOT_ID
 from aitools_alerts.poster.ledger import QUIET
@@ -61,6 +65,7 @@ RELEASE = 2
 _VERSION = re.compile(r"[0-9]{1,6}(?:\.[0-9]{1,6}){1,4}")  # CISA's catalogVersion: 2026.11.24
 MAX_LOWERED = 200  # ids waiting for the digest line
 _LEVELS = ("notice", "high", "critical")
+_BELOW = (*_LEVELS, wire.WITHDRAWN)  # kk2q: what a wait may be for, and what the digest reports
 _DWELL = {"level": str, "held": int}  # "last": the complete read before, or None; "version": the KEV copy's, or None
 _KEV = {"version": str, "peak": int, "at": int}  # the latest version and the largest size of a complete copy
 _TRIP = {"since": int, "due": int}
@@ -95,10 +100,10 @@ def _ok(st) -> bool:
                     for k, v in st["exploited"].items())
             and all(isinstance(k, str) and isinstance(v, dict) and (v.get("last") is None or type(v["last"]) is int)
                     and "last" in v and "version" in v and (v["version"] is None or isinstance(v["version"], str))
-                    and _shaped({x: v[x] for x in v if x not in ("last", "version")}, _DWELL) and v["level"] in _LEVELS
+                    and _shaped({x: v[x] for x in v if x not in ("last", "version")}, _DWELL) and v["level"] in _BELOW
                     for k, v in st["dwell"].items())
             and isinstance(st["lowered"], list)
-            and all(isinstance(x, list) and len(x) == 2 and isinstance(x[0], str) and x[1] in _LEVELS
+            and all(isinstance(x, list) and len(x) == 2 and isinstance(x[0], str) and x[1] in _BELOW
                     for x in st["lowered"])
             and (st["direct"] is None or isinstance(st["direct"], str))
             and isinstance(st["recent"], list)
@@ -355,17 +360,51 @@ def held(entry, scope, found: str, rs, stop: bool = False, infer: bool = True) -
     return capped
 
 
+def _stated(counted) -> list:
+    """For each advisory reading counted, whether it states the withdrawal."""
+    return [fields.get("withdrawn_at" if source == "ghsa" else "withdrawn") is not None
+            for source, fields in counted if source != "kev"]
+
+
+def withdrawal(counted) -> bool:
+    """Whether the advisory readings counted (``support``'s ``counted``) state the
+    withdrawal: at least one, and every one of them (kk2q). A KEV entry is no advisory
+    reading; one that lists the thread supports it, which ``judge`` asks separately."""
+    said = _stated(counted)
+    return bool(said) and all(said)
+
+
+def leaving(entry, found: str, known: bool, counted, rs) -> str | None:
+    """The level a withdrawn thread (``Entry.withdrawn``) returns to on this read, or
+    None while it stays withdrawn (kk2q). Its level reads as ``none``, so each way out
+    is a raise and needs no wait: a read supports a level (``found``, as ``held`` gave
+    it); its prose floor is above notice (a candidate taught it since); or every source
+    was read whole (``known``), none supports the product and no reading counted states
+    the withdrawal, which returns it to notice. While any reading counted still states
+    it the thread stays, though another reading no longer does: the state is entered
+    when all state it and left on this path when none does. An unknown read changes
+    nothing."""
+    low = floor(entry, rs)
+    if found != ruleset.NONE or rs.rank(low) > rs.rank("notice"):
+        return rs.highest(found, low, "notice")
+    return "notice" if known and not any(_stated(counted)) else None
+
+
 def raised(entry, scope, copy: Copy | None, rs, read=None) -> str | None:
     """The level ``judge`` would raise the thread to on this read, or None. It reads
     only: the thread's wait is ``judge``'s to keep (jsje: asked of a thread with work
-    in flight, which is not judged)."""
+    in flight, which is not judged). Of a withdrawn thread (kk2q) it answers for a
+    level a read supports and for the floor, not for the return to notice, which rests
+    on ``judge``'s own account of what was read whole."""
     found, known, _, _, stop = support(entry, scope, copy, rs, read)
     found = held(entry, scope, found, rs, stop, infer=not known)
+    if entry.withdrawn:
+        return leaving(entry, found, False, (), rs)
     return found if rs.rank(found) > rs.rank(entry.level) else None
 
 
 def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int, read=None, info: dict | None = None):
-    """("raise", level), ("due", level) or None for one thread; keeps its wait in
+    """("raise", level), ("due", level or ``wire.WITHDRAWN``) or None for one thread; keeps its wait in
     ``st["dwell"]``. A raise rests on a source's fields alone and needs no complete
     read: an unread source can only add. ``info``, when given, receives ``known``
     (every source read whole this run) and ``listed``.
@@ -379,7 +418,13 @@ def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int, read=None, in
     known without a complete copy, while a CVE once listed is no longer among the ids
     judged (an advisory that stopped naming it says nothing about KEV), and when no
     CVE of it is judged at all. A thread KEV never listed does not rest on it: that
-    absence is not what lowers it (3qyq)."""
+    absence is not what lowers it (3qyq).
+
+    kk2q: ("due", "withdrawn") when what is held is the withdrawal (module docstring):
+    a state below every level, so a thread at notice waits for it too, under the same
+    rules. A wait for a level and a wait for the state are two waits: when one becomes
+    the other it starts over. A thread the ledger marks withdrawn is never due; it
+    is raised or stays (``leaving``)."""
     counted: list = []
     found, known, listed, gone, stop = support(entry, scope, copy, rs, read, counted)
     root, dwell = entry.root_event_id, st["dwell"]
@@ -392,7 +437,12 @@ def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int, read=None, in
         known = False
     if info is not None:
         info.update(known=known, listed=listed, readings=counted)
+    off = found == ruleset.NONE and not listed and withdrawal(counted)  # before ``held``: what the sources state
     found = held(entry, scope, found, rs, stop, infer=not known)
+    if entry.withdrawn:
+        dwell.pop(root, None)
+        level = leaving(entry, found, known, counted, rs)
+        return ("raise", level) if level is not None else None
     if rs.rank(found) > rs.rank(entry.level):
         dwell.pop(root, None)
         return "raise", found
@@ -400,7 +450,9 @@ def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int, read=None, in
     if known and listed - seen:
         st["listed"][root] = sorted(seen | listed)
     level = rs.highest(found, floor(entry, rs), "notice")
-    if rs.rank(level) >= rs.rank(entry.level):
+    if off and found == ruleset.NONE and level == "notice":
+        level = wire.WITHDRAWN  # below notice: the floor is notice and nothing holds the thread up
+    elif rs.rank(level) >= rs.rank(entry.level):
         # What the copy lists holds the level, complete or not: evidence for the level needs
         # no completeness, and it ends a wait for a lower one.
         dwell.pop(root, None)

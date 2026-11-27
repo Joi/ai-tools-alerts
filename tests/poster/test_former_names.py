@@ -14,8 +14,9 @@ from aitools_alerts.poster.ledger import Ledger
 from advisories import ghsa_json
 from test_main import T0, env, finding  # noqa: F401  (env is a fixture)
 from test_recompute import _kev_with_its_fix, levels  # noqa: F401  (an autouse fixture)
-from test_recompute_names import WHEN, entries, sent, state
+from test_recompute_names import WHEN, entries, run, sent, state
 from test_renew import DAY, day, renewals, steps
+from test_withdrawn_state import claims, moved, moves
 
 SERVERS, INSPECTOR = "MCP servers and clients", "MCP Inspector"
 G = "GHSA-abcd-efgh-ijkl"
@@ -40,34 +41,62 @@ def thread(env, name, level="high", floor="notice"):
         led.record_root(adv, "ef" * 32, {"feed": "ef" * 32}, scope=name, exploited=False, now=T0 - 600, floor=floor)
 
 
-def member(env, name):
+def member(env, name, now=T0):
     """The member's own check of the thread as the ledger now publishes it, against the
-    same API answers: (result, why, the level its sources give)."""
+    same API answers: (result, why, the level its sources give). ``now``: the member's
+    clock; a result that is not a confirmation is read again a day later."""
     (e,) = entries(env)
     adv = schema.validate(e["advisory"])
     assert [(p.name, p.ecosystem) for p in adv.products] == [(name, "mcp")]
 
     def fetch(url, etag, limit, timeout):
         return (404, None, b"") if url == verify.KEV_URL else env.api(url, etag, limit, timeout)
-    (r,) = verify.result_for(adv, verify.run([adv], [adv], env.config.ledger.parent, fetch=fetch, now=T0)).values()
+    (r,) = verify.result_for(adv, verify.run([adv], [adv], env.config.ledger.parent, fetch=fetch, now=now)).values()
     return r["result"], r["why"], r["source"]
 
 
+def confirms_withdrawal(env, name):
+    """What a member's check says about the relay bot's withdrawal of the thread
+    (``verify.lowering`` at ``withdrawn``), for a thread whose high carried the claim of
+    its advisory's fields, against the same API answers: True, False or None."""
+    (e,) = entries(env)
+    adv = schema.validate(e["advisory"])
+    fields = verify._ghsa_reading(ghsa_json(G, **CASES[name][2]), G)[0]
+    stated = (("high", ruleset.load().claim("ghsa", fields, name, T0 - 600, T0 - 600)),)
+    ask = verify.at_level(adv, wire.WITHDRAWN, verify.claimed(adv, wire.WITHDRAWN, stated))
+
+    def fetch(url, etag, limit, timeout):
+        return (404, None, b"") if url == verify.KEV_URL else env.api(url, etag, limit, timeout)
+    cache = verify.run([adv, ask], [ask], env.config.ledger.parent, fetch=fetch, now=T0, recheck=[ask])
+    return verify.lowering(adv, wire.WITHDRAWN, cache, T0, stated=stated)
+
+
 @pytest.mark.parametrize("name", [INSPECTOR, SERVERS])
-def test_a_former_name_thread_whose_advisory_is_withdrawn_is_lowered_and_a_member_confirms_it(env, name):
+def test_a_former_name_thread_whose_advisory_is_withdrawn_is_withdrawn_and_a_member_confirms_it(env, name):
     """Acceptance: under ny5g's rules, so after 24 hours of complete reads and not
-    before, once, to notice."""
+    before, once. Since kk2q what a withdrawn advisory brings is the state ``withdrawn``,
+    below notice, with the claim of the withdrawn reading; the member's check of the
+    same response confirms it, and the thread returns when the advisory does."""
     thread(env, name)
+    live = ghsa_json(G, **CASES[name][2])
+    env.api.put(G, live)
+    assert confirms_withdrawal(env, name) is False  # while the source supports it, a withdrawal is refused
     env.api.put(G, ghsa_json(G, withdrawn_at=WHEN, **CASES[name][2]))
-    assert sent(env, 1, 24) == []
+    assert moved(env, 1, 24) == []
     (e,) = entries(env)
-    assert state(env)["dwell"][e["root_event_id"]]["level"] == "notice" and e["level"] == "high"
+    assert state(env)["dwell"][e["root_event_id"]]["level"] == wire.WITHDRAWN and e["level"] == "high"
     assert member(env, name) == ("contradicted", "unsupported", "none")  # the member reads the same before the bot moves
-    assert sent(env, 25, 25) == [(25, "notice")]
+    relay = run(env, 25)
+    assert moves(relay) == ["withdrawn"]
+    (claim,) = claims(relay)
+    assert claim["level"] == ruleset.NONE and ruleset.check_claim(claim, name) == "ok"
     (e,) = entries(env)
-    assert (e["scope"], e["level"], e["lowered"]) == (name, "notice", True)
-    assert member(env, name) == ("confirmed", "withdrawn", "none")
-    assert sent(env, 26, 40) == [] and state(env)["dwell"] == {}
+    assert (e["scope"], e["level"], e["withdrawn"], e["lowered"]) == (name, "high", ["feed"], True)
+    assert confirms_withdrawal(env, name) is True
+    assert moved(env, 26, 40) == [] and state(env)["dwell"] == {}
+    env.api.put(G, live)  # published again: back at its level, in the run that reads it
+    assert moves(run(env, 41)) == ["high"] and "withdrawn" not in entries(env)[0]
+    assert member(env, name, T0 + 2 * DAY) == ("confirmed", "match", "high")
 
 
 @pytest.mark.parametrize("name", [INSPECTOR, SERVERS])

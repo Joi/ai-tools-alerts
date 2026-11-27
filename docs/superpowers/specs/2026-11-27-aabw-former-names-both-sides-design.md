@@ -149,6 +149,14 @@ The delta pass raised nothing on the silence rule or the schema rule.
 
 nx25 landed while this branch was in review and also raised the cache version to 6. Both are unreleased, and a cache written by main's version 6 holds the `no-source` this change must not keep, so this branch's version is 7 (criterion 6 and its tests read 7 and 6 where the text above says 6 and 5). Two conflicts, both kept whole on both sides: the changelog's two entries, and the two new sections at the end of `tests/test_verify.py`. nx25 rewrote how aliases beside a CVE first id are chosen and kept `weight`, which this branch's change to it merged into without conflict; nx25's new code reads no support by product name.
 
+## After the merge of main at `d40fef5` (kk2q)
+
+kk2q landed next: the poster reaches, sends and leaves the state `withdrawn`. A thread whose every counted advisory reading states the withdrawal, with nothing supporting it and a floor of notice, is no longer lowered to notice; after the same wait it is withdrawn, with the claim of the withdrawn reading, and it returns to its level in the run that reads the advisory published again. One conflict, in the changelog, both entries kept. `recompute.support` and `Run._judge` merged without conflict.
+
+What that changes here: the first acceptance case reads "is withdrawn by the bot" where the text above says "lowered to notice". Its test (`test_a_former_name_thread_whose_advisory_is_withdrawn_is_withdrawn_and_a_member_confirms_it`, both names) now holds: nothing in hours 1 to 24, a wait for `withdrawn` running; hour 25 sends the withdrawal, its claim is of level `none` and `check_claim` gives `ok` for the former name; `verify.lowering` at `withdrawn` is True for the thread when its high carried its advisory's claim, and False while the source still supports it; published again, the thread is back at high in that run and the member's check confirms it.
+
+The silence rule holds under kk2q: a withdrawn advisory that names none of the name's products is counted as a reading that states a withdrawal, but the thread is not known, so no wait starts and it is not withdrawn (the `[withdrawn]` case of `..._names_none_of_its_products_is_unknown_and_stands`, which passes on the merged tree). A withdrawn former-name thread leaves the state for notice only when a reading names one of its products and none states the withdrawal.
+
 ## Open questions
 
 None that blocks.
