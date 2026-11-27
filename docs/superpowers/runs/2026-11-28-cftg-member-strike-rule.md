@@ -1,9 +1,9 @@
 # Run: cftg-member-strike-rule
 Instruction: Read TASK-ai-tools-alerts#cftg.md in this worktree root, then run `kata show ai-tools-alerts#cftg` and follow the brief and the dispatch rules (run as /do-it, starting rung floored at medium).
-Stage: spec
+Stage: plan-review
 Rung: heavy (start-floor medium: constraint-lens, BR1 REV1 NOV1 INT1 FC1 = 5, no hard trigger; the dispatch floor was medium too) + escalated medium→heavy after the spec's pass: one BLOCKER is fixed in part and rebutted in part (whose strike with two relay-bot keys)
 Lens: "the service runs with no human in the loop. Nothing you build may wait for a person to act."; "`tests/test_wire_compat.py` is untouched"
-Last reviewed: spec 7504c032406dada0e626779b670b426f2597c566
+Last reviewed: spec 16ba0b2cfa5ed4fd552cbb5ca6f452b9496f3f30 (the delta, `--since 7504c03`)
 Spec: docs/superpowers/specs/2026-11-28-cftg-member-strike-rule-design.md   Plan: docs/superpowers/plans/2026-11-28-cftg-member-strike-rule.md
 Agency project: — (no Agency tools in this session; the build is done in the session itself)
 Kata: ai-tools-alerts#cftg
@@ -13,10 +13,15 @@ Landing: this repo has no `.repoman-managed` marker, so the brief's landing appl
 ## Scorecards
 Pass 1 [spec]: 6B/0S/0C/0R · fixed -/- · velocity = (—→6, escalation no)
 spec — pass 1 (fresheyes, gpt-6.1-sol, 7504c03, watchdog FRESHEYES_DONE REASON=-). Fixed in the next commit: a copy changed after its strike stayed inside the strike (a recorded strike two found alerts share roots with becomes two); a probation was read before the lock only (`_reserve` reads it again); the wait of a lowering counted from the last command during the probation (the bar is read from the record, and `_note_offers` removes a run-out entry in the write that starts the waits); the evidence-loss test left the evidence on the machine (it now removes the roots from the store and the mirror, the memory and the cached results, and asserts each); the existing assertion on the record's keys (updated, named in the spec). Fixed in part: a key on probation lowering another relay-bot key's thread (the reply's signer now bars too). Rebutted in part: counting a strike or a raise against the signer of a reply (the manifest names one relay-bot key; `pull` keeps no signer per reply; holding by any reply's signer would let a key on probation silence the other key's alerts; a limit in the spec and a follow-up issue). The fixes changed the design, and the rebutted half is why the rung is heavy: the one delta runs `--since 7504c03` with the rebuttal.
+Pass 2 [spec]: 1B/0S/0C/0R · fixed 6/6 prior · velocity ↓ (6→1, escalation no)
+spec — pass 2, the delta (fresheyes, gpt-6.1-sol, `--since 7504c03`, head 16ba0b2, FRESHEYES_DONE REASON=-): one finding, the rebuttal not overturned. A stored checkpoint from before the probation's end became the start of the restarted wait (a `check` on day 31 with the checkpoint of day 26, then a pull). Fixed with no further pass, in the commit that adds the plan: the entry is removed only when the checkpoint held was issued at or after the probation's end. spec — passes: 2 · elapsed: about 25 min.
 
 ## Chunks
 - [ ] the record of strikes and probations (`state.py`), the step that writes it and the two places it bites (`cli.py`), tests
 - [ ] docs: CHANGELOG, README
 
 ## Notes
+- Follow-up filed: ai-tools-alerts#ex8f (count a strike, a slot and a held raise against the signer of the reply; needs `pull` to keep signers per thread).
+- Skip temptation: the code and its tests were written in the working tree while the spec's reviews ran, and changed with each finding; nothing of it was committed before the plan's review.
+- Spec, plan and this record were edited by scripts with exact-match replacements, each asserted to occur once, not with the Edit tool the skill names.
 - Prior work read: the issue and its note from 0z4e; finding D14, the D8 table row "one strike against the key" and revised rule 10 on ai-tools-alerts#h29n; the m729 run record; `cli.py` (`_support_step`, `_note_support`, `_never`, `_note_offers`, `_interrupts`, `_reserve`, `_start_again`), `state.py` (`_load_unverified`), `pull.py` (`offers`, `standing`, `_filter`). `kata search "probation strike"` returns m729, cftg and h29n only: no earlier attempt, no dead end.
