@@ -1,6 +1,6 @@
 # Run: cftg-member-strike-rule
 Instruction: Read TASK-ai-tools-alerts#cftg.md in this worktree root, then run `kata show ai-tools-alerts#cftg` and follow the brief and the dispatch rules (run as /do-it, starting rung floored at medium).
-Stage: code-review:whole-branch
+Stage: done
 Rung: heavy (start-floor medium: constraint-lens, BR1 REV1 NOV1 INT1 FC1 = 5, no hard trigger; the dispatch floor was medium too) + escalated medium→heavy after the spec's pass: one BLOCKER is fixed in part and rebutted in part (whose strike with two relay-bot keys)
 Lens: "the service runs with no human in the loop. Nothing you build may wait for a person to act."; "`tests/test_wire_compat.py` is untouched"
 Last reviewed: spec 16ba0b2cfa5ed4fd552cbb5ca6f452b9496f3f30 (the delta, `--since 7504c03`)
@@ -23,12 +23,18 @@ Pass 1 [code:whole-branch]: 1B/2S/5C/0R · fixed -/- · velocity = (—→8, esc
 code — pass 1, Stage 2 (fresheyes, gpt-6.1-sol, 6134002, FRESHEYES_DONE REASON=-): one BLOCKER, a probation begun between `_reserve` and `_notify` did not stop the send. Fixed in the next commit: `_notify` reads the probation again under its own lock (and under one of its own with no channel configured), and `run` reports such an alert as held, in the JSON and in the exit status. Stage 1 (same-model subagent, 6134002): 0 blockers, 3 substantive (the same send-lock gap; no test for "supported earlier and no longer"; one command with the clock set back ended a probation), 5 cosmetic. All fixed in the same commit: stored times are compared against the clock and kept as written, never cut and written back; tests for the lost-support case, the root's key barring, the slot test's premise, what `check` says between the clock's end and the checkpoint after it; the spec says which `gone` dates a strike. Nothing rebutted beyond the standing one (ai-tools-alerts#ex8f). The BLOCKER fix changed behaviour: the one delta runs `--since 6134002`.
 Pass 2 [code:whole-branch]: 1B/0S/0C/0R · fixed 3/3 prior · velocity ↓ (8→1, escalation no)
 code — pass 2, the delta (fresheyes, gpt-6.1-sol, `--since 6134002`, head bebf191, FRESHEYES_DONE REASON=-): the fixes checked, the standing rebuttal not challenged; one finding. An alert withheld at the send was not tried again when the same run's source check confirmed it, and `run` exited 0. Fixed in the next commit with no further pass: the second pass of `run` tries again what the first withheld, and what it sends is an interrupt. A regression through plain `run` with the check on, and two mutations. code — passes: 2 · elapsed: about 30 min.
+Gate: `scripts/test-gate.sh` in a clone of this branch alone (the shared clone's scan reads other sessions' refs; none of its hits is reachable from this branch). On 58e276a, the last reviewed code plus the delta's fix: 3679 passed, 1 skipped, public scan clean. Main then moved (pull request 62, the poster's reads of its mirror copy); merged without conflict as 5aae2fb, and the gate again: passed, scan clean.
+After the last reviewed code (bebf191): the fix of the delta's one finding (58e276a), the merge of main (5aae2fb) and this record. `git diff bebf191..58e276a` is what landed without a further independent pass, by the one-delta rule.
 
 ## Chunks
 - [x] the record of strikes and probations (`state.py`), the step that writes it and the two places it bites (`cli.py`), tests (1282536; review fixes in the commit after 6134002)
 - [x] docs: CHANGELOG, README (6134002)
 
 ## Notes
+- Pull request 61. Rollout note left on ai-tools-alerts#5fry (nothing to install, sign or migrate).
+- Follow-up filed: ai-tools-alerts#pf28 (the clock-sensitive test below).
+- Skip temptations: none beyond the one below (code written while the spec's reviews ran). No Agency tools were available in this session, so the build ran in the session itself with no per-task evaluator; the mutation check stands in for it.
+- Wall clock: about 75 minutes of the brief's five hours, most of it in five review passes and three gate runs.
 - An existing test is sensitive to the clock: `tests/test_never_supported_cli.py::test_for_48_hours_after_a_rebuilt_record_nothing_shows_at_notice` failed once here in a run beside two gate runs and passes alone. It needs the rebuild and the cached read to fall in one second (`at >= first[root]` in `_support_step`); this branch does not touch that path. Follow-up filed.
 - Mutation check (a script in the scratchpad, each change restored after): eighteen changes to `cli.py`, one per rule (the probation test in `_interrupts`, the bar on a lowering, the reply's signer and the root's, the split of a strike, the record ending the bar, the checkpoint's time ending it, the two halves of the bar on a narrowing, the denial in `_reserve`, the three parts of the recheck at the send, `last` in the strike test, times written back, the retry of a withheld alert and its report, strikes kept without their alert); each makes its named test in `tests/test_probation_cli.py` fail.
 - Follow-up filed: ai-tools-alerts#ex8f (count a strike, a slot and a held raise against the signer of the reply; needs `pull` to keep signers per thread).
