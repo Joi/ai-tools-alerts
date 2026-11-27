@@ -12,7 +12,7 @@ Line numbers are those of `dd4d195` (main when the branch was cut).
 - [ ] `_locked(path)`: a context manager holding `fcntl.LOCK_EX` on `<path>.lock` (created mode 600). Every function that writes reads the record inside it.
 - [ ] `load(path) -> dict`: the record, or an empty one when the file is missing, unreadable, not JSON or of another shape (keys exactly the four; ids 64 hex; times ints; `since` int or None; `said` a list of 64 hex). Unreadable or malformed says one stderr line (`aitools-alerts-poster: sent record <path> is unreadable; started again`); missing says nothing.
 - [ ] `note(path, event_id, now)`: add one id (64 hex, else nothing) and write (`state.write_json`), only when the id is new. Raises OSError.
-- [ ] `holds(path, attempted_at) -> set | None`: the recorded ids when the record is started and `attempted_at >= since`; else None (the caller then matches by text).
+- [ ] `holds(path) -> set`: the recorded ids; empty for a record that is missing, unreadable or not started.
 - [ ] `check(path, events, m, now, adopt=None, channels=None) -> set`:
   - `bots`: ids of `events` with `manifest.role_of(m, pubkey) == "relay-bot"` and `pull._bound(ev, channels or pull.channel_ids())`.
   - `since is None`: with `adopt is None` return `set()` and write nothing; else add every id of `adopt` at `now`, set `since = now`, say `sent record <path>: started with N ids (the served checkpoint, the ledger, the owed list)`.
@@ -26,11 +26,11 @@ Verify: `python3 -m pytest tests/poster/test_sent.py -q`.
 
 ### Task 1.2: config, journal shape, transport
 
-- [ ] `inputs.py`: `Config.sent_state` (`<ledger>.sent.json`) after `owed_state` (line 162); add it to the file lists of `check_paths` (line 192) and `check_catalog_paths` (line 210) and to the error text.
+- [ ] `inputs.py`: `Config.sent_state` (`<ledger>.sent.json`) after `owed_state` (line 162); add it and its lock (`<ledger>.sent.json.lock`) to the file lists of `check_paths` (line 192) and `check_catalog_paths` (line 210) and to the error text.
 - [ ] `inputs.py` line 478: the digest item's `adv` may carry `foreign`: a non-empty list of at most 200 distinct 64-hex strings (`set(adv) - {"week", "dropped", "foreign"}`).
 - [ ] `transport.py`: `Relay.__init__(..., on_signed=None)`. In `Relay.send`, after signing and before `_post`: when `on_signed` is set, call it with `event["id"]`; any exception returns `SendResult(False, None, None, "the sent record could not be written", "failed")` and nothing is sent.
 - [ ] `main.py` `relay_sender(config)` (line 2219): `on_signed=lambda eid: sent.note(config.sent_state, eid, int(time.time()))` when `config.checkpoint_key_file is not None`, else None.
-- [ ] Tests: `test_signer.py::test_key_and_owed_files_join_the_path_collision_check` gains the sent record; `test_inputs.py`: a journal with a digest item carrying `foreign` loads, and one with a bad value is refused; `test_transport.py`: `on_signed` is called with the event's id before `connect`; when it raises, `connect` is never called and the outcome is `failed`; `relay_sender` with a checkpoint key writes the id to the sent record, and without one writes no file.
+- [ ] Tests: `test_signer.py::test_key_and_owed_files_join_the_path_collision_check` gains the sent record and its lock (a `kev_cache` set to either is refused); `test_inputs.py`: a journal with a digest item carrying `foreign` loads, and one with a bad value is refused; `test_transport.py`: `on_signed` is called with the event's id before `connect`; when it raises, `connect` is never called and the outcome is `failed`; `relay_sender` with a checkpoint key writes the id to the sent record, and without one writes no file.
 
 Verify: `python3 -m pytest tests/poster/test_inputs.py tests/poster/test_transport.py tests/poster/test_signer.py -q`.
 
@@ -38,7 +38,7 @@ Verify: `python3 -m pytest tests/poster/test_inputs.py tests/poster/test_transpo
 
 - [ ] `ledger.py`: `Ledger.event_ids() -> set`: every root id, channel copy id and reply id of every entry (what `has_event` searches).
 - [ ] `signer.run_checkpoint(..., known=frozenset())` (line 415). After the certificate is accepted and the served checkpoint is read (line 476): `adopt = {o["id"] for o in rec["owed"]} | set(known) | (set(cp.events) if this key signed the served checkpoint else set())`; `foreign = sent.check(config.sent_state, st.events.values(), m, now, adopt=adopt)`; `mine = {i: e for i, e in st.events.items() if i not in foreign}`.
-- [ ] From there every read of the copy uses `mine`: `settle_gone(rec["gone"], mine, ...)` (line 486), the `present` set and `_later` of `settle_owed` (lines 495-496), `lapsed` (line 500), `window` (line 503).
+- [ ] From there every read of the copy uses `mine`, and what `settle_gone` gives up is removed from `mine` as it is from `st.events` (before `settle_owed`, `lapsed` and `window`): `settle_gone(rec["gone"], mine, ...)` (line 486), the `present` set and `_later` of `settle_owed` (lines 495-496), `lapsed` (line 500), `window` (line 503).
 - [ ] A full store: when the pull's error is `state limit reached: new events not stored` and a manifest is accepted under `root`, `foreign = sent.check(path, st.events.values(), m, now)` (no `adopt`); when any, drop them from the stored copy, save, and run `read_mirror` once more; then go on as usual (`no-mirror` when the error stands).
 - [ ] The stored copy: at line 488-490, also drop `foreign - serving` (a foreign event the mirror no longer serves), in the same `st.accept` and `save_events`; when only that set is non-empty the save still happens.
 - [ ] `listable` (line 498) also leaves out an owed entry whose `root` is in `foreign`.
@@ -54,7 +54,8 @@ Verify: `python3 -m pytest tests/poster/test_inputs.py tests/poster/test_transpo
   - the first run takes what the served checkpoint lists (a relay-bot event on the mirror, listed by the mirror's checkpoint: listed again, no `foreign=`); with the served checkpoint signed by another key, a relay-bot event neither owed nor in the ledger is foreign on the first run;
   - criterion 6: after a foreign event was left out, delete the sent record; the next run still leaves it out;
   - a foreign event removed from the mirror is gone from the poster's stored events after the next run;
-  - with `pull.MAX_STORED_EVENTS` patched low and the store filled by foreign events, the run clears them, pulls again and signs (`checkpoint=sent`).
+  - with `pull.MAX_STORED_EVENTS` patched low, the store filled by foreign events the mirror no longer serves and a new foreign event on the mirror: the run clears the stored ones, pulls again and signs (`checkpoint=sent`), the new one left out;
+  - the existing `test_an_event_that_leaves_the_mirror_is_listed_for_three_days_then_given_up` and the renewal case at `test_signer.py:806` pass unchanged.
 - [ ] Existing tests that put a relay-bot event on the mirror after a first run stand in for the poster's own post. Each records the id through one helper in `test_signer.py` (`as_sent(env, *events)`, a call of `sent.note`), next to the line that posts it. Expected in `test_signer.py`, `test_settle.py`, `test_translate.py`, `test_end_to_end.py`, `test_main.py`, `test_renew.py`; found by running the suite. No assertion of an existing test is weakened.
 
 Verify: `python3 -m pytest tests/poster -q`.
@@ -62,15 +63,16 @@ Verify: `python3 -m pytest tests/poster -q`.
 ### Task 1.4: the run
 
 - [ ] `main.py` `Run._owed` (line 372): before `signer.record_sent`, `sent.note(self.config.sent_state, eid, self.now)`, in the same `try`: an OSError from either sets `owe_failed` and raises `LedgerError` (the message names the file that failed).
-- [ ] `Run._delivery` (line 480): when `checkpoint_key_file` is set, `ids = sent.holds(path, min(p["at"], it.get("tried", p["at"])))`; when not None, keep only hits whose id is in it. An unreadable record gives None (text, as today).
+- [ ] `Run._delivery` (line 480): when `checkpoint_key_file` is set, keep only hits whose id is in `sent.holds(path)`. No fallback to text: a lost or unstarted record settles nothing, and the send is expired and sent again by the existing rule.
 - [ ] `Run.digest` (line 1902): after `_withdrawn` succeeded, when `checkpoint_key_file` is set: `st = State.load(mirror_dir)`, `sent.check(path, st.events_for(root).values(), st.accepted(root), self.now)` in a `try` that says any exception on stderr; then `foreign = sent.unsaid(path)` (its own `try`: an unreadable record gives none). Pass `foreign=bool(foreign)` to both `compose.digest` calls; `snap` gains `"foreign": foreign` when non-empty.
 - [ ] `Run._record`, digest branch (line 926): when not replayed and `it["adv"].get("foreign")`, `sent.mark_said(...)`; an OSError is said on stderr.
 - [ ] `compose.digest(..., foreign: bool = False)`: `_DIGEST[lang]["foreign"]`, its own paragraph after the withheld line and before the weekly summary, on the quiet path too.
 - [ ] Tests:
   - settling by id: an unknown root send whose id is in the record; the mirror then holds that event and an earlier-dated copy of its text under another id; `settle` records the recorded id, and the copy is foreign in that run's checkpoint; the same when the journal item carries no trace of the attempt but its pending mark (a run that died mid-send);
-  - an attempt older than the record's start settles by text as before, and so does every case of `test_settle.py` without a checkpoint key (unchanged);
+  - criterion 6 with an unknown send: the copy was left out; the record is deleted; the next run does not settle the copy, does not record it in the ledger or the sent record, and leaves it out; the send is expired and sent again by the existing rule;
+  - every case of `test_settle.py` without a checkpoint key passes unchanged (text, as today);
   - a renewal whose send had an unknown outcome through a real `Relay` (a connection fake that drops after the request) and that the mirror shows: not foreign;
-  - a run that dies right after a send through a real `Relay` (the existing "the run dies after the acknowledgement" pattern): the id is in the sent record;
+  - a run that dies inside `Run._owe` (patched to raise, so nothing after the transport has run) after a send through a real `Relay` built by `relay_sender` over a connection fake: the id on disk in the sent record is the id of the event the fake received;
   - digest: after a foreign event, `--digest-now` carries the line in the English post and the Japanese reply, on a quiet day and with an alert listed; the next day's digest does not; a digest whose send failed says it again; an event recorded before the digest is not said;
   - `tests/poster/test_compose.py`: the line passes the publication guard in both languages and is absent by default;
   - a failed write of the sent record in `_owed` stops the run and signs nothing; the replay records it.
@@ -84,7 +86,7 @@ Verify: `python3 -m pytest tests/poster -q`, then `scripts/test-gate.sh`.
 
 ## Chunk 2: docs
 
-- [ ] `CHANGELOG.md`: a new section above `## 0.3.0`, `## Unreleased`, one entry: what the poster does, how the record starts, the summary token `,foreign=N`, the digest line, the new files (`.sent.json`, its lock), rollback (the outbox free of a digest item with `foreign`), the limits of the spec, install between runs, and that the member half is ai-tools-alerts#cftg.
+- [ ] `CHANGELOG.md`: a new section above `## 0.3.0`, `## Unreleased`, one entry: what the poster does, how the record starts, the summary token `,foreign=N`, the digest line, the new files (`.sent.json`, its lock), rollback (the outbox and the withheld list free of a digest item with `foreign`), the limits of the spec, install between runs, and that the member half is ai-tools-alerts#cftg.
 - [ ] `README.md`: line 268 (the poster's checkpoint paragraph): the sent record and `,foreign=N`; line 21 (trust paragraph): one sentence that a relay-bot event the poster did not sign is in no checkpoint.
 - [ ] `scripts/public-scan.sh` passes (no host name, no local path).
 
@@ -92,7 +94,7 @@ Verify: `scripts/test-gate.sh`.
 
 ## Rollback
 
-Revert the merge commit. `<ledger>.sent.json` and its lock are ignored by an older poster. An older poster refuses a journal holding a digest item with `foreign`: revert when no digest waits in the outbox, or let it send first.
+Revert the merge commit. `<ledger>.sent.json` and its lock are ignored by an older poster. An older poster refuses a journal holding a digest item with `foreign`, in `outbox` or in `withheld[*].items`: revert when neither holds a digest (`jq '[.outbox[], .withheld[].items[]] | map(select(.kind == "digest")) | length'` on the journal prints 0), or let it send or expire first.
 
 ## Order
 

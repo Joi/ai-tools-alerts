@@ -13,6 +13,9 @@ Landing: this repo has no `.repoman-managed` marker and no repoman registry row,
 ## Scorecards
 Pass 1 [spec]: 4B/3S/0C/0R · fixed -/- · velocity = (—→7, escalation no)
 spec — pass 1 (fresheyes, gpt-6.1-sol, 6d99ae2, watchdog FRESHEYES_DONE REASON=-). Fixed in 7a483a2: settling by text (now by signed id), ownership recorded after the send (now before it, in the transport), a lost record re-trusting the mirror (the start takes the served checkpoint, the ledger and the owed list only), the store filling with foreign events, pruning by age, an owed reply to a foreign root. Rebutted: the pre-upgrade unknown renewal; the mirror's own capped files (not this design's). The blocker fixes changed the design, so the one delta runs `--since 6d99ae2` with the rebuttals.
+Pass 2 [spec]: 0B/2S/0C/0R · fixed 6/7 prior · velocity ↓ (7→2, escalation no)
+spec — pass 2, the delta (fresheyes, gpt-6.1-sol, `--since 6d99ae2`, head 7a483a2, FRESHEYES_DONE REASON=-): two major findings, no rebuttal overturned. Both fixed in b94e143 with no further pass: settling asks the sent record (no journal key, no `SendResult.signed`), and a pull that reports the store full clears the foreign events and pulls once more. spec — passes: 2 · elapsed: about 25 min.
+Last reviewed: plan b94e1438ad3707911592f26333fbecea21961fa1
 
 ## Chunks
 - [ ] the sent record and the check (aitools_alerts/poster/sent.py, signer, main, transport, inputs, compose)
