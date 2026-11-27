@@ -1,6 +1,6 @@
 # Run: kk2q-poster-withdrawn-state
 Instruction: Read TASK-ai-tools-alerts#kk2q.md in this worktree root, then run `kata show ai-tools-alerts#kk2q` and follow the brief and the dispatch rules pasted after this sentence. (The brief: ai-tools-alerts#kk2q, the poster reaches, sends and leaves the withdrawn state, D4 and D13; run as /do-it, starting rung medium.)
-Stage: code-review:poster
+Stage: verifying
 Rung: medium (start-floor medium: constraint-lens, BR2 REV2 NOV1 INT2 FC2 = 9; no hard trigger; the dispatch floors it at medium too)
 Lens: "every released reader still shows the alert"; "Nothing you build may wait for a person to act"; "No rollout in this task: no install, signing step or release" (in every review pass)
 Last reviewed: spec f31d14cb13bb18a4c8376a2df230565282d7afca
@@ -51,11 +51,18 @@ Code findings and what was done (the same defect counted once):
 8. COSMETIC (Stage 1 findings 6 and 7): a stale sentence in `spec/wire.md` about roots without claims, fixed; two test names that claimed more than they test, renamed. Not added: a `main.run` test of a return below the kept level and of the `plan_known` copy guard (the reviewer ran the first by hand: both channels took the level and the ledger agreed).
 Rung after the pass: medium. Finding 1 changed behaviour, so the fix is committed and gets the one delta pass (`fresheyes --since f744c46`).
 
+Pass 2 [code:poster]: 0B/1S/0C/0R · fixed 11/12 prior · velocity ↓ (12→1, escalation no)
+code:poster: passes 2 · the delta, gpt-6-astra through `fresheyes --since f744c46 --rebuttals` at head d699911fb0e4e6f8123d9b4fe7b82e68a5c75bd8 (11 of 12 fixed, one rebutted and carried in the rebuttals file; none overturned)
+
+Delta finding and what was done:
+1. SUBSTANTIVE (the reviewer called it major; it is a sentence of the rollback note, no code): the note named `withheld` and `pending` as if their records held a text. Fixed in the commit after d699911: the note names `outbox[].text`, `withheld[].items[].text` and any `pending` key containing `#level:`. Not reviewed again: the review cycle allows one delta. `git diff d699911..HEAD` shows it (documents only).
+
 ## Chunks
-- [ ] poster: the withdrawn state in `recompute`, the ledger, `compose`, `main`, `signer`, with tests and `spec/wire.md`
+- [x] poster: the withdrawn state in `recompute`, the ledger, `compose`, `main`, `signer`, with tests and `spec/wire.md` — f744c46 (whole-branch review), d699911 (its fixes; reviewed by the delta), 2 code passes
 
 ## Notes
 - The session stood at its usage limit from about 2026-11-26T20:50Z to 2026-11-27T12:00Z; working time before it was about 25 minutes.
 - Order of work: the code and tests were begun while the spec and plan reviews ran, to use the wait; both reviews' findings were then applied to the code (the state by channel, no reply that ends the state in the run that recorded the withdrawal, the catalog). No review was skipped.
 - Size: about 400 changed lines in existing files and a new test file of about 400. Above the 600-line mark with its tests; not split, because the state has no half that lands alone: reaching it without leaving it would hide alerts with no way back.
+- Follow-up filed: ai-tools-alerts#aqtf (per-channel reconciliation of level replies; the two cases code finding 5 leaves on the higher side).
 - Agency tools are not present in this session; tasks were executed here.
