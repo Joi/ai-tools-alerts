@@ -100,9 +100,14 @@ def snapshot(led, held) -> dict[str, dict | None]:
     for e in led.entries():
         scope = _scope(e.scope)
         a = _valid(e.advisory)
+        if a is not None and getattr(e, "withdrawn", None):
+            # before the filter for what may start: a thread that started at high and
+            # stands lower now still has its earlier block in the inventory
+            out[key(e.scope, a["id"])] = None
+            continue
         if a is None or scope is None or not rules.starts(scope, e.level):
             continue
-        out[key(e.scope, a["id"])] = None if getattr(e, "withdrawn", None) else a
+        out[key(e.scope, a["id"])] = a
     return out
 
 
@@ -148,17 +153,24 @@ def remember(path, snap: dict, at: int = 0) -> int:
     dropped first, so what is written is always readable (MAX_FILE)."""
     known = {k: a for k, a in _read(path, "known").items() if _valid(a) is not None}
     stamp = {k: t for k, t in _read(path, "at").items() if k in known and type(t) is int}
+    # kk2q: when a key was taken out (its thread withdrawn by its source), so that an older
+    # snapshot merged afterwards does not bring the advisory back
+    gone = {k: t for k, t in _read(path, "gone").items() if k not in known and type(t) is int}
     for k, a in snap.items():
-        if stamp.get(k, 0) <= at:  # equal: the same snapshot merged again
-            if a is None:  # kk2q: withdrawn by its source; nothing of it waits to be sent
+        if max(stamp.get(k, 0), gone.get(k, 0)) <= at:  # equal: the same snapshot merged again
+            if a is None:  # nothing of it waits to be sent
                 known.pop(k, None)
                 stamp.pop(k, None)
+                gone[k] = at
             else:
                 known[k], stamp[k] = a, at
+                gone.pop(k, None)
+    gone = dict(sorted(gone.items(), key=lambda x: x[1], reverse=True)[:MAX_KEYS])
     known = {k: a for k, a in known.items() if _in_scope(a["products"][0]["name"])}
     order = sorted(known, key=lambda k: (known[k]["posted_at"], k), reverse=True)[:MAX_KEYS]  # newest first
     while True:
-        doc = {"v": VERSION, "known": {k: known[k] for k in order}, "at": {k: stamp.get(k, 0) for k in order}}
+        doc = {"v": VERSION, "known": {k: known[k] for k in order}, "at": {k: stamp.get(k, 0) for k in order},
+               **({"gone": gone} if gone else {})}  # no key without one: the file is as it was
         if _encoded(doc) <= KEEP_BYTES or not order:
             break
         order = order[:len(order) * 9 // 10]  # the oldest tenth goes, until it fits

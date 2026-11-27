@@ -110,6 +110,42 @@ def test_a_withdrawn_thread_is_not_catalogued_again_until_it_returns(env):
     assert summary.endswith(" catalog=1/0") and [b.products[0].fixed for b in blocks(relay)] == ["2.1.1"], summary
 
 
+def test_a_withdrawn_key_stays_out_when_an_older_snapshot_merges_after(tmp_path):
+    """Two runs' passes can merge in either order (the catalog lock is not the ledger's)."""
+    adv = catalog._valid({
+        "id": "GHSA-abcd-efgh-ijkl", "aliases": [], "level": "high", "advisory_severity": None, "title": "t",
+        "products": [{"name": "Claude Code", "ecosystem": "claude-code", "affected": None, "fixed": "2.1.0"}],
+        "actions": [], "sources": [{"url": "https://github.com/advisories/GHSA-abcd-efgh-ijkl", "published_at": None}],
+        "posted_by": "relay-bot", "posted_at": 1, "expires_at": None})
+    assert adv is not None
+    path, k = tmp_path / "known.json", catalog.key("Claude Code", adv["id"])
+    assert catalog.remember(path, {k: adv}, at=10) == 1
+    assert catalog.remember(path, {k: None}, at=30) == 0  # withdrawn
+    assert catalog.remember(path, {k: adv}, at=20) == 0   # the older run's snapshot, merged late
+    assert json.loads(path.read_text())["gone"] == {k: 30}
+    assert catalog.remember(path, {k: adv}, at=40) == 1   # it left the state: catalogued anew
+    assert "gone" not in json.loads(path.read_text())
+
+
+def test_a_withdrawn_thread_that_no_longer_starts_at_its_level_still_leaves_the_inventory():
+    """An out product's thread starts at high only; lowered to notice and then withdrawn,
+    its earlier block must still be taken out."""
+    from types import SimpleNamespace
+    adv = {"id": "CVE-2026-0001", "aliases": [], "level": "notice", "advisory_severity": None, "title": "t",
+           "products": [{"name": "Git", "ecosystem": "git", "affected": None, "fixed": "2.50.0"}],
+           "actions": [], "sources": [{"url": "https://github.com/git/git/security/advisories/GHSA-abcd-efgh-ijkl",
+                                       "published_at": None}],
+           "posted_by": "relay-bot", "posted_at": 1, "expires_at": None}
+    out = next(e for e in schema.load_scope() if not main.rules.starts(e, "notice") and main.rules.starts(e, "high"))
+    adv["products"][0].update(name=out.name, ecosystem=out.ecosystem)
+    assert catalog._valid(adv) is not None
+    entry = SimpleNamespace(scope=out.name, level="notice", advisory=adv, withdrawn=["feed"])
+    led = SimpleNamespace(entries=lambda: [entry])
+    assert catalog.snapshot(led, []) == {catalog.key(out.name, adv["id"]): None}
+    entry.withdrawn = None
+    assert catalog.snapshot(led, []) == {}  # not withdrawn: a notice of an out product starts nothing, as before
+
+
 def test_a_held_notice_posts_to_the_catalog_and_not_to_feed(env):
     env.collector([MAC])
     code, summary, relay = run(env)

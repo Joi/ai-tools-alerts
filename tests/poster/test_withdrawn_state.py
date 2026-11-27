@@ -8,7 +8,7 @@ import json
 import pytest
 
 from aitools_alerts import pull, ruleset, schema, wire
-from aitools_alerts.poster import compose, recompute
+from aitools_alerts.poster import compose, main, recompute
 
 from advisories import ghsa_json, osv_json
 from test_advisory_recompute import (CLAUDE, CVE, G, HOUR, MAL, NO_FIX, RS, WHEN, entries, hourly, post, reads, run,
@@ -50,11 +50,15 @@ def test_what_keeps_a_thread_out_of_the_state():
     assert hourly(thread(level="notice"), one, 30)[0] == [None] * 31
     both = reads(**{G: ghsa_json(G, **named), MAL: osv_json(MAL, withdrawn=WHEN)})
     assert hourly(thread(), both, 24)[0][-1] == DUE
-    # a KEV entry that lists the thread's CVE for the product holds it
-    listed = catalog("v", kev_item(CVE))
-    got, _ = hourly(thread((G, CVE), level="high", exploited=True), reads(**{G: ghsa_json(G, cve=CVE, **OFF)}), 30,
-                    cat=lambda h: {**listed, "catalogVersion": f"2026.11.{h // 24 + 1:02d}"})
-    assert DUE not in got
+    # a KEV entry that lists the thread's CVE for the product holds it; the same thread with the
+    # CVE in no catalog is due the state, so it is the listing that holds
+    tied = reads(**{G: ghsa_json(G, cve=CVE, **OFF)})
+    version = lambda h: f"2026.11.{h // 24 + 1:02d}"  # noqa: E731
+    absent, _ = hourly(thread((G, CVE)), tied, 30, cat=lambda h: {**catalog("v"), "catalogVersion": version(h)})
+    assert absent[24:] == [DUE] * 7
+    listed, _ = hourly(thread((G, CVE)), tied, 30,
+                       cat=lambda h: {**catalog("v", kev_item(CVE)), "catalogVersion": version(h)})
+    assert listed == [None] * 31  # held at its level by the listing: no wait, no state
 
 
 def test_a_wait_for_a_level_and_a_wait_for_the_state_are_two_waits():
@@ -85,6 +89,15 @@ def test_a_withdrawn_thread_leaves_the_state_in_the_run_that_reads_the_cause(kep
     silent = reads(**{G: ghsa_json(G, packages=OTHER)})  # read whole, no withdrawal stated, the product not named
     assert hourly(e, silent, 0)[0] == [("raise", "notice")]
     assert recompute.raised(e, CLAUDE, None, RS, silent) is None  # judge's to say: it knows what was read whole
+    # two readings, both read whole, neither supporting the product: while one still states the
+    # withdrawal the thread stays (entered when all state it, left this way when none does)
+    named = dict(identifiers=(MAL,), packages=OTHER)
+    mixed = reads(**{G: ghsa_json(G, **named, **OFF), MAL: osv_json(MAL, packages=(("npm", "left-pad"),))})
+    assert hourly(e, mixed, 3)[0] == [None] * 4
+    mixed = reads(**{G: ghsa_json(G, **named), MAL: osv_json(MAL, packages=(("npm", "left-pad"),), withdrawn=WHEN)})
+    assert hourly(e, mixed, 3)[0] == [None] * 4
+    neither = reads(**{G: ghsa_json(G, **named), MAL: osv_json(MAL, packages=(("npm", "left-pad"),))})
+    assert hourly(e, neither, 0)[0] == [("raise", "notice")]
     taught = thread(level=kept, floor="high", **IN)  # a candidate taught the floor since
     still = reads(**{G: ghsa_json(G, **OFF)})
     assert hourly(taught, still, 0)[0] == [("raise", "high")] and recompute.raised(taught, CLAUDE, None, RS, still) == "high"
@@ -253,7 +266,7 @@ def test_a_withdrawn_thread_is_not_renewed_or_stepped_down(env):
     assert e["level"] == "high" and e["withdrawn"] == ["feed"]
 
 
-def test_a_withdrawn_thread_gets_no_copy_and_no_digest_line(env):
+def test_a_withdrawn_thread_gets_no_copy(env):
     malware = dict(type="malware", packages=NO_FIX)
     post(env, fixed=None, **malware)
     env.run(now=T0 + HOUR, digest_now=True)  # the digest that lists its root
@@ -373,24 +386,33 @@ def test_a_partly_withdrawn_thread_is_brought_to_the_ledgers_level_not_below(env
     assert e["level"] == "critical" and "withdrawn" not in e  # one level in every channel; a fall is a lowering's
 
 
-def test_a_raise_passes_an_unsent_withdrawal(env):
-    post(env)
-    env.api.put(G, ghsa_json(G, **OFF))
+def test_a_reply_that_ends_the_state_passes_the_withdrawal_one_channel_still_lacks(env, monkeypatch):
+    """``yields``: one channel took the withdrawal and the other's send failed, then the
+    advisory is back. The unsent withdrawal leaves the journal in the save that journals
+    the level reply, which goes to the channel that is withdrawn."""
+    asked = []
+    real = main.Run.yields
+    monkeypatch.setattr(main.Run, "yields", lambda self, e, level: asked.append(level) or real(self, e, level))
+    malware = dict(type="malware", packages=NO_FIX)
+    post(env, fixed=None, **malware)
+    env.api.put(G, ghsa_json(G, **OFF, **malware))
     assert moved(env, 1, 24) == []
-    env.run(now=T0 + 25 * HOUR, relay=FakeRelay("fail"))
-    assert env.state()["outbox"]
-    env.api.put(G, ghsa_json(G, type="malware"))  # more than the thread stood at
+    code, _, relay = env.run(now=T0 + 25 * HOUR, relay=FakeRelay("ok", "fail"))
+    (took,) = entries(env)[0]["withdrawn"]
+    assert [it["channel"] for it in env.state()["outbox"]] == [c for c in ("feed", "critical") if c != took]
+    env.api.put(G, ghsa_json(G, **malware))
     relay = run(env, 26)
-    assert moves(relay) == ["critical"] and "withdrawn" not in entries(env)[0]
-    assert not [it for it in env.state()["outbox"] if "#level:" in it["key"]]
+    assert asked and [(c[0], json.loads(schema._last_block(c[2]))) for c in relay.calls] == [(took, {"level": "critical"})]
+    (e,) = entries(env)
+    assert "withdrawn" not in e and e["level"] == "critical" and env.state()["outbox"] == []
+    assert moved(env, 27, 30) == []
 
 
 # ---------------------------------------------------------------- the poster's events on this reader
 
 
-def test_the_reader_takes_the_posters_replies_as_a_withdrawal_and_its_end():
-    """``pull._bot_reply`` on the texts ``compose`` writes: the withdrawal is the thread's
-    standing offer, and a level reply naming the kept level ends it."""
+def test_the_blocks_compose_writes_are_the_ones_the_reader_knows():
+    """The blocks only; tests/test_wire_compat.py reads the signed events through the reader."""
     prev = schema.validate(thread().advisory)
     gone = json.loads(schema._last_block(compose.withdrawal_post()))
     back = json.loads(schema._last_block(compose.level_post(prev, prev.level, again=True)))

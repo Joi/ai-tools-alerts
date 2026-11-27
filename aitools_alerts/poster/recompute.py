@@ -342,12 +342,17 @@ def held(entry, scope, found: str, rs, stop: bool = False, infer: bool = True) -
     return capped
 
 
+def _stated(counted) -> list:
+    """For each advisory reading counted, whether it states the withdrawal."""
+    return [fields.get("withdrawn_at" if source == "ghsa" else "withdrawn") is not None
+            for source, fields in counted if source != "kev"]
+
+
 def withdrawal(counted) -> bool:
     """Whether the advisory readings counted (``support``'s ``counted``) state the
     withdrawal: at least one, and every one of them (kk2q). A KEV entry is no advisory
     reading; one that lists the thread supports it, which ``judge`` asks separately."""
-    said = [fields.get("withdrawn_at" if source == "ghsa" else "withdrawn") is not None
-            for source, fields in counted if source != "kev"]
+    said = _stated(counted)
     return bool(said) and all(said)
 
 
@@ -357,11 +362,14 @@ def leaving(entry, found: str, known: bool, counted, rs) -> str | None:
     is a raise and needs no wait: a read supports a level (``found``, as ``held`` gave
     it); its prose floor is above notice (a candidate taught it since); or every source
     was read whole (``known``), none supports the product and no reading counted states
-    the withdrawal, which returns it to notice. An unknown read changes nothing."""
+    the withdrawal, which returns it to notice. While any reading counted still states
+    it the thread stays, though another reading no longer does: the state is entered
+    when all state it and left on this path when none does. An unknown read changes
+    nothing."""
     low = floor(entry, rs)
     if found != ruleset.NONE or rs.rank(low) > rs.rank("notice"):
         return rs.highest(found, low, "notice")
-    return "notice" if known and not withdrawal(counted) else None
+    return "notice" if known and not any(_stated(counted)) else None
 
 
 def raised(entry, scope, copy: Copy | None, rs, read=None) -> str | None:

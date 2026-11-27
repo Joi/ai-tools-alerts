@@ -88,7 +88,7 @@ The relay bot has no retraction (`retract` is a curator's word and ends nothing 
 - **Leaving.** A later relay-bot reply that names a level ends the withdrawal: a level at or above the thread's stands at once, a lower one is a lowering like any other. It is the same thread under the same root. Without any reply, a member whose check reads the advisory published again shows the alert again.
 - **A curator's hold** governs while it is in force: the thread is as the curator left it, and the withdrawal is judged when the hold has lapsed. A curator who retracts the thread or names a level after the withdrawal has the last word on the level: the withdrawal is no longer the thread's published state, and the thread is not hidden by it.
 - **Expiry** is not changed. The reply names no level, so it is no renewal, and a claim of level `none` renews nothing: a thread whose root carries a claim decays as before, shown or hidden.
-- The reply carries the claim of the withdrawn reading, level `none` (hh5s). Roots carry no claim yet (ai-tools-alerts#gtw9), so until they do no withdrawal is confirmed and each counts as a lowering to notice.
+- The reply carries the claim of the withdrawn reading, level `none` (hh5s). A thread whose root carries no claim (every thread posted before ai-tools-alerts#gtw9, and a root no reading stated) has a level without a claim, so its withdrawal is never confirmed and counts as a lowering to notice.
 
 What the poster sends (ai-tools-alerts#kk2q):
 

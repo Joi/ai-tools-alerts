@@ -90,7 +90,7 @@ Existing tests that state today's behaviour change: `test_a_withdrawn_reviewed_a
 
 ## Blast radius and rollback
 
-Poster only; no schema, manifest, ruleset or scope file changes, and no new wire form (y484 defined it). The member CLI is untouched. Once a thread is withdrawn the ledger entry holds `withdrawn`, and the recompute state may hold `withdrawn` as a wait's or a reported lowering's level: an older poster refuses that ledger (as it does `claim` since gtw9) and replaces that recompute state with an empty one. Before any thread is withdrawn, revert the merge. After, roll forward, or remove the key from the entry by hand: the thread then stands at its kept level in the ledger while readers hold the withdrawal until a reply names a level.
+Poster only; no schema, manifest, ruleset or scope file changes, and no new wire form (y484 defined it). The member CLI is untouched. Once a thread is withdrawn the ledger entry holds `withdrawn`, and the recompute state may hold `withdrawn` as a wait's or a reported lowering's level: an older poster refuses that ledger (as it does `claim` since gtw9) and replaces that recompute state with an empty one. An older poster does not refuse a withdrawal still in the journal (code review finding 4): it would send the reply and record it as an ordinary one, with nothing to end it on readers afterwards. So revert the merge only while no entry holds `withdrawn` and no journaled, withheld or pending item carries the withdrawal block. After, roll forward, or remove the key from the entry by hand: the thread then stands at its kept level in the ledger while readers hold the withdrawal until a reply names a level.
 
 Readers 0.1.8 to 0.2.1 lose the lowering to notice they got for a withdrawn reviewed advisory (decision 1).
 

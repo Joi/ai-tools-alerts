@@ -37,6 +37,20 @@ Plan findings and what was done:
 6. SUBSTANTIVE: v0.3.0 was optional. Fixed: required.
 Rung after the pass: medium.
 
+Pass 1 [code:poster]: 2B/7S/3C/0R · fixed -/- · velocity = (—→12, escalation no)
+code:poster: passes 1 · Stage 2 gpt-6-astra through fresheyes on the whole branch (`git diff origin/main...f744c46`), Stage 1 a same-model reviewer on the same commit, in parallel
+
+Code findings and what was done (the same defect counted once):
+1. BLOCKER (Stage 2; Stage 1 finding 1): `leaving` returned the thread to notice as soon as one counted reading stopped stating the withdrawal, while another still did. Fixed: that way out needs no counted reading to state it; tests for both mixed cases.
+2. BLOCKER (Stage 2): the rollback note allowed a revert while a withdrawal was still in the journal, which an older poster would send and record as an ordinary reply. Fixed in the changelog and the spec: revert only with no `withdrawn` entry and no journaled, withheld or pending withdrawal.
+3. SUBSTANTIVE (Stage 2; Stage 1 finding 5): the catalog forgot when it took a withdrawn key out, so an older snapshot merged later brought the advisory back. Fixed: a `gone` map in the inventory; a test in both orders.
+4. SUBSTANTIVE (Stage 2; Stage 1 finding 5): the catalog's filter for what may start ran before the withdrawn check. Fixed and tested with an out product's thread at notice.
+5. SUBSTANTIVE (Stage 1 finding 2), rebutted: a thread withdrawn in one channel only is treated as withdrawn in all (no renewal, no new wait) until the advisory returns. It takes a relay that refuses one channel's reply twice, three days apart, and then a second withdrawal; the channel that left keeps its alert, the higher side. Per-channel reconciliation of every level reply is its own piece of work (follow-up issue).
+6. SUBSTANTIVE (Stage 1 finding 3): the KEV test passed with or without the listing. Fixed: the same thread with the CVE absent is due the state, with it listed is not.
+7. SUBSTANTIVE (Stage 1 finding 4): the `yields` test never reached `yields`. Fixed: a two-channel case that does, asserted by a wrapper.
+8. COSMETIC (Stage 1 findings 6 and 7): a stale sentence in `spec/wire.md` about roots without claims, fixed; two test names that claimed more than they test, renamed. Not added: a `main.run` test of a return below the kept level and of the `plan_known` copy guard (the reviewer ran the first by hand: both channels took the level and the ledger agreed).
+Rung after the pass: medium. Finding 1 changed behaviour, so the fix is committed and gets the one delta pass (`fresheyes --since f744c46`).
+
 ## Chunks
 - [ ] poster: the withdrawn state in `recompute`, the ledger, `compose`, `main`, `signer`, with tests and `spec/wire.md`
 
