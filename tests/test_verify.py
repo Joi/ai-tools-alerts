@@ -1073,8 +1073,11 @@ def test_a_thread_under_a_former_name_is_judged_by_its_own_advisory(tmp_path, na
     go(tmp_path / "gone", [high, notice], net((gurl(G1), ghsa(pkgs=pkgs, withdrawn_at=GONE_AT))))
     assert res(tmp_path / "gone", notice)[key] == {"result": "confirmed", "why": "withdrawn", "source": "none"}
     assert res(tmp_path / "gone", high)[key] == {"result": "contradicted", "why": "unsupported", "source": "none"}
-    go(tmp_path / "other", [high], net((gurl(G1), ghsa())))  # an advisory about another product
-    assert res(tmp_path / "other", high)[key] == {"result": "contradicted", "why": "unsupported", "source": "none"}
+    # an advisory about a product the name does not stand for, live or withdrawn: silence, not absence
+    for folder, body in (("other", ghsa()), ("other-gone", ghsa(withdrawn_at=GONE_AT))):
+        go(tmp_path / folder, [high, notice], net((gurl(G1), body)))
+        for a in (high, notice):
+            assert res(tmp_path / folder, a)[key] == {"result": "unknown", "why": "unauthoritative", "source": "none"}
 
 
 def test_a_former_name_takes_the_highest_support_and_lowers_only_when_all_of_it_may():
@@ -1086,7 +1089,11 @@ def test_a_former_name_takes_the_highest_support_and_lowers_only_when_all_of_it_
     both = {"mcp-server-git": ["notice", True], "mcp-server-fetch": ["high", True]}
     assert said("high", both) == ("confirmed", "match", "high")
     assert said("notice", both) == ("contradicted", "below-source", "high")
-    assert said("high", {"Claude Code": ["critical", True]}) == ("contradicted", "unsupported", "none")  # not one of them
+    assert said("high", {"Claude Code": ["critical", True]}) == ("unknown", "unauthoritative", "none")  # not one of them
+    assert said("high", {}) == ("unknown", "unauthoritative", "none") and said("none", {}) == ("unknown", "unauthoritative", "none")
+    assert said("high", {"mcp-server-git": ["none", True]}) == ("contradicted", "unsupported", "none")  # withdrawn: named
+    one = verify.judge("high", "mcp-server-git", [rec({})], True, rs)  # a current name: silence is absence, as before
+    assert (one["result"], one["why"]) == ("contradicted", "unsupported")
     # support its subject's attacker can write for one of them: the record contradicts nothing
     mixed = {"mcp-server-git": ["high", False], "mcp-server-fetch": ["notice", True]}
     assert said("critical", mixed) == ("unknown", "unauthoritative", "notice")

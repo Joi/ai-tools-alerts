@@ -725,7 +725,7 @@ def _source_check(a, st: State, s: config.Settings, threads: list, pairs: list, 
 
 def _source_lines(a, st: State, s: config.Settings, threads: list) -> list[str]:
     """One line per product whose source contradicts the post, from the cache.
-    Printed: the id as verify.norm_id returned it, a scope product name, and
+    Printed: the id as verify.norm_id returned it, a scope product name or a former one, and
     level words. A CLI the trust root calls too old prints none: its ruleset
     and scope file may be the ones that are wrong."""
     cache = _cache(a, st, s)

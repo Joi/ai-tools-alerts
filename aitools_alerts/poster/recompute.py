@@ -9,7 +9,8 @@ was posted under (``rules.scope_named``, ai-tools-alerts#zmg2); a thread whose p
 left the scope file is not recomputed. A thread under a product's former name is judged
 as every scope product that lists the name (``Ruleset.stands_for``, ai-tools-alerts#aabw):
 its readings are its own advisory's, and what they support for any of those products is
-what they support for the thread, as a member's check reads it (``verify.judge``). Only
+what they support for the thread, as a member's check reads it (``verify.judge``). Such
+a thread is unknown while no reading names one of those products. Only
 evidence moves a level:
 
 - ``unknown`` changes nothing, starts no wait and adds no time to one. A fetch that
@@ -272,9 +273,14 @@ def support(entry, scope, copy: Copy | None, rs, read=None, counted: list | None
     ``scope.name`` may be a former name (aabw): "this product" is then each scope
     product the name stands for (``Ruleset.stands_for``). A response counts only when
     its support for every one of them it names may lower, and the highest of them is
-    what it supports."""
+    what it supports. And the thread is known only when some counted reading names one
+    of them: the name was a wider entry once ("MCP servers and clients" matched any
+    MCP server), so a thread under it may be about a product that is none of those,
+    and sources that never name them say nothing about it (``verify.judge`` answers
+    ``unknown`` then). A withdrawn advisory still names its package."""
     ids = bare_ids(entry)
     names = sorted(rs.stands_for(scope.name))
+    named = names == [scope.name]  # a current name is its own product: silence about it is evidence
     counted = [] if counted is None else counted
     read = read or (lambda i: None)
     found, listed, gone, stop = ruleset.NONE, set(), set(), False
@@ -296,6 +302,7 @@ def support(entry, scope, copy: Copy | None, rs, read=None, counted: list | None
                 known = False  # a source its subject's attacker can write justifies no lowering
             else:
                 counted.append((r.source, r.fields))
+                named = named or bool(owns)
                 for own in owns:
                     if own[0] != ruleset.NONE:
                         if rs.rank(own[0]) > rs.rank(found):
@@ -321,10 +328,11 @@ def support(entry, scope, copy: Copy | None, rs, read=None, counted: list | None
             known = False
         else:
             counted.append(("kev", fields))
+            named = True
             if rs.rank(got.level) > rs.rank(found):
                 found, stop = got.level, False
             listed.add(i)
-    return found, known, listed, gone, stop
+    return found, known and named, listed, gone, stop
 
 
 def held(entry, scope, found: str, rs, stop: bool = False, infer: bool = True) -> str:

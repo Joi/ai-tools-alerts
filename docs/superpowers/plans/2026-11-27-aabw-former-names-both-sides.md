@@ -20,7 +20,7 @@ Spec: `docs/superpowers/specs/2026-11-27-aabw-former-names-both-sides-design.md`
   - withdrawn advisory, for "MCP Inspector" and "MCP servers and clients": nothing sent in hours 1 to 24, a wait at notice running, the member already reads `unsupported`; hour 25 sends one lowering to notice; the member reads `confirmed`/`withdrawn`; hours 26 to 40 send nothing.
   - supported advisory, both names: 30 hours send nothing, no wait, the API was asked, the member reads `confirmed`/`match`.
   - the shared name's advisory names another of the seven: the thread stands, the member confirms.
-  - the shared name's advisory names none of them: lowered at hour 25; the member reads `unsupported`.
+  - the shared name's advisory names none of them (a package outside the seven), live and withdrawn: 40 hours send nothing, no wait, the API was asked, the member reads `unknown`/`unauthoritative` (code review; the first draft of this line said "lowered at hour 25", which was the defect).
   - a thread at notice whose advisory supports high, both names: raised in that run with `candidates=0`, the member confirms high, not raised again.
   - a thread under a name the scope file never had: not read, no wait, the member reads `no-source`.
   - an enrolled thread (a standing claim set with `Ledger.set_claim(root, text, root_ids=[the first id])`, as a root carries one since gtw9; without `root_ids` `Run._confirming` confirms nothing, plan review finding 1), both names, advisory supporting high: 90 daily runs, no step, every renewal with `confirmed_at == checked_at ==` the run's time and `check_claim` `ok` for the former name, `Ruleset.level_at` high every day from the claims sent, at least five renewals (spec review, finding 2).
@@ -65,6 +65,14 @@ Spec: `docs/superpowers/specs/2026-11-27-aabw-former-names-both-sides-design.md`
 
 - A thread under "MCP Inspector" whose advisory is withdrawn is lowered by the bot under ny5g's rules and a member's check confirms it: the first poster test, case `MCP Inspector`.
 - A thread under "MCP servers and clients" is handled by the chosen rule, with a test: the same test's second case and the four tests after it.
+
+### Added by the code review
+
+- [ ] `aitools_alerts/verify.py` `judge` and `aitools_alerts/poster/recompute.py` `support`: for a former name, no source naming one of its products is unknown (spec, "Silence about a former name"). The member's four-case test and built-records test and the poster's built-read test carry the cases.
+- [ ] `aitools_alerts/check.py` `_identity` and `_former_packages`; `tests/test_check.py` `test_an_installation_of_another_package_is_not_a_former_names_product`.
+- [ ] `aitools_alerts/schema.py` `load_scope`; `tests/test_schema.py` `test_entries_that_share_a_former_name_are_one_kind_of_product`.
+- [ ] `tests/test_never_supported_cli.py`: the source-line test reads a withdrawn advisory that names one of the seven (a silent one has no line now).
+- [ ] Mutations 14 to 17: `judge` without the silence rule; `support` returning `known` without `named`; `_identity` without the former-name branch; `load_scope` without the shared-name rule. Each must fail the test named above.
 
 ### Review dispositions (plan, one independent pass, gpt-6.1-sol)
 

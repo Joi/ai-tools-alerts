@@ -5,6 +5,7 @@ Rung: medium (start-floor medium: constraint-lens, BR2 REV2 NOV1 INT1 FC1 = 7; t
 Lens: "the service runs with no human in the loop; nothing you build may wait for a person to act"; "no rollout, no install, no signing step, no release in this work"
 Last reviewed: spec f44bc56ea7a5d444875acf6e407e7b075eee9745
 Last reviewed: plan 2af413ec18310519cb199be33d26838a97a8d3e8
+Last reviewed: code af685e7dab543a9dff135e909fc0cb690d7cb787 (the whole branch, `git diff origin/main...HEAD`)
 Spec: docs/superpowers/specs/2026-11-27-aabw-former-names-both-sides-design.md   Plan: docs/superpowers/plans/2026-11-27-aabw-former-names-both-sides.md
 Agency project: — (no Agency tools on this seat's session; the chunk was built inline)
 Kata: ai-tools-alerts#aabw
@@ -15,6 +16,8 @@ Pass 1 [spec]: 1B/2S/1C/0R · fixed -/- · velocity = (—→4, escalation no)
 spec passes: 1 · reviewer gpt-6.1-sol at high (fresheyes run 20261127-053215-bad03b, REASON=-) · the BLOCKER fixed (criterion 7 names the cache-version test as a third test that changes, and that test now carries a stored `no-source`), one SUBSTANTIVE fixed (a renewal test for an enrolled former-name thread), one rebutted (the throwaway snapshot's message: a dangling commit made for the reviewer, on no branch, never lands), the COSMETIC fixed (10 requests, not 20); nothing survives, so the rung stays medium
 Pass 1 [plan]: 1B/3S/0C/0R · fixed -/- · velocity = (—→4, escalation no)
 plan passes: 1 · reviewer gpt-6.1-sol at high (fresheyes run 20261127-053852-24ce69, REASON=-) · all four fixed: the BLOCKER in the plan's text (the fixture as built already carried `root_ids`), two SUBSTANTIVE by a new test each (mutations 11 and 12 now fail one), one in the landing steps (fetch before the author check); nothing survives, so the rung stays medium
+Pass 1 [code:former-names]: 0B/3S/4C/0R · fixed -/- · velocity = (—→7, escalation no)
+code passes: 1 · whole branch at af685e7dab543a9dff135e909fc0cb690d7cb787 · Stage 2 reviewer gpt-6.1-sol at high (fresheyes run 20261127-211328-c75b84, REASON=-): one SUBSTANTIVE (another package under a former name's key takes its confirmation) · Stage 1 (same-model subagent): two SUBSTANTIVE (the same one; silence about a former name read as absence, which this run regrades BLOCKER) and four COSMETIC · all seven fixed (spec, "Review dispositions (code)"); nothing survives, so the rung stays medium; the two behaviour-changing fixes get the one delta pass
 
 ## Chunks
 - [ ] former-names: the ruleset says what a name stands for; the member's check and the recompute read a former name by it; tests, changelog
@@ -25,4 +28,6 @@ plan passes: 1 · reviewer gpt-6.1-sol at high (fresheyes run 20261127-053852-24
 - A stray review: `fresheyes.sh --help` is not a help flag; it started a review of the text "--help" (run 20261127-053151-3e1392). Stopped within a minute by ending its own process group; no finding was read from it.
 - Found after the spec review, while writing the changelog: `cli._source_lines` printed nothing for a former name, and `_shown` would show such an alert at notice with no line. Fixed with a test (spec "Member: cli.py").
 - Mutations, each failing the test the plan names: 1, 2, 4 to 13. Mutation 3 (the KEV line by `scope.name`) survives: no entry that lists a former name has a KEV identity.
+- Mutations for the code review's fixes, each failing a named test: 14 (the member's silence rule), 15 and 18 (the poster's), 16 (`_identity`), 17 (the schema rule), 19 and 20 (a current name keeps silence-is-absence, member and poster).
+- `tests/test_never_supported_cli.py::test_for_48_hours_after_a_rebuilt_record_nothing_shows_at_notice` failed once in a run made while two other suites ran on the machine, and passed in three runs alone and in the full suite. It is about a Claude Code thread and reads the real clock; this branch does not touch it.
 - The repository has no repoman marker: the run ends with a pull request this session merges, as the brief says, not a repoman handoff.

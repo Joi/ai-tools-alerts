@@ -26,8 +26,14 @@ All four names are handled, "MCP servers and clients" included. No case is left 
 Why this is sound for a name seven entries share. zmg2 rejected it because "a lowering there would rest on the absence of support for seven products at once". That is not what the evidence is. The readings counted for a thread are those of the thread's own ids: its first id, and the ids its source ties to it (`sources.chosen`, `verify._Run.thread`). They are one advisory. Which of the seven servers that advisory is about is stated by the advisory's own package field, and the ruleset binds it. So:
 
 - the thread's level is held by whichever of the seven its advisory names, at what the rules give that product;
-- a lowering needs what it needs for any thread: every source read whole, each an authority, none supporting the level. An advisory that names none of the seven any more is the same evidence as an advisory that no longer names a single product;
+- a lowering needs what it needs for any thread (every source read whole, each an authority, none supporting the level) and one thing more: some source that may lower must name one of the name's products. See "Silence about a former name" below;
 - a withdrawn advisory still names its package and supports it at `none`, which is the "named and supports nothing" both sides require for a withdrawal.
+
+### Silence about a former name is unknown, not absence
+
+Added after the code review (same-model review, finding 1), which the first draft of this section got wrong. "MCP servers and clients" was not a name seven products shared: until wa6n it was one entry that matched any MCP server (`mcp server`, `model context protocol`, the `modelcontextprotocol/servers` slug). A thread under it may be about a server that is none of today's seven, and its advisory then never names any of them. Read as absence, that silence would lower a live, correct alert to its floor and show it to members as "the source does not support it".
+
+So for a former name, on both sides: when no counted source names one of the products it stands for, the thread is unknown. The poster does not know it (`recompute.support`: nothing moves, no wait starts). The member's check answers `unknown`, why `unauthoritative` (`verify.judge`), never `unsupported`. A withdrawal of an advisory that names none of them is silence too. For a current name nothing changes: silence about it from an authority is absence, as before. Such a thread stays where zmg2 left it: raised by a candidate, never lowered by the recompute, stepped down by gtw9 when nothing confirms it.
 
 The other half of zmg2's objection, "threads no member can check", is what this change removes.
 
@@ -66,6 +72,14 @@ Rejected:
 - `_Run.thread.weight` (which alias is read first) reads the support of every product the thread's names stand for.
 - `VERSION = 6`.
 
+### Member: the matcher, `check._identity`
+
+Added after the code review (both reviews found it). A former-name product was unjudgeable, so on a pinned reader a critical match on it was held out of the interrupts (`cli._unjudgeable`, 2mgd). Judged, it can interrupt as verified. An MCP installation matches a post by its configured key, which is free text: a server configured under the key `mcp servers and clients` whose package is `npm:mcp-remote` would take a confirmation that is about `mcp-server-git`. For a current name `_identity` already refuses an installation whose package is another product's. It now does the same for a former name: the installation's package is one of the packages of the entries that list the name (it is the product), or it is known and none of theirs (no match at all); a key alone still matches by name, as for a current name.
+
+### `aitools_alerts/schema.py`: entries that share a former name are one kind of product
+
+Added after the code review (same-model review, findings 3 and 4, both latent). `load_scope` refuses a scope file in which two entries share a former name and differ in ecosystem, class, `channel_if` or authority, or spell the name differently. Then one reading gives every product of a former name the same authority, so the poster and the member cannot count one response differently, and the name resolves the same way on both sides. The shipped file meets it; the JSON format does not change.
+
 Not changed: the version ranges kept for a narrowing (`_Run.thread.pairs`, `verify.narrowing`). A former name has no ranges under its own name, so a narrowing of such a thread is not settled by the check, as today.
 
 ### Member: `aitools_alerts/cli.py`
@@ -78,7 +92,7 @@ Not changed: the version ranges kept for a narrowing (`_Run.thread.pairs`, `veri
 - `recompute.support`: `names = rs.stands_for(scope.name)`. An advisory response: the supports it holds for `names`; it is counted only when every one may lower (none held: the response's own `lowers`), and then each support above `none` raises `found`, with `stop` as today. A KEV entry: the catalog names one product; it counts when that product is in `names`.
 - `held` and `judge` already work on `scope.name`: `Ruleset.action_level` reads a former name, and the thread's published actions name the former name, because the thread was composed under it.
 
-The poster stays the stricter side: a response in which one of the names has support that cannot lower is not counted at all by the poster, while the member still counts the others' support as a lower bound. So the poster publishes no level a member's check does not find.
+A response in which one of the names has support that cannot lower is not counted at all by the poster, while the member still counts the others' support. With the shipped scope file that case cannot arise, and `schema.load_scope` now refuses a file in which it could (below), so the two sides count the same responses.
 
 ## What changes for threads already posted
 
@@ -98,7 +112,7 @@ Options (b) and (c) above. Also: resolve former names inside `check.scope_name`.
 
 ## Blast radius and rollback
 
-Six source files (`ruleset.py`, `check.py`, `verify.py`, `cli.py`, `poster/recompute.py`, `poster/main.py`), tests, the changelog. No wire format, schema, ruleset, scope file or ledger change; the ruleset digest the trust root pins is the same. The member's cache file is rebuilt once by the version change, as for versions 4 and 5.
+Seven source files (`ruleset.py`, `schema.py`, `check.py`, `verify.py`, `cli.py`, `poster/recompute.py`, `poster/main.py`), tests, the changelog. No wire format, schema, ruleset, scope file or ledger change; the ruleset digest the trust root pins is the same. The member's cache file is rebuilt once by the version change, as for versions 4 and 5.
 
 Rollback is a revert. The older poster pauses the waits the newer one started (`recompute.pause`) and judges those threads no more; the older reader rebuilds its cache again. A level change already published stays published.
 
@@ -110,6 +124,17 @@ Rollout: the change ships with the next release (ai-tools-alerts#5fry). No insta
 2. SUBSTANTIVE, the renewal claim had no acceptance test. Fixed: the last case of criterion 4, two tests in `tests/poster/test_former_names.py`.
 3. SUBSTANTIVE, the message of the snapshot commit ("do-it review snapshot"). Rebutted: a dangling commit made for the reviewer with `git commit-tree`; it is on no branch and never lands.
 4. COSMETIC, the member's request limit is 10, not 20. Fixed.
+
+## Review dispositions (code, whole branch at `af685e7`: one independent pass, gpt-6.1-sol, and one same-model pass)
+
+1. Same-model, SUBSTANTIVE (regraded BLOCKER here: it would have lowered live alerts): a thread under the shared name about a server outside the seven read as unsupported. Fixed: "Silence about a former name". Tests: the poster's `..._names_none_of_its_products_is_unknown_and_stands`, the member's four-case test and the built-records test.
+2. Independent, SUBSTANTIVE, and same-model, SUBSTANTIVE: an installation of another package under a former name's key could take its confirmation. Fixed: "Member: the matcher". Test: `test_an_installation_of_another_package_is_not_a_former_names_product`.
+3. Same-model, COSMETIC (latent): mixed authority among a former name's products is counted differently by the two sides. Fixed by the schema rule.
+4. Same-model, COSMETIC (latent): the two sides resolve a former name by different rules for a scope file with a name under two ecosystems or two spellings. Fixed by the schema rule.
+5. Same-model, COSMETIC: the changelog did not say such a match can now interrupt. Fixed.
+6. Same-model, COSMETIC: `_source_lines` docstring. Fixed.
+
+The fixes of 1 and 2 change behaviour, so the independent reviewer reads them in one delta pass (`--since af685e7`).
 
 ## Open questions
 

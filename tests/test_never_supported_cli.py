@@ -697,7 +697,8 @@ def test_a_thread_under_a_former_product_name_has_its_source_line(feed, monkeypa
     a = advisory(posted_by="relay-bot", id=G1, level="high", products=[Product(old.lower(), "mcp", "<99.0.0", "99.0.0")],
                  actions=[Action("upgrade", old.lower(), "99.0.0")])
     feed([a], 'verify = "all"\n')
-    use(monkeypatch, Net().set(gurl(G1), ghsa()))  # the advisory names another product: nothing for any of the seven
+    gone = ghsa(pkgs=(("pip", "mcp-server-git"),), withdrawn_at=WITHDRAWN)  # names one of the seven, and supports nothing
+    use(monkeypatch, Net().set(gurl(G1), gone))
     assert cli.main(["pull"]) == 0 and cli.main(["verify"]) == 0
     out = out_of(capsys, ["check"])[1]
     assert f"source check: the source does not support {G1} for {old}\n" in out and out.count("source check:") == 1

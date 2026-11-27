@@ -504,3 +504,23 @@ def test_a_former_name_two_ecosystems_share_is_not_found(monkeypatch):
     monkeypatch.setattr(schema, "load_scope", lambda: entries)
     assert check.former_name("Old One", "mcp") is None and check.former_name("Old One", "skill") is None
     assert check.former_name("old two", "mcp") is None  # two former names that differ in case only
+
+
+
+def test_an_installation_of_another_package_is_not_a_former_names_product():
+    """A former name stands for the entries that list it. A server configured under the
+    name whose package is none of theirs is another product: no match, so nothing the
+    source check confirms for the name reaches it. One of theirs, and a key alone, match."""
+    old = Product("MCP servers and clients", "mcp", "<1.0", "1.0")
+    a = adv([old], [Action("upgrade", old.name, "1.0")], posted_by="relay-bot")
+    key = "mcp servers and clients"
+    assert check.match([a], inv(mcp=[_mcp("mcp-remote", "0.1.0", "npm:mcp-remote", key)])) == []
+    [m] = check.match([a], inv(mcp=[_mcp("mcp-server-git", "0.1.0", "pypi:mcp-server-git", key)]))
+    assert m.reason == check.AFFECTED
+    assert check.match([a], inv(mcp=[_mcp("mcp-server-git", "1.0", "pypi:mcp-server-git", key)])) == []
+    [m] = check.match([a], inv(mcp=[_mcp(key)]))  # a key alone: by name, as for a current name
+    assert m.reason == check.MAY_APPLY
+    assert check._former_packages()[key] == (frozenset(
+        p for n, p in check.scope_products()["mcp"] if n in ruleset.load().stands_for(old.name)), True)
+    assert check._identity(Product("My Own Key", "mcp", None, None), _mcp("x", "1", "npm:mcp-remote", "my own key")) is None
+

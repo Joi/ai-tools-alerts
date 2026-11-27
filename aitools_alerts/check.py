@@ -91,14 +91,39 @@ def _scope_packages() -> dict[str, str]:
         return {}
 
 
+@lru_cache(maxsize=1)
+def _former_packages() -> dict[str, tuple]:
+    """former name (lowercase) -> (the packages of the mcp entries that list it, whether
+    every one of them has a package) (aabw). A scope file that does not load: {}."""
+    try:
+        out: dict = {}
+        for e in schema.load_scope():
+            for old in e.formerly if e.ecosystem == "mcp" else ():
+                held = out.setdefault(old.lower(), [set(), True])
+                if e.package:
+                    held[0].add(e.package.lower())
+                else:
+                    held[1] = False
+        return {k: (frozenset(v[0]), v[1]) for k, v in out.items()}
+    except Exception:
+        return {}
+
+
 def _identity(product: Product, inst: Installed) -> bool | None:
     """Whether the installation is the product by more than a name: True
     when its package (mcp) or its marketplace (a plugin) says so, False when
     they say it is another product (no match at all), None when nothing
-    beyond the name is known."""
+    beyond the name is known. A former product name (aabw) stands for the entries
+    that list it: an installation whose package is one of theirs is it, and one whose
+    package is known to be none of theirs is not, though its configured key says the
+    name. So no installation of another package takes what the source check confirms
+    for the former name."""
     name = product.name.lower()
     if product.ecosystem == "mcp":
         want = name if name.startswith(("npm:", "pypi:")) else _scope_packages().get(name)
+        if want is None and inst.package is not None and name in _former_packages():
+            packages, every = _former_packages()[name]
+            return True if inst.package in packages else False if every else None
         if want is None or inst.package is None:
             return None
         return inst.package == want

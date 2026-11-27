@@ -365,7 +365,11 @@ def judge(level: str, product: str | None, records, complete: bool, rs, actions=
     is none (``scope_of``). ``records``: what was kept of each counted id. A former name
     (aabw) is judged as every scope product it stands for (``Ruleset.stands_for``): the
     highest support any of them has is its support, and a record may lower only when
-    its support for each of them may.
+    its support for each of them may. And silence proves nothing for it: the name was
+    a wider entry once ("MCP servers and clients" matched any MCP server), so a thread
+    under it may be about a product that is none of those. When no source that may
+    lower names one of them, the result is ``unknown``, why ``unauthoritative``, never
+    ``unsupported``; a withdrawn advisory still names its package.
     Support from a source its subject's attacker can write (``lowers`` false)
     confirms nothing and contradicts nothing: it only makes the result unknown.
     The source's level is what a post with the thread's ``actions`` and ``fixed``
@@ -405,6 +409,8 @@ def judge(level: str, product: str | None, records, complete: bool, rs, actions=
         return out(UNKNOWN, "unread", s if s != ruleset.NONE else None)
     if s == level and (level != ruleset.NONE or (named and may_lower)):
         return out(CONFIRMED, "match", s)
+    if not named and product not in rs.products():
+        return out(UNKNOWN, "unauthoritative", s)  # a former name its sources do not name: not theirs to deny
     if not may_lower or level == ruleset.NONE:
         # y484: asked at "none", whole reads of authorities that do not name the product are
         # ``silent``: no withdrawal (nothing is confirmed), and no support either, which is

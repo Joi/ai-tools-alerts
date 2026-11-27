@@ -88,13 +88,18 @@ def test_a_shared_former_name_is_held_by_whichever_of_its_products_the_advisory_
     assert member(env, SERVERS) == ("confirmed", "match", "high")
 
 
-def test_a_shared_former_name_falls_when_its_advisory_names_none_of_its_products(env):
-    """An advisory that now names another vendor's package supports nothing for the
-    thread: the same evidence as for a thread under a current name."""
+@pytest.mark.parametrize("withdrawn", [None, WHEN])
+def test_a_former_name_thread_whose_advisory_names_none_of_its_products_is_unknown_and_stands(env, withdrawn):
+    """The name was a wider entry once: "MCP servers and clients" matched any MCP server,
+    so a thread under it may be about one that is none of the seven. Its advisory then
+    never names them, and that silence is not absence: nothing is lowered, no wait
+    starts, and a member's check answers unknown, never "the source does not support
+    it". Not even when that advisory is withdrawn: it withdraws another product."""
     thread(env, SERVERS)
-    env.api.put(G, ghsa_json(G))  # @anthropic-ai/claude-code
-    assert sent(env, 1, 24) == [] and sent(env, 25, 25) == [(25, "notice")]
-    assert member(env, SERVERS) == ("contradicted", "unsupported", "none")  # no withdrawal: "never supported" at notice (0z4e)
+    env.api.put(G, ghsa_json(G, withdrawn_at=withdrawn, packages=[("npm", "mcp-remote", "< 1", "1")], repo="geelen/mcp-remote"))
+    assert sent(env, 1, 40) == [] and state(env)["dwell"] == {} and env.api.calls
+    assert entries(env)[0]["level"] == "high"
+    assert member(env, SERVERS) == ("unknown", "unauthoritative", "none")
 
 
 @pytest.mark.parametrize("name", [INSPECTOR, SERVERS])
@@ -185,4 +190,4 @@ def test_a_response_counts_for_a_former_name_only_when_all_its_support_for_the_n
         return found, known, len(counted)
     assert got({"mcp-server-git": ["notice", True, False], "mcp-server-fetch": ["high", True, False]}) == ("high", True, 1)
     assert got({"mcp-server-git": ["high", False, False], "mcp-server-fetch": ["notice", True, False]}) == ("none", False, 0)
-    assert got({"Claude Code": ["critical", True, False]}) == ("none", True, 1)  # read whole, and nothing for the name
+    assert got({"Claude Code": ["critical", True, False]}) == ("none", False, 1)  # names none of them: not known
