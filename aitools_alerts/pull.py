@@ -1483,9 +1483,10 @@ def active(threads: list[Thread], now: float | None = None, listed=None, check=N
     thread whose root carries a claim, and that no curator posted or amended,
     is shown at ``ruleset.Ruleset.level_at`` of its renewals and dropped when
     no level stands. While any of its renewals is on an event dated after the
-    checkpoint (the poster's checkpoint lists the posts of its own run, which
-    are dated after it) the thread keeps its level: the next checkpoint
-    judges it. So every renewal is counted when the thread is judged, the
+    checkpoint (a poster to 0.3.0 dated its checkpoint at the start of the run
+    whose posts it lists; a later one dates it at the signing, and a clock set
+    back still gives the case) the thread keeps its level: the next checkpoint
+    judges it. Such a checkpoint is not refused (spec/wire.md, p93w). So every renewal is counted when the thread is judged, the
     root's among them, and no reply can end a thread sooner than the root
     alone would. Every other thread does not expire. A ruleset that cannot be
     loaded expires nothing, and neither does ``decay=False``: a reader whose
