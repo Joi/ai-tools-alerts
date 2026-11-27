@@ -994,6 +994,29 @@ def test_a_must_listed_thread_keeps_its_raise(monkeypatch):
     assert _level(m, [e for e in m.events["feed.json"] if e["id"] in got], T0 + 3 * DAY) == "critical"
 
 
+def test_a_must_listed_thread_keeps_a_reply_that_widens_what_it_matches(monkeypatch):
+    """A products-only reply widens the affected range, and discussion fills the
+    thread. The least set (root, level replies, renewals) would give a reader the
+    narrower range: the thread is listed as any thread is, and with no room for that
+    nothing is signed."""
+    m = Mirror()
+    root = _claimed_root(m, T0)
+    wide = {"name": "Claude Code", "ecosystem": "claude-code", "affected": "<199.0.0", "fixed": "199.0.0"}
+    widened = m.reply(m.bot_sec, root, m.patch_text(products=[wide]), created_at=T0 + 50)
+    for i in range(30):
+        m.reply(m.bot_sec, root, f"note {i}", created_at=T0 + 100 + i)
+    events = list(m.events["feed.json"])
+    (whole,) = pull.threads_from(events, m.man)
+    assert any(p.affected == "<199.0.0" for p in whole.adv.products)  # the reply applies on a reader
+    owed = [{"id": "a" * 64, "bytes": 10, "since": T0, "root": root["id"]}]
+    got = set(_win(m, owed, now=T0 + 1000))
+    assert widened["id"] in got
+    (listed,) = pull.threads_from([e for e in events if e["id"] in got], m.man)
+    assert listed.adv.products == whole.adv.products
+    monkeypatch.setattr(signer, "MAX_LISTED", 10)
+    assert _win(m, owed, now=T0 + 1000) is None
+
+
 def test_a_must_listed_thread_whose_frontier_a_reader_does_not_count_is_listed_as_any_thread(monkeypatch):
     """The frontier of this thread is a claim about another id. Root and frontier would
     read as high on day 20; the set is the slim thread instead, and with no room for

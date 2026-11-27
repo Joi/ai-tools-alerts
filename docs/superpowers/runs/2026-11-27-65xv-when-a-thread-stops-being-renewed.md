@@ -10,6 +10,7 @@ Limits: wall clock 5 hours from the 20:26Z dispatch (01:26Z); one independent pa
 ## Scorecards
 Pass 1 [spec]: 5B/1S/0C/0R · fixed -/- · velocity = (—→6, escalation no)
 Pass 1 [plan]: 6B/0S/0C/0R · fixed -/- · velocity = (—→6, escalation no)
+Pass 1 [code:whole-branch]: 2B/0S/0C/0R · fixed -/- · velocity = (—→2, escalation no)
 
 ## Chunks
 - [x] signer: a checkpoint lists a thread without its superseded renewals
@@ -41,3 +42,8 @@ Pass 1 [plan]: 6B/0S/0C/0R · fixed -/- · velocity = (—→6, escalation no)
 4. The test expected renewals to day 90 and a step on day 119; the steps end the thread on day 90 before that day's renewal. Fixed in the test and the spec: no renewal on or after day 90, last renewal day 75 in a daily run, step on day 104.
 5. The end-to-end fixture's certificate lasts 90 days. Fixed: the year test writes a new one every 60 days.
 6. The summary does not end with `checkpoint=sent` in a run that renewed. Fixed: the test looks for the field.
+
+## Code review, whole branch (fresheyes, gpt-6-astra, run 20261127-215749-0ba102, head 89d33f0c7e0876dddb49255bfdbf086f601b49e7): 2 BLOCKER
+The gate at that head, in a clone of the branch alone: 3369 passed, 1 skipped. The same-model Stage 1 reviewer stopped on the seat's usage limit before reporting; nothing of its is counted.
+1. `_core` compared only what decides a thread's level, so the must-list could list a thread without a reply that widens its affected range, and a new reader on a version only that reply covers was not matched. Fixed: `_core` uses its set only when the reader builds the very thread from it (`_reads_alike`, every field), else the slim thread.
+2. After a lost checkpoint state an ended thread past its life by the ledger was neither renewed nor left out, though an acknowledged renewal the ledger never recorded could still keep it on readers. Fixed: its roots are left out for the longest TTL after the loss; nothing is sent to it.

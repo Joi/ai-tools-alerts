@@ -270,20 +270,14 @@ def slim(events, m) -> list:
     return kept if _reads_alike(kept, events, m) else events
 
 
-def _reads_alike(some, events, m, standing_only: bool = False) -> bool:
+def _reads_alike(some, events, m) -> bool:
     """Whether a reader builds from ``some`` the threads it builds from ``events``
-    (``pull.threads_from``): equal in every field but ``renewals``, and with the same
-    renewals that no other makes redundant. ``standing_only``: equal in what decides
-    whether and at what level the thread shows (its level and the widest state's, a
-    retraction, a curator's hold, the published lower level, its enrolment and those
-    renewals), whatever else differs. False when the reader's code raises."""
+    (``pull.threads_from``): equal in every field but ``renewals`` (its products and
+    actions, what a source check is asked with, its translations), and with the same
+    renewals that no other makes redundant. False when the reader's code raises."""
     def view(evs):
-        out = []
-        for t in pull.threads_from(evs, m):
-            tops = tuple(sorted(_tops((c, k) for c, k, _ in t.renewals)))
-            out.append((t.root_id, t.adv.level, t.wide.level if t.wide is not None else None, t.retracted, t.curated,
-                        t.held_until, t.offered, t.enrolled_at, tops) if standing_only else replace(t, renewals=tops))
-        return out
+        return [replace(t, renewals=tuple(sorted(_tops((c, k) for c, k, _ in t.renewals))))
+                for t in pull.threads_from(evs, m)]
     try:
         return view(some) == view(events)
     except Exception:  # noqa: BLE001 - whatever the events hold, they do not read alike
@@ -296,9 +290,12 @@ def _core(events, key, m, old: bool) -> list:
     other makes redundant; with its newest event when all of those are ``old`` (the
     reader's retention sees only listed events). Since gtw9 it was the root, the
     curator replies and the frontier, which left out a raise that a later renewal made
-    redundant by its date: a new reader showed the level before it. When a reader
-    of this set would not show the thread standing as the whole thread does
-    (``_reads_alike``), the set is ``slim``'s: all of it must then fit."""
+    redundant by its date: a new reader showed the level before it. And it left out
+    every other relay-bot reply, a wider range or a translation among them. So this
+    set is used only when a reader builds from it the very thread it builds from all
+    the events (``_reads_alike``): what is left out is then replies a reader ignores
+    and renewals another covers. Otherwise the set is ``slim``'s, all of which must
+    fit, or nothing is signed."""
     replies = [e for e in events if e["id"] != key]
     core = {e["id"]: e for e in events if e["id"] == key}
     for e in replies:
@@ -309,7 +306,7 @@ def _core(events, key, m, old: bool) -> list:
     if old(core.values()):
         newest = max(events, key=lambda e: (e["created_at"], e["id"]))
         core[newest["id"]] = newest
-    return list(core.values()) if _reads_alike(core.values(), events, m, standing_only=True) else slim(events, m)
+    return list(core.values()) if _reads_alike(list(core.values()), events, m) else slim(events, m)
 
 
 def lapsed(events, m, now: int, channels=None) -> set:
@@ -422,8 +419,10 @@ def window(events, m, owed: list, now: int, channels=None, suppress=frozenset())
     Must be listed: the owed ids; and, for every eligible thread that has a
     curator reply or an owed reply, what ``_core`` gives: its root, every
     curator reply (a curator reply is how an alert is retracted, lowered or
-    corrected: no other traffic may push one out), every reply that names a
-    level and the renewals that keep it standing. Then threads as ``slim``
+    corrected: no traffic a reader ignores may push one out), every reply
+    that names a level and the renewals that keep it standing, when a reader
+    builds the whole thread from those, else the thread as ``slim`` gives it.
+    Then threads as ``slim``
     gives them (65xv: whole but for the renewals another makes redundant, a
     set the reader's code builds the whole thread from), newest first; a
     thread that does not fit so is skipped and the next is tried. A plain

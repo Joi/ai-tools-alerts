@@ -471,14 +471,27 @@ def test_after_a_lost_checkpoint_state_an_ended_thread_is_renewed_once_confirmed
     assert not renewals(day(env, 300, relay=PutRelay()))  # long off readers, another loss or not: nothing
 
 
-def test_an_ended_thread_off_readers_gets_nothing_after_a_lost_checkpoint_state(signing):
+def test_an_ended_thread_past_its_life_is_sent_nothing_and_not_vouched_for_while_a_lost_renewal_could_stand(signing, monkeypatch):
+    """By the ledger the notice ran out on day 194. A renewal the relay acknowledged
+    before the checkpoint state was lost, and the ledger never recorded, could keep it
+    on readers for 90 days more. So nothing is sent (that could bring back a thread
+    that is gone), and its roots stay out of the checkpoint until 90 days after the loss."""
     env = signing
     env.api.put(G, ghsa_json(G))
     env.collector([finding(fid=G, severity="moderate")])
     day(env, 0, relay=PutRelay())
     for d in range(1, 111):
         day(env, d, relay=PutRelay())
-    day(env, 250, relay=PutRelay())  # its notice ran out on day 194
+    (e,) = entries(env)
+    day(env, 250, relay=PutRelay())
+    seen = []
+    real = signer.run_checkpoint
+    monkeypatch.setattr(signer, "run_checkpoint", lambda *a, **k: (seen.append(set(k["suppress"])), real(*a, **k))[1])
+    relay = day(env, 250, hours=1, relay=PutRelay())
+    assert relay.calls == [] and seen[-1] == set()  # no loss: listed, and it leaves readers
     env.config.owed_state.unlink()
-    relay = day(env, 251, relay=PutRelay())
-    assert relay.calls == []
+    for d in (251, 300, 340):
+        relay = day(env, d, relay=PutRelay())
+        assert relay.calls == [] and seen[-1] == set(e["channel_ids"].values()), d
+    relay = day(env, 342, relay=PutRelay())  # 91 days after the loss
+    assert relay.calls == [] and seen[-1] == set()
