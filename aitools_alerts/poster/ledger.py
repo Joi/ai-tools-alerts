@@ -100,12 +100,12 @@ class Entry:
     joined: list | None = None
 
     def member(self, ids) -> list | None:
-        """The joined advisory these ids are of (btqg), or None: some id of it, and none of
-        the thread's own ids (the ones that are not any joined advisory's)."""
+        """The ids of the joined advisories these ids are of (btqg), or None: some id of
+        one, and none of the thread's own ids (the ones that are no joined advisory's)."""
         keys = _keys(ids)
         mine = set().union(*map(set, self.joined or ()))
-        hit = next((g for g in self.joined or () if keys & set(g)), None)
-        return hit if hit is not None and not keys & (_keys(self.aliases) - mine) else None
+        hit = [g for g in self.joined or () if keys & set(g)]
+        return sorted(set().union(*map(set, hit))) if hit and not keys & (_keys(self.aliases) - mine) else None
 
     @property
     def listed(self) -> int:
@@ -352,14 +352,14 @@ class Ledger:
         return Entry(**e)
 
     def unjoin(self, root_event_id: str, ids) -> Entry:
-        """btqg: the joined advisory of ``ids`` (``Entry.member``) leaves the thread: its
-        ids are no longer the thread's, so it can post its own root."""
+        """btqg: the joined advisories of ``ids`` (``Entry.member``) leave the thread: their
+        ids are no longer the thread's, so the sighting can post its own root."""
         e = self._entry(root_event_id)
         group = Entry(**e).member(ids)
         if group is None:
             raise LedgerError(f"{root_event_id}: no joined advisory of these ids")
         e["aliases"] = [a for a in e["aliases"] if a.casefold() not in group]
-        e["joined"] = [g for g in e["joined"] if g != group]
+        e["joined"] = [g for g in e["joined"] if not set(g) & set(group)]
         if not e["joined"]:
             del e["joined"]
         self._save()

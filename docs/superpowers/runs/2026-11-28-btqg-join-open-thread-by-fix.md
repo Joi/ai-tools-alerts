@@ -34,6 +34,12 @@ Pass 1 [code:join]: 3B/3S/2C/0R · fixed -/- · velocity = (—→8, escalation 
   - C (S1) spec's chunk claim false (fixed); two test nits (fixed)
   - S1 also: learn_floor takes a joined member's prose floor (rebutted: the in-run group does the same; the floor only stops a lowering, the safe direction)
   passes: 1 · BLOCKER fixes changed behaviour: one delta (fresheyes --since 4a9293f) follows
+Pass 2 [code:join]: 4B/0S/0C/0R · fixed 6/6 prior · velocity ↓ (8→4, escalation no)   (delta: fresheyes --since 4a9293f --rebuttals, at 4d3f244, gpt-6.1-sol high, REASON=-; no standing rebuttal overturned)
+  - B a joined advisory's fix corrected past the thread's was dropped: it leaves when its fix is later or incomparable (fixed, test; an older fix stays, test)
+  - B a failed GHSA read kept a KEV-listed joined advisory in: the exploited mark needs no read (fixed, test)
+  - B an id learned by the busy thread's work became the thread's own: no learning on a joined advisory's sightings (fixed, test)
+  - B two advisories joined together were one group: one group per member (fixed, test)
+  Each delta fix mutation-checked. No further pass (review cycle: the delta is the last).
 
 ## Chunks
 - [ ] join — Run.one finds the open thread of the candidate's fix; plan_known widens its range; ledger `joined`

@@ -1296,6 +1296,21 @@ class Run:
         return not any(i.casefold().startswith("ghsa-") for i in (c.id, *c.aliases)) \
             or any(r[0] == "ghsa" for r in self._tied(c).readings)
 
+    def _leaves(self, c, scope, e) -> bool:
+        """btqg: a joined advisory sighted again leaves thread e when it is exploited where e
+        is not (a KEV listing needs no advisory read), when its own fix is one e's does not
+        cover (a later or an incomparable version), or, its reading in hand, when it alone
+        rates above e."""
+        if c.exploited is True and not e.exploited:
+            return True
+        mine = compose.schema_fixed(c.fixed)
+        theirs = compose.schema_fixed((e.advisory.get("products") or [{}])[0].get("fixed"))
+        if mine is not None and mine != theirs:
+            a, b = versions.parse(mine), versions.parse(theirs)
+            if a is None or b is None or a > b:
+                return True
+        return self._judged(c) and self._louder(c, scope, e)
+
     def _louder(self, c, scope, e) -> bool:
         """btqg: c alone rates above thread e, or is exploited where e is not. A thread's
         level and mark rest on its first id (3qyq), which no source ties to c."""
@@ -1305,17 +1320,20 @@ class Run:
         ids = [c.id, *c.aliases]
         scope = own = self._former(named, ids)
         entry = self.led.lookup(ids, scope=scope.name)
+        # btqg: a joined advisory's ids are never learned by the thread's work, whose send
+        # would record them as the thread's own
+        learn = entry is None or entry.member(ids) is None
         # jsje: a raise never waits behind lower-priority work on its own thread
-        if self.busy(ids, scope.name) and not (self._clears(c, scope, entry)
-                                               and not self.busy(ids, scope.name, passing=True)):
+        if self.busy(ids, scope.name, learn=learn) and not (
+                self._clears(c, scope, entry) and not self.busy(ids, scope.name, passing=True, learn=learn)):
             self.n["busy"] += 1
             self.defer([(c, scope)])  # its update (a fix, a promotion) is planned once the send resolves
             return
         joined = False
         if entry is not None and entry.member(ids) is not None:
             joined = True  # btqg: a joined advisory sighted again keeps the join's rules
-            if self._judged(c) and self._louder(c, scope, entry):
-                # it now supports more than the thread can say: it leaves and posts alone
+            if self._leaves(c, scope, entry):
+                # it now says more than the thread can: it leaves and posts alone
                 self.led.unjoin(entry.root_event_id, ids)
                 scope = own = self._former(named, ids)
                 entry, joined = None, False
@@ -1529,8 +1547,15 @@ class Run:
         was = prev.products[0]
         stored = _fold(entry.aliases)
         fresh = [i for i in dict.fromkeys(ids) if i.casefold() not in stored and i != prev.id]
-        if fresh or joined:  # identity is learned whether or not a reply can say so (the 50-alias cap)
-            self.led.add_ids(entry.root_event_id, ids if joined else fresh, joined=joined)
+        if joined:  # btqg: one group for each advisory, a fix group's members apart, so each can leave
+            members = self.groups.get((scope.name, c.id.casefold()), [c])
+            for m in members:
+                self.led.add_ids(entry.root_event_id, [m.id, *m.aliases], joined=True)
+            have = _fold([i for m in members for i in (m.id, *m.aliases)])
+            if rest := [i for i in ids if i.casefold() not in have]:  # with its first member's
+                self.led.add_ids(entry.root_event_id, [members[0].id, *rest], joined=True)
+        elif fresh:  # identity is learned whether or not a reply can say so (the 50-alias cap)
+            self.led.add_ids(entry.root_event_id, fresh)
         hidden = set().union(*map(set, entry.joined or ())) | (_fold(ids) if joined else set())  # btqg
         title = (entry.source_title or compose.source_title(c)) if joined else compose.source_title(c)
         if title and not entry.source_title:  # learned late: the digest carries it; no reply says it

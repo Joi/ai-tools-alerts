@@ -131,13 +131,18 @@ journaling its widening widens on the next sighting:
 ### `Entry.joined` and leaving
 
 A list of groups, one per joined advisory: its ids, case-folded and sorted. A later
-id of the same advisory goes into its group. `Entry.member(ids)` names the group a
+id of the same advisory goes into its group. A fix group that joins in one run is
+stored as its members, one group each (delta review), so one can leave alone. The
+thread's work never learns a joined advisory's ids (`busy(learn=False)` on its
+sightings too), or its send would record them as the thread's own. `Entry.member(ids)` names the group a
 sighting is of: some id of it and none of the thread's own ids.
 
 A joined advisory is found by its ids on every later sighting, so the join's checks
-run again there (code review): when its own reading is in hand (`_judged`) and it now
-rates above the thread or is exploited where the thread is not (`_louder`), the group
-leaves (`Ledger.unjoin`: its ids are dropped from the thread) and the sighting is
+run again there (code review; `_leaves`): when it is exploited where the thread is
+not (a KEV listing needs no advisory read, delta review), when its own fix is one the
+thread's does not cover (a later or an incomparable version, delta review), or, its
+own reading in hand (`_judged`), when it now rates above the thread, its groups
+leave (`Ledger.unjoin`: its ids are dropped from the thread) and the sighting is
 planned as a new advisory, which posts its own root. Its ids were never published, so
 no reader holds them in the thread. Its listed sources stay listed in the thread.
 

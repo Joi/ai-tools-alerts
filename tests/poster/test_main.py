@@ -2955,3 +2955,91 @@ def test_an_unread_member_advisory_posts_alone(env):
     code, summary, _ = env.run(now=T0 + 3600)
     assert code == 0 and "roots=1" in summary, summary
     assert len(env.ledger()[0]) == 2
+
+
+def test_a_joined_member_whose_fix_moves_later_leaves_and_posts_alone(env):
+    """Delta review: Z's vendor corrects its fix to 2.2.0; the thread's 2.1.0 no longer
+    fixes it, so it leaves and posts its own root, and the thread keeps its fix."""
+    env.collector([finding()])
+    env.run()
+    env.collector([finding(fid=GHSA_Z)])
+    env.run(now=T0 + 3600)
+    env.collector([finding(fid=GHSA_Z, fixed="2.2.0", affected="<2.2.0")])
+    code, summary, _ = env.run(now=T0 + 7200)
+    assert code == 0 and "roots=1" in summary, summary
+    entries, _ = env.ledger()
+    a = next(e for e in entries if e["advisory"]["id"] == A)
+    z = next(e for e in entries if e["advisory"]["id"] == GHSA_Z)
+    assert a["advisory"]["products"][0]["fixed"] == "2.1.0" and "joined" not in a
+    assert z["advisory"]["products"][0]["fixed"] == "2.2.0"
+
+
+def test_a_joined_member_with_an_older_fix_than_the_threads_stays(env):
+    env.collector([finding(fixed="2.2.0")])
+    env.run()
+    env.collector([finding(fid=GHSA_Z, fixed="2.2.0")])
+    env.run(now=T0 + 3600)
+    env.collector([finding(fid=GHSA_Z, fixed="2.1.0")])  # covered by the thread's later fix
+    code, summary, relay = env.run(now=T0 + 7200)
+    assert code == 0 and "roots=0" in summary and relay.calls == [], summary
+    assert _thread(env)["joined"]
+
+
+def test_a_kev_listing_with_a_failed_advisory_read_still_leaves(env):
+    """Delta review: the KEV listing needs no advisory read; Z's read failing must not
+    keep the exploited advisory inside the unexploited thread."""
+    cve = "CVE-2026-0003"
+    env.collector([finding()])
+    env.run()
+    env.collector([finding(fid=GHSA_Z, aliases=(cve,))])
+    env.run(now=T0 + 3600)
+    env.api.put(GHSA_Z, 503)
+    env.kev.catalog = {"vulnerabilities": [kev_item(cve)]}
+    env.collector([finding(fid=GHSA_Z, aliases=(cve,))])
+    code, summary, _ = env.run(now=T0 + 7200)
+    assert code == 0 and "roots=1" in summary, summary
+    entries, _ = env.ledger()
+    a = next(e for e in entries if e["advisory"]["id"] == A)
+    assert a["exploited"] is False and "joined" not in a
+    assert any(e["exploited"] for e in entries if e is not a)
+
+
+def test_an_id_a_joined_member_brings_while_the_thread_is_busy_stays_its_own(env):
+    """Delta review: the waiting item must not learn Z's new CVE, or its send records the
+    CVE as the thread's own and Z can never leave."""
+    cve = "CVE-2026-0003"
+    env.collector([finding(affected=">=2.0,<2.1.0")])
+    env.run()
+    env.collector([finding(fid=GHSA_Z, affected=">=2.0,<2.1.0")])
+    env.run(now=T0 + 3600)
+    env.collector([finding(affected=">=1.0,<2.1.0")])  # a range correction of A: a reply, unknown
+    assert env.run(now=T0 + 7200, relay=FakeRelay("unknown"))[0] == 1
+    (it,) = [o for o in env.state()["outbox"] if o["kind"] == "reply"]
+    env.collector([finding(fid=GHSA_Z, aliases=(cve,), affected=">=2.0,<2.1.0")])
+    env.run(now=T0 + 10800)
+    assert cve.casefold() not in {i.casefold() for i in it["ids"] + [
+        i for o in env.state()["outbox"] for i in o["ids"]]}
+    assert main.resolve(T0 + 10900, env.config, it["key"], delivered="ab" * 32)[0] == 0
+    env.run(now=T0 + 14400)  # Z again, from the deferred list
+    e = _thread(env)
+    assert sorted([GHSA_Z.casefold(), cve.casefold()]) in e["joined"]
+    with Ledger(env.config.ledger) as led:
+        assert led.thread(e["root_event_id"]).member([cve]) is not None
+
+
+def test_two_advisories_that_joined_together_leave_one_at_a_time(env):
+    """Delta review: Z and W, one later run, one fix: two groups, so when Z alone comes to
+    support more it leaves and W stays."""
+    w = "GHSA-wwww-wwww-wwww"
+    env.collector([finding()])
+    env.run()
+    env.collector([finding(fid=GHSA_Z), finding(fid=w)])
+    code, summary, _ = env.run(now=T0 + 3600)
+    assert code == 0 and "roots=0" in summary, summary
+    assert sorted(_thread(env)["joined"]) == [[w.casefold()], [GHSA_Z.casefold()]]
+    env.api.put(GHSA_Z, ghsa_json(GHSA_Z, type="malware"))
+    env.collector([finding(fid=GHSA_Z)])
+    code, summary, _ = env.run(now=T0 + 7200)
+    assert code == 0 and "roots=1" in summary, summary
+    a = next(e for e in env.ledger()[0] if e["advisory"]["id"] == A)
+    assert a["joined"] == [[w.casefold()]] and w in a["aliases"] and GHSA_Z not in a["aliases"]
