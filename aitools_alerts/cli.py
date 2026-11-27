@@ -30,7 +30,7 @@ from dataclasses import asdict, dataclass, replace
 from urllib.parse import quote
 
 from . import TRUST_ROOT_PUBKEY, __version__, check, config, curator, inventory, nostr, notify, pull, relay, ruleset, schema, verify, versions
-from .state import State, StateError, no_support
+from .state import MAX_STRIKE_ROOTS, MAX_STRIKES, State, StateError, no_probation, no_support
 
 TRUST_ROOT_ENV = "AITOOLS_ALERTS_TRUST_ROOT"
 EXIT_UNSEEN_CRITICAL = 2
@@ -53,6 +53,15 @@ NOT_VERIFIED = "Not verified from this machine"
 UNVERIFIED_LINE_IDS = "not verified from this machine: {ids}"
 HELD_LINE = ("held, not notified (not verified from this machine; at most {n} unverified alerts from one poster "
              "interrupt in 24 hours): CRITICAL: {title} (id {id})")
+# cftg (finding D14): two alerts of one poster key that this machine's source check found
+# unsupported inside STRIKE_WINDOW_S put the key on probation here for PROBATION_S.
+STRIKE_WINDOW_S = 7 * 86400
+PROBATION_S = 30 * 86400
+PROBATION_LINE = ("probation: poster key {key} is on probation on this machine until {until}: its sources did not "
+                  "support two of its alerts within seven days. Its alerts that this machine has not verified do "
+                  "not notify, and its lowerings apply only when this machine's source check confirms them")
+PROBATION_HELD_LINE = ("held, not notified (not verified from this machine; its poster key is on probation here): "
+                       "CRITICAL: {title} (id {id})")
 UNJUDGED_LINE = "source check: {id} names a product or an id this check cannot judge: no interrupt"
 WAITING_LINE = ("a lowering of {id} to {level} is published and not verified from this machine: "
                 "it applies once signed checkpoints 72 hours apart have listed it")
@@ -490,10 +499,99 @@ def _support_step(record: dict, entries: list, cache: dict, digest: str, now: in
     return {"ruleset": digest, "first": first, "threads": {root: names for root, names in threads.items() if names}}
 
 
+# ------------------------------------------------- cftg: strikes and probation (finding D14)
+
+def _strikes(st: State, entries: list, supported: dict, now: int) -> list:
+    """[(poster key, root ids, time)]: the relay-bot alerts of ``entries`` that the memory
+    ``supported`` says no source this machine read ever supported, for one product of the
+    judged state at least (``_never``: no root of the entry has ``last`` and every one has
+    ``gone``). One alert is one entry: copies of an advisory count once, two unsupported
+    products count once. The time is the earliest such product's ``gone``. The key is
+    the pubkey of the stored root; roots signed by different keys are an alert for each.
+    None while a record rebuilt from damage is younger than SUPPORT_GAP_S, as in ``_never``."""
+    if st.reset_at is not None and st.reset_at > now - SUPPORT_GAP_S:
+        return []
+    out = []
+    for t in entries:
+        ats = []
+        for p in t.judged.products if t.judged is not None else ():
+            got = [supported["threads"].get(r, {}).get(verify.pkey(p)) for r in t.root_ids]
+            if all(e is not None and e[0] is None and e[1] is not None for e in got):
+                ats.append(max(e[1] for e in got))
+        keys: dict = {}
+        for r in t.root_ids if ats else ():
+            if r in st.events:
+                keys.setdefault(st.events[r]["pubkey"], []).append(r)
+        out += [(key, tuple(roots), min(ats)) for key, roots in keys.items()]
+    return out
+
+
+def _probation_step(record: dict, found: list, now: int) -> dict:
+    """``State.probation`` after the alerts struck now (``found``, from ``_strikes``).
+
+    A strike, once found, is written down and stands STRIKE_WINDOW_S from its time whatever
+    becomes of its thread: a thread leaves the entries when a relay-bot withdrawal of it
+    applies, and the memory of support forgets since when no support was read when the
+    ruleset changes, so strikes read from the memory alone could be shed one by one.
+
+    A found alert takes the place of every recorded strike of its key that shares a root
+    with it, at the earliest of their times: one alert read again is one strike, and
+    copies that have become one alert are one. A recorded strike that two found alerts
+    share roots with becomes two: copies whose content now differs are two alerts, so
+    nobody keeps a series of fabrications inside one strike by posting each as a copy
+    first. A recorded strike no found alert shares a root with stands as it is. Per key
+    the MAX_STRIKES latest are kept, each with MAX_STRIKE_ROOTS roots at most: nothing a
+    key holder posts grows the record.
+
+    A key with MAX_STRIKES strikes and no probation younger than PROBATION_S is put on
+    probation from the time of its latest strike. The entry is not moved while it is
+    that young, and one that has run out is left for ``_note_offers`` to remove, which
+    starts the waits of the key's lowerings in the same write.
+
+    A stored time is compared as ``min(time, now)`` and kept as it was written. One
+    written while the clock was ahead counts as now until the clock reaches it. None is
+    cut and written back: a single command run while the clock was set back (a machine
+    that starts before its time is set) would otherwise date a probation in the past
+    and end it, which is the open side."""
+    strikes: dict = {}
+    for key, ss in record["strikes"].items():
+        live = [[at, list(roots)] for at, roots in ss if min(at, now) > now - STRIKE_WINDOW_S]
+        if live:
+            strikes[key] = live
+    fresh: dict = {}
+    replaced: set = set()
+    for key, roots, at in found:
+        at = min(at, now)
+        if at <= now - STRIKE_WINDOW_S:
+            continue
+        same = [s for s in strikes.get(key, []) if not set(s[1]).isdisjoint(roots)]
+        replaced.update(id(s) for s in same)
+        fresh.setdefault(key, []).append([min([at, *(s[0] for s in same)]), list(roots)[:MAX_STRIKE_ROOTS]])
+    out = {}
+    for key in {*strikes, *fresh}:
+        ss = [s for s in strikes.get(key, []) if id(s) not in replaced] + fresh.get(key, [])
+        out[key] = sorted(ss, key=lambda s: (s[0], sorted(s[1])))[-MAX_STRIKES:]
+    since = dict(record["since"])
+    for key, ss in out.items():
+        if len(ss) >= MAX_STRIKES and not min(since.get(key, -PROBATION_S), now) > now - PROBATION_S:
+            since[key] = ss[-1][0]
+    return {"strikes": out, "since": since}
+
+
+def _on_probation(st: State, key: str, now: int) -> bool:
+    """The poster key is on probation on this machine: its entry is younger than
+    PROBATION_S by this clock (one dated ahead of the clock counts). Read whatever the
+    ``verify`` setting is now, as the cap on unverified interrupts is."""
+    at = st.probation["since"].get(key)
+    return at is not None and min(at, now) > now - PROBATION_S
+
+
 def _note_support(a, st: State, entries: list, cache: dict | None = None) -> bool:
     """Bring the memory of support (``State.supported``, ``_support_step``) up to the
     source-check results: those of ``cache`` when this command's own source check just
-    returned them, else those on disk. True when the memory changed.
+    returned them, else those on disk. With it the record of strikes and probations
+    (``State.probation``, ``_probation_step``), from the memory as it then is. True when
+    either changed.
 
     Both are needed. A command hands over its own results because another command may
     write its view of verify.json over them before anyone reads the file again. And every
@@ -515,19 +613,24 @@ def _note_support(a, st: State, entries: list, cache: dict | None = None) -> boo
     except Exception:
         return False
     a.judging = True
-    want = _support_step(st.supported, entries, cache or disk, digest, int(time.time()), set(st.events))
-    if want == st.supported:
+    now = int(time.time())
+    want = _support_step(st.supported, entries, cache or disk, digest, now, set(st.events))
+    # cftg: the strikes and probations, from the memory as just computed
+    marks = _probation_step(st.probation, _strikes(st, entries, want, now), now)
+    if want == st.supported and marks == st.probation:
         return False
     try:
         with st.locked():
             if st.unverified_damaged:  # damaged since this command began: started again, on the safe side
                 _start_again(st)
                 return True
+            now = int(time.time())
             st.supported = _support_step(st.supported, entries, cache or _results(a, st, s) or disk, digest,
-                                         int(time.time()), set(st.events))
+                                         now, set(st.events))
+            st.probation = _probation_step(st.probation, _strikes(st, entries, st.supported, now), now)
             st.save_unverified()
     except OSError:
-        st.supported = want
+        st.supported, st.probation = want, marks
     return True
 
 
@@ -633,6 +736,16 @@ def _note_offers(a, st: State, now, listed, check):
     known refusal into an unchecked lowering. A state directory that cannot be written
     records nothing.
 
+    cftg: no wait runs either for a lowering or a narrowing when the key that signed the
+    reply, or the key that signed the thread's root, has an entry in the record of
+    probations (``State.probation``). Its time is kept at the checkpoint's and it is left
+    out of what is returned: only the check's own confirmation applies it. An entry that
+    has run out by this machine's clock is removed here and nowhere else, under the lock
+    and in the write that set the times once more, and only when the checkpoint held was
+    issued at or after the probation's end. So the 72 hours of each such reply start at
+    the first checkpoint issued after the probation ended that this machine holds,
+    however long the machine was off and whatever older checkpoint it still stored.
+
     A refused narrowing (swfe) is remembered by its content, ``pull.narrow_key`` of the
     root and the list, beside the root ids: added when the check contradicts the
     thread's standing list, and while it is remembered no wait of that list runs. It is
@@ -653,6 +766,21 @@ def _note_offers(a, st: State, now, listed, check):
     saved since, nor drop the memory of a list it has not yet seen published. What it
     decided on is left in ``a.raw``, ``a.clock`` and ``a.check`` for ``_matches``, which
     shows the threads by the same threads, checkpoint and check."""
+    def barred(t, reply) -> bool:
+        # cftg: the thread's root or the reply was signed by a key with an entry in the record
+        # of probations. By the record, not the clock: an entry that has run out bars until
+        # this function removes it, in the write that starts the wait again (``over``).
+        return reply is not None and any(
+            ev is not None and ev["pubkey"] in st.probation["since"] for ev in map(st.events.get, (t.root_id, reply)))
+
+    def over(now) -> set:
+        # The probations that have run out by this machine's clock and that the checkpoint
+        # issued at ``now`` is not older than: a stored checkpoint from before the end must
+        # not become the start of the wait, or the next pull would find the 72 hours over.
+        at = int(time.time())
+        return {key for key, since in st.probation["since"].items()
+                if not _on_probation(st, key, at) and now >= min(since, at) + PROBATION_S}
+
     def step(check, raw, now, listed) -> tuple[dict, set]:
         want = pull.offers(raw, st.lowerings, now, listed)
         refused = set(st.refused)
@@ -666,8 +794,9 @@ def _note_offers(a, st: State, now, listed, check):
                         refused.add(t.root_id)
                     elif said is True or (check is not None and check.whole(pull.widest(t), t.offered, t.stated)):
                         refused.discard(t.root_id)
-                    if t.root_id in refused:
-                        want[t.offered_by] = int(now)  # the 72 hours start when the refusal ends
+                    if t.root_id in refused or (said is not True and barred(t, t.offered_by)):
+                        # the 72 hours start when the refusal ends, and when the probation does
+                        want[t.offered_by] = int(now)
                 if t.narrowed_by in want:
                     key, mark, wide = pull.narrow_key(t.root_id, t.narrowed), pull.narrow_key(t.root_id), pull.widest(t)
                     said = check.narrowing(wide, t.narrowed, t.wide.products) if check is not None else None
@@ -676,12 +805,13 @@ def _note_offers(a, st: State, now, listed, check):
                     elif said is True:
                         refused.discard(key)
                     if key in refused or (mark in refused and said is not True and not (
-                            check is not None and check.narrowing(wide, t.narrowed, t.wide.products, whole=True))):
+                            check is not None and check.narrowing(wide, t.narrowed, t.wide.products, whole=True))) \
+                            or (said is not True and barred(t, t.narrowed_by)):
                         want[t.narrowed_by] = int(now)
         return want, refused
 
     want, refused = step(check, a.raw, now, listed)
-    if (want, refused) != (st.lowerings, st.refused):
+    if (want, refused) != (st.lowerings, st.refused) or (now is not None and listed is not None and over(now)):
         fresh = False  # the record was computed again from the refreshed state
         try:
             with st.locked():
@@ -692,6 +822,9 @@ def _note_offers(a, st: State, now, listed, check):
                     check = _lowering_check(a, st)
                     st.lowerings, st.refused = step(check, a.raw, now, listed)
                     fresh = True
+                    if now is not None and listed is not None:  # the waits were just started again
+                        live = {key: at for key, at in st.probation["since"].items() if key not in over(now)}
+                        st.probation = {**st.probation, "since": live}
                     st.save_unverified()
         except OSError:
             # Not saved. What was computed under the lock stands for this command: it goes
@@ -705,6 +838,8 @@ def _note_offers(a, st: State, now, listed, check):
         return None
     held = {t.offered_by for t in a.raw if t.root_id in st.refused}
     held |= {t.narrowed_by for t in a.raw if _narrow_refused(t, st)}
+    # cftg: no wait of a key on probation runs; only this machine's confirmation applies its word
+    held |= {i for t in a.raw for i in (t.offered_by, t.narrowed_by) if barred(t, i)}
     return {i: at for i, at in st.lowerings.items() if i not in held}
 
 
@@ -760,7 +895,7 @@ def _start_again(st: State, save: bool = True) -> None:
     """The record of ``_mend``, emptied and dated; saved when the caller holds the lock.
     0z4e: the memory of support goes with it, and nothing shows at notice for SUPPORT_GAP_S."""
     st.lowerings, st.refused, st.interrupts, st.held, st.reset_at = {}, set(), {}, {}, int(time.time())
-    st.supported = no_support()
+    st.supported, st.probation = no_support(), no_probation()  # cftg: what cannot be read cannot be kept
     _err("the record of unverified alerts was unreadable and has been started again")
     if save:
         st.save_unverified()
@@ -1036,8 +1171,14 @@ def cmd_check(a, st: State, s: config.Settings, source_lines: bool = True) -> in
     if loose:
         print(UNVERIFIED_LINE_IDS.format(ids=", ".join(dict.fromkeys(loose))))
     once = {t.root_id: t for t, _ in pairs}  # an entry matched through two installations is said once
+    now = int(time.time())
     for t in {t.root_id: t for t, _ in _interrupts(a, st, s, pairs)[1]}.values():
-        print(HELD_LINE.format(n=MAX_UNVERIFIED, title=_title(t, s, plain(t)), id=t.adv.id))
+        line = PROBATION_HELD_LINE if _on_probation(st, _poster(t, st), now) else HELD_LINE
+        print(line.format(n=MAX_UNVERIFIED, title=_title(t, s, plain(t)), id=t.adv.id))
+    for key, at in sorted(st.probation["since"].items()):
+        if _on_probation(st, key, now):
+            until = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(min(at, now) + PROBATION_S))
+            print(PROBATION_LINE.format(key=key[:12], until=until))
     for t in _unjudged(a, st, s, pairs):
         print(UNJUDGED_LINE.format(id=t.adv.id))
     for t in once.values():
@@ -1204,6 +1345,10 @@ def _interrupts(a, st: State, s: config.Settings, pairs: list | None = None) -> 
     While a record rebuilt after damage is younger than the window, no poster-key slot
     is free (``State.reset_at``). A curator's alert needs no slot.
 
+    cftg: nor is one free for a poster key on probation on this machine
+    (``_on_probation``): its unverified alerts are held, those that took a slot before
+    the probation began too. One the source confirms interrupts as above.
+
     A relay-bot match that cannot be judged by construction (``_unjudgeable``) is left
     out when this CLI's ruleset is the pinned one (``_judged_here``): an alert with no
     other match is neither pending nor held and takes no slot (2mgd). Two unverified
@@ -1235,7 +1380,7 @@ def _interrupts(a, st: State, s: config.Settings, pairs: list | None = None) -> 
             pending += [(t, sure)] + [(t, m) for m in ms if m is not sure]
         elif _result(t, ms[0], cache) is None:
             pending += [(t, m) for m in ms]
-        elif not rebuilt and take(_poster(t, st), MAX_UNVERIFIED, t):
+        elif not rebuilt and not _on_probation(st, _poster(t, st), now) and take(_poster(t, st), MAX_UNVERIFIED, t):
             loose.update(t.root_ids)
             pending += [(t, m) for m in ms]
         else:
@@ -1243,7 +1388,7 @@ def _interrupts(a, st: State, s: config.Settings, pairs: list | None = None) -> 
     return pending, held, grants, loose
 
 
-def _reserve(st: State, pending: list, held: list, grants: list) -> tuple[list, list]:
+def _reserve(st: State, pending: list, held: list, grants: list, loose=frozenset()) -> tuple[list, list]:
     """Record the slots ``_interrupts`` granted, under the state lock and against the
     record as it is then, and return (pending, held) as they stand after: an alert whose
     slot a concurrent run took meanwhile is held, not pending. Called before a command
@@ -1255,18 +1400,24 @@ def _reserve(st: State, pending: list, held: list, grants: list) -> tuple[list, 
     pulled it since) is kept with its time, unless that alert is seen or its root is no
     longer stored. Slots outside the window are dropped on the way. A state directory
     that cannot be written grants them for this command: a critical is never lost to a
-    full disk."""
+    full disk.
+
+    cftg: an unverified alert among ``pending`` (its roots are in ``loose``) whose poster
+    key is on probation in the record as it is under the lock is held too, with or
+    without a grant: a probation another command began meanwhile counts."""
     denied = set()
     waiting = {t.root_id for t, _ in held}
     looked = waiting | {t.root_id for t, _ in pending}
-    if not grants and not waiting and not st.held:
+    unsure = [t for t, _ in pending if not loose.isdisjoint(t.root_ids)]
+    if not grants and not waiting and not st.held and not unsure:
         return pending, held
     try:
         with st.locked():
             now, slots = int(time.time()), dict(st.interrupts)
+            denied |= {t.root_id for t in unsure if _on_probation(st, _poster(t, st), now)}
             for bucket, cap, root in grants:
                 have = _slots(st, bucket, now)
-                if root in have:
+                if root in have or root in denied:
                     continue
                 if len(have) >= cap:
                     denied.add(root)
@@ -1287,7 +1438,7 @@ def _reserve(st: State, pending: list, held: list, grants: list) -> tuple[list, 
             held + [x for x in pending if x[0].root_id in denied])
 
 
-def _notify(st: State, s: config.Settings, pending, loose=frozenset(), flagged=None) -> int:
+def _notify(st: State, s: config.Settings, pending, loose=frozenset(), flagged=None, withheld=None) -> int:
     """Send each pending advisory once, under the state lock: a concurrent
     run waits, then re-reads seen and skips what this one already sent. Every
     root of an advisory is marked seen; one seen root makes it seen. An unverified
@@ -1296,11 +1447,32 @@ def _notify(st: State, s: config.Settings, pending, loose=frozenset(), flagged=N
     ``flagged`` (53fy, ``_flagged`` of the command's pairs): an entry in it is sent with
     no translation, whichever match the text describes, and once it is accepted every
     flagged match of the entry counts as told: no correction follows a notification
-    that named no version."""
+    that named no version.
+
+    cftg: an unverified alert whose poster key is on probation in the record as it is
+    under this lock is not sent and not marked seen: a probation another command began
+    after ``_reserve`` counts. Its root ids are added to ``withheld`` (a set), so the
+    caller reports it as held and not as an interrupt. With no channel configured the
+    same is decided under a lock of its own."""
     flagged = flagged or {}
+    withheld = set() if withheld is None else withheld
+
+    def barred(t) -> bool:  # under the lock
+        if loose.isdisjoint(t.root_ids) or not _on_probation(st, _poster(t, st), int(time.time())):
+            return False
+        withheld.update(t.root_ids)
+        return True
     if not pending:
         return 0
     if not s.notify:
+        try:
+            if not loose.isdisjoint(r for t, _ in pending for r in t.root_ids):
+                with st.locked():
+                    pending = [(t, m) for t, m in pending if not barred(t)]
+        except OSError:
+            pass
+        if not pending:
+            return 0
         _err("no notify channel configured")
         return 1
     status = 0
@@ -1308,6 +1480,8 @@ def _notify(st: State, s: config.Settings, pending, loose=frozenset(), flagged=N
         for t, m in pending:
             if _seen(t, st):
                 continue  # sent already (by this run, or a concurrent one)
+            if barred(t):
+                continue
             told = {k for r in t.root_ids for k in flagged.get(r, ())}
             text = notify.format_text(t.adv, m, None if told else _tr(t, s), plain=bool(told))
             if not loose.isdisjoint(t.root_ids):
@@ -1330,7 +1504,7 @@ def cmd_notify(a, st: State, s: config.Settings) -> int:
     _, pairs = _matches(a, st)
     pending, held, grants, loose = _interrupts(a, st, s, pairs)
     # loose roots that end up held are not sent
-    status = _notify(st, s, _reserve(st, pending, held, grants)[0], loose, _flagged(pairs))
+    status = _notify(st, s, _reserve(st, pending, held, grants, loose)[0], loose, _flagged(pairs))
     return _correct(st, s, _corrections(st, pairs)) or status  # 53fy
 
 
@@ -1394,7 +1568,7 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
         _err(f"{res.error} (using the last good state)")
     threads, pairs = _matches(a, st)  # one inventory collection per run (the hook's time budget)
     pending, held, grants, loose = _interrupts(a, st, s, pairs)
-    pending, held = _reserve(st, pending, held, grants)  # before anything is reported
+    pending, held = _reserve(st, pending, held, grants, loose)  # before anything is reported
     if a.json:
         cache, old = _cache(a, st, s), _ruleset_outdated(a, st)
         out = {"pull_error": res.error, "ignored_env": a.ignored_env,
@@ -1406,18 +1580,20 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
     elif not a.quiet:
         a.json = False
         cmd_check(a, st, s, source_lines=False)  # printed below, once the sources are read
-    def send(them, loose, pairs) -> int:
+    withheld: set = set()  # cftg: what a probation begun since ``_reserve`` kept from being sent
+
+    def send(them, loose, pairs, withheld) -> int:
         if a.quiet or a.json:
             with contextlib.redirect_stdout(io.StringIO()):
-                return _notify(st, s, them, loose, _flagged(pairs))
-        return _notify(st, s, them, loose, _flagged(pairs))
+                return _notify(st, s, them, loose, _flagged(pairs), withheld)
+        return _notify(st, s, them, loose, _flagged(pairs), withheld)
     def correct(pairs, fresh=None) -> int:  # 53fy
         due = _corrections(st, _flag(a, st, pairs, fresh))
         if a.quiet or a.json:
             with contextlib.redirect_stdout(io.StringIO()):
                 return _correct(st, s, due)
         return _correct(st, s, due)
-    status = send(pending, loose, pairs)
+    status = send(pending, loose, pairs, withheld)
     got = None
     if not a.json:  # the hourly job's form; the hook runs --json and must read no source.
         # After the notification: a critical never waits for a source.
@@ -1435,12 +1611,15 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
             changed = got is not None and _note_support(a, st, threads, got)
             if a.asked or changed:
                 threads, pairs = _matches(a, st)
-            tried = {r for t, _ in pending for r in t.root_ids}
+            # not what the first pass withheld: its source may have confirmed it just now
+            tried = {r for t, _ in pending for r in t.root_ids} - withheld
             pairs = _flag(a, st, pairs, got)  # 53fy: by what this run just read, written or not
             again, held, grants, loose = _interrupts(a, st, s, pairs)
-            again, held = _reserve(st, again, held, grants)
+            again, held = _reserve(st, again, held, grants, loose)
             late = [x for x in again if tried.isdisjoint(x[0].root_ids)]
-            status = send(late, loose, pairs) or status
+            again_withheld: set = set()
+            status = send(late, loose, pairs, again_withheld) or status
+            withheld = (withheld - {r for t, _ in late for r in t.root_ids}) | again_withheld
             pending = pending + late
             if not a.quiet and before != levels():
                 print("After the source check:")  # what was listed above is no longer what stands
@@ -1449,7 +1628,10 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
             print(line)
     # 53fy: a critical this machine was notified of whose fixed version the source contradicts
     status = correct(pairs, got) or status
+    pending = [x for x in pending if x[0].root_id not in withheld]  # held, not an interrupt
     if a.json:
+        out["held_critical"] = sorted({*out["held_critical"], *(r for r in out["unseen_critical"] if r in withheld)})
+        out["unseen_critical"] = [r for r in out["unseen_critical"] if r not in withheld]
         print(json.dumps(out, indent=2))
     return EXIT_UNSEEN_CRITICAL if pending else status
 
