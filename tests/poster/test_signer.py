@@ -12,7 +12,7 @@ import pytest
 from aitools_alerts import checkpoint as cp
 from aitools_alerts import config as member_config
 from aitools_alerts import nostr, pull
-from aitools_alerts.poster import compose, inputs, main, signer
+from aitools_alerts.poster import compose, inputs, main, sent, signer
 from aitools_alerts.state import State
 from mirror_helpers import CHANNELS, Mirror, advisory
 from test_main import T0, FakeRelay, env, finding  # noqa: F401 - env is a fixture
@@ -823,6 +823,7 @@ def test_a_renewal_the_mirror_stops_serving_is_never_given_up_its_thread_is_left
         assert "threads_suppressed=1" in summary and "gone_dropped" not in summary
         assert root["id"] not in ssh.last().events and other["id"] in ssh.last().events
     later = _renewal(m, root, T0 + 200 * 3600, confirmed=T0 - 600)  # a later check: the hidden one adds nothing now
+    sent.note(signing.config.sent_state, later["id"], T0 + 200 * 3600)  # m729: the poster's own send, as its record has it
     _, summary, ssh = signing.run(relay=PutRelay(), now=T0 + 201 * 3600)
     assert "gone_dropped=1" in summary and "threads_suppressed" not in summary
     assert {root["id"], later["id"]} <= ssh.last().events and hidden["id"] not in ssh.last().events
@@ -1088,18 +1089,22 @@ def test_a_level_change_from_before_a_lost_state_keeps_its_root_out_until_its_re
     assert status == "sent,threads_suppressed=3" and relay.last().events == {other["id"]}
     assert _sign(signing)[1].last().events == {other["id"], a["id"], b["id"], c["id"]}  # no loss: listed
 
+    def own(ev):  # m729: the poster's own send, as its record has it
+        sent.note(signing.config.sent_state, ev["id"], T0)
+        return ev
+
     def level_reply(root, at):
-        return m.post(m.bot_sec, m.patch_text(level="critical"), created_at=at, tags=[["e", root["id"], "", "root"]])
+        return own(m.post(m.bot_sec, m.patch_text(level="critical"), created_at=at, tags=[["e", root["id"], "", "root"]]))
 
     def renewal(root, confirmed, at):
-        return m.post(m.bot_sec, "Sources checked. No change to this alert.", created_at=at,
-                      tags=[["e", root["id"], "", "root"], _claim(confirmed, at)])
+        return own(m.post(m.bot_sec, "Sources checked. No change to this alert.", created_at=at,
+                          tags=[["e", root["id"], "", "root"], _claim(confirmed, at)]))
     early = [renewal(a, T0 - 5 * DAY, T0 - 100), renewal(a, t + 3600, T0 - 95), renewal(a, u, T0 - 90)]
     in_run, before = level_reply(b, t + 5), level_reply(c, t - 300)
     assert signer.answered(b["id"], t, u, [in_run], m.man) and not signer.answered(c["id"], t, u, [before], m.man)
     assert not signer.answered(a["id"], t, u, [a, *early, in_run], m.man)
-    other_id = m.post(m.bot_sec, "Sources checked. No change to this alert.", created_at=T0 - 80,  # confirmed after u,
-                      tags=[["e", a["id"], "", "root"], _claim(u + 3600, T0 - 80, cve="CVE-2026-9999")])  # of another advisory
+    other_id = own(m.post(m.bot_sec, "Sources checked. No change to this alert.", created_at=T0 - 80,  # confirmed after u,
+                          tags=[["e", a["id"], "", "root"], _claim(u + 3600, T0 - 80, cve="CVE-2026-9999")]))  # of another advisory
     copy = m.root_post(m.bot_sec, advisory(id="CVE-2026-0001", posted_by="relay-bot"), created_at=t + 9,
                        tags=[_claim(t, cve="CVE-2026-0001")], files=())  # the root a raise copies into another channel
     assert signer.answered(copy["id"], t, u, [copy], m.man)  # it states the level itself: no reply under it

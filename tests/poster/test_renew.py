@@ -343,12 +343,15 @@ def test_a_level_reply_sent_again_by_a_later_run_is_passed_with_both_times(signi
     """The first send of a step had no answer and the mirror showed it two days later. The
     ledger dates the change from the attempt; the reply may be as late as the run that
     recorded it, so a confirmation counts only when it is later than that run began."""
+    from aitools_alerts.poster import sent as sent_record
     from test_settle import show
     env = signing
     critical(env, relay=PutRelay())
     seen = _changes_seen(monkeypatch)
     relay = day(env, 44, kev=BLOCKED, relay=PutRelay("unknown"))
-    show(env, relay.calls[0], when=T0 + 44 * DAY + 5)
+    ev = show(env, relay.calls[0], when=T0 + 44 * DAY + 5)
+    # m729: with a checkpoint key a send is settled by its recorded id; the real sender writes it down first
+    sent_record.note(env.config.sent_state, ev["id"], T0 + 44 * DAY)
     day(env, 46, kev=BLOCKED, relay=PutRelay())
     (e,) = entries(env)
     assert e["level"] == "high" and (e["changed"][-1], e["last_change"]) == (T0 + 44 * DAY, T0 + 46 * DAY)

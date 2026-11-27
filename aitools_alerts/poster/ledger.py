@@ -441,6 +441,14 @@ class Ledger:
                    or any(event_id in r.values() for r in e["replies"])
                    for e in self._state()["entries"])
 
+    def event_ids(self) -> set:
+        """Every event id any thread records: roots, channel copies and replies (m729)."""
+        out = set()
+        for e in self._state()["entries"]:
+            out |= {e["root_event_id"], *e["channel_ids"].values()}
+            out |= {i for r in e["replies"] for i in r.values()}
+        return out
+
     def pending_entries(self) -> list[dict]:
         """Every send in flight (copies), oldest first: ``aitools-alerts-poster pending``."""
         return sorted((dict(p) for p in self._state()["pending"]), key=lambda p: p["at"])

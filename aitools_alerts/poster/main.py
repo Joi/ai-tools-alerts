@@ -104,7 +104,7 @@ from zoneinfo import ZoneInfo
 
 from aitools_alerts import TRUST_ROOT_PUBKEY, check, manifest, pull, ruleset, schema, verify, versions, wire
 from aitools_alerts import config as _member_config
-from aitools_alerts.poster import (candidates, catalog, compose, inputs, ledger, recompute, rules, signer, sources,
+from aitools_alerts.poster import (candidates, catalog, compose, inputs, ledger, recompute, rules, sent, signer, sources,
                                    translate, wording,
                                    transport)
 from aitools_alerts.poster.inputs import Config, ConfigError
@@ -389,6 +389,11 @@ class Run:
         signer never gives such a reply up for lost."""
         if self.config.checkpoint_key_file is None:
             return
+        try:  # m729: the real sender wrote it down before the send; another sender, or a person's word, did not
+            sent.note(self.config.sent_state, eid, self.now)
+        except OSError as e:
+            self.owe_failed = True
+            raise LedgerError(f"sent record {self.config.sent_state}: {e.strerror or e}") from None
         try:
             size = len(text.encode("utf-8")) + (wire.tag_bytes(tag) if tag else 0)  # hh5s: a channel file holds the tag
             c = self._parsed(tag[1]) if tag and reply else None
@@ -515,6 +520,11 @@ class Run:
                 and [t for t in e["tags"] if isinstance(t, list) and t and t[0] == wire.CLAIM_TAG] == claim
                 and [t[1] for t in e["tags"] if len(t) >= 2 and t[0] == "h"] == [channel]
                 and e["created_at"] >= min(p["at"], it.get("tried", p["at"])) - SETTLE_SKEW]
+        if self.config.checkpoint_key_file is not None:
+            # m729: text is no proof of who signed (a thief can copy it). Only an event whose
+            # id this poster wrote down before sending is its send; a lost record settles nothing.
+            mine = sent.holds(self.config.sent_state)
+            hits = [e for e in hits if e["id"] in mine]
         return next((e["id"] for e in sorted(hits, key=lambda e: (e["created_at"], e["id"]))
                      if _unrecordable(self, it, e["id"]) is None), None)
 
@@ -954,6 +964,11 @@ class Run:
                 ids = (ids + [eid])[-inputs.MAX_DIGEST_IDS:]
             if not replayed:  # jsje: this digest counted them
                 self.state["dropped"] = max(0, self.state["dropped"] - it["adv"].get("dropped", 0))
+                if it["adv"].get("foreign"):  # m729: and said the line for these
+                    try:
+                        sent.mark_said(self.config.sent_state, it["adv"]["foreign"])
+                    except OSError as e:
+                        _say(f"sent record not written ({e.strerror or type(e).__name__}): the next digest repeats its line")
             self.state.update(weekly=it["adv"].get("week", self.state["weekly"]),
                               digest_date=it["date"], digest_at=it["adv"]["cutoff"],
                               digest_roots=it["adv"]["roots"], digest_ids=ids,
@@ -1978,6 +1993,24 @@ class Run:
                 roots.add(t.root_id)
         return {i.casefold() for i in m.retracted}, roots
 
+    def _foreign(self, root) -> list:
+        """m729: the ids of the relay-bot events this poster did not sign that no digest has
+        reported, after a check of the mirror copy the digest just pulled, so one that
+        arrived since the last run is said today. Never raises: a digest is not held for it."""
+        if self.config.checkpoint_key_file is None:
+            return []
+        try:
+            st = State.load(self.config.mirror_dir)
+            m = st.accepted(root)
+            if m is not None:
+                sent.check(self.config.sent_state, st.events_for(root).values(), m, self.now)
+        except Exception as e:  # noqa: BLE001
+            _say(f"own-key check before the digest stopped: {type(e).__name__}")
+        try:
+            return sent.unsaid(self.config.sent_state)
+        except Exception:  # noqa: BLE001
+            return []
+
     def digest(self, root=TRUST_ROOT_PUBKEY, fetch=None):
         local = _dt.datetime.fromtimestamp(self.now, TOKYO)
         today = local.date().isoformat()
@@ -2054,12 +2087,13 @@ class Run:
                 self.n["withheld"] += 1
                 weekly = False
         dropped = self.state["dropped"]  # jsje: refused items a run dropped since the last digest
+        foreign = self._foreign(root)
         keep = len(led_items)
         while True:  # the largest prefix that fits one post; the rest waits for tomorrow
             try:
                 text = compose.digest([x[0] for x in led_items[:keep]], local.date(), retracted=gone, now=self.now,
                                       titles=titles, held=len(notices), link=link, summary=summaries.get("en"),
-                                      dropped=dropped) \
+                                      dropped=dropped, foreign=bool(foreign)) \
                     + compose.level_report(self.rc["lowered"], self.rc["tripped"])
             except ValueError:
                 self.n["withheld"] += 1
@@ -2080,11 +2114,11 @@ class Run:
         acked = retire + ([h for _, h in notices] if weekly else [])
         snap = {"held": sorted({k for h in acked for k in self._notice_keys(h["scope"], h["adv"])}),
                 "cutoff": cutoff, "roots": roots, **({"week": week} if weekly else {}),
-                **({"dropped": dropped} if dropped else {})}
+                **({"dropped": dropped} if dropped else {}), **({"foreign": foreign} if foreign else {})}
         ja = self._ja(lambda: compose.digest([x[0] for x in taken], local.date(), lang="ja", retracted=gone,
                                              now=self.now, titles=titles, held=len(notices), link=link,
                                              summary=compose.weekly(names, link, "ja") if weekly else None,
-                                             dropped=dropped)
+                                             dropped=dropped, foreign=bool(foreign))
                       + compose.level_report(self.rc["lowered"], self.rc["tripped"], "ja"))
         item = self._item("digest", None, [f"digest:{today}"], "feed", text, key_id=today, adv=snap, date=today, ja=ja)
         if self.rc["lowered"]:
@@ -2310,7 +2344,12 @@ def relay_sender(config: Config):
             return translate.read_key(config.secrets_helper, name=config.relay_key_secret)
         except translate.CallError as e:  # its messages never carry the key
             raise transport.KeyUnavailable(str(e)) from None
-    return transport.Relay(config.relay_url, key_source, expected_pubkey=bots[0]).send
+    extra = {}
+    if config.checkpoint_key_file is not None:  # m729: every id is written down before its send
+        def noted(event_id):
+            sent.note(config.sent_state, event_id, int(time.time()))
+        extra["on_signed"] = noted
+    return transport.Relay(config.relay_url, key_source, expected_pubkey=bots[0], **extra).send
 
 
 def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
@@ -2455,10 +2494,12 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                     # journal; the next run records it before it signs. This one must not sign.
                     cp_status = "owed-unrecorded"
                 else:
+                    known = led.event_ids() | set(state["digest_ids"]) | {
+                        it["sent"] for it in state["outbox"] + r._withheld_items() if it.get("sent")}
                     cp_status = signer.run_checkpoint(config, now, ssh=ssh, fetch=mirror_fetch,
                                                       root=translate_kw.get("root", TRUST_ROOT_PUBKEY),
-                                                      suppress=frozenset(r.unrenewed), clock=clock,
-                                                      changes=r.level_changes())
+                                                      suppress=frozenset(r.unrenewed), known=frozenset(known),
+                                                      clock=clock, changes=r.level_changes())
             except Exception as e:  # noqa: BLE001 - nothing here may reach the run's exit code
                 cp_status = "error"
                 _say(f"checkpoint stopped: {type(e).__name__}")

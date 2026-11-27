@@ -179,10 +179,13 @@ class Relay:
     runs on the first send and its result is kept for this object's life. A key whose
     public key is not ``expected_pubkey`` sends nothing. ``connect(host, timeout)``
     returns an http.client connection, already connected (tests replace it).
+    ``on_signed(event_id)`` is called with the id of each message event once it is signed
+    and before the request is made (ai-tools-alerts#m729); when it raises, nothing is
+    sent and the outcome is ``failed``.
     """
 
     def __init__(self, url: str, key_source, *, expected_pubkey: str, connect=None,
-                 clock=time.time, deadline: float | None = None):
+                 clock=time.time, deadline: float | None = None, on_signed=None):
         self.host = check_url(url)
         self.url = f"https://{self.host}/events"
         self._key_source, self._expected = key_source, expected_pubkey
@@ -191,6 +194,7 @@ class Relay:
         self._deadline = DEADLINE if deadline is None else deadline
         self._key: str | None = None
         self._key_error: str | None = None
+        self._on_signed = on_signed
 
     def _signing_key(self) -> str | None:
         if self._key is None and self._key_error is None:
@@ -225,6 +229,13 @@ class Relay:
             return SendResult(False, None, None, self._key_error or "relay key unavailable", "failed")
         now = int(self._clock())
         event = nostr.sign_event(key, message_event(channel_id, content, reply_to, created_at=now, claim=claim))
+        if self._on_signed is not None:
+            # m729: the id is written down before a byte is sent, so whatever becomes of the
+            # send or of this process, the poster knows the event as its own.
+            try:
+                self._on_signed(event["id"])
+            except Exception:  # noqa: BLE001 - not recorded, so not sent: next hour
+                return SendResult(False, None, None, "the sent record could not be written", "failed")
         body = json.dumps(event, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         headers = {"Authorization": auth_header(key, self.url, body, created_at=now,
                                                 nonce=secrets.token_hex(16)),

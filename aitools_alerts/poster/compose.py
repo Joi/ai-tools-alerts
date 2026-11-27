@@ -760,6 +760,8 @@ _DIGEST = {
                bare=lambda d: f"Daily digest for {d}: no new alerts.",
                level=lambda lv: lv.upper(),
                withheld=lambda n: f"{n} item{'s' if n > 1 else ''} withheld by the publication check.",
+               foreign="Warning: an event signed with this service's key was not sent by this service. "
+                       "No checkpoint lists it, so the CLI does not apply it.",
                fixed=lambda v: f"fixed in {v}", nofix="fixed version not stated, check the vendor", end=".",
                title=lambda a: a.title, upstream=lambda t: f": {t}",
                w_head=lambda n: f"Weekly summary: {n} notice{'' if n == 1 else 's'} added to the catalog this week.",
@@ -772,6 +774,8 @@ _DIGEST = {
                bare=lambda d: f"{d} のデイリーダイジェスト: 新しいアラートはありません。",
                level=lambda lv: _JA_LEVEL[lv],
                withheld=lambda n: f"{n} 件を公開前チェックで保留しました。",
+               foreign="警告: このサービスの鍵で署名され、このサービスが送信していないイベントがあります。"
+                       "チェックポイントに載せていないため、CLI はこれを適用しません。",
                fixed=lambda v: f"修正版 {v}", nofix="修正版の記載なし、ベンダーの情報を確認してください", end="。",
                title=_ja_title, upstream=lambda t: f" 原題: {t}",
                w_head=lambda n: f"週間まとめ: 今週カタログに追加された注意は {n} 件です。",
@@ -819,7 +823,7 @@ def weekly(products, link: str, lang: str = "en") -> str:
 
 def digest(advs_today, date, lang: str = "en", *, retracted=(), now: int | None = None,
            titles=None, held: int = 0, link: str = DEFAULT_MIRROR_URL, summary: str | None = None,
-           dropped: int = 0) -> str:
+           dropped: int = 0, foreign: bool = False) -> str:
     """The daily digest (qwpw, v2 design section 7): the day's new relay-bot posts, one
     line each, loudest first then oldest first, and nothing else. ``advs_today`` is
     the advisory of each thread whose root was posted since the last digest; one
@@ -834,7 +838,8 @@ def digest(advs_today, date, lang: str = "en", *, retracted=(), now: int | None 
     catalog this week and ``link``; without the count when ``summary`` (the weekly
     summary, ``weekly``) follows, which carries it. ``lang="ja"``: the Japanese templates.
     ``dropped`` (jsje): posts the relay refused that the poster has since dropped; they
-    join the withheld count, which a quiet day then prints too."""
+    join the withheld count, which a quiet day then prints too. ``foreign`` (m729): the
+    poster found a relay-bot event it did not sign; one fixed line says so, on any day."""
     t = _DIGEST[lang]
     latest: dict[tuple, schema.Advisory] = {}
     for adv in advs_today:
@@ -847,7 +852,7 @@ def digest(advs_today, date, lang: str = "en", *, retracted=(), now: int | None 
     shown = sorted((a for a in latest.values() if listable(a) and not withdrawn(a, gone, now)),
         key=lambda a: (-_RANK[a.level], a.posted_at, a.id))
     day = date.isoformat() if hasattr(date, "isoformat") else str(date)
-    tail = [] if summary is None else ["", summary]
+    tail = (["", t["foreign"]] if foreign else []) + ([] if summary is None else ["", summary])
     if not shown:
         gone_too = ["", t["withheld"](dropped)] if dropped > 0 else []
         return _guard("\n".join([t["quiet"](day, held, link) if summary is None else t["bare"](day)]
