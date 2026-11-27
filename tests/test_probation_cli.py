@@ -625,3 +625,25 @@ def test_without_a_probation_the_send_is_as_before(feed, sent, monkeypatch, caps
     feed([bot(id=G1, level="critical")], 'verify = "off"\n')
     status, data = run_json(capsys)
     assert status == cli.EXIT_UNSEEN_CRITICAL and len(data["unseen_critical"]) == 1 and len(sent["texts"]) == 1
+
+
+def test_an_alert_withheld_at_the_send_is_sent_when_the_same_run_confirms_it(feed, sent, monkeypatch, capsys):
+    """Found by the delta review: the second pass of ``run`` must try again what the first
+    withheld, and report it as the interrupt it then is."""
+    m = feed([bot(id=G1, level="critical")])
+    use(monkeypatch, Net().set(gurl(G1), ghsa(type="malware", fixed="99.0.0")))
+    reserve, calls = cli._reserve, []
+
+    def then_probation(st, *args):
+        got = reserve(st, *args)
+        if not calls:  # after the first reservation, a concurrent command begins the probation
+            other = State.load()
+            other.probation = {"strikes": {}, "since": {m.bot: int(verify.time.time())}}
+            other.save_unverified()
+        calls.append(1)
+        return got
+    monkeypatch.setattr(cli, "_reserve", then_probation)
+    status, out, _ = out_of(capsys, ["run"])
+    assert len(calls) == 2 and list(record()["since"]) == [m.bot]
+    assert status == cli.EXIT_UNSEEN_CRITICAL and len(sent["texts"]) == 1 and cli.NOT_VERIFIED not in sent["texts"][0]
+    assert len(State.load().seen) == 1

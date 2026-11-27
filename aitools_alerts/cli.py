@@ -1582,7 +1582,7 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
         cmd_check(a, st, s, source_lines=False)  # printed below, once the sources are read
     withheld: set = set()  # cftg: what a probation begun since ``_reserve`` kept from being sent
 
-    def send(them, loose, pairs) -> int:
+    def send(them, loose, pairs, withheld) -> int:
         if a.quiet or a.json:
             with contextlib.redirect_stdout(io.StringIO()):
                 return _notify(st, s, them, loose, _flagged(pairs), withheld)
@@ -1593,7 +1593,7 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
             with contextlib.redirect_stdout(io.StringIO()):
                 return _correct(st, s, due)
         return _correct(st, s, due)
-    status = send(pending, loose, pairs)
+    status = send(pending, loose, pairs, withheld)
     got = None
     if not a.json:  # the hourly job's form; the hook runs --json and must read no source.
         # After the notification: a critical never waits for a source.
@@ -1611,12 +1611,15 @@ def cmd_run(a, st: State, s: config.Settings) -> int:
             changed = got is not None and _note_support(a, st, threads, got)
             if a.asked or changed:
                 threads, pairs = _matches(a, st)
-            tried = {r for t, _ in pending for r in t.root_ids}
+            # not what the first pass withheld: its source may have confirmed it just now
+            tried = {r for t, _ in pending for r in t.root_ids} - withheld
             pairs = _flag(a, st, pairs, got)  # 53fy: by what this run just read, written or not
             again, held, grants, loose = _interrupts(a, st, s, pairs)
             again, held = _reserve(st, again, held, grants, loose)
             late = [x for x in again if tried.isdisjoint(x[0].root_ids)]
-            status = send(late, loose, pairs) or status
+            again_withheld: set = set()
+            status = send(late, loose, pairs, again_withheld) or status
+            withheld = (withheld - {r for t, _ in late for r in t.root_ids}) | again_withheld
             pending = pending + late
             if not a.quiet and before != levels():
                 print("After the source check:")  # what was listed above is no longer what stands
