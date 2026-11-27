@@ -1,6 +1,6 @@
 # Run: 65xv-when-a-thread-stops-being-renewed
 Instruction: Read TASK-ai-tools-alerts#65xv.md in this worktree root, then run `kata show ai-tools-alerts#65xv` and follow the brief and the dispatch rules (run as /do-it, starting rung floored at medium).
-Stage: executing
+Stage: code-review:whole-branch
 Rung: medium (start-floor medium: dispatch brief)
 Spec: docs/superpowers/specs/2026-11-27-65xv-when-a-thread-stops-being-renewed-design.md   Plan: docs/superpowers/plans/2026-11-27-65xv-when-a-thread-stops-being-renewed.md
 Agency project: —
@@ -12,14 +12,19 @@ Pass 1 [spec]: 5B/1S/0C/0R · fixed -/- · velocity = (—→6, escalation no)
 Pass 1 [plan]: 6B/0S/0C/0R · fixed -/- · velocity = (—→6, escalation no)
 
 ## Chunks
-- [ ] signer: a checkpoint lists a thread without its superseded renewals
-- [ ] ledger, recompute, compose, main: a thread ends 90 days after its level last changed; raises on an ended or unconfirmed thread
-- [ ] the simulated year, spec/wire.md, changelog
+- [x] signer: a checkpoint lists a thread without its superseded renewals
+- [x] ledger, recompute, compose, main: a thread ends 90 days after its level last changed; raises on an ended or unconfirmed thread
+- [x] the simulated year, spec/wire.md, changelog
 
 ## Notes
 - Prior work searched: `kata search "renewal end thread feed caps"` gives this issue and ai-tools-alerts#h29n only. The gtw9 design (docs/superpowers/specs/2026-11-26-gtw9-renewals-and-step-down-design.md) names this follow-up in "Not in this change".
 - The repository has no `.repoman-managed` marker: the ending is a pull request this session merges, as the brief says.
 - The run stalled on the seat's usage limit from about 20:46Z on 2026-11-26 to 12:00Z on 2026-11-27, so the 5-hour wall clock passed with the pane idle. Resumed on Joi's word (kata comment xcgjx8); main had not moved.
+
+- Agency was not used: the agency tools are not available in this session, as in the gtw9 run. The plan was executed directly, tests first in each chunk.
+- Amended while building (plan, chunk 1): the must-list keeps a minimal set (`signer._core`: root, curator replies, replies that name a level, frontier) checked by the reader's code, with the slim thread as the fallback. Listing the slim thread alone there made a curator's retraction in an oversized thread unlistable, which three existing tests pin.
+- The simulated year at one poster run a day stepped threads down unconfirmed: a lane reads ten advisories a run, so by the end a thread was read every 36 days. The test gives the daily run the reads of 24 runs. The limit itself is the follow-up issue on judging threads that are off readers.
+- The whole year takes 8.6 minutes (passed 2026-11-27, `AITOOLS_ALERTS_SIM_DAYS=365`); the suite runs 200 days.
 
 ## Spec review (fresheyes, gpt-6-astra, run 20261127-053600-a042f4, snapshot 4eea962506517e5781a47f48b40c42665a64c59b): 5 BLOCKER, 1 SUBSTANTIVE
 1. BLOCKER. The must-list of `window` uses the raw `_frontier`, so a bot-key reply whose claim names another id stands for a renewal the reader counts, and `slim`'s check never sees that selection. Fixed, in the form the plan review left it (plan findings 1 and 2): the must-list lists `slim(thread)`, and `slim` returns a thread whole unless the reader's code builds the same thread from the kept events.
