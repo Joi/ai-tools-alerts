@@ -21,7 +21,7 @@ from . import check, pull
 from .check import Match
 from .config import Settings
 
-__all__ = ["SendResult", "send", "format_text", "TITLE", "OSASCRIPT"]
+__all__ = ["SendResult", "send", "format_text", "plain_title", "TITLE", "OSASCRIPT"]
 
 TITLE = "ai-tools alert"
 TIMEOUT = 30
@@ -38,19 +38,28 @@ class SendResult:
     detail: str
 
 
-def format_text(adv, m: Match | None = None, translation: str | None = None) -> str:
+def plain_title(adv) -> str:
+    """What stands for the title of an entry one of whose ``fixed`` versions the source
+    contradicts (53fy): its id, which the schema holds to an id's form."""
+    return f"advisory {adv.id}"
+
+
+def format_text(adv, m: Match | None = None, translation: str | None = None, plain: bool = False) -> str:
     """Level and title, what is affected, the action, the primary source.
     With a translation, its title and text replace the English title; only
     the text is shortened, and when the translated title would not fit
     with Affected, Action and Source, the English text is sent.
 
     A match whose ``fixed`` the source contradicts (53fy, ``Match.fixed_contradicted``)
-    names no fixed version, and no translation is used for it: a translation is the
-    signer's prose and can name that version."""
+    names no fixed version, and none of the signer's prose is shown for it: no
+    translation, and the advisory's id in place of its title. Either can name that
+    version ("Upgrade Claude Code to 50.0.0" is a valid title). ``plain``: the same for
+    a match that is not flagged itself, when another match of its entry is."""
     flagged = m is not None and m.fixed_contradicted
-    if flagged:
+    plain = plain or flagged
+    if plain:
         translation = None
-    title = pull.translation_title(translation, adv.id) if translation else adv.title
+    title = pull.translation_title(translation, adv.id) if translation else plain_title(adv) if plain else adv.title
     lines = [f"{adv.level.upper()}: {title}"]
     p = m.product if m is not None and m.product is not None else (adv.products[0] if adv.products else None)
     if p is not None:
@@ -62,7 +71,7 @@ def format_text(adv, m: Match | None = None, translation: str | None = None) -> 
     if adv.sources:
         lines.append(f"Source: {adv.sources[0].url}")
     if translation and len("\n".join(lines)) > MAX_TEXT:
-        return format_text(adv, m)
+        return format_text(adv, m, None, plain)
     if translation:
         body = "\n".join(translation.split("\n")[1:]).strip("\n")
         room = MAX_TEXT - len("\n".join(lines)) - 1

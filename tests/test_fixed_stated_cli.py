@@ -27,14 +27,15 @@ JA = "lang: ja\n\n題\nClaude Code を 50.0.0 以降に更新してください�
 OFF = 'verify = "off"\n'
 
 
-def raised(feed, clock, extra="", level="critical", ja=False, **kw):
+def raised(feed, clock, extra="", level="critical", ja=False, title=None, **kw):
     """A relay-bot thread that stated the advisory's ``fixed`` (9.9.9), and a reply that
     raises it to 50.0.0: a widening, joined at once. Pulled."""
     root_adv = advisory(posted_by="relay-bot", id=G1, level=level, products=[RIGHT],
                         actions=[Action("upgrade", "Claude Code", "9.9.9")])
     m = feed([root_adv], extra, **kw)
     root = m.events["feed.json"][0]
-    reply = m.post(m.bot_sec, m.patch_text(products=[PAST]), created_at=AT, tags=[["e", root["id"], "", "root"]])
+    patch = {"products": [PAST], **({"title": title} if title else {})}
+    reply = m.post(m.bot_sec, m.patch_text(**patch), created_at=AT, tags=[["e", root["id"], "", "root"]])
     if ja:  # one translation of the root, one of the change: both are needed for either to show
         m.reply(m.bot_sec, root, "lang: ja\n\n題\n本文", created_at=AT + 1)
         m.reply(m.bot_sec, root, JA.replace("\n\n題", f"\nof: {reply['id']}\n"), created_at=AT + 2)
@@ -261,6 +262,39 @@ def test_run_json_sends_a_due_correction_and_prints_one_object(feed, sent, monke
     assert len(sent["texts"]) == 2 and sent["texts"][1].startswith(cli.CORRECTION_LINE)
 
 
+# ---------------------------------------------------------------- the signer's prose: the title, translations
+
+TITLE = "Upgrade Claude Code to 50.0.0 now"
+
+
+def test_a_title_that_names_the_version_is_not_shown_for_a_flagged_entry(feed, sent, monkeypatch, capsys, reader_clock):
+    """The reply that raises ``fixed`` can set the title too, and a title is free text."""
+    raised(feed, reader_clock, title=TITLE)
+    source(monkeypatch)
+    assert f"CRITICAL: {TITLE} [" in out_of(capsys, ["check"])[1]  # before the source is read: as today
+    status, out, _ = out_of(capsys, ["run"])
+    assert status == cli.EXIT_UNSEEN_CRITICAL
+    first, correction = sent["texts"]
+    assert first.startswith(f"CRITICAL: {TITLE}\n")
+    assert correction.splitlines()[1] == f"CRITICAL: advisory {G1}" and "50.0.0" not in correction
+    for argv in (["check"], ["plan", G1], ["run"], ["verify"]):
+        out = out_of(capsys, argv)[1]
+        assert "50.0.0" not in out and TITLE not in out, argv
+    assert f"CRITICAL: advisory {G1} [Claude Code 2.0.0: affected]" in out_of(capsys, ["check"])[1]
+    assert out_of(capsys, ["plan", G1])[1].startswith(f"CRITICAL: advisory {G1} [Claude Code 2.0.0] posted by relay-bot\n")
+    (d,) = matches(capsys)
+    assert d["title"] == TITLE and d["fixed_contradicted"] is True  # the JSON is the post as published, with the flag
+
+
+def test_a_notification_sent_with_the_flag_known_carries_no_title(feed, sent, monkeypatch, capsys, reader_clock):
+    raised(feed, reader_clock, title=TITLE)
+    source(monkeypatch)
+    assert cli.main(["verify"]) == 0
+    assert out_of(capsys, ["run"])[0] == cli.EXIT_UNSEEN_CRITICAL
+    (text,) = sent["texts"]
+    assert text.startswith(f"CRITICAL: advisory {G1}\n") and "50.0.0" not in text
+
+
 # ---------------------------------------------------------------- translations
 
 def test_a_translation_that_names_the_version_is_not_shown_for_a_flagged_entry(feed, sent, monkeypatch, capsys, reader_clock):
@@ -324,5 +358,6 @@ def test_an_unflagged_match_of_the_same_entry_shows_no_translation_either(feed, 
     assert out_of(capsys, ["run"])[0] == cli.EXIT_UNSEEN_CRITICAL
     (text,) = sent["texts"]
     assert "更新" not in text and "題" not in text and "50.0.0" not in text
+    assert text.startswith(f"CRITICAL: advisory {G1}\n")  # nor the title, whichever match it describes
     assert ("Affected: Codex" in text) == (first == "codex")
     assert out_of(capsys, ["run"])[0] == 0 and len(sent["texts"]) == 1

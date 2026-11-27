@@ -26,6 +26,12 @@ Pass 1 [plan]: 3B/0S/0C/0R · fixed -/- · velocity = (—→3, escalation no)  
 - B2 two flagged products: a correction right after a notification that said no version: fixed (an accepted notification records the key of every flagged match of the entry; the correction line claims nothing about an earlier notice).
 - B3 a flagged and an unflagged match share one translation: fixed (no translation for any match of an entry with a flagged match).
 - Rung stays medium: nothing survives the pass. No delta at medium; the code review reads the code built on the amended plan.
+Pass 1 [code:reader]: 1B/1S/0C/0R · fixed -/- · velocity = (—→2, escalation no)   (Stage 2: fresheyes gpt-6.1-sol high, run 20261127-215852-606d68, snapshot f28bcd2; passes: 1)
+- B1 the English title can name the contradicted version: fixed (the id stands for the title of an entry with a flagged match, in check, plan, the notification and the correction).
+- S1 the skill and snippet tell the agent to report the raw action before plan, and do not document the key: fixed (the key and the rule, before the first report, in all three copies; pinned in tests/test_templates.py).
+- Stage 1 (same-model subagent) did not finish: the seat's usage limit ended it. Not rerun: the independent pass is the one the rung requires, and the delta below reads the fixes.
+- The BLOCKER fix changes behaviour: one delta pass (fresheyes --since 5561320, no rebuttals file: every finding was fixed). Cause named for the climb to heavy's delta: do-it's own rule for a behaviour-changing BLOCKER fix, no hard trigger.
+- Gate at the reviewed tree (before the fixes): scripts/test-gate.sh, public scan clean, 3395 passed.
 
 ## Chunks
 - [ ] reader: the flag, the plan without a version, the lines, tests, docs

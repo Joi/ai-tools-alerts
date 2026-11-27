@@ -161,5 +161,9 @@ def test_the_notification_of_a_contradicted_fixed_names_no_version_and_uses_no_t
     lines = text.splitlines()
     assert "Affected: Claude Code 2.0.0" in lines
     assert "Action: upgrade Claude Code (the fixed version given is not the advisory's)" in lines
+    assert lines[0] == f"CRITICAL: advisory {m.adv.id}"  # nor the title: it is free text too
+    other = replace(m, fixed_contradicted=False)  # an unflagged match of an entry with a flagged one
+    shown = notify.format_text(m.adv, other, "題\n更新", plain=True)
+    assert shown.splitlines()[0] == lines[0] and "更新" not in shown and "(fixed in 99.0.0)" in shown
     plain = replace(m, fixed_contradicted=False)
     assert "(fixed in 99.0.0)" in notify.format_text(m.adv, plain) and "更新" in notify.format_text(m.adv, plain, "題\n更新")

@@ -53,7 +53,9 @@ how to use it. The rules below are fixed; follow them exactly.
      version), `product` (name, affected, fixed), `actions`, `sources`
      (each `url`, `published_at`), `source` (the link to give the
      person: the first primary source, else the first source) and
-     `source_primary` (false when no source is a primary source).
+     `source_primary` (false when no source is a primary source),
+     and `fixed_contradicted` (true when your own check read the advisory
+     and it does not name the fixed version this alert gives).
    - `unseen_critical`: thread ids (every root) of critical matches not
      shown before; count advisories from `matches`, not from this list.
    Exit 2 means `unseen_critical` is not empty. Exit 0 or 1 with the JSON
@@ -67,6 +69,10 @@ how to use it. The rules below are fixed; follow them exactly.
    the title, the affected product and the installed version, the action,
    and the source link (`source`); when `source_primary` is false, say
    that it is not a primary source.
+   When `fixed_contradicted` is true on any match of an advisory, name
+   it by its `id` and not by its `title`, and say no fixed version and no
+   version from its `actions`, for any of its matches: say that the
+   fixed version the alert gives is not the advisory's.
    Report `high` and `notice` matches too when the person asked.
    A `may apply` match never exits 2 and is never in `unseen_critical`:
    say it may apply to this machine, with the product and the source link.

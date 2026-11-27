@@ -272,7 +272,12 @@ def _tr(t: Entry, s: config.Settings) -> str | None:
     return t.translations.get(s.lang) if s.lang != "en" else None
 
 
-def _title(t: Entry, s: config.Settings) -> str:
+def _title(t: Entry, s: config.Settings, plain: bool = False) -> str:
+    """``plain`` (53fy): for an entry with a match whose ``fixed`` the source contradicts,
+    the id stands for the title, translated or not: a title is the signer's prose and
+    can name that version."""
+    if plain:
+        return notify.plain_title(t.adv)
     tr = _tr(t, s)
     return pull.translation_title(tr, t.adv.id) if tr else t.adv.title
 
@@ -356,9 +361,9 @@ def _correction_key(root_id: str, product, fixed) -> str:
 
 def _flagged(pairs: list) -> dict:
     """{root id: the correction keys of the flagged matches of its entry}, for every root
-    of an entry with a flagged match. An entry in it is shown with no translation, for
-    any of its matches: the translation belongs to the entry, is the signer's prose, and
-    can name the version of the flagged product."""
+    of an entry with a flagged match. An entry in it is shown with no translation and
+    with its id for its title, for any of its matches: both belong to the entry, are the
+    signer's prose, and can name the version of the flagged product."""
     out: dict = {}
     for t, m in pairs:
         for r in t.root_ids if m.fixed_contradicted else ():
@@ -1010,9 +1015,13 @@ def cmd_check(a, st: State, s: config.Settings, source_lines: bool = True) -> in
         print(UNVERIFIED_LINE.format(reason=reason))
         if reason == "checkpoint out of date":
             print(STALE_LINE.format(since=_stale_since(a, st)))
+    flagged = _flagged(pairs)  # 53fy: such an entry is listed by its id, here and in the held line
+
+    def plain(t) -> bool:
+        return not flagged.keys().isdisjoint(t.root_ids)
     for t, m in pairs:
         ver = m.installed.version or "unknown version"
-        print(f"{t.adv.level.upper()}: {_title(t, s)} [{m.installed.name} {ver}: {m.reason}] "
+        print(f"{t.adv.level.upper()}: {_title(t, s, plain(t))} [{m.installed.name} {ver}: {m.reason}] "
               f"(id {t.adv.id}, {_thread_ref(t)}{_published(t)})")
     cache = _results(a, st, s)
     loose = [t.adv.id for t, m in pairs if _result(t, m, cache) == verify.UNKNOWN]
@@ -1020,7 +1029,7 @@ def cmd_check(a, st: State, s: config.Settings, source_lines: bool = True) -> in
         print(UNVERIFIED_LINE_IDS.format(ids=", ".join(dict.fromkeys(loose))))
     once = {t.root_id: t for t, _ in pairs}  # an entry matched through two installations is said once
     for t in {t.root_id: t for t, _ in _interrupts(a, st, s, pairs)[1]}.values():
-        print(HELD_LINE.format(n=MAX_UNVERIFIED, title=_title(t, s), id=t.adv.id))
+        print(HELD_LINE.format(n=MAX_UNVERIFIED, title=_title(t, s, plain(t)), id=t.adv.id))
     for t in _unjudged(a, st, s, pairs):
         print(UNJUDGED_LINE.format(id=t.adv.id))
     for t in once.values():
@@ -1281,7 +1290,7 @@ def _notify(st: State, s: config.Settings, pending, loose=frozenset(), flagged=N
             if _seen(t, st):
                 continue  # sent already (by this run, or a concurrent one)
             told = {k for r in t.root_ids for k in flagged.get(r, ())}
-            text = notify.format_text(t.adv, m, None if told else _tr(t, s))
+            text = notify.format_text(t.adv, m, None if told else _tr(t, s), plain=bool(told))
             if not loose.isdisjoint(t.root_ids):
                 text += f"\n{NOT_VERIFIED}"
             accepted = False
@@ -1326,10 +1335,10 @@ def cmd_plan(a, st: State, s: config.Settings) -> int:
         p = check.plan(m, cfg)
         if reason:
             p = replace(p, auto_apply=[], prepare=[*p.auto_apply, *p.prepare])
-        # 53fy: no translation for an entry one of whose matches has a ``fixed`` the source
-        # contradicts: it is the signer's prose and can name that version
+        # 53fy: no translation and no title for an entry one of whose matches has a ``fixed``
+        # the source contradicts: they are the signer's prose and can name that version
         plain = not flagged.keys().isdisjoint(t.root_ids)
-        print(f"{t.adv.level.upper()}: {t.adv.title if plain else _title(t, s)} [{m.installed.name} "
+        print(f"{t.adv.level.upper()}: {_title(t, s, plain)} [{m.installed.name} "
               f"{m.installed.version or 'unknown version'}] posted by {t.adv.posted_by}{_published(t)}")
         tr = None if plain else _tr(t, s)  # quoted with "> ": translated text, never a section or a command
         for line in (tr.split("\n")[1:] if tr else []):

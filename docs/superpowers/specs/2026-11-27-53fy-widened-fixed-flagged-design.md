@@ -54,7 +54,10 @@ What does not change: the match itself, its reason, its level, the interrupt (0z
 
 `FIXED_LINE = "source check: the fixed version {id} gives for {name} is not the advisory's: no upgrade version is shown"`, printed by `_source_lines` (so by `check`, `plan`, `verify` and `run`) once per id and scope product, for every thread it is given whose shown entries include a flagged one. Printed: the id as `verify.norm_id` returned it and a scope product name, as every other source-check line. Not the version: the line states nothing the signer chose.
 
-### Translations
+### Translations and the title
+
+Code review, BLOCKER: the English title is the signer's prose as much as a translation is ("Upgrade Claude Code to 50.0.0" is a valid title, and the reply that raises `fixed` can set it). For an entry with a flagged match the id stands for the title, `advisory <id>`, wherever the CLI prints one for that entry: the `check` listing and its held line, `plan`, the notification and the correction. The JSON keeps the post as published with the flag; the skill texts tell the agent, before its first report, to name such an advisory by its id and say no version (code review, SUBSTANTIVE).
+
 
 A translation is the signer's prose and can name the version (the shipped Japanese template writes `<fixed> 以降に更新してください`). A translation belongs to the entry, not to one match. So for an entry any of whose matches on this machine is flagged, no translation is used for any of its matches: the notification is the English text, and `plan` prints the English title and no quoted translation (an unflagged Codex match of the same thread would otherwise quote the body that names the flagged Claude Code version). `notify.format_text` also ignores a translation for a flagged match on its own. `check`'s one-line listing keeps the translated title: it is a title, and the flag line follows it.
 
