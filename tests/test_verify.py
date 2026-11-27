@@ -1218,6 +1218,31 @@ def test_an_answer_stands_only_while_the_last_request_got_one(tmp_path):
     assert one(tmp_path, a) == ("confirmed", "match")
 
 
+def test_an_alias_that_was_readable_and_is_refused_from_then_on_is_waived_after_a_day(tmp_path):
+    """Its record of the first read stays in the cache: the deadline must not be dropped for that."""
+    a = adv(id=CVE, aliases=[G2], level="critical")
+    n = net((verify.KEV_URL, KEV_OTHER), (gurl(G2), ghsa(G2, cve=CVE2)))  # an advisory of another CVE
+    go(tmp_path, [a], n)
+    assert one(tmp_path, a) == ("contradicted", "unsupported")
+    n.set(gurl(G2), verify.TooLarge())  # it grew past the limit
+    for at in (DAY, DAY + HOUR, 2 * DAY - 1):
+        assert go(tmp_path, [a], n, now=NOW + at)["since"] == {CVE: NOW + DAY}
+        assert one(tmp_path, a) == ("unknown", "unread")
+    go(tmp_path, [a], n, now=NOW + 2 * DAY)
+    assert one(tmp_path, a) == ("contradicted", "unsupported")
+
+
+def test_a_result_is_whole_only_when_every_alias_the_state_lists_was_read(tmp_path):
+    """swfe: one that does not count for the first id (another thread filled the eight) is not read."""
+    full = adv(id=CVE, aliases=[G2, *FAKE[:7]], level="critical")
+    n = net((verify.KEV_URL, KEV_CC), (gurl(G2), ghsa(G2, cve=CVE)), (gurl(G3), ghsa(G3, cve=CVE)))
+    for run in range(3):
+        go(tmp_path, [full], n, now=NOW + run * HOUR)
+    other = adv(id=CVE, aliases=[G2, G3], level="high")
+    cache = go(tmp_path, [full, other], n, now=NOW + 3 * HOUR)
+    assert gurl(G3) not in n.urls and cache["results"][verify.state_key(other)]["whole"] is False
+
+
 def test_a_refused_answer_followed_by_no_answer_is_not_waived(tmp_path):
     a = adv(id=CVE, aliases=[REAL], level="critical")
     n = answering(REFUSED, [REAL])

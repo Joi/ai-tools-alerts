@@ -822,6 +822,7 @@ class _Run:
         self.kev_asked = self.kev_unchanged = False
         self.stated: dict | None = None  # swfe: ``ranges`` and ``whole`` of the thread last judged
         self.how = "none"  # nx25: what the last ``_get`` met: see there
+        self.missed: set = set()  # nx25: the GHSA and MAL ids whose read the budget did not make
 
     def spent(self) -> bool:
         """The run's 30 seconds are over."""
@@ -938,7 +939,9 @@ class _Run:
                     rec = _record(self.rs, source, [fields], named, got[1], self.now)
                 except (_Bad, ruleset.RulesetError, TypeError, AttributeError):
                     rec, how = None, "refused"
-            if how != "cut":
+            if how == "cut":
+                self.missed.add(lookup_id)
+            else:
                 self.cache["tried"][lookup_id] = [self.now, how]
         if rec is not None:
             sources[lookup_id] = rec
@@ -1045,7 +1048,7 @@ class _Run:
         untried first, so those that fail every run cannot keep another from its turn;
         and one of the waived and of the answered ones not tried for RETRY_S (an
         advisory can come to name the CVE), in a place no other alias can take."""
-        held, tried, since = self.cache["sources"], self.cache["tried"], self.cache["since"]
+        tried, since = self.cache["tried"], self.cache["since"]
         first, now = t.first, self.now
         kept = self.cache["counted"].setdefault(first, [])
         kept += [a for a in t.others if a not in kept][:MAX_LISTED - len(kept)]
@@ -1055,10 +1058,7 @@ class _Run:
             return tried[a][1] if a in tried else None
 
         def state(a) -> str:
-            r = held.get(a)
-            if r is not None and r["lowers"] and first in r["names"]:
-                return "tied"
-            return "answered" if met(a) in ("absent", "record") else "unknown"
+            return _alias_state(self.cache, first, a)
 
         def at(a) -> int:
             """When ``a`` was last tried; never, for one dated after the clock."""
@@ -1083,9 +1083,24 @@ class _Run:
         records += [got[a] for a in tied if got.get(a) is not None]
         if any(state(a) == "unknown" and a in tried for a in aliases):
             since.setdefault(first, now)
-        complete = not any(waits(a) for a in aliases) and all(got.get(a) is not None for a in tied)
-        whole = len(t.others) <= MAX_ALIASES and all(got[a] is not None for a in aliases)
+        # A read the budget did not make leaves the run's reads short of what it set out to
+        # read: nothing is judged complete on them (0z4e: no old result under a new time).
+        complete = not any(waits(a) for a in aliases) and all(got.get(a) is not None for a in tied) \
+            and not any(a in self.missed for a in picks)
+        # every alias the state lists, not only those that count for the first id
+        whole = len(t.others) <= MAX_ALIASES and all(got.get(a) is not None for a in t.others)
         return complete, whole
+
+
+def _alias_state(cache: dict, first: str, alias: str) -> str:
+    """``tied``, ``answered`` or ``unknown``: what ``alias`` is beside CVE first id ``first``
+    by what the cache holds (nx25, ``_Run._aliases``). A stored record that ties stays
+    tied; otherwise only what the last request met counts, so a record kept from an
+    earlier read is no answer once a later request was refused or met none."""
+    r = cache["sources"].get(alias)
+    if r is not None and r["lowers"] and first in r["names"]:
+        return "tied"
+    return "answered" if cache["tried"].get(alias, (0, None))[1] in ("absent", "record") else "unknown"
 
 
 def _settled(held, products: dict, asked: bool) -> dict:
@@ -1214,7 +1229,7 @@ def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=
     cache["sources"] = {i: r for i, r in cache["sources"].items() if i in ids}
     # nx25: an alias's attempts are kept as long as its id is; an alias counts for a first
     # id as long as a current thread of it lists it; a first id's deadline is kept as long
-    # as one that counts is unknown (no record, and its last request met no 404). Over
+    # as one that counts is unknown, by the rule the reads go by (``_alias_state``). Over
     # every state of it: one state without such an alias must not restart the clock of another.
     cache["tried"] = {i: v for i, v in cache["tried"].items() if i in ids}
     lists: dict = {}
@@ -1222,8 +1237,7 @@ def run(current, wanted, state_dir, fetch=None, now: float | None = None, clock=
         lists.setdefault(t.first, set()).update(t.others)
     cache["counted"] = {i: kept for i, v in cache["counted"].items() if (kept := [a for a in v if a in lists.get(i, ())])}
     cache["since"] = {i: at for i, at in cache["since"].items()
-                      if any(a not in cache["sources"] and cache["tried"].get(a, (0, None))[1] != "absent"
-                             for a in cache["counted"].get(i, ()))}
+                      if any(_alias_state(cache, i, a) == "unknown" for a in cache["counted"].get(i, ()))}
     try:
         write_json(Path(state_dir) / FILE, cache)
     except OSError:
