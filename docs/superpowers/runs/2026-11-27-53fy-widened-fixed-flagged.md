@@ -1,6 +1,6 @@
 # Run: 53fy-widened-fixed-flagged
 Instruction: Read TASK-ai-tools-alerts#53fy.md in this worktree root, then run `kata show ai-tools-alerts#53fy` and follow the brief and the dispatch rules pasted after this sentence. (The brief file is empty; the issue text is the brief: a relay-bot widening of `fixed` past the advisory is flagged and gives no upgrade version. Dispatch: /do-it, starting rung floored at medium.)
-Stage: verifying (the gate on the merged head, then the pull request and its merge; the merge commit and the close are on the issue)
+Stage: done (the pull request, its merge commit and the close are on the issue)
 Rung: medium (start-floor medium: constraint-lens, BR1 REV1 NOV1 INT1 FC1 = 5; no hard trigger; the dispatch brief floors it at medium too)
 Lens (every review pass carries all three): "It still matches and still interrupts: the alert is not narrowed"; "with the fetch failing nothing changes"; "a released reader is unaffected (`tests/test_wire_compat.py`)"
 Spec: docs/superpowers/specs/2026-11-27-53fy-widened-fixed-flagged-design.md   Plan: docs/superpowers/plans/2026-11-27-53fy-widened-fixed-flagged.md
@@ -9,7 +9,8 @@ Kata: ai-tools-alerts#53fy
 Last reviewed: spec 1c5baf5bd57d487ff8ab7a62ef1568e4e046c1d2
 Last reviewed: plan 37768c33c5594c6c6074411cb8579e5bfe58ec76
 Last reviewed: code (whole branch) f28bcd218b780a8beaa681f7fc7d3ef336bbb33b (the tree of commit 5561320); delta to 4ac0fd231728cf2f7844943a68d93d95b7cfd02a
-Unreviewed after the delta: e696180 (the delta's one finding, the spec only), 6814ce5 (merge of main: `__all__` in verify.py and the changelog's Unreleased section conflicted, nothing else), the run-record commit
+Unreviewed after the delta: e696180 (the delta's one finding, the spec only), 6814ce5 (merge of main: `__all__` in verify.py and the changelog's Unreleased section conflicted, nothing else), 4ffee94 (second merge of main, aabw and p93w: the changelog conflicted), 71773cd (one line: the 53fy source line asks `known(name)`, the helper aabw put in place of the `scope` set; without it 21 of the new tests failed after the merge), the run-record commit
+Gate: `scripts/test-gate.sh` at 71773cd51069a2752af702ddaa10ea81b9996e03, public scan clean, 3577 passed. Earlier heads: the first reviewed tree 3395 passed, 6814ce5 3512 passed.
 
 Limits: wall clock 4 hours from 2026-11-27T12:10Z; one independent review per artifact (spec, plan, code), one delta only after a behaviour-changing BLOCKER fix; completion check: the four acceptance cases of the issue pass as tests in `scripts/test-gate.sh`.
 
