@@ -641,7 +641,6 @@ def test_a_record_that_is_there_and_cannot_be_read_is_not_overwritten(tmp_path, 
 # ---------------------------------------------------------------- the other reads of the copy (ai-tools-alerts#9cch)
 
 from aitools_alerts import schema  # noqa: E402
-from test_advisory_recompute import entries  # noqa: E402
 from test_copy_on_raise import lost, roots  # noqa: E402
 from test_translate import SRC, Call  # noqa: E402
 
@@ -704,41 +703,52 @@ def _forged_replies(m, root_id, when):
             m.post(m.bot_sec, m.patch_text(level="withdrawn"), created_at=when + 1, tags=tags)]
 
 
-def test_forged_replies_take_no_real_thread_out_of_the_digest(signing):
-    m = signing.mirror
-    signing.collector([finding()])
-    _, _, relay = signing.run(relay=PutRelay())
-    (root_id,) = _roots(signing)
-    m.events["feed.json"].append(_event_of(signing, root_id, relay))
-    _forged_replies(m, root_id, T0 + 100)
-    _, summary, relay = signing.run(relay=PutRelay(), now=at(5, 9))
-    (digest,) = [c[2] for c in relay.calls if c[2].startswith("Daily digest")]
-    assert "GHSA-abcd-efgh-ijkl" in digest and ",foreign=2" in summary
-
-
-def _event_of(env, root_id, relay):  # noqa: F811
-    """The poster's own root as the mirror would serve it: signed with the bot key, and
-    taken as the poster's (its id written down, as the real sender does before a send)."""
-    channel, _, text = next(c for c in relay.calls if c[1] is None)
-    ev = nostr.sign_event(env.mirror.bot_sec, {"created_at": T0, "kind": 9, "tags": [["h", CHANNELS[channel]]],
-                                               "content": text})
-    sent.note(env.config.sent_state, ev["id"], T0)
+def _export(env, when=T0):  # noqa: F811
+    """Put the ledger's one thread on the mirror, as the exporter would: its root signed
+    with the bot key, its id written down as the real sender does before a send, and the
+    ledger's ids for the thread made that event's (the fake relay hands out ids no
+    event has). Returns the root event."""
     with Ledger(env.config.ledger) as led:
-        e = next(e for e in led._state()["entries"] if e["root_event_id"] == root_id)
+        (e,) = led._state()["entries"]
+        ev = nostr.sign_event(env.mirror.bot_sec, {
+            "created_at": when, "kind": 9, "tags": [["h", CHANNELS["feed"]]],
+            "content": schema.render_post(schema.validate(e["advisory"]), "Body line.")})
         e["root_event_id"] = ev["id"]
         e["channel_ids"] = {k: ev["id"] for k in e["channel_ids"]}
         led._save()
+    sent.note(env.config.sent_state, ev["id"], when)
+    env.mirror.events["feed.json"].append(ev)
     return ev
 
 
+def _attacked(env, when):  # noqa: F811
+    """The exported thread with the forged replies in it; checks that the whole copy,
+    replayed, holds the thread and both replies (so the test is about them)."""
+    m = env.mirror
+    root = _export(env)
+    forged = _forged_replies(m, root["id"], when)
+    (t,) = [t for t in pull.threads_from([root, *forged], m.man) if t.root_id == root["id"]]
+    assert not t.retracted and t.offered == pull.WITHDRAWN  # the withdrawal is read, and hides nothing unchecked
+    return root, forged
+
+
+def test_forged_replies_take_no_real_thread_out_of_the_digest(signing):
+    signing.collector([finding()])
+    signing.run(relay=PutRelay())
+    root, forged = _attacked(signing, T0 + 100)
+    _, summary, relay = signing.run(relay=PutRelay(), now=at(5, 9))
+    (digest,) = [c[2] for c in relay.calls if c[2].startswith("Daily digest")]
+    assert "GHSA-abcd-efgh-ijkl" in digest and ",foreign=2" in summary
+    assert {root["id"], *(f["id"] for f in forged)} <= set(_stored(signing))
+
+
 def test_forged_replies_keep_no_copy_from_posting(signing):
-    m = signing.mirror
     signing.run(relay=PutRelay())  # the record is started
     lost(signing)
-    feed = entries(signing)[0]["channel_ids"]["feed"]
-    _forged_replies(m, feed, T0 + HOUR + 100)
-    _, _, relay = signing.run(relay=PutRelay(), now=T0 + 2 * HOUR)
-    assert len(roots(relay, "critical")) == 1
+    root, forged = _attacked(signing, T0 + HOUR + 100)
+    _, summary, relay = signing.run(relay=PutRelay(), now=T0 + 2 * HOUR)
+    assert len(roots(relay, "critical")) == 1 and ",foreign=2" in summary
+    assert {root["id"], *(f["id"] for f in forged)} <= set(_stored(signing))
 
 
 @pytest.fixture
@@ -833,12 +843,13 @@ def test_the_pass_waits_for_the_record(signing, how):
     m = signing.mirror
     m.raw["checkpoint.json"] = None  # no checkpoint of the poster's is served: nothing on the mirror starts the record
     r = _curator_root(m)
-    _ja(m, r, T0 + 300)
+    forged = _ja(m, r, T0 + 300)
     call = Call(lambda t: pytest.fail("called before the record was started"))
     _, summary, relay = signing.run(relay=PutRelay(), now=T0 + HOUR, translate_call=call,
                                     mirror_fetch=m.fetch)
     assert " translate=no-record " in summary and relay.ja == []
     assert sent.started(signing.config.sent_state)  # by the signer, at the end of that run
+    assert forged["id"] not in _rec(signing.config.sent_state)["ids"]  # and not with the forgery in it
     call = Call()
     _, summary, relay = signing.run(relay=PutRelay(), now=T0 + 2 * HOUR, translate_call=call)
     assert " translate=ok " in summary and len(call.texts) == 1 and [to for _, to, _ in relay.ja] == [r["id"]]

@@ -9,7 +9,24 @@ One chunk; it lands whole. Expected size: about 40 lines of code, 150 of tests.
 
 Fixtures already there: `signing` (a poster with a checkpoint key), `_forged`,
 `on_mirror`, `PutRelay`, `FakeRelay`, `T0`, `at`, `HOUR`. Each test first runs the
-poster once (`signing.run(relay=PutRelay())`) so the signer starts the record.
+poster once (`signing.run(relay=PutRelay())`) so the signer starts the record,
+except the two cases of `test_the_pass_waits_for_the_record`, which are about a
+record that is not started.
+
+Two facts about the fixtures decide how the tests are set up (plan review):
+
+- `Mirror` serves by default a checkpoint, signed with the poster's checkpoint
+  key, that lists every event on it. A first run adopts what that checkpoint
+  lists, a forgery included. A test whose record must start without the forgery
+  serves no checkpoint (`m.raw["checkpoint.json"] = None`) and asserts the forged
+  id is not among the record's ids afterwards.
+- `FakeRelay` and `PutRelay` hand out ids and put nothing on the mirror, so a
+  ledger thread has no root there and a forged reply to its id is dropped by
+  `pull.threads_from` before any rule reads it. `_export(env)` puts the ledger's
+  thread on the mirror: a root signed with the bot key, noted in the sent record,
+  the ledger's ids rewritten to it. `_attacked(env, when)` adds the forged replies
+  and asserts that the whole copy, replayed, holds the thread with the withdrawal
+  read as an offer (`t.offered == pull.WITHDRAWN`, not retracted).
 
 - [ ] `test_own_returns_the_copy_without_the_foreign_events` (unit, `sent.own`):
   an unstarted record returns the same mapping; a started one drops the forged
@@ -21,12 +38,14 @@ poster once (`signing.run(relay=PutRelay())`) so the signer starts the record.
   `Run._withdrawn` roots hold a retracted curator thread and not the forged root
   a curator retracted.
 - [ ] `test_forged_replies_take_no_real_thread_out_of_the_digest`: a relay-bot
-  thread of the poster's (a collector finding posted by the first run), then a
-  forged `retract` reply and a forged withdrawal block in it; the 09:00 digest
-  lists the thread. Passes before and after: it pins what the issue feared.
+  thread of the poster's (a collector finding posted by the first run, put on the
+  mirror by `_export`), then a forged `retract` reply and a forged withdrawal
+  block in it (`_attacked`); the 09:00 digest lists the thread and the stored copy
+  holds the root and both replies. Passes before and after: it pins what the
+  issue feared.
 - [ ] `test_forged_replies_keep_no_copy_from_posting`: the `lost` setup of
-  `tests/poster/test_copy_on_raise.py` under `signing`, the same forged replies,
-  the critical copy still posts.
+  `tests/poster/test_copy_on_raise.py` under `signing`, the thread exported and
+  attacked the same way, the critical copy still posts.
 - [ ] `test_a_forged_translation_does_not_stop_the_posters_own`: curator
   translation on (`translate_curator=True` on `signing.config`), a curator root, a
   forged `lang: ja` reply to it under the bot key; the pass calls the model once
@@ -44,10 +63,11 @@ poster once (`signing.run(relay=PutRelay())`) so the signer starts the record.
   changes the title, then a curator's amendment; the one model input and the one
   reply sent contain neither `Forged Product` nor the forged title.
 - [ ] `test_the_pass_waits_for_the_record` (parametrized: first run, record lost):
-  with the record not started, the run's summary says ` translate=no-record `, the
-  model is not called and nothing Japanese is sent, even with the forged block of
-  the test above on the mirror; the signer starts the record in that run and the
-  next run translates from the advisory without the forged block.
+  no checkpoint served; a curator root and a forged `lang: ja` reply to it. With
+  the record not started, the run's summary says ` translate=no-record `, the
+  model is not called and nothing Japanese is sent; the signer starts the record
+  in that run without the forged id; the next run translates the root (which it
+  would not, had the forgery been read or adopted).
 - [ ] `test_without_a_checkpoint_key_the_reads_take_the_whole_copy` (`env`, no
   key): `Run._mirror` returns the relay-bot root on the mirror, and no sent record
   is written.
