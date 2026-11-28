@@ -8,6 +8,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -15,7 +16,7 @@ import pytest
 
 from aitools_alerts import checkpoint as cp
 from aitools_alerts import manifest, nostr, pull
-from aitools_alerts.poster import signer, transport
+from aitools_alerts.poster import signer, sources, transport
 from aitools_alerts.state import State
 from mirror_helpers import CHANNELS, advisory, released_reader
 from test_main import T0, env, finding  # noqa: F401 - env is a fixture
@@ -196,3 +197,85 @@ def test_a_relay_that_withholds_an_acknowledged_post_cannot_get_a_clean_checkpoi
     shutil.copy(w.vm_home / "alerts-inbox" / "checkpoint.json", w.out / "checkpoint.json")
     res, st, shown = w.member(member)
     assert res.error == "mirror incomplete" and pull.unverified(st, w.now) is not None
+
+
+# ---------------------------------------------------------------- a year of renewals (65xv)
+
+def _ghsa(n: int) -> str:
+    """A GHSA id of its own for day ``n``."""
+    digits = "23456789cfghjmpqrvwx"
+    s = ""
+    for _ in range(12):
+        n, r = divmod(n, len(digits))
+        s = digits[r] + s
+    return f"GHSA-{s[:4]}-{s[4:8]}-{s[8:]}"
+
+
+def test_a_year_of_one_new_high_a_day_stays_inside_every_cap(world, tmp_path, monkeypatch):
+    """ai-tools-alerts#65xv, its acceptance. Every day a reviewed advisory of its own is
+    posted at high, the poster runs once, the exporter publishes and a member pulls. The
+    channel files and each checkpoint stay inside their caps, no pull fails, and on the
+    last day a member, the daily one and a new one, shows every thread the ledger still
+    holds open at the ledger's level or a higher one.
+
+    200 days by default: the first threads have ended (day 90), stepped down (day 104)
+    and left readers (day 194), and what a checkpoint lists has stopped growing.
+    ``AITOOLS_ALERTS_SIM_DAYS=365`` runs the issue's whole year, about eleven minutes."""
+    from advisories import ghsa_json
+    from aitools_alerts.poster import main
+    w, DAY = world, 86400
+    seen = {}
+    real = nostr.verify_event
+
+    def verify(ev):  # the exporter verifies every row at every export: once is enough here
+        key = json.dumps(ev, sort_keys=True)
+        if key not in seen:
+            seen[key] = real(ev)
+        return seen[key]
+    monkeypatch.setattr(nostr, "verify_event", verify)
+    member, rank = tmp_path / "member-daily", {"notice": 0, "high": 1, "critical": 2}
+    days = int(os.environ.get("AITOOLS_ALERTS_SIM_DAYS", 200))
+    # One run a day stands for the poster's 24: it reads as many advisories as those would.
+    monkeypatch.setattr(sources, "LANE_READS", 24 * sources.LANE_READS)
+    monkeypatch.setattr(sources, "LANE_SECONDS", 24 * sources.LANE_SECONDS)
+    w.export()  # the mirror exists before the poster's first pull
+    for d in range(days + 1):
+        w.now = T0 + d * DAY
+        if d % 60 == 0:  # the fixture's certificate lasts 90 days: the root signs the next one
+            w.cert_file.write_text(json.dumps(cp.build_cert(w.root_sec, w.man, w.ck, w.now - 3600, w.now + 90 * DAY)))
+        fid = _ghsa(d + 1)
+        fix = f"2.{d + 1}.0"  # a fix of its own: an advisory with an open thread's fix joins that thread (btqg)
+        w.env.api.put(fid, ghsa_json(fid, packages=[("npm", "@anthropic-ai/claude-code", f"< {fix}", fix)]))
+        stamp = time.strftime("%Y-%m-%dT%H%M%SZ", time.gmtime(w.now))
+        w.env.collector([finding(fid=fid, severity="moderate", fixed=fix, observed=stamp[:13] + ":00:00Z")], name=stamp)
+        code, summary, _ = w.poster_run()
+        assert code == 0 and " checkpoint=sent" in summary, (d, summary)
+        w.now += 300
+        result = w.export()
+        assert result["checkpoint"].startswith("published seq "), (d, result["checkpoint"])
+        for name in ("feed", "critical"):
+            data = (w.out / f"{name}.json").read_bytes()
+            assert len(data) <= em.MAX_CHANNEL_BYTES and len(json.loads(data)["events"]) <= em.MAX_CHANNEL_EVENTS
+        listed = cp.load_checkpoint(w.out / "checkpoint.json").events
+        assert len(listed) <= signer.MAX_LISTED
+        res, st, _ = w.member(member)
+        assert res.error is None, (d, res.error)
+    entries = w.env.ledger()[0]
+    assert len(entries) == days + 1
+    ended = [e for e in entries if e.get("ended")]
+    assert len(ended) >= days - main.RENEW_DAYS  # every thread older than the limit has ended
+    # still on readers: above notice, or stepped to notice under 90 days ago
+    still = {e["root_event_id"]: e["level"] for e in entries
+             if e["level"] != "notice" or w.now - max(e.get("changed") or [0]) < 90 * DAY}
+    assert len(still) >= 180 and all(e["level"] == "high" for e in entries[-main.RENEW_DAYS:])
+    for home in (member, tmp_path / "member-new"):
+        res, st, _ = w.member(home)
+        assert res.error is None and pull.unverified(st, w.now) is None
+        shown = {t.root_id: t.adv.level for t in pull.active(pull.advisories(st), *pull.head_clock(st))}
+        low = [r for r, level in still.items() if rank.get(shown.get(r), -1) < rank[level]]
+        assert not low, f"{len(low)} of {len(still)} open threads show below the ledger's level"
+        assert len(st.events) < pull.MAX_STORED_EVENTS // 2
+        # What the open threads cost the checkpoint, which also lists older ones while it has room
+        listed = cp.load_checkpoint(w.out / "checkpoint.json").events
+        cost = [i for i in listed if (pull._thread_ref(st.events[i]) or i) in still]
+        assert set(still) <= listed and len(cost) <= signer.MAX_LISTED * 0.8, len(cost)

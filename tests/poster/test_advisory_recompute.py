@@ -615,3 +615,18 @@ def test_a_fix_groups_other_member_lends_no_level(env):
     assert hours(env, 2, 30) == [] and member(env, entries(env)[0])["claude-code\nClaude Code"]["result"] == "confirmed"
     alone = Api(default=plain, **{G2: ghsa_json(G2, type="malware")})  # the same advisory as its own thread: critical
     assert sources.Reader(alone).read(G2).support["Claude Code"][0] == "critical"
+
+
+def test_an_ended_thread_is_raised_only_above_the_level_it_ended_at():
+    """65xv: ended at high and stepped to notice. The advisory still states high: no
+    raise, and no wait for a lowering either. One that KEV lists is above high."""
+    e, st = thread(level="notice", ended="high", claim="x"), recompute.new_state()
+    read = reads(**{G: ghsa_json(G)})
+    assert recompute.judge(thread(level="notice"), CLAUDE, None, RS, recompute.new_state(), 0, read) == ("raise", "high")
+    assert recompute.judge(e, CLAUDE, None, RS, st, 0, read) is None and st["dwell"] == {}
+    assert recompute.raised(e, CLAUDE, None, RS, read) is None
+    up = [{"verb": "upgrade", "target": "Claude Code", "value": "2.1.0"}]
+    e = thread((G, CVE), level="notice", ended="high", claim="x", actions=up)
+    read = reads(**{G: ghsa_json(G, cve=CVE)})
+    assert recompute.judge(e, CLAUDE, kc(catalog("v1", CVE), "ok", st, 0), RS, st, 0, read) == ("raise", "critical")
+    assert recompute.raised(e, CLAUDE, kc(catalog("v1", CVE), "ok", st, 0), RS, read) == "critical"
