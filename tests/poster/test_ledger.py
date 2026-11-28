@@ -549,3 +549,45 @@ def test_the_standing_claim_and_the_roots_ids_are_optional_keys(tmp_path):
     p.write_text(json.dumps(data))
     with pytest.raises(LedgerError):
         Ledger(p).__enter__()
+
+
+def test_a_thread_ends_once_and_a_recorded_raise_makes_it_an_ordinary_thread_again(tmp_path):
+    """65xv: ``end`` keeps the level a thread ended at, once, and only for a thread with a
+    standing claim; a lowering recorded later keeps the key, a raise removes it."""
+    import json
+    p = tmp_path / "l.json"
+    with Ledger(p) as led:
+        led.record_root(adv_for(cand(), "high"), "e1", {"feed": "e1"}, scope="Claude Code", exploited=False, now=T0)
+        with pytest.raises(LedgerError):
+            led.end("e1", "high")  # no standing claim: nothing renews it, nothing ends it
+        led.set_claim("e1", "one", ["CVE-2026-0001"])
+        with pytest.raises(LedgerError):
+            led.end("e1", "none")
+        assert led.thread("e1").ended is None
+        assert led.end("e1", "high").ended == "high" and led.end("e1", "notice").ended == "high"
+        led.record_reply("e1", adv_for(cand(), "notice"), {"feed": "r1"}, now=T0 + DAY)
+        assert led.thread("e1").ended == "high"
+        led.record_reply("e1", adv_for(cand(), "critical"), {"feed": "r2"}, now=T0 + 2 * DAY)
+        assert led.thread("e1").ended is None
+        led.end("e1", "critical")
+    data = json.loads(p.read_text())
+    assert data["entries"][0]["ended"] == "critical"
+    data["entries"][0]["ended"] = "none"
+    p.write_text(json.dumps(data))
+    with pytest.raises(LedgerError):
+        Ledger(p).__enter__()
+
+
+def test_leaving_the_withdrawn_state_makes_an_ended_thread_an_ordinary_one(tmp_path):
+    """65xv with kk2q: the withdrawal reply is a lowering and keeps ``ended``; the reply
+    that ends the withdrawal, at the same level, is news: ``ended`` goes and the 90 days
+    count from it."""
+    p = tmp_path / "l.json"
+    with Ledger(p) as led:
+        led.record_root(adv_for(cand(), "high"), "e1", {"feed": "e1"}, scope="Claude Code", exploited=False, now=T0)
+        led.set_claim("e1", "one", ["CVE-2026-0001"])
+        led.end("e1", "high")
+        e = led.record_reply("e1", adv_for(cand(), "high"), {"feed": "r1"}, now=T0 + DAY, withdrawn=True)
+        assert e.ended == "high" and e.withdrawn == ["feed"]
+        e = led.record_reply("e1", adv_for(cand(), "high"), {"feed": "r2"}, now=T0 + 2 * DAY, withdrawn=False)
+        assert e.ended is None and e.withdrawn is None and e.changed[-1] == T0 + 2 * DAY
