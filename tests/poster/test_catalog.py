@@ -166,8 +166,9 @@ def test_a_held_notice_corrected_by_a_whole_read_posts_a_new_catalog_root(env): 
     assert chans(relay) == [("catalog", None)]
     (b,) = blocks(relay)
     assert b.id == "GHSA-4fc4-wcmh-4g86" and (b.products[0].affected, b.products[0].fixed) == (None, "2.17.0")
-    _, _, relay = run(env, now=T0 + 7200)
-    assert relay.calls == []  # the same read again posts nothing
+    test_main.inspector_notice(env, blocks=test_main.TWO_RANGES)
+    _, summary, relay = run(env, now=T0 + 7200)
+    assert "candidates=1" in summary and relay.calls == []  # the same read again posts nothing
 
 
 def test_a_notice_first_seen_in_the_digest_run_still_reaches_the_catalog(env):

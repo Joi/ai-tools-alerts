@@ -49,8 +49,9 @@ is not matched.
 read. Only a repository advisory page gives them (`Evidence.structured`); a vendor
 site page or KEV alone gives none. A box can also state no range and no patched
 version, so the fields alone do not say whether a box was read. `admit` therefore
-records, in a set on the run (`Run.boxed`, `scope|id`), the candidate's id and every
-id the page assigns whenever the evidence is structured. `plan_new` passes
+records, in a set on the run (`Run.boxed`, `scope|id`), the candidate's own id
+whenever its evidence is structured (not the ids the page assigns: another record
+those ids name read no box itself; a merged candidate carries its members' ids). `plan_new` passes
 `read = any id of the candidate is in boxed` to `hold`. Nothing is added to the state
 file or to `Candidate`: a read is of this run.
 
@@ -68,8 +69,11 @@ For each held notice the sighting matches:
   null included;
 - **a read of some of its ids:** the fields become what covers both blocks
   (`Run._cover`), which only widens:
-  - the fix is the higher of the two; none when the read states none (no version is
-    then safe for every member) or one cannot be compared;
+  - the fix is the higher of the two; none when either states none or one cannot be
+    compared. No version is then known safe for every member. A held notice with no
+    fix may be one whose other member lost its fix, so a later member's read never
+    gives it one back; only a read of every id does. The result does not depend on
+    the order in which members are read (code review, BLOCKER);
   - the range is theirs when they agree, else everything before the fix when both
     state one and there is a fix, else none stated. This is the rule a fix group's
     range already follows (`ledger.merge`).
@@ -86,7 +90,14 @@ A held group whose members' pages have diverged (A now states 2.2.0, B still 2.1
 is no longer one fix group for `ledger.merge`; each member's read then widens the
 held notice, which ends at the higher fix and a range that covers both. B's members
 are told a higher fix than B's own, the safe direction, as a several-range advisory
-already is (xkbf).
+already is (xkbf). When A instead loses its fix, the notice names no fix and no range
+("may apply" to every install) until a read covers every id again.
+
+Not covered here: a notice held under a product's former name. `Run.one` drops a
+later sighting of it before `plan_new` (`_noticed_formerly`, wa6n: "once is enough"),
+so no later read reaches it, before this change or after. That is the state for at
+most the week between a rename and the weekly summary; ai-tools-alerts#n2yj's re-read
+is where a notice no sighting reaches is corrected, and the gap is ai-tools-alerts#2emq.
 
 The rest of `hold` is unchanged: titles, publication dates, the primary source learned
 later (8ke5), new members of a fix group (faxq), struck notices (9je7).

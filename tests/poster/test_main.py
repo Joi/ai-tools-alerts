@@ -1964,6 +1964,37 @@ def test_one_members_read_only_widens_a_held_group(env, page, want):  # 6wy8, fa
     assert bool(env.state()["held"][0]["adv"]["actions"]) is (want[0] is not None)
 
 
+@pytest.mark.parametrize("first", [0, 1])
+def test_members_that_diverge_leave_no_fix_in_either_order_and_on_the_next_run(env, first):  # 6wy8
+    """Held A and B fixed in 1.0.3. A then states `< 1.0.5` and no patch, B what it did.
+    Whichever is read first, and again on the next run, the notice names no fix: B's
+    read never gives back the fix A lost, which would leave 1.0.4 unmatched."""
+    held_group(env)
+    st = env.state()
+    b_url = INSPECTOR.rsplit("/", 1)[0] + "/" + B_ID
+    st["held"][0]["adv"]["sources"].append({**st["held"][0]["adv"]["sources"][0], "url": b_url})
+    env.config.state.write_text(json.dumps(st))
+    for n in (1, 2):
+        pair = [inspector_finding(env, affected="< 1.0.5", patched=None),
+                inspector_finding(env, ghsa=B_ID, affected="< 1.0.3", patched="1.0.3")]
+        env.collector(pair[::-1] if first else pair)
+        env.run(now=T0 + 3600 * n)
+        (h,) = env.state()["held"]
+        assert held_fields(env) == (None, None) and h["adv"]["actions"] == [], n
+        assert {h["adv"]["id"], *h["adv"]["aliases"]} == {"GHSA-4fc4-wcmh-4g86", B_ID}
+
+
+def test_a_partial_read_gives_no_fix_to_a_held_notice_that_has_none(env):  # 6wy8
+    inspector_notice(env, affected="< 1.0.5", patched=None)
+    env.run()
+    st = env.state()
+    st["held"][0]["adv"]["aliases"].append(B_ID)
+    env.config.state.write_text(json.dumps(st))
+    inspector_notice(env, affected="< 1.0.5", patched="1.0.5")
+    env.run(now=T0 + 3600)
+    assert held_fields(env) == (None, "<1.0.5")
+
+
 def test_a_group_that_shares_one_member_joins_under_a_fix_that_covers_it(env):  # 6wy8, faxq
     """Held A and B fixed in 1.0.3; A and C then state 1.0.5. C joins the held notice
     (faxq) under 1.0.5 and everything before it: never under the earlier fix."""

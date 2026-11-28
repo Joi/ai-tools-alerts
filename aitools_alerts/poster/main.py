@@ -216,7 +216,7 @@ class Run:
         self.n = Counter()
         self.deferred: dict[tuple, dict] = {}  # (scope, id) -> candidate dict, for the next run
         self.groups: dict[tuple, list] = {}  # faxq: (scope, id) -> a fix group's members (ledger.merge)
-        self.boxed: set[str] = set()  # 6wy8: scope|id whose repository advisory page admit read this run
+        self.boxed: set[str] = set()  # 6wy8: scope|id of each candidate admit read a repository advisory page for
         # jsje: thread root -> (journal items, withheld groups) a raise of that thread will
         # replace (yields). They stay where they are until the raise is journaled (enqueue).
         self.passed: dict[str, tuple] = {}
@@ -1156,7 +1156,8 @@ class Run:
         # to the product by its fields and the record cites nothing but what is kept here.
         trusted = ev.structured and len(kept) == len(c.sources)
         if ev.structured:  # 6wy8: the package box was read, whatever it states (a box may state no range and no fix)
-            self.boxed.update(f"{scope.name}|{i.casefold()}" for i in (c.id, *ev.ids))
+            # The candidate's own id only: another record that the page's ids name read no box itself.
+            self.boxed.add(f"{scope.name}|{c.id.casefold()}")
         title = candidates._title(ev.title, candidates._Hosts(candidates.FLEET_HOSTS)) if ev.title \
             else c.source_title if ev.kev else None
         severity = "; ".join(x for x in (ev.severity, title if ev.url else None) if x) or None
@@ -1552,12 +1553,15 @@ class Run:
     def _cover(was: dict, new: dict) -> dict:
         """6wy8: the fix and range of a held notice after a read of some of its ids:
         what covers both blocks, never narrower than either. The fix is the higher of
-        the two, and none when the read states none (no version is then safe for every
-        member) or one cannot be compared. The range is theirs when they agree, else
-        everything before the fix, else none stated, as a fix group's is (``ledger.merge``)."""
-        fixes = [v for v in (was["fixed"], new["fixed"]) if v]
-        fixed = max(fixes, key=versions.parse) if new["fixed"] and all(
-            versions.parse(v) is not None for v in fixes) else None
+        the two, and none when either states none or one cannot be compared: no version
+        is then known safe for every member, and a held notice with no fix may be one
+        whose other member lost its fix, so a later member's read never gives it one
+        back (only a read of every id does). The range is theirs when they agree, else
+        everything before the fix, else none stated, as a fix group's is
+        (``ledger.merge``). The result does not depend on the order of the reads."""
+        fixes = [was["fixed"], new["fixed"]]
+        fixed = max(fixes, key=versions.parse) if all(
+            v and versions.parse(v) is not None for v in fixes) else None
         if was["affected"] == new["affected"]:
             affected = new["affected"]
         else:

@@ -30,6 +30,8 @@ One chunk. Tests first.
   - `test_one_members_read_only_widens_a_held_group`, five cases: a narrower member,
     a fix that rose, the same range, no fix now, several ranges (spec review).
   - `test_a_group_that_shares_one_member_joins_under_a_fix_that_covers_it` (spec review).
+  - `test_members_that_diverge_leave_no_fix_in_either_order_and_on_the_next_run` and
+    `test_a_partial_read_gives_no_fix_to_a_held_notice_that_has_none` (code review).
   - catalog: `test_a_held_notice_corrected_by_a_whole_read_posts_a_new_catalog_root`.
   - `test_an_old_source_posts_no_root_and_reaches_the_digest_notices`: its
     "the fix stays" assertion becomes "the fix and the action go" (spec review).
@@ -44,7 +46,7 @@ One chunk. Tests first.
 - [x] 6. `Run.plan_new` passes `read`.
 - [x] 7. Mutation checks (nine with one more on the range), each must fail a test: `read` always true; `whole` always
   true; `whole` always false; the old per-field merge; `boxed` filled from stated
-  fields only; `_cover` keeping the held fix when the read states none; `_cover`
+  fields only; `_cover` giving a fix when either side states none (two mutations); `_cover`
   taking the lower fix; `_cover` keeping the held range when they differ.
 - [x] 8. `CHANGELOG.md`: an entry under a new unreleased heading.
 
