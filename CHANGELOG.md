@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-11-28
+
+Corrections to grouped alerts, per-channel level replies, a fuller read of an advisory's package box, and the member's reading of a current Hermes release. A channel that refused a level reply is sent the thread's standing level again (ai-tools-alerts#aqtf). Retracting one advisory of a grouped alert or of a held grouped notice no longer hides or drops the others (ai-tools-alerts#z360, ai-tools-alerts#9je7), and an advisory that still supports a grouped alert's level leaves it when the first advisory is withdrawn or lowered (ai-tools-alerts#yd1y). The relay bot reads every package, range and patched version of a repository advisory (ai-tools-alerts#xkbf). The member's CLI reads the release a current Hermes runs (ai-tools-alerts#1qy4). No wire format, schema, manifest, ruleset or scope file changes, so the trust root, the ruleset pin and the checkpoint key certificate stay as they were; `spec/wire.md` changes in prose only. The poster's ledger and journal gain keys an older poster refuses (`lacks`, `copied`, `uneven`, `split`, and a journal item's `again`). Going back is possible only under the conditions each entry below names, and otherwise goes forward.
 
 A level reply that one channel refused is no longer lost to that channel (ai-tools-alerts#aqtf). A critical alert has a thread in two channels and every level reply goes to both. The poster gives up a reply a channel refused twice, three days apart, and until now nothing remembered which channel lacked it: a raise that one channel never took left the alert low there for good, a lowering left it high, and a withdrawal left it shown.
 
