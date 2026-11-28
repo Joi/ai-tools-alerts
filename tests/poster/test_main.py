@@ -2190,31 +2190,39 @@ def test_a_page_that_never_parses_and_names_nothing_is_dropped_and_counted(env, 
     ((summary, err, fetched),) = _hourly(env, capsys, [24 * 7], relay)
     assert "advisory page not parsed, dropped=1" in err and "deferred" not in err and fetched == [GHSA]
     assert "held=0" in summary and env.state()["deferred"] == [] and env.state()["held"] == []
+    # the end is on record, dated the run that ended it, and the first sight is pruned
+    assert env.state()["waiting"] == {"Claude Code|ghsa-abcd-efgh-ijkl|end": T0 + 7 * DAY}
     ((summary, err, fetched),) = _hourly(env, capsys, [24 * 7 + 1], relay)
-    assert fetched == [] and "not parsed" not in err and env.state()["waiting"] == {}
-    _nothing_was_signed(env, relay)
+    assert fetched == [] and "not parsed" not in err
+    _hourly(env, capsys, [24 * 14], relay)  # no input has named it for a week: forgotten
+    assert env.state()["waiting"] == {} and env.state()["deferred"] == []
+    assert all(c[2].startswith("Daily digest for ") for c in relay.calls) and env.ledger()[0] == []
 
 
 def test_an_input_that_still_names_an_ended_candidate_does_not_start_its_wait_again(env, capsys):
-    """The collector's next record lists the same finding. Its first sight is kept while an
-    input names it, so each run ends it again at once: it never goes back on the deferred list."""
+    """The collector's later records list the same finding, with runs between that read no
+    new record. The end is on record for a week past the last run that ended the candidate,
+    so each run that meets it ends it again at once: it never goes back on the deferred list."""
+    end = "Claude Code|ghsa-abcd-efgh-ijkl|end"
     env.pages.put(GHSA, "<html>Sign in to continue</html>")
     env.collector([finding()])
     _hourly(env, capsys, (0, 24 * 7))
-    assert env.state()["waiting"] == {"Claude Code|ghsa-abcd-efgh-ijkl": T0}  # ended in this run: kept
-    for n, h in enumerate((24 * 7 + 1, 24 * 7 + 2, 24 * 20)):
+    assert env.state()["waiting"] == {end: T0 + 7 * DAY}
+    for h in (24 * 7 + 3, 24 * 9, 24 * 15):
+        _hourly(env, capsys, [h - 2, h - 1])  # runs with no newer record: the end is not forgotten
+        assert end in env.state()["waiting"], h
         env.collector([finding()])
         ((summary, err, fetched),) = _hourly(env, capsys, [h])
-        assert "advisory page not parsed, dropped=1" in err and "deferred" not in err, h
-        assert env.state()["deferred"] == [] and env.state()["waiting"] == {"Claude Code|ghsa-abcd-efgh-ijkl": T0}
+        assert "advisory page not parsed, dropped=1" in err and "deferred" not in err and fetched == [GHSA], h
+        assert env.state()["deferred"] == [] and env.state()["waiting"] == {end: T0 + 3600 * h}
     env.pages.put(GHSA, NEW_MARKUP)  # and the notice is held once, however often it is named
-    for h in (24 * 21, 24 * 21 + 1):
+    for h in (24 * 16, 24 * 16 + 1):
         env.collector([finding()])
         _hourly(env, capsys, [h])
         assert len(env.state()["held"]) == 1 and env.state()["deferred"] == []
     del env.pages.fixed[GHSA]  # the page parses at last: it is read as it always was
     env.collector([finding()])
-    _, summary, relay = env.run(now=T0 + 3600 * (24 * 21 + 2))
+    _, summary, relay = env.run(now=T0 + 3600 * (24 * 16 + 2))
     assert env.state()["deferred"] == [] and "not parsed" not in capsys.readouterr().err
     assert "roots=1" in summary and "Do: upgrade Claude Code to 2.1.0 or later." in relay.calls[0][2], summary
 
@@ -2257,16 +2265,74 @@ def test_with_no_first_sight_on_record_the_end_is_at_once(env, capsys):
     ((summary, err, _),) = _hourly(env, capsys, [0])
     assert "held=1" in summary and "advisory page not parsed, dropped=1" in err and "deferred" not in err
     assert env.state()["deferred"] == [] and [h["adv"]["id"] for h in env.state()["held"]] == ["GHSA-abcd-efgh-ijkl"]
-    # the end is on record as a first sight that old, so a map with room again starts no new wait
-    old = T0 - main.RETRY_DAYS * DAY
-    assert {k: t for k, t in env.state()["waiting"].items() if "ghsa" in k} == {
-        "Claude Code|ghsa-abcd-efgh-ijkl": old, "Claude Code|ghsa-mnop-qrst-uvwx": old}
+    # the end is on record, so a map with room again starts no new wait
+    ends = {"Claude Code|ghsa-abcd-efgh-ijkl|end": T0, "Claude Code|ghsa-mnop-qrst-uvwx|end": T0}
+    assert {k: t for k, t in env.state()["waiting"].items() if "ghsa" in k} == ends
     st = env.state()
-    st["waiting"] = {k: t for k, t in st["waiting"].items() if "ghsa" in k}
+    st["waiting"] = ends
     inputs.save_state(env.config.state, st)
     env.collector([finding(), finding(fid="GHSA-mnop-qrst-uvwx")])
     ((summary, err, _),) = _hourly(env, capsys, [1])
     assert "advisory page not parsed, dropped=1" in err and "deferred" not in err and env.state()["deferred"] == []
+
+
+def test_a_full_waiting_map_still_records_the_end(env, capsys):
+    """The map is at its cap. The end is written all the same, the oldest entry making way,
+    so when the map has room again the next record naming the candidate starts no wait."""
+    st = inputs.new_state(T0, 3)
+    st["waiting"] = {f"Claude Code|cve-2020-{n:04d}": T0 - n for n in range(inputs.MAX_WAITING)}
+    env.config.state.parent.mkdir(parents=True, exist_ok=True)
+    inputs.save_state(env.config.state, st)
+    env.pages.put(GHSA, "<html>Sign in</html>")
+    env.collector([finding()])
+    ((summary, err, _),) = _hourly(env, capsys, [0])
+    assert "advisory page not parsed, dropped=1" in err and env.state()["deferred"] == []
+    w = env.state()["waiting"]  # still a map the next run loads: at the cap, the oldest entry gone
+    assert len(w) == inputs.MAX_WAITING and w["Claude Code|ghsa-abcd-efgh-ijkl|end"] == T0
+    assert f"Claude Code|cve-2020-{inputs.MAX_WAITING - 1:04d}" not in w and "Claude Code|cve-2020-0000" in w
+    st = env.state()
+    st["waiting"] = {k: t for k, t in w.items() if k.endswith("|end")}  # the rest resolved
+    inputs.save_state(env.config.state, st)
+    env.collector([finding()])
+    ((summary, err, _),) = _hourly(env, capsys, [1])
+    assert "advisory page not parsed, dropped=1" in err and "deferred" not in err and env.state()["deferred"] == []
+
+
+def test_an_end_with_no_first_sight_invents_none(env, capsys):
+    """The map is half full, so the candidate ends with no first sight on record. None is
+    made up for it: when its page parses an hour later, the age limit judges it from that
+    run, as it would have before, and a source published ten days ago posts no root."""
+    st = inputs.new_state(T0, 3)
+    st["waiting"] = {f"Claude Code|cve-2020-{n:04d}": T0 for n in range(inputs.MAX_WAITING // 2)}
+    env.config.state.parent.mkdir(parents=True, exist_ok=True)
+    inputs.save_state(env.config.state, st)
+    f = finding()
+    f["sources"][0]["published_at"] = "2026-10-26T00:00:00Z"
+    env.pages.put(GHSA, "<html>Sign in</html>")
+    env.collector([f])
+    ((summary, err, _),) = _hourly(env, capsys, [0])
+    assert "advisory page not parsed, dropped=1" in err
+    w = env.state()["waiting"]
+    assert w["Claude Code|ghsa-abcd-efgh-ijkl|end"] == T0 and "Claude Code|ghsa-abcd-efgh-ijkl" not in w
+    del env.pages.fixed[GHSA]
+    env.collector([f])
+    _, summary, relay = env.run(now=T0 + 3600)
+    assert "aged=1" in summary and "roots=0" in summary and "held=1" in summary and relay.calls == []
+
+
+def test_a_first_sight_under_the_products_former_name_counts(env, capsys):
+    """wa6n: the scope file renamed the product while its candidate waited. The wait is
+    counted from the first sight under the old name, not begun again under the new one."""
+    url = "https://github.com/modelcontextprotocol/inspector/security/advisories/GHSA-abcd-efgh-ijkl"
+    st = inputs.new_state(T0, 3)
+    st["waiting"] = {"MCP Inspector|ghsa-abcd-efgh-ijkl": T0 - 7 * DAY}
+    env.config.state.parent.mkdir(parents=True, exist_ok=True)
+    inputs.save_state(env.config.state, st)
+    env.pages.put(url, "<html>Sign in</html>")
+    env.collector([finding(product="@modelcontextprotocol/inspector", sources=(url,))])
+    ((summary, err, _),) = _hourly(env, capsys, [0])
+    assert "advisory page not parsed, dropped=1" in err and "deferred" not in err and env.state()["deferred"] == []
+    assert "@modelcontextprotocol/inspector|ghsa-abcd-efgh-ijkl|end" in env.state()["waiting"]
 
 
 def test_many_pages_that_never_parse_all_end_and_the_deferred_list_empties(env, capsys, monkeypatch):
@@ -2280,10 +2346,12 @@ def test_many_pages_that_never_parse_all_end_and_the_deferred_list_empties(env, 
     _hourly(env, capsys, range(5))  # each is deferred, by its page or by the budget
     assert len(env.state()["deferred"]) == 5
     sizes, ended = [], 0
-    for summary, err, fetched in _hourly(env, capsys, range(24 * 7 + 5, 24 * 7 + 5 + 8)):
+    for h in range(24 * 7 + 5, 24 * 7 + 5 + 8):  # one run at a time: the list is read after each
+        ((summary, err, fetched),) = _hourly(env, capsys, [h])
         assert len(fetched) <= 2
         sizes.append(len(env.state()["deferred"]))
         ended += int(summary.split(" held=")[1].split()[0])
+    assert len(set(sizes)) > 2, sizes  # it shrank over several runs, never grew
     assert sizes == sorted(sizes, reverse=True) and sizes[-1] == 0, sizes
     st = env.state()  # each was held once; a weekly summary has listed some since
     listed = {k.split("|")[1] for k in st["digested"]} | {h["adv"]["id"].lower() for h in st["held"]}

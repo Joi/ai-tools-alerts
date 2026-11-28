@@ -25,17 +25,24 @@ One chunk, one commit. About 330 changed lines, most of them tests.
 
 ### 2. `aitools_alerts/poster/main.py`
 
-- [x] `Run.__init__`: `self.ended: set[str] = set()`.
-- [x] `Run._lapsed(scope, cid)`: `self.saw(scope, cid)`; the `waiting` entry
-      is missing or `RETRY_DAYS * 86400` old.
+- [x] `ENDED = "|end"` beside `RETRY_DAYS`: the suffix of a `waiting` key that
+      says its candidate reached its end.
+- [x] `Run._lapsed(scope, cid)`, over the keys of the product's name and its
+      former names: True at once when an end entry is in the map; else
+      `self.saw(scope.name, cid)` when no first sight is there, and the oldest
+      first sight is missing or `RETRY_DAYS * 86400` old.
+- [x] `Run._end(scope, cid)`: write the end entry dated now. In a map at
+      `inputs.MAX_WAITING` that lacks it, the oldest entry (by date, then key)
+      is deleted first, so the state stays one `load_state` accepts.
 - [x] `Run.admit`: after the first `rules.evidence`, when `not ev.ok and
-      ev.unparsed and not ev.failed and not ev.budget and self._lapsed(...)`:
-      read `rules.evidence(..., lapsed=True)`; remember the end (the key into
-      `self.ended`, with an entry `RETRY_DAYS` old written by `setdefault` when
-      the map is under `inputs.MAX_WAITING` and the id is not synthetic); when
-      still not ok, count "advisory page not parsed, dropped" and return None.
-      Otherwise fall through to the existing code with the new evidence.
-- [x] `run`: the prune of `state["waiting"]` keeps a key in `r.ended`.
+      ev.unparsed and not ev.failed and not ev.budget`
+      and `self._lapsed(...)`: read `rules.evidence(..., lapsed=True)`, call
+      `self._end(...)`; when still not ok, count "advisory page not parsed,
+      dropped" and return None. Otherwise fall through to the existing code
+      with the new evidence.
+- [x] `run` is not changed: its prune of `waiting` keeps an end entry for
+      `AGE_LIMIT` after the last run that ended the candidate, which is the
+      memory wanted (a run with no new collector record does not forget it).
 
 ### 3. Tests
 
@@ -55,8 +62,9 @@ scripts/test-gate.sh        # in a clone of this branch alone (the shared clone'
 
 Mutation checks, each of which a test must catch: drop `p is None`; drop the
 URL-id condition; drop `_sole`; drop `_says`; drop `rank == 0`; `>` for `>=` in
-`_lapsed`; drop `not ev.failed`; drop `k in r.ended` from the prune; defer
-after the drop.
+`_lapsed`; a missing first sight never ends; drop `not ev.failed`; `_end`
+writes nothing; `_lapsed` ignores the end entry; `_end` evicts nothing in a
+full map; defer after the drop; `failed` always False.
 
 ### Acceptance
 
@@ -70,14 +78,14 @@ after the drop.
 
 ### Rollback
 
-Revert the commit. The state file's shape is unchanged; a `waiting` entry
-older than `AGE_LIMIT` that no deferred candidate names is pruned by the older
-code's next run.
+Revert the commit. The state file's shape is unchanged; the older code reads
+an end entry as a `waiting` entry no candidate names and prunes it within
+`AGE_LIMIT`.
 
 ### Order with ai-tools-alerts#vszx
 
 vszx is in flight and edits `run` near the lines that build `pairs`. This
-change touches `run` only in the prune. Merge `origin/main` before the review
+change does not touch `run`. Merge `origin/main` before the review
 and again before the merge.
 
 ### Rollout

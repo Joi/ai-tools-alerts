@@ -79,20 +79,30 @@ there is still none or it is `RETRY_DAYS` old. Then:
   it is counted as dropped. Either way it is not deferred.
 - not lapsed: deferred and counted as now.
 
-**Remembering the end.** The collector's record is replaced each hour and lists
-largely the same findings, so an ended candidate comes back as a fresh one. Its
-`waiting` entry is the memory: at the end `admit` notes the key in `Run.ended`
-(writing an entry `RETRY_DAYS` old if the candidate has none and the map is
-under its cap), and `run` keeps a key in `ended` when it prunes the map. So
-while any input still names the candidate, each run ends it again at once, by
-the same two reads of pages already fetched: the notice is held once (`hold`
-knows its ids) and the drop is counted each run, as "no authoritative source"
-is. When no input names it any more, the entry is pruned with the rest. If the
-page parses on a later run it is read by its fields and the candidate posts as
-the page states; `plan_new` dates it from the first sight on record.
+**Remembering the end.** The collector's record is replaced about each hour
+and lists largely the same findings, so an ended candidate comes back as a
+fresh one, sometimes after runs that read no new record. The memory is an
+entry of the `waiting` map under the candidate's key with the suffix `|end`,
+dated the run that ended it (`Run._end`). `_lapsed` answers True at once for a
+candidate that has one. `run` prunes the map as it always has (an entry no
+deferred candidate names goes `AGE_LIMIT`, seven days, after its date), and
+each run that ends the candidate again dates the entry anew. So the end holds
+for as long as an input names the candidate and for a week after the last run
+that met it; then it is forgotten, and a later sighting is a new one. While it
+holds, each run that meets the candidate ends it by the same two reads of pages
+already fetched: the notice is held once (`hold` knows its ids) and the drop is
+counted each run, as "no authoritative source" is. If the page parses on a
+later run it is read by its fields and the candidate posts as the page states.
 
-No new state field, no change to the state file's shape, no change to any
-post's wording. `run` changes by one condition in the prune.
+The entry is written whatever the map holds. In a map at its cap
+(`inputs.MAX_WAITING`, which `load_state` enforces) the oldest entry makes way:
+it is the one nearest its own pruning, and the candidate it stood for is at
+worst seen as new once more.
+
+No new state field and no change to the state file's shape (`waiting` keys are
+strings holding a `|`, values integers, as before), so an older poster reads a
+newer state and prunes the entries it does not know. No change to any post's
+wording. `run` does not change.
 
 ## Why (a), and why not the others
 
@@ -138,9 +148,12 @@ action, one source.
   issue: it widens the name test, which is not asked for. The cost is a drop
   where a page names only `@anthropic-ai/claude-code` and never "Claude Code";
   it is counted.
-- **A new state field for ended candidates.** Not needed: the `waiting` entry
-  already says when the candidate was first seen, and keeping it while an input
-  names the candidate is one condition.
+- **A new state field for ended candidates.** Not needed, and it would make an
+  older poster refuse the state (`load_state` knows its keys). The `waiting` map
+  already holds dated entries per candidate and prunes them.
+- **Keeping the first-sight entry while this run's inputs name the candidate.**
+  The first build. Rejected after the plan's review: a run that reads no new
+  record names nothing and forgot the end, and a full map could not hold it.
 - **A back-off (read a deferred page less often).** Not needed: the deferred
   list no longer grows with such candidates.
 
@@ -201,17 +214,22 @@ In `tests/poster/test_main.py`:
   notice of the vendor-site shape, the deferred list empty; later runs with no
   input naming it fetch nothing. Pages fetched in all: 169.
 - a page that names nothing: at day 7 "advisory page not parsed, dropped=1",
-  nothing held or signed, the deferred list empty, the `waiting` entry pruned
-  the run after.
-- the collector lists the finding again after the end, three times over
-  thirteen days: dropped each run, never deferred, the first sight kept; then
-  the page meets the conditions: held once over two runs; then it parses: one
-  root, as the page states.
+  nothing held or signed, the deferred list empty, the `waiting` map holding
+  the end entry alone; a week with no input naming it later, the map empty.
+- the collector lists the finding again after the end, three times over eight
+  days, with two runs that read no new record before each: the end entry is
+  still there, the candidate is dropped each time and never deferred; then the
+  page meets the conditions: held once over two runs; then it parses: one root,
+  as the page states.
+- a `waiting` map at its cap: the end in the first run, the end entry written,
+  the oldest entry gone, the map still at the cap; with the map emptied of the
+  rest, the next record naming the candidate is ended at once.
 - a page that starts parsing on day 3: posts as the page states.
 - an unparsed page beside a source that answers 503, past day 7: deferred; when
   that source answers 404, the end.
 - no first sight on record (the `waiting` map at half its cap): the end in the
-  first run, one held and one dropped, none deferred.
+  first run, one held and one dropped, none deferred, both end entries written;
+  with room in the map again, no new wait.
 - five such candidates with two pages a run: the deferred list only shrinks
   after day 7 and empties within eight runs; five notices held in all.
 
