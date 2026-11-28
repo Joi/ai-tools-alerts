@@ -33,6 +33,10 @@ evidence moves a level:
   than ``TRIP_MIN`` threads or ``TRIP_SHARE`` of the threads judged fall due
   within a day (``select``).
 
+A thread the poster has stopped renewing (the ledger's ``ended``, ai-tools-alerts#65xv)
+is raised only above the level it ended at: its sources still state that level, and
+that is no news.
+
 A level that rests on a reading of prose is never recomputed below it (the
 ledger's ``floor``), and ``notice`` is the lowest level. Below it there is one state,
 ``withdrawn`` (ai-tools-alerts#kk2q; spec/wire.md "A withdrawal"): every advisory
@@ -360,6 +364,11 @@ def held(entry, scope, found: str, rs, stop: bool = False, infer: bool = True) -
     return capped
 
 
+def _rises(entry, found: str, rs) -> bool:
+    """Whether ``found`` raises the thread: above its level and, for a thread that has
+    ended (65xv), above the level it ended at."""
+    ended = getattr(entry, "ended", None)
+    return rs.rank(found) > rs.rank(entry.level) and (ended is None or rs.rank(found) > rs.rank(ended))
 def _stated(counted) -> list:
     """For each advisory reading counted, whether it states the withdrawal."""
     return [fields.get("withdrawn_at" if source == "ghsa" else "withdrawn") is not None
@@ -400,7 +409,7 @@ def raised(entry, scope, copy: Copy | None, rs, read=None) -> str | None:
     found = held(entry, scope, found, rs, stop, infer=not known)
     if entry.withdrawn:
         return leaving(entry, found, False, (), rs)
-    return found if rs.rank(found) > rs.rank(entry.level) else None
+    return found if _rises(entry, found, rs) else None
 
 
 def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int, read=None, info: dict | None = None):
@@ -443,7 +452,7 @@ def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int, read=None, in
         dwell.pop(root, None)
         level = leaving(entry, found, known, counted, rs)
         return ("raise", level) if level is not None else None
-    if rs.rank(found) > rs.rank(entry.level):
+    if _rises(entry, found, rs):
         dwell.pop(root, None)
         return "raise", found
     seen = set(st["listed"].get(root, ()))
