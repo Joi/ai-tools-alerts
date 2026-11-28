@@ -3398,19 +3398,65 @@ def test_a_held_group_that_posted_is_not_acknowledged_whole_by_the_digest_that_s
     assert code == 0 and st["held"] == [] and KEY_A in st["digested"] and KEY_Z not in st["digested"]
 
 
-def test_a_member_a_notice_kept_no_source_for_is_read_beside_the_others(env):
+@pytest.mark.parametrize("host", ["github.com/", "github.com./"])
+def test_a_member_a_notice_kept_no_source_for_is_read_beside_the_others(env, host):
     """Review: a notice held by an earlier version took a joining member's id without its
-    source. The member is read at its own page in the repository the notice does name."""
+    source. The member is read at its own page in the repository the notice does name,
+    however that source spells the host (``rules.host_of``)."""
     env.collector([finding(severity=None)])
     env.run()
     env.collector([finding(severity=None), finding(fid=GHSA_Z, severity=None)])
     env.run(now=T0 + 3600)
     st = env.state()
     (h,) = st["held"]
-    h["adv"]["sources"] = [s for s in h["adv"]["sources"] if s["url"] != ZURL]  # as the earlier version left it
+    h["adv"]["sources"] = [{**s, "url": s["url"].replace("github.com/", host)}  # as the earlier version left it
+                           for s in h["adv"]["sources"] if s["url"] != ZURL]
     env.config.state.write_text(json.dumps(st))
+    for f in (finding(), finding(fid=GHSA_Z, severity=None)):
+        url = f["sources"][0]["url"].replace("github.com/", host)
+        env.pages.put(url, env.pages(f["sources"][0]["url"])[1])
     _strike(env, ["GHSA-abcd-efgh-ijkl"])
     code, _, _ = env.run(now=at(5, 10))
     st = env.state()
     assert code == 0 and _held_ids(env) == [[GHSA_Z]] and KEY_Z not in st["digested"]
-    assert [s["url"] for s in st["held"][0]["adv"]["sources"]] == [ZURL]
+    assert [s["url"] for s in st["held"][0]["adv"]["sources"]] == [ZURL.replace("github.com/", host)]
+
+
+def test_a_notice_whose_lead_id_is_released_is_led_by_the_next_and_loads(env):
+    """Review: the lead id leaves while another member waits; what stays is a notice the
+    next run loads, led by its next id, and the waiting member is released later."""
+    env.collector([finding(severity=None), finding(fid=GHSA_Y, severity=None), finding(fid=GHSA_Z, severity=None)])
+    env.run()
+    (h,) = env.state()["held"]
+    lead = h["adv"]["id"]
+    gone, waits = [i for i in ("GHSA-abcd-efgh-ijkl", GHSA_Y, GHSA_Z) if i != lead]
+    _strike(env, [gone])
+    env.pages.put(REPO + waits, "", status=503)
+    code, _, _ = env.run(now=at(5, 10))
+    assert code == 0 and _held_ids(env) == sorted([[lead], sorted([gone, waits])])
+    struck = next(h for h in env.state()["held"] if h["adv"]["id"] != lead)
+    assert lead not in struck["adv"]["title"] and struck["adv"]["id"] in struck["adv"]["title"]
+    del env.pages.fixed[REPO + waits]
+    code, _, _ = env.run(now=at(5, 11))  # the rewritten state loads, and the one that waited is out
+    assert code == 0 and {i for h in _held_ids(env) for i in h} == {lead, waits}
+
+
+def test_a_held_survivor_whose_page_is_gone_is_dropped_with_the_notice(env):
+    """Review: a page that answers 404 is an answer: the id is kept, the notice does not
+    wait run after run, however many sources it keeps."""
+    env.collector([finding(severity=None), finding(fid=GHSA_Z, severity=None)])
+    env.run()
+    _strike(env, ["GHSA-abcd-efgh-ijkl"])
+    st = env.state()
+    st["held"][0]["adv"]["sources"] += [{"url": f"{REPO}GHSA-{n:04d}-aaaa-bbbb", "published_at": None} for n in range(12)]
+    env.config.state.write_text(json.dumps(st))
+    env.pages.put(ZURL, "", status=404)
+    code, _, _ = env.run(now=at(5, 10))
+    st = env.state()
+    assert code == 0 and st["held"] == [] and {KEY_A, KEY_Z} <= set(st["digested"])
+
+
+def test_a_scoped_id_with_no_source_is_read_at_its_bare_ids_page():
+    pages = main.Run._pages_for({"sources": [{"url": GHSA, "published_at": None}]}, GHSA_Z + ":claude-code", set(),
+                                {"ghsa-abcd-efgh-ijkl"})
+    assert [s["url"] for s in pages] == [ZURL, GHSA]

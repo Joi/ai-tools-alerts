@@ -42,6 +42,15 @@ the retraction wins, as z360.
      retracted advisory's own CVE) or no source confirms it. **Undecided** when a page
      could not be read; the next run tries again. A verdict covers every id of the
      notice that the page assigns.
+   - the pages an id is judged by (`Run._pages_for`, code reviews): a GHSA id by the
+     sources named for it and those named for a retracted id; when the notice keeps no
+     source named for it (held before step 4, or past the 20-source cap), by its page
+     in each repository whose advisory page the notice does keep, the host read as
+     `rules.host_of` reads it. A CVE by the sources not named for an id already decided
+     this run. Never more than `rules.MAX_PAGES`, so an id no page confirms is kept and
+     its notice does not wait run after run.
+   - an expired struck notice is left to the digest, which drops it whole; one notice's
+     failure is said and the others go on.
    - new pages read for held notices are capped at `RETIRE_PAGES` a run, apart from the
      threads' own cap; the notice the work starts at rotates each hour, and so does the
      id within a notice (GHSA ids still ahead of CVEs), so a page that fails every run
@@ -71,7 +80,8 @@ the retraction wins, as z360.
    could never be held.
 4. **A member that joins later brings its sources.** `Run.hold`, where a fix group's new
    ids join a held notice, now also adds the sighting's sources after the notice's own
-   (`compose._sources`, 20 at most, the order of the old ones unchanged). Without them a
+   (`compose._sources`: primary sources first, 20 at most, so at the cap a joining
+   member's primary source can displace an old secondary one). Without them a
    member that joined after the notice was first held has no page to be judged by.
 5. **A struck notice takes nothing.** `Run.hold` skips a held notice the stored manifest
    strikes: it gains no id, source or field, and a group one of whose members is in it
@@ -92,9 +102,9 @@ the retraction wins, as z360.
   there is no record of which ids were members.
 - A digest journaled by an older poster that already acknowledges a struck notice and
   has not been sent: its acknowledgement stands (the skip in step 1).
-- A survivor whose page is past the 20-source cap of a held notice cannot be proven: it
-  is kept, or stays undecided with its notice when `rules.evidence` reports its page
-  budget spent. More than 20 advisories in one group; ai-tools-alerts#5rra.
+- A survivor whose page is past the 20-source cap of a held notice is read at its page
+  in the repositories the notice does name; one published elsewhere cannot be proven
+  and is kept. The same member of a thread is still kept; ai-tools-alerts#5rra.
 - Two notices held apart and later sighted as one fix group each take the other's ids
   (`Run.hold`, older than this change; staggered releases can reach it too): two rows,
   no advisory lost. ai-tools-alerts#1e90.

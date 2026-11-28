@@ -2277,6 +2277,8 @@ class Run:
         bases = self.gone | {_base(i) for i in self.gone}
         try:
             self._retire_held(bases)  # 9je7: whatever the threads below give
+        except LedgerError:  # the state not written: as any save of the run
+            raise
         except Exception as e:  # noqa: BLE001 - a notice never stops the run
             _say(f"held notices not split: {type(e).__name__}")
         try:
@@ -2365,19 +2367,32 @@ class Run:
         return sorted(ids, key=lambda i: not i.upper().startswith("GHSA"))
 
     @staticmethod
-    def _beside(adv: dict, ids) -> list[dict]:
-        """9je7: for each GHSA id of ``ids`` no source of the notice is named for, its page
-        in every repository whose advisory page the notice does keep. A notice held
-        before it kept a joining member's source (and one past the 20-source cap) has
-        no page for that member; an advisory of the same product is most often in the
-        same repository, and the page itself decides (``_judge_id``)."""
-        urls = [s["url"] for s in adv.get("sources") or () if isinstance(s, dict) and isinstance(s.get("url"), str)]
-        named = {_base(u.rstrip("/").rsplit("/", 1)[-1]) for u in urls}
-        repos = list(dict.fromkeys(u.rstrip("/").rsplit("/", 1)[0] for u in urls
-                                   if (q := urlsplit(u)).netloc == "github.com" and not q.query
-                                   and rules._REPO_ADVISORY.fullmatch(q.path)))
-        return [{"url": f"{r}/{i}", "published_at": None} for i in ids
-                if i.upper().startswith("GHSA") and _base(i) not in named for r in repos]
+    def _pages_for(adv: dict, i, decided, bases) -> list[dict]:
+        """9je7: the sources id ``i`` of a struck held notice is judged by (``_judge_id``).
+
+        A GHSA id: the sources named for it and those named for a retracted id, no
+        other (only its own page can release it). When the notice keeps no source named
+        for it (one held before a joining member's source was kept, or past the
+        20-source cap), its page in every repository whose advisory page the notice
+        does keep: an advisory of the same product is most often there, and the page
+        itself decides. A CVE: the sources not named for an id already decided this
+        run (their pages did not assign it), those named for a retracted id first, at
+        most ``rules.MAX_PAGES``. Either way never more than one candidate's page
+        budget, so an id no page confirms is kept, not left undecided run after run."""
+        srcs = [s for s in adv.get("sources") or () if isinstance(s, dict) and isinstance(s.get("url"), str)]
+
+        def named(s):
+            return _base(s["url"].rstrip("/").rsplit("/", 1)[-1])
+        if not i.upper().startswith("GHSA"):
+            rest = [s for s in srcs if named(s) not in decided]
+            return sorted(rest, key=lambda s: named(s) not in bases)[:rules.MAX_PAGES]
+        own = [s for s in srcs if named(s) == _base(i)]
+        if not own:
+            repos = dict.fromkeys(s["url"].rstrip("/").rsplit("/", 1)[0] for s in srcs
+                                  if rules.host_of(s["url"]) == "github.com" and not (q := urlsplit(s["url"])).query
+                                  and rules._REPO_ADVISORY.fullmatch(q.path))
+            own = [{"url": f"{r}/{candidates.BOT_ID.fullmatch(i).group(1)}", "published_at": None} for r in repos]
+        return (own + [s for s in srcs if named(s) in bases])[:rules.MAX_PAGES]
 
     def _retire_held(self, bases) -> None:
         """9je7: split every held notice the manifest's retraction strikes.
@@ -2386,66 +2401,80 @@ class Run:
         (faxq). The digest leaves out a notice with a retracted id and acknowledges every
         id of it, so the other members were never counted. Here each surviving id
         (``_survivors``) is judged by its own repository advisory page, as a retired
-        thread's (``_judge_id``): released as a pointer candidate in the state's
-        deferred list, which this run plans and holds as a notice of its own; kept with
-        the notice when a page answers otherwise or no source confirms it; left in the
-        notice for the next run when a page could not be read. A member the notice kept
-        no page for is read beside the pages it did keep (``_beside``). A notice with nothing
-        left to decide is dropped, the ids it still has marked digested (what the
-        digest did with all of them). New pages are capped at RETIRE_PAGES a run and
-        the work starts at a different notice, and in it a different id, each hour. A notice a journaled digest
-        already acknowledges is that digest's. One save: the pointers, the held list
-        and the digested keys are one file."""
+        thread's (``_judge_id``, over ``_pages_for``): released as a pointer candidate
+        in the state's deferred list, which this run plans and holds as a notice of its
+        own; kept with the notice when a page answers otherwise or no source confirms
+        it; left in the notice for the next run when a page could not be read. A notice
+        with nothing left to decide is dropped, the ids it still has marked digested
+        (what the digest did with all of them). New pages are capped at RETIRE_PAGES a
+        run and the work starts at a different notice, and in it a different id, each
+        hour. A notice a journaled digest already acknowledges is that digest's, and an
+        expired one is dropped whole by the next digest. One notice's failure is said
+        and the others go on. One save: the pointers, the held list and the digested
+        keys are one file."""
         pending = [set(it["adv"]["held"]) for it in self.state["outbox"] + self._withheld_items()
                    if it["kind"] == "digest"]
         struck = [h for h in self.state["held"] if self._struck(h)
+                  and not (type(t := h["adv"].get("expires_at")) is int and t < self.now)
                   and not any(set(self._notice_keys(h["scope"], h["adv"])) <= s for s in pending)]
         if not struck:
             return
         k = (self.now // 3600) % len(struck)
         start, changed = len(self.pages), False
         for h in struck[k:] + struck[:k]:
-            a = h["adv"]
-            survivors, released, kept, pointers, undecided = self._survivors(a, bases), [], [], [], False
-            # what _judge_id reads; a member whose page the notice did not keep is read beside the others'
-            shim = SimpleNamespace(scope=h["scope"], advisory=a, learned_sources=self._beside(a, survivors))
-            # A different id first each hour, GHSA ids still ahead of CVEs (a CVE is often
-            # decided with its GHSA): pages that keep failing never starve the ids behind.
-            n = sum(i.upper().startswith("GHSA") for i in survivors)
-            turn = [x for part in (survivors[:n], survivors[n:]) if part
-                    for x in part[(self.now // 3600) % len(part):] + part[:(self.now // 3600) % len(part)]]
-            for i in turn:
-                if i in released + kept:
-                    continue  # decided with another id of its advisory
-                verdict = None if len(self.pages) - start >= RETIRE_PAGES else self._judge_id(shim, i, bases)
-                if verdict is None:
-                    undecided = True  # no page read: the next run tries again
-                    continue
-                ok, assigned, pointer = verdict
-                (released if ok else kept).extend(x for x in survivors if _base(x) in assigned | {_base(i)}
-                                                  and x not in released + kept)
-                if ok:
-                    pointers.append(pointer)
-            if undecided and not released:
-                continue
-            for c in pointers:  # in place of a row for the same id: its sources are proven
-                self.state["deferred"] = [d for d in self.state["deferred"] if not (
-                    d["product_text"] == c.product_text and d["id"].casefold() == c.id.casefold())] + [c.to_dict()]
-            out = _fold(released)
-            rest = [i for i in dict.fromkeys([a["id"], *a["aliases"]]) if i.casefold() not in out]  # never empty: the retracted id
-            if undecided:
-                title = a["title"].replace(f"({compose.public_form(a['id'])})", f"({compose.public_form(rest[0])})")
-                h["adv"] = {**a, "id": rest[0], "aliases": rest[1:], "title": title}
-            else:
-                self.state["held"] = [x for x in self.state["held"] if x is not h]
-                keys = self._notice_keys(h["scope"], {"id": rest[0], "aliases": rest[1:]})
-                self.state["digested"] = (self.state["digested"]
-                                          + [x for x in keys if x not in self.state["digested"]])[-MAX_DIGESTED:]
-            changed = True
-            _say(f"held notice {a['id']} split: released {', '.join(released) or '-'}; kept {', '.join(kept) or '-'}"
-                 + ("; the rest wait" if undecided else "; dropped"))
+            try:
+                changed = self._split(h, bases, start) or changed
+            except LedgerError:
+                raise
+            except Exception as e:  # noqa: BLE001 - one notice never stops the others
+                _say(f"held notice {h['adv'].get('id')} not split: {type(e).__name__}")
         if changed:
             self.save()
+
+    def _split(self, h, bases, start) -> bool:
+        """9je7: judge one struck held notice (``_retire_held``); True when the state changed.
+        Nothing is changed before every verdict of this run is in."""
+        a = h["adv"]
+        survivors, released, kept, pointers, undecided = self._survivors(a, bases), [], [], [], False
+        # A different id first each hour, GHSA ids still ahead of CVEs (a CVE is often
+        # decided with its GHSA): pages that keep failing never starve the ids behind.
+        n = sum(i.upper().startswith("GHSA") for i in survivors)
+        turn = [x for part in (survivors[:n], survivors[n:]) if part
+                for x in part[(self.now // 3600) % len(part):] + part[:(self.now // 3600) % len(part)]]
+        for i in turn:
+            if i in released + kept:
+                continue  # decided with another id of its advisory
+            verdict = None
+            if len(self.pages) - start < RETIRE_PAGES:
+                pages = self._pages_for(a, i, {_base(x) for x in released + kept}, bases)
+                shim = SimpleNamespace(scope=h["scope"], advisory={"sources": pages}, learned_sources=None)
+                verdict = self._judge_id(shim, i, bases)  # the shim: what _judge_id reads of an entry
+            if verdict is None:
+                undecided = True  # no page read: the next run tries again
+                continue
+            ok, assigned, pointer = verdict
+            (released if ok else kept).extend(x for x in survivors if _base(x) in assigned | {_base(i)}
+                                              and x not in released + kept)
+            if ok:
+                pointers.append(pointer)
+        if undecided and not released:
+            return False
+        for c in pointers:  # in place of a row for the same id: its sources are proven
+            self.state["deferred"] = [d for d in self.state["deferred"] if not (
+                d["product_text"] == c.product_text and d["id"].casefold() == c.id.casefold())] + [c.to_dict()]
+        out = _fold(released)
+        rest = [i for i in dict.fromkeys([a["id"], *a["aliases"]]) if i.casefold() not in out]  # never empty: the retracted id
+        if undecided:
+            title = a["title"].replace(f"({compose.public_form(a['id'])})", f"({compose.public_form(rest[0])})")
+            h["adv"] = {**a, "id": rest[0], "aliases": rest[1:], "title": title}
+        else:
+            self.state["held"] = [x for x in self.state["held"] if x is not h]
+            keys = self._notice_keys(h["scope"], {"id": rest[0], "aliases": rest[1:]})
+            self.state["digested"] = (self.state["digested"]
+                                      + [x for x in keys if x not in self.state["digested"]])[-MAX_DIGESTED:]
+        _say(f"held notice {a['id']} split: released {', '.join(released) or '-'}; kept {', '.join(kept) or '-'}"
+             + ("; the rest wait" if undecided else "; dropped"))
+        return True
 
     def released(self) -> set[str]:
         """The base ids retired threads released (z360), read once a run."""
