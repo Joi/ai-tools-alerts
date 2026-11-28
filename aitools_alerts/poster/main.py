@@ -1362,13 +1362,18 @@ class Run:
         level and mark rest on its first id (3qyq), which no source ties to c."""
         return RANK[self._rate(c, scope, None)[1]] > RANK[e.level] or (c.exploited is True and not e.exploited)
 
-    def one(self, c, named):
-        ids = [c.id, *c.aliases]
+    def _own_mark(self, c):
+        """yd1y: c without an ``exploited`` mark that is not its own. A candidate for an id
+        a thread released may carry the mark of the thread it left (``ledger.merge`` runs
+        before the release and lends it): KEV's word comes with a KEV reading, or not at all."""
         if c.exploited is True and not any(r[0] == "kev" for r in c.readings) \
-                and not self.released().isdisjoint(_base(i) for i in ids):
-            # yd1y: a mark lent by the thread it left (``ledger.merge`` ran before the
-            # release) is not its own: KEV's word comes with a KEV reading, or not at all.
-            c = replace(c, exploited=False)
+                and not self.released().isdisjoint(_base(i) for i in (c.id, *c.aliases)):
+            return replace(c, exploited=False)
+        return c
+
+    def one(self, c, named):
+        c = self._own_mark(c)
+        ids = [c.id, *c.aliases]
         scope = own = self._former(named, ids)
         entry = self.led.lookup(ids, scope=scope.name)
         # btqg: a joined advisory's ids are never learned by the thread's work, whose send
@@ -1910,7 +1915,10 @@ class Run:
         out, cves = recompute.outlived(e, scope, self.copy, rs, self.rc, read, turn)
         theirs = {_base(i) for i, _ in out} | {_base(i) for i in cves}
         known = [e.advisory.get("id"), *(e.advisory.get("aliases") or ()), *e.aliases]
-        own_ids = {_base(x) for x in known if isinstance(x, str)} - theirs  # the first id and what its source ties
+        # the first id and what its source ties: not this run's loose ids, nor ids released before
+        # (the root still names those, and another member's page may assign one of them)
+        own_ids = {_base(x) for x in known if isinstance(x, str)} - theirs \
+            - {_base(x) for x in recompute.released(e)}
         released, kept, pointers = [], [], []
         for i, _ in out:
             own = next((x for x in known if recompute.lookup_id(x) == i), None)

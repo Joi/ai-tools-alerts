@@ -366,3 +366,66 @@ def test_a_member_takes_its_own_cve_and_leaves_the_first_ids(env):
     assert sorted(old["split"]["released"]) == sorted([G2, theirs]) and sorted(old["aliases"]) == sorted([G, mine])
     assert len(roots(go(2))) == 1
     assert sorted(entries(env)[1]["aliases"]) == sorted([G2, theirs])
+
+
+# ---------------------------------------------------------------- from the delta review
+
+
+def test_an_id_released_before_does_not_keep_a_later_member(env):
+    """C and its CVE leave while B's advisory cannot be read. The root still names that
+    CVE. When B reads again, its page assigns the same CVE: that is no id of the first
+    advisory's, so B is not kept; it leaves too."""
+    from test_main import FakeKEV
+    from test_recompute import catalog
+    shared = "CVE-2026-0303"
+
+    def go(h):
+        return run(env, h, kev=FakeKEV(catalog=catalog(f"v{h + 1}")))
+    env.api.put(G, ghsa_json(G))
+    env.api.put(G2, ghsa_json(G2, cve=shared))
+    env.api.put(G3, ghsa_json(G3, cve=shared))
+    env.collector([finding(fid=G, severity="moderate"), finding(fid=G2, severity="moderate", aliases=[shared]),
+                   finding(fid=G3, severity="moderate", aliases=[shared])])
+    go(0)
+    (e,) = entries(env)
+    assert e["advisory"]["id"].upper() == G.upper()
+    env.api.put(G, ghsa_json(G, withdrawn_at=WHEN))
+    env.api.put(G2, 503)
+    go(1)
+    old = entries(env)[0]
+    assert sorted(old["split"]["released"]) == sorted([G3, shared]) and old["split"]["kept"] == []
+    env.api.put(G2, ghsa_json(G2, cve=shared))
+    go(2)
+    old = entries(env)[0]
+    assert sorted(old["split"]["released"]) == sorted([G2, G3, shared]) and old["split"]["kept"] == []
+    assert old["aliases"] == [G]
+
+
+def test_a_members_pages_stop_at_the_release_budget():
+    """``part`` lowers the page cap while one member's evidence is read: a fetch past it
+    is a spent budget, a page already read is not a fetch."""
+    from types import SimpleNamespace
+    from aitools_alerts.poster import rules
+    fetched = []
+    stub = SimpleNamespace(pages={f"u{n}": (200, "") for n in range(3)}, page_cap=4,
+                           fetch_page=lambda url, allow, timeout: fetched.append(url) or (200, "x"))
+    assert main.Run.page(stub, "u0", None) == (200, "") and fetched == []
+    assert main.Run.page(stub, "new", None) == (200, "x") and fetched == ["new"]
+    with pytest.raises(rules.PageBudget):
+        main.Run.page(stub, "another", None)
+    stub.page_cap = main.MAX_RUN_PAGES
+    assert main.Run.page(stub, "another", None) == (200, "x")
+
+
+def test_a_released_ids_candidate_keeps_only_a_kev_mark_of_its_own():
+    from types import SimpleNamespace
+    from aitools_alerts.poster import candidates
+    stub = SimpleNamespace(released=lambda: {G2.casefold()})
+
+    def cand(i, readings=()):
+        return candidates.Candidate(id=i, aliases=(), product_text="Claude Code", advisory_severity=None,
+                                    local_level_hint=None, exploited=True, trojanized=False, injection_exec=False,
+                                    fixed=None, affected=None, sources=(), observed_at=None, readings=readings)
+    assert main.Run._own_mark(stub, cand(G2)).exploited is False  # lent by the thread it left
+    assert main.Run._own_mark(stub, cand(G2, (("kev", "{}"),))).exploited is True  # KEV's own word
+    assert main.Run._own_mark(stub, cand(G)).exploited is True  # no released id: untouched
