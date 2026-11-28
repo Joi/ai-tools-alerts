@@ -6,15 +6,15 @@ Created 2026-11-05 under jibot-code#wpbd.
 
 ## Release files
 
-Every file this page installs on the VM comes from a verified release, never from a working checkout or a branch. The pinned release is `v0.5.0`, commit `f6a545c1b88101050d7a874c2817c64e25834fda`, the same pin as the top-level README. Export it once and take every file below from `$rel`:
+Every file this page installs on the VM comes from a verified release, never from a working checkout or a branch. The pinned release is `v0.6.0`, commit `a9fb8b3ca0ed9d605dc5830a85e4f62e089656ba`, the same pin as the top-level README. Export it once and take every file below from `$rel`:
 
 ```bash
 unset rel
 c=<ai-tools-alerts checkout>
 git -C "$c" fetch --tags origin &&
-  git -C "$c" -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.5.0 &&   # the principal and fingerprint in the README
-  test "$(git -C "$c" rev-parse 'v0.5.0^{commit}')" = f6a545c1b88101050d7a874c2817c64e25834fda &&
-  d="$(mktemp -d)" && git -C "$c" archive -o "$d/release.tar" f6a545c1b88101050d7a874c2817c64e25834fda && tar -x -C "$d" -f "$d/release.tar" &&
+  git -C "$c" -c gpg.ssh.allowedSignersFile=trust/allowed_signers tag -v v0.6.0 &&   # the principal and fingerprint in the README
+  test "$(git -C "$c" rev-parse 'v0.6.0^{commit}')" = a9fb8b3ca0ed9d605dc5830a85e4f62e089656ba &&
+  d="$(mktemp -d)" && git -C "$c" archive -o "$d/release.tar" a9fb8b3ca0ed9d605dc5830a85e4f62e089656ba && tar -x -C "$d" -f "$d/release.tar" &&
   rm "$d/release.tar" && test -f "$d/mirror/export_mirror.py" && rel="$d" ||
   echo 'VERIFICATION FAILED: install nothing'
 ```
@@ -99,7 +99,7 @@ Do not use `--template`: it resolves desktop-app templates.
 The mirror exporter on the VM runs from a pinned commit of this repo, never a clone the VM pulls. cell-fleet's `ops/buzz/compose-overlays/buzz-aitools/install-mirror.sh <dir>` ships `aitools_alerts/`, `mirror/`, `spec/` and `trust/` from a local directory as they are on disk, unpacks them into a new `~/.ai-tools-alerts.d/<id>`, and points the `~/ai-tools-alerts` symlink at it. It does not check git state, so give it the verified export from Release files (above), not a working checkout that may hold local edits:
 
 ```bash
-./install-mirror.sh "${rel:?}"   # record f6a545c1b88101050d7a874c2817c64e25834fda on the kata issue
+./install-mirror.sh "${rel:?}"   # record a9fb8b3ca0ed9d605dc5830a85e4f62e089656ba on the kata issue
 ```
 
 The installer's `<id>` is a timestamp, so the recorded sha is the only note of what is deployed. The exporter publishes `trust/root.pub` from the deployed copy as `https://buzz.ai-tools.md/alerts/root.pub`, beside `manifest.json`, so a reader can compare the root with GitHub's.
@@ -110,7 +110,7 @@ Until ai-tools-alerts#vzc3 the poster also sent each post through this route, as
 
 What remains is a put-only route for the feed checkpoint (ai-tools-alerts#nfm3), a signed document the relay does not store. It holds no key. The vzc3 removal took the whole route off the VM; the checkpoint's rollout installs it again with the steps below.
 
-The release pinned in Release files above (v0.5.0) carries this route, as v0.1.6, v0.1.7, v0.1.8, v0.2.0, v0.2.1, v0.3.0 and v0.4.0 did. Every release before v0.1.6 predates this route: v0.1.5's guard still allows the retired send shape and has no `mirror-put`. Take every file of this section from the `$rel` the Release files block sets. Before installing anything, check that export, and stop if either check fails:
+The release pinned in Release files above (v0.6.0) carries this route, as v0.1.6, v0.1.7, v0.1.8, v0.2.0, v0.2.1, v0.3.0, v0.4.0 and v0.5.0 did. Every release before v0.1.6 predates this route: v0.1.5's guard still allows the retired send shape and has no `mirror-put`. Take every file of this section from the `$rel` the Release files block sets. Before installing anything, check that export, and stop if either check fails:
 
 ```bash
 test -f "${rel:?}/ops/vm/mirror-put" &&
