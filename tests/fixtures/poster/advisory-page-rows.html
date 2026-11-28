@@ -1,0 +1,235 @@
+<!doctype html>
+<html><head><title>OAuth destination guard does not recognize the NAT64 well-known prefix (64:ff9b::/96), letting a malicious MCP server reach cloud metadata on NAT64/DNS64 egress · Advisory · modelcontextprotocol/inspector · GitHub</title></head><body>
+<h1 class="gh-header-title" >
+        OAuth destination guard does not recognize the NAT64 well-known prefix (64:ff9b::/96), letting a malicious MCP server reach cloud metadata on NAT64/DNS64 egress
+      </h1>
+    </div>
+    <div class="gh-header-meta TableObject border-0 pb-0">
+        <div class="TableObject-item">
+          <span title="Severity: low" data-view-component="true" class="Label Label--primary Label--large text-bold mr-2 tmp-mr-2">
+  Low
+</span>
+        </div>
+      <div class="TableObject-item TableObject-item--primary ws-normal">
+          published
+          <span class="text-bold user-select-contain">GHSA-v2gx-m79c-pvxj</span>
+          <relative-time datetime="2026-11-27T10:08:17Z" class="no-wrap">Nov 27, 2026</relative-time>
+      </div>
+    </div>
+  </div>
+</div>
+    <div class="d-flex flex-column flex-md-row">
+      <div class="col-12 col-md-9">
+    <div class="Details js-details-container width-full">
+  <div class="Details-content--shown">
+      <div class="Box Box--responsive ">
+  <div class="Box-body">
+        <div class="Bow-row border-0 clearfix " >
+  <div class="float-left col-12 col-md-6 pr-md-2">
+      <h2 class="text-small color-fg-muted mb-1">Package</h2>
+    <div >
+        <span >
+        </span>
+      <span class="f4 color-fg-default text-bold">@modelcontextprotocol/inspector</span>        <span class="color-fg-muted f4 d-inline-flex text-underline" >
+            (<a href="/advisories?query=ecosystem%3Anpm" data-view-component="true" class="Link Link--muted">npm</a>)
+        </span>
+    </div>
+  </div>
+  <div class="float-left col-6 col-md-3 py-2 py-md-0 pr-2">
+      <h2 class="text-small color-fg-muted mb-1">Affected versions</h2>
+      <div class="f4 color-fg-default" >&gt;= 2.0.0, &lt;= 2.16.0</div>
+      <div class="f4 color-fg-default" >&lt;= 1.0.6</div>
+  </div>
+  <div class="float-left col-6 col-md-3 py-2 py-md-0">
+      <h2 class="text-small color-fg-muted mb-1">Patched versions</h2>
+      <div class="f4 color-fg-default" >2.17.0</div>
+      <div class="f4 color-fg-default" >1.0.7</div>
+  </div>
+</div>
+        <div class="Bow-row border-0 clearfix pt-2" >
+  <div class="float-left col-12 col-md-6 pr-md-2">
+    <div >
+        <span >
+        </span>
+      <span class="f4 color-fg-default text-bold">@modelcontextprotocol/inspector-server</span>        <span class="color-fg-muted f4 d-inline-flex text-underline" >
+            (<a href="/advisories?query=ecosystem%3Anpm" data-view-component="true" class="Link Link--muted">npm</a>)
+        </span>
+    </div>
+  </div>
+  <div class="float-left col-6 col-md-3 py-2 py-md-0 pr-2">
+      <div class="f4 color-fg-default" >&lt;= 1.0.6</div>
+  </div>
+  <div class="float-left col-6 col-md-3 py-2 py-md-0">
+      <div class="f4 color-fg-default" >1.0.7</div>
+  </div>
+</div>
+  </div>
+</div>
+    <div class="Box Box--responsive tmp-mt-3">
+  <div class="Box-header color-bg-default border-bottom-0 ">
+  <h2 class="Box-title h5 color-fg-default">Description</h2>
+</div>
+<div class="Box-body tmp-px-5 tmp-pb-5">
+  <div class="markdown-body comment-body p-0" >
+    <h2 dir="auto">Summary</h2>
+<p dir="auto"><code class="notranslate">core/mcp/node/fetchGuard.ts</code>'s <code class="notranslate">isBlockedAddress()</code> blocks <code class="notranslate">169.254.0.0/16</code>, two named cloud-metadata IPv4 addresses, their IPv4-mapped-IPv6 forms, <code class="notranslate">fe80::/10</code> and <code class="notranslate">fd00:ec2::254</code> — but not RFC 6052's NAT64 well-known prefix <code class="notranslate">64:ff9b::/96</code>, which embeds an IPv4 address in its low 32 bits. A malicious or compromised MCP server that names a NAT64 address (e.g. <code class="notranslate">64:ff9b::a9fe:a9fe</code>, the NAT64 form of <code class="notranslate">169.254.169.254</code>) as its OAuth protected-resource <code class="notranslate">authorization_servers[0]</code>, or as the MCP server URL itself, gets Inspector's Node backend to fetch that address directly — on a host whose network has NAT64/DNS64 egress (common for IPv6-only networks, several mobile carriers, and 464XLAT), that reaches the real cloud instance-metadata service.</p>
+<p dir="auto">This is the same class already fixed in two sibling guards in this ecosystem: <code class="notranslate">mcp-server-fetch</code> (<a title="GHSA-66qx-2266-pmj6" href="https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-66qx-2266-pmj6">GHSA-66qx-2266-pmj6</a>, 2026-10-25) and <code class="notranslate">server-everything</code>'s gzip-fetch tool (<a title="GHSA-38j4-j742-j7r3" href="https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-38j4-j742-j7r3">GHSA-38j4-j742-j7r3</a>, 2026-11-18, which names the fetch fix explicitly as the precedent). <code class="notranslate">fetchGuard.ts</code> was hardened for the metadata-IPv4-address class in the same window (<a title="GHSA-fvg8-f358-w2c8" href="https://github.com/modelcontextprotocol/inspector/security/advisories/GHSA-fvg8-f358-w2c8">GHSA-fvg8-f358-w2c8</a>, fixed 2.15.0) but NAT64 was not covered.</p>
+<h2 dir="auto">Details</h2>
+<p dir="auto"><code class="notranslate">isBlockedAddress(ip)</code> (<code class="notranslate">core/mcp/node/fetchGuard.ts:142</code>): for an IPv6 input it lower-cases the string, checks the <code class="notranslate">::ffff:</code>-mapped-IPv4 form, <code class="notranslate">fe[89ab]</code> (fe80::/10), and the literal string <code class="notranslate">fd00:ec2::254</code> — nothing else. <code class="notranslate">64:ff9b::a9fe:a9fe</code> matches none of those, so the function returns <code class="notranslate">false</code>.</p>
+<p dir="auto">Reachability, traced through the real call chain: a guarded request's target URL goes through <code class="notranslate">assertAllowedTarget(url, resolveHost, viaProxy, signal)</code> (<code class="notranslate">fetchGuard.ts:447</code>). <code class="notranslate">bareHost(url)</code> strips the <code class="notranslate">[...]</code> brackets a URL puts around an IPv6 literal host (<code class="notranslate">fetchGuard.ts:179-181</code>). <code class="notranslate">isIP(host)</code> (Node's <code class="notranslate">node:net</code>) recognizes the bare NAT64 address as an IPv6 literal (kind <code class="notranslate">6</code>) — confirmed directly. Because the host is an IP literal, <code class="notranslate">assertAllowedTarget</code> calls <code class="notranslate">assertNoneBlocked([host])</code> unconditionally, with no dependency on a proxy and no DNS resolution — the same IP-literal path GHSA-fvg8's own advisory names as the boundary for the metadata-address class it fixed. <code class="notranslate">assertNoneBlocked</code> calls <code class="notranslate">isBlockedAddress(host)</code>, gets <code class="notranslate">false</code>, and the fetch proceeds.</p>
+<h2 dir="auto">Proof of concept</h2>
+<p dir="auto">Synthetic data only; no real network reached.</p>
+<ol dir="auto">
+<li>Extracted <code class="notranslate">isBlockedAddress()</code> and its one dependency (<code class="notranslate">METADATA_IPV4_ADDRESSES</code>) verbatim by line range from <code class="notranslate">core/mcp/node/fetchGuard.ts</code> at commit <code class="notranslate">eb54b447</code> (package version 2.16.0).</li>
+<li>Ran under plain <code class="notranslate">node --experimental-strip-types</code> (no project build tooling — the function's only import is <code class="notranslate">isIP</code> from <code class="notranslate">node:net</code>) with four inputs: the NAT64 forms of <code class="notranslate">169.254.169.254</code> and <code class="notranslate">100.100.100.200</code> (expected blocked), a NAT64 form of a public address as a control (expected allowed), and the already-blocked plain IPv4 metadata address as a sanity check (expected blocked).</li>
+<li>Observed, twice, in two independently started, network-isolated containers:</li>
+</ol>
+<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="FAIL isBlockedAddress(&quot;64:ff9b::a9fe:a9fe&quot;) = false (expected true)  -- NAT64(169.254.169.254)
+FAIL isBlockedAddress(&quot;64:ff9b::6464:64c8&quot;) = false (expected true)  -- NAT64(100.100.100.200)
+ok   isBlockedAddress(&quot;64:ff9b::0808:0808&quot;) = false (expected false) -- NAT64(8.8.8.8) control
+ok   isBlockedAddress(&quot;169.254.169.254&quot;)    = true  (expected true)  -- sanity, already-blocked case"><pre class="notranslate"><code class="notranslate">FAIL isBlockedAddress("64:ff9b::a9fe:a9fe") = false (expected true)  -- NAT64(169.254.169.254)
+FAIL isBlockedAddress("64:ff9b::6464:64c8") = false (expected true)  -- NAT64(100.100.100.200)
+ok   isBlockedAddress("64:ff9b::0808:0808") = false (expected false) -- NAT64(8.8.8.8) control
+ok   isBlockedAddress("169.254.169.254")    = true  (expected true)  -- sanity, already-blocked case
+</code></pre></div>
+<ol start="4" dir="auto">
+<li>End-to-end: point a <code class="notranslate">guardedFetch</code> call (or an Inspector OAuth connection) at an MCP server whose RFC 9728 protected-resource metadata or server URL names <code class="notranslate">http://[64:ff9b::a9fe:a9fe]/...</code> as the authorization server, on a host with NAT64 egress (or a simulated NAT64 gateway).</li>
+</ol>
+<h2 dir="auto">Impact</h2>
+<p dir="auto">Server-Side Request Forgery, low impact (information disclosure only, no write path): an MCP server a user connects to can get the Inspector backend to make a cloud-metadata request on the user's behalf and receive the response (typically credentials) if-and-only-if the host's network provides NAT64/DNS64 egress. No impact on hosts without NAT64. Same shape and severity as the two sibling advisories cited above.</p>
+<h2 dir="auto">Disclosure note</h2>
+<p dir="auto">This report was found and written with AI assistance (an automated triage lead plus a human-directed, corpus-method variant hunt across the sibling guards named above); I reviewed and verified the reproduction myself before submitting. The web report form has a checkbox for this that the API used here does not expose, so stating it here instead.</p>
+  </div>
+</div>
+</div>
+  </div>
+</div>
+</div>
+  <div class="col-12 col-md-3 tmp-pl-md-4 tmp-mt-3 tmp-mt-md-0">
+    <div class="discussion-sidebar-item js-repository-advisory-details"  >
+  <h3 data-view-component="true" class="mb-2 tmp-mb-2 f6">Severity</h3>
+    <div data-view-component="true" class="d-flex flex-items-baseline pb-1 tmp-pb-1">
+    <span title="Severity: low" data-view-component="true" class="Label Label--primary">
+  Low
+</span>
+    <div data-view-component="true" class="lh-condensed d-flex flex-items-baseline ml-2 tmp-ml-2 color-fg-subtle f5">
+      <div style="border-style: none none dashed !important;" data-show-dialog-id="cvss-overall-score-id" data-view-component="true" class="color-fg-default text-semibold border-bottom">
+        <button id="dialog-show-dialog-58245dee-a69f-4bba-a06e-f68e172a8d6e" data-show-dialog-id="dialog-58245dee-a69f-4bba-a06e-f68e172a8d6e" type="button" data-view-component="true" class="Button--link Button--medium Button color-fg-muted">  <span class="Button-content">
+    <span class="Button-label">3.7</span>
+  </span>
+</button>
+<dialog-helper>
+  <dialog id="dialog-58245dee-a69f-4bba-a06e-f68e172a8d6e" aria-modal="true" aria-labelledby="dialog-58245dee-a69f-4bba-a06e-f68e172a8d6e-title" aria-describedby="dialog-58245dee-a69f-4bba-a06e-f68e172a8d6e-description" data-view-component="true" class="Overlay Overlay-whenNarrow Overlay--size-small-portrait Overlay--motion-scaleFade Overlay--full-whenNarrow Overlay--disableScroll">
+    <div data-view-component="true" class="Overlay-header">
+  <div class="Overlay-headerContentWrap">
+    <div class="Overlay-titleWrap">
+      <h1 class="Overlay-title " id="dialog-58245dee-a69f-4bba-a06e-f68e172a8d6e-title">
+        CVSS overall score
+      </h1>
+    </div>
+    <div class="Overlay-actionWrap">
+      <button data-close-dialog-id="dialog-58245dee-a69f-4bba-a06e-f68e172a8d6e" aria-label="Close" aria-label="Close" type="button" data-view-component="true" class="close-button Overlay-closeButton"></button>
+    </div>
+  </div>
+</div>
+      <scrollable-region data-labelled-by="dialog-58245dee-a69f-4bba-a06e-f68e172a8d6e-title">
+        <div data-view-component="true" class="Overlay-body">            <span data-view-component="true" class="text-small">This score calculates overall vulnerability severity from 0 to 10 and is based on the Common Vulnerability Scoring System (CVSS).</span>
+</div>
+      </scrollable-region>
+</dialog></dialog-helper>
+</div>      <span class="ml-1">/ 10</span>
+</div></div>
+  <div data-view-component="true" class="d-flex flex-column mt-2 tmp-mt-2 p-2 tmp-p-2 border rounded-2">
+    <h4 data-view-component="true" class="f6 p-1 tmp-p-1">CVSS v3 base metrics</h4>
+      <div data-view-component="true" class="d-flex p-1 tmp-p-1 flex-justify-between">
+        Attack vector
+        <div data-view-component="true" class="color-fg-default text-semibold ml-2 tmp-ml-2">Network</div>
+</div>      <div data-view-component="true" class="d-flex p-1 tmp-p-1 flex-justify-between">
+        Attack complexity
+        <div data-view-component="true" class="color-fg-default text-semibold ml-2 tmp-ml-2">High</div>
+</div>      <div data-view-component="true" class="d-flex p-1 tmp-p-1 flex-justify-between">
+        Privileges required
+        <div data-view-component="true" class="color-fg-default text-semibold ml-2 tmp-ml-2">None</div>
+</div>      <div data-view-component="true" class="d-flex p-1 tmp-p-1 flex-justify-between">
+        User interaction
+        <div data-view-component="true" class="color-fg-default text-semibold ml-2 tmp-ml-2">None</div>
+</div>      <div data-view-component="true" class="d-flex p-1 tmp-p-1 flex-justify-between">
+        Scope
+        <div data-view-component="true" class="color-fg-default text-semibold ml-2 tmp-ml-2">Unchanged</div>
+</div>      <div data-view-component="true" class="d-flex p-1 tmp-p-1 flex-justify-between">
+        Confidentiality
+        <div data-view-component="true" class="color-fg-default text-semibold ml-2 tmp-ml-2">Low</div>
+</div>      <div data-view-component="true" class="d-flex p-1 tmp-p-1 flex-justify-between">
+        Integrity
+        <div data-view-component="true" class="color-fg-default text-semibold ml-2 tmp-ml-2">None</div>
+</div>      <div data-view-component="true" class="d-flex p-1 tmp-p-1 flex-justify-between">
+        Availability
+        <div data-view-component="true" class="color-fg-default text-semibold ml-2 tmp-ml-2">None</div>
+</div>
+    <div data-view-component="true" class="d-flex p-1 tmp-p-1">
+      <button id="dialog-show-dialog-b6b2c3a6-44b6-4533-a960-d2e885b458b8" data-show-dialog-id="dialog-b6b2c3a6-44b6-4533-a960-d2e885b458b8" type="button" data-view-component="true" class="Button--link Button--medium Button text-left">  <span class="Button-content">
+    <span class="Button-label">Learn more about base metrics</span>
+  </span>
+</button>
+<dialog-helper>
+  <dialog id="dialog-b6b2c3a6-44b6-4533-a960-d2e885b458b8" aria-modal="true" aria-labelledby="dialog-b6b2c3a6-44b6-4533-a960-d2e885b458b8-title" aria-describedby="dialog-b6b2c3a6-44b6-4533-a960-d2e885b458b8-description" data-view-component="true" class="Overlay Overlay-whenNarrow Overlay--size-medium-portrait Overlay--motion-scaleFade Overlay--full-whenNarrow Overlay--disableScroll">
+    <div data-view-component="true" class="Overlay-header">
+  <div class="Overlay-headerContentWrap">
+    <div class="Overlay-titleWrap">
+      <h1 class="Overlay-title " id="dialog-b6b2c3a6-44b6-4533-a960-d2e885b458b8-title">
+        CVSS v3 base metrics
+      </h1>
+    </div>
+    <div class="Overlay-actionWrap">
+      <button data-close-dialog-id="dialog-b6b2c3a6-44b6-4533-a960-d2e885b458b8" aria-label="Close" aria-label="Close" type="button" data-view-component="true" class="close-button Overlay-closeButton"></button>
+    </div>
+  </div>
+</div>
+      <scrollable-region data-labelled-by="dialog-b6b2c3a6-44b6-4533-a960-d2e885b458b8-title">
+        <div data-view-component="true" class="Overlay-body">          <div class="pt-2">
+              <div class="pb-2">
+                <span data-view-component="true" class="text-small text-bold">Attack vector:</span>
+                <span data-view-component="true" class="text-small">More severe the more the remote (logically and physically) an attacker can be in order to exploit the vulnerability.</span>
+              </div>
+              <div class="pb-2">
+                <span data-view-component="true" class="text-small text-bold">Attack complexity:</span>
+                <span data-view-component="true" class="text-small">More severe for the least complex attacks.</span>
+              </div>
+              <div class="pb-2">
+                <span data-view-component="true" class="text-small text-bold">Privileges required:</span>
+                <span data-view-component="true" class="text-small">More severe if no privileges are required.</span>
+              </div>
+              <div class="pb-2">
+                <span data-view-component="true" class="text-small text-bold">User interaction:</span>
+                <span data-view-component="true" class="text-small">More severe when no user interaction is required.</span>
+              </div>
+              <div class="pb-2">
+                <span data-view-component="true" class="text-small text-bold">Scope:</span>
+                <span data-view-component="true" class="text-small">More severe when a scope change occurs, e.g. one vulnerable component impacts resources in components beyond its security scope.</span>
+              </div>
+              <div class="pb-2">
+                <span data-view-component="true" class="text-small text-bold">Confidentiality:</span>
+                <span data-view-component="true" class="text-small">More severe when loss of data confidentiality is highest, measuring the level of data access available to an unauthorized user.</span>
+              </div>
+              <div class="pb-2">
+                <span data-view-component="true" class="text-small text-bold">Integrity:</span>
+                <span data-view-component="true" class="text-small">More severe when loss of data integrity is the highest, measuring the consequence of data modification possible by an unauthorized user.</span>
+              </div>
+              <div class="pb-2">
+                <span data-view-component="true" class="text-small text-bold">Availability:</span>
+                <span data-view-component="true" class="text-small">More severe when the loss of impacted component availability is highest.</span>
+              </div>
+          </div>
+</div>
+      </scrollable-region>
+</dialog></dialog-helper>
+</div></div>
+  <div data-view-component="true" class="mt-2 tmp-mt-2">CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:N/A:N</div>
+</div>
+      <div class="discussion-sidebar-item">
+  <h3 data-view-component="true" class="mb-2 tmp-mb-2 f6">CVE ID</h3>
+  <div class="color-fg-muted" >
+    No known CVE
+  </div>
+</div>
+</body></html>
