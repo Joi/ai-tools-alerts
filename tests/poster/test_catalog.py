@@ -154,6 +154,23 @@ def test_a_held_notice_posts_to_the_catalog_and_not_to_feed(env):
     assert b.level == "notice" and b.id == "CVE-2026-5000"
 
 
+def test_a_held_notice_corrected_by_a_whole_read_posts_a_new_catalog_root(env):  # 6wy8
+    """The corrected block is a new root, which a reader takes over the earlier one
+    (newest root per id and product): no second mechanism, and nothing waits."""
+    test_main.inspector_notice(env, affected=">= 2.0.0, <= 2.16.0", patched=None)
+    _, _, relay = run(env)
+    (b,) = blocks(relay)
+    assert (b.products[0].affected, b.products[0].fixed) == (">=2.0.0,<=2.16.0", None)
+    test_main.inspector_notice(env, blocks=test_main.TWO_RANGES)
+    _, _, relay = run(env, now=T0 + 3600)
+    assert chans(relay) == [("catalog", None)]
+    (b,) = blocks(relay)
+    assert b.id == "GHSA-4fc4-wcmh-4g86" and (b.products[0].affected, b.products[0].fixed) == (None, "2.17.0")
+    test_main.inspector_notice(env, blocks=test_main.TWO_RANGES)
+    _, summary, relay = run(env, now=T0 + 7200)
+    assert "candidates=1" in summary and relay.calls == []  # the same read again posts nothing
+
+
 def test_a_notice_first_seen_in_the_digest_run_still_reaches_the_catalog(env):
     run(env)  # qwpw: the state starts in ISO week 2026-W45; Monday's digest carries the weekly summary
     env.collector([MAC])
