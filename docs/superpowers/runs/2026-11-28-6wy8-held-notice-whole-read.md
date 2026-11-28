@@ -1,6 +1,6 @@
 # Run: 6wy8-held-notice-whole-read
 Instruction: Read TASK-ai-tools-alerts#6wy8.md in this worktree root, then run `kata show ai-tools-alerts#6wy8` and follow the brief and the dispatch rules (do-it, start rung floored at medium; landing per the brief: scripts/test-gate.sh, one independent review, a PR merged with the no-reply author, the issue closed on the merge commit).
-Stage: verifying (pull request; merged by this session)
+Stage: done (pull request 76; merged by this session)
 Rung: medium (start-floor medium: dispatch floor; evaluator constraint-lens, BR1 REV1 NOV1 INT0 FC1 = 4, no hard trigger)
 Lens: "Nothing you build may wait for a person to act." / "No rollout, no install, no release in this task." / "it must replace the held notice's fixed and affected together" (the evaluator's; carried in every review prompt)
 Spec: docs/superpowers/specs/2026-11-28-6wy8-held-notice-whole-read-design.md   Plan: docs/superpowers/plans/2026-11-28-6wy8-held-notice-whole-read.md
@@ -42,3 +42,5 @@ Pass 2 [code:hold]: 0B/1S/0C/0R · fixed 4/4 prior · velocity ↓ (7→1, escal
 - The issue text predates nothing that landed since; main at d2dd492 (v0.5.0 pin) is the code read.
 - The whole suite takes over an hour on this host while other sessions run theirs; it is run once, as the gate, on the final head.
 - Follow-up filed: ai-tools-alerts#2emq (a notice held under a former name).
+- Gate: `scripts/test-gate.sh` at 1901fdb in a clone of this branch alone: the public scan passed, 3945 passed, 1 skipped. The commits after 1901fdb change documents only. The shared clone's scan fails on other sessions' refs; none of this branch's objects is a hit.
+- Main did not move during the run (d2dd492): nothing to merge before the review or before the merge.
