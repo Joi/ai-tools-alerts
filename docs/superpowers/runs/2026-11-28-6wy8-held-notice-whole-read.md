@@ -1,6 +1,6 @@
 # Run: 6wy8-held-notice-whole-read
 Instruction: Read TASK-ai-tools-alerts#6wy8.md in this worktree root, then run `kata show ai-tools-alerts#6wy8` and follow the brief and the dispatch rules (do-it, start rung floored at medium; landing per the brief: scripts/test-gate.sh, one independent review, a PR merged with the no-reply author, the issue closed on the merge commit).
-Stage: code-review:hold
+Stage: verifying (pull request; merged by this session)
 Rung: medium (start-floor medium: dispatch floor; evaluator constraint-lens, BR1 REV1 NOV1 INT0 FC1 = 4, no hard trigger)
 Lens: "Nothing you build may wait for a person to act." / "No rollout, no install, no release in this task." / "it must replace the held notice's fixed and affected together" (the evaluator's; carried in every review prompt)
 Spec: docs/superpowers/specs/2026-11-28-6wy8-held-notice-whole-read-design.md   Plan: docs/superpowers/plans/2026-11-28-6wy8-held-notice-whole-read.md
@@ -27,6 +27,8 @@ Pass 1 [code:hold]: 1B/4S/2C/0R · fixed -/- · velocity = (—→7, escalation 
   - C (S1) the changelog read as if the live notice is corrected unconditionally: it now names the condition (fixed)
   - C (S1) a diverged group stays at no fix and no range until the digest lists it: accepted, the wide direction, no person needed
   passes: 1 · a BLOCKER fix changed behaviour: one delta (fresheyes --since 6107110 --rebuttals) follows
+Pass 2 [code:hold]: 0B/1S/0C/0R · fixed 4/4 prior · velocity ↓ (7→1, escalation no)   (delta: fresheyes --since 6107110 --rebuttals, at 1901fdb, gpt-6.1-sol high, REASON=-; no standing rebuttal overturned)
+  - S the plan's step 3 still said `boxed` takes the page's ids: corrected (a document; fixed in the record commit after 1901fdb)
 
 ## Chunks
 - [x] hold — a read replaces or widens a held notice's fix and range; tests

@@ -38,7 +38,7 @@ One chunk. Tests first.
 - [x] 2. Run them on main's code: the first four written failed (recorded in the run
   manifest).
 - [x] 3. `Run.boxed` (a set, `scope|id`), filled in `Run.admit` when the evidence is
-  structured, with the candidate's id and the page's ids.
+  structured, with the candidate's own id only (code review: not the page's ids).
 - [x] 4. `Run._cover(was, new)`: the widening rule of the spec.
 - [x] 5. `Run.hold(self, scope, adv, title=None, read=False)`: not a read, no change;
   a read of every held id, both fields replaced; else `_cover`. The existing
