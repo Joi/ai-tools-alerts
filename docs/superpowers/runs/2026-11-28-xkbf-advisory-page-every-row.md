@@ -17,6 +17,18 @@ Pass 1 [spec]: 1B/3S/1C/0R · fixed -/- · velocity = (—→5, escalation no)  
   - S the tests were not named: listed in the spec and written (fixed)
   - C the snapshot's commit message: rebutted, a dangling review snapshot, never on the branch
   passes: 1 · elapsed: ~8 min
+Pass 1 [plan]: 1B/1S/0C/0R · fixed -/- · velocity = (—→2, escalation no)   (fresheyes gpt-6.1-sol high, at 38c118e, REASON=-; run beside the code review)
+  - B a package row laid out another way before the first row is left out: the box is the div the first row opens in and must hold no text before it; rows open directly in it and before it closes (fixed, tests)
+  - S an unknown shape defers with no end: rebutted as on the spec pass (ai-tools-alerts#psb5, raised to priority 1)
+Pass 1 [code:parser]: 3B/3S/5C/0R · fixed -/- · velocity = (—→11, escalation no)   (Stage 1 same-model subagent ∥ Stage 2 fresheyes gpt-6.1-sol high, whole branch origin/main...38c118e, REASON=-)
+  - B (S1, S2) a value that is the word "Description" ended the box and hid the rows after it: the heading counts only outside a row (fixed, tests)
+  - B (S2) empty elements dropped, so a range took the next range's patch: an entry is one element, kept when empty (fixed, tests)
+  - B (S1, S2) under a "Software" first row a later row's registry was dropped, so `pip:x` matched the bare name: each row's registry is its own (fixed, test)
+  - S (S1) a label's words in a later row were taken as a label: labels are read in the first row only (fixed, tests)
+  - S (S1, S2) an unknown shape defers with no end: rebutted, ai-tools-alerts#psb5
+  - S (S1) the box was not bounded before its first row (the plan's B; fixed)
+  - C (S1) a line break inside an element made two entries (fixed with the entry change, test); `>` inside an attribute value (rebutted: only GitHub writes attributes, and `_lines` reads tags the same way); two refused-shape tests on one line (cases added; fourteen mutations each caught); plan checkbox (fixed)
+  passes: 1 · BLOCKER fixes changed behaviour: one delta (fresheyes --since 38c118e --rebuttals) follows
 
 ## Chunks
 - [ ] parser — every row and every range of the package box; test page helper in GitHub's shape; fixture

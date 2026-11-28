@@ -54,24 +54,33 @@ in place of label-and-next-text-node:
 - The page is split into tags and text once. Reading stops at the first text
   node that is exactly "Description", as now.
 - A `div` whose class list has `Bow-row` (GitHub's spelling) starts a row. Inside
-  a row, a `div` whose class list has `float-left` starts a column. Text nodes
-  are collected per column, normalised as `_lines` does.
+  a row, a `div` whose class list has `float-left` starts a column. A `div`
+  directly in a column is one entry: its text nodes joined, or nothing when it is
+  empty, so an empty element keeps its place and a line break inside an element
+  does not make two. A text node directly in a column is an entry too (a label).
 - A row must have exactly three columns: package, affected, patched.
-  - Column 1: an optional "Package" or "Software" label, then the name, then the
-    registry in parentheses. A row without a label takes the label of the
-    nearest labelled row above. The first row must carry a label.
-  - Column 2: an optional "Affected versions" label, then one text node per
-    range. Column 3: an optional "Patched versions" label, then one per patched
-    version. The first row must carry both labels.
+  - The first row carries the three labels, each required: "Package" or
+    "Software", "Affected versions", "Patched versions". No later row has a
+    label, and a label's words anywhere else make the page unread: text a vendor
+    writes in a field is never taken as a label.
+  - Column 1 after the label: the name, then the registry in parentheses or
+    nothing. Each row's registry is its own; the first row under "Software" has
+    none, as now.
+  - Columns 2 and 3 after the label: one entry per range, one per patched
+    version.
 - Ranges and patched versions pair by position. Equal counts: one block per
-  pair. One side empty: one block per entry of the other side, the empty side
-  `None` (an empty field renders no text node; this is today's reading of a row
-  with no range or no patch). Both sides empty: one block with neither. Unequal
-  non-zero counts: the page is not read.
-- The box is rows of columns and nothing else: from the first row to the
-  "Description" heading, a text node outside a column makes the page unread, and
-  so does a row or column opening inside a column. A package row GitHub lays out
-  some other way is then never left out while the rest reads as the whole.
+  pair, an empty entry `None`. A column with no entry: one block per entry of
+  the other column, with `None` at this one. Both without entries: one block
+  with neither. Unequal non-zero counts: the page is not read.
+- The box is the `div` the first row opens in, and it is rows of columns and
+  nothing else. The page is unread when the box holds text before its first row,
+  when a row opens anywhere but directly in the box or after the box closed,
+  when a column opens inside a column, and when, from the first row to the
+  heading, a text node lies outside a column. A package row GitHub lays out some
+  other way, before or after the rows this reads, is then never left out while
+  the rest reads as the whole.
+- The heading is a "Description" text node outside every row. Inside a column
+  the word is a value like any other.
 - Any row that breaks these rules makes the whole page unread. No rows at all
   makes it unread, as "no blocks" does now.
 
@@ -104,8 +113,12 @@ New tests in `tests/poster/test_rules.py`:
 - one range without a patch among several ("None" at its place) gives no fix;
 - each refused shape makes the page unread and `evidence` report `unparsed`:
   unequal counts, a row of two columns, a first row without a label, a label
-  among the values, a later row laid out without the row class, a column inside
-  a column;
+  among the values or in a later row, a row laid out without the row class
+  before or after the others, a row outside the box, in a second box, one level
+  down or inside a row, a column inside a column, the heading's word inside a
+  row;
+- a value that is the word "Description" or a label's words, an empty element
+  among several, an element with a tag inside it, a later row's own registry;
 - row and column markup written in a description changes nothing.
 
 ## What a member sees after this

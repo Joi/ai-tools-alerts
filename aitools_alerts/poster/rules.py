@@ -426,49 +426,77 @@ _PART = re.compile(r"(<[^>]*>)")
 _DIV = re.compile(r"(?is)<div\b[^>]*?\bclass\s*=\s*\"([^\"]*)\"")
 _DIV_OPEN = re.compile(r"(?i)<div\b")
 _DIV_CLOSE = re.compile(r"(?i)</div\b")
+_REGISTRY = re.compile(r"(?:\(([^()]+)\))?")  # what follows a package name: nothing, or "(npm)"
 
 
-def _package_rows(text: str) -> list[list[list[str]]] | None:
+def _package_rows(text: str) -> list[list[list[list[str]]]] | None:
     """The package box before the "Description" heading as GitHub lays it out: rows
     (a ``div`` whose class list has ``Bow-row``, GitHub's spelling), each a list of
-    columns (a ``div`` inside the row whose class list has ``float-left``), each the
-    column's text nodes as ``_lines`` gives them. A column ends where its ``div``
-    closes and a row where its does. None when the box is not wholly rows of columns:
-    a row or a column opens inside another column, or, from the first row to the
-    heading, any text lies outside a column (a package row laid out another way would
-    otherwise be left out and the rest read as the whole)."""
-    rows: list[list[list[str]]] = []
-    depth = 0
-    row = col = None  # the depth each open row and column was opened at
+    columns (a ``div`` inside the row whose class list has ``float-left``), each a
+    list of entries. An entry is one ``div`` directly in the column, with the text
+    nodes inside it as ``_lines`` gives them, possibly none (GitHub puts each range
+    and each patched version in its own, and an empty one keeps its place); or one
+    text node that is in the column and in no such ``div`` (a label). A column ends
+    where its ``div`` closes and a row where its does.
+
+    The box is the ``div`` the first row opens in, and it must be rows of columns and
+    nothing else, or a package row laid out another way would be left out and the rest
+    read as the whole. None when: the box holds text before its first row; a row opens
+    anywhere but directly in the box, or after the box closed; a column opens inside
+    a column; from the first row to the heading, any text lies outside a column. The
+    heading is a "Description" text node outside every row: inside one the word is a
+    value, or text out of place, like any other."""
+    rows: list[list[list[list[str]]]] = []
+    seen = [False]  # per open div, the page itself first: text met in it outside a column
+    row = col = cell = box = None  # the depth each was opened at; the box is the first row's parent
+    closed = False  # the box has closed
     for n, part in enumerate(_PART.split(_NOT_TEXT.sub("\n", text))):
+        depth = len(seen) - 1
         if n % 2:  # a tag
             if _DIV_CLOSE.match(part):
+                if depth == 0:
+                    continue  # a close with no open: not counted
+                if cell == depth:
+                    cell = None
                 if col == depth:
-                    col = None
+                    col = cell = None
                 if row == depth:
-                    row = col = None
-                depth -= 1
+                    row = col = cell = None
+                closed |= box == depth
+                inner = seen.pop()
+                seen[-1] |= inner
             elif _DIV_OPEN.match(part):
-                depth += 1
                 m = _DIV.match(part)
                 classes = m.group(1).split() if m else ()
-                if "Bow-row" in classes or ("float-left" in classes and row is not None):
+                if "Bow-row" in classes:
+                    if closed or (box is not None and depth != box) or seen[-1]:  # in a column: another depth
+                        return None
+                    box = depth
+                    rows.append([])
+                    row = depth + 1
+                elif "float-left" in classes and row is not None:
                     if col is not None:
                         return None
-                    if "Bow-row" in classes:
-                        rows.append([])
-                        row = depth
-                    else:
-                        rows[-1].append([])
-                        col = depth
+                    rows[-1].append([])
+                    col = depth + 1
+                elif col == depth:  # directly in the column: an entry
+                    rows[-1][-1].append([])
+                    cell = depth + 1
+                seen.append(False)
             continue
-        for node in (" ".join(html.unescape(t).split()) for t in part.split("\n")):
-            if node == "Description":
+        for node in (" ".join(html.unescape(x).split()) for x in part.split("\n")):
+            if not node:
+                continue
+            if node == "Description" and row is None:
                 return rows
-            if node and col is not None:
-                rows[-1][-1].append(node)
-            elif node and rows:
+            if cell is not None:
+                rows[-1][-1][-1].append(node)
+            elif col is not None:
+                rows[-1][-1].append([node])
+            elif rows:
                 return None  # text after the first row and in no column: a row this does not know
+            else:
+                seen[-1] = True
     return rows
 
 
@@ -478,37 +506,38 @@ def _blocks(text: str) -> tuple[Block, ...] | None:
 
     GitHub prints the labels "Package" (or "Software"), "Affected versions" and
     "Patched versions" in the first row only; a later row is another package and has
-    none. One package with several ranges is one row: each range is its own element
-    under "Affected versions" and each patched version its own under "Patched
-    versions", in the same order. So a row is three columns, and a block is one range
-    with the patched version at its place. A column with no entry states nothing for
-    every block of its row (an empty field renders no text node); the two columns
-    holding different numbers of entries cannot be paired, and the page is not read."""
+    none, so a label anywhere else is not read as one and the page is not read. After
+    the name comes the registry in parentheses, or nothing. One package with several
+    ranges is one row: each range is its own element under "Affected versions" and
+    each patched version its own under "Patched versions", in the same order. So a row
+    is three columns, and a block is one range with the patched version at its place.
+    An element is one value whatever tags are inside it; an empty one states nothing
+    at its place, and a column with none states nothing for every block of its row.
+    Two columns holding different numbers of elements cannot be paired, and the page
+    is not read."""
     rows = _package_rows(text)
     if not rows:
         return None
-    blocks, label = [], None
+    blocks = []
     for n, row in enumerate(rows):
         if len(row) != 3:
             return None
-        package, affected, patched = (list(c) for c in row)
-        if package[:1] in (["Package"], ["Software"]):
-            label = package.pop(0)
-        elif n == 0:
-            return None
-        if affected[:1] == ["Affected versions"]:
+        package = [node for entry in row[0] for node in entry]
+        affected, patched = ([" ".join(entry) or None for entry in column] for column in row[1:])
+        software = False
+        if n == 0:  # the labels, each required, and nowhere else
+            if package[:1] not in (["Package"], ["Software"]) or affected[:1] != ["Affected versions"] \
+                    or patched[:1] != ["Patched versions"]:
+                return None
+            software = package.pop(0) == "Software"
             affected.pop(0)
-        elif n == 0:
-            return None
-        if patched[:1] == ["Patched versions"]:
             patched.pop(0)
-        elif n == 0:
-            return None
         if not package or any(x in _LABELS for x in package + affected + patched):
             return None
-        if affected and patched and len(affected) != len(patched):
+        registry = _REGISTRY.fullmatch("".join(package[1:]))
+        if registry is None or (affected and patched and len(affected) != len(patched)):
             return None
-        eco = "".join(package[1:]).strip("() ").lower() if label == "Package" else ""
+        eco = "" if software else (registry.group(1) or "").strip().lower()
         for i in range(max(len(affected), len(patched), 1)):
             blocks.append(Block(package[0], eco, affected[i] if affected else None, patched[i] if patched else None))
     return tuple(blocks)

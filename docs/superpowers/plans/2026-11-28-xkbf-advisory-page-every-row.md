@@ -42,8 +42,15 @@ Steps:
   for `@modelcontextprotocol/inspector`; a product in an unlabelled later row;
   pairing by place, one range unpatched, an empty column; nine refused shapes,
   each also `unparsed` through `evidence`; rows written in a description.
-- [ ] 8. CHANGELOG entry under the unreleased heading.
+- [x] 8. CHANGELOG entry under the unreleased heading.
 - [ ] 9. Comment on ai-tools-alerts#z3fs: what the release session must know.
+- [x] 10. After the reviews (the spec has the rules as they stand): the box is the
+  `div` the first row opens in and holds nothing but rows, from its start; a row
+  opens directly in it and before it closes. An entry is one `div` directly in a
+  column, kept when empty, so pairing by place survives an empty element. Labels
+  are read in the first row only. Each row's registry is its own. The heading
+  counts only outside a row. A test for each, and the mutation list grown to
+  fourteen.
 
 Verification:
 

@@ -420,10 +420,35 @@ def test_a_package_in_a_later_row_has_no_label_and_is_read():
                                                 rules.Block("@anthropic-ai/claude-code", "npm", "< 1.2.9", "1.2.9"))
     ev = rules.evidence(ghsa_cand(), CLAUDE, served({REPO + G1: (200, page)}))
     assert ev.structured and (ev.fixed, ev.affected) == ("1.2.9", "<1.2.9") and not ev.other_package
-    # A later row under the "Software" label of the first has no registry.
+    # A later row's registry is its own, whatever label the first row carries.
     soft = rules.read_advisory(advisory_page(G1, blocks=[("Claude Desktop", None, "< 9.0", "9.0"),
-                                                         ("claude code", None, "< 2.0", "2.0")]))
-    assert [(b.name, b.ecosystem) for b in soft.blocks] == [("Claude Desktop", ""), ("claude code", "")]
+                                                         ("claude code", None, "< 2.0", "2.0"),
+                                                         ("@anthropic-ai/claude-code", "npm", "< 1.2.9", "1.2.9")]))
+    assert [(b.name, b.ecosystem) for b in soft.blocks] == [
+        ("Claude Desktop", ""), ("claude code", ""), ("@anthropic-ai/claude-code", "npm")]
+    # Under the "Software" label the first row has no registry, as before, whatever follows the name.
+    page = advisory_page(G1, package="Claude Desktop", ecosystem=None)
+    labelled = page.replace("<span >Claude Desktop</span>", "<span >Claude Desktop</span><span>(<a>npm</a>)</span>")
+    assert labelled != page and rules.read_advisory(labelled).blocks[0].ecosystem == ""
+
+
+def test_text_a_vendor_writes_in_a_field_is_a_value_and_never_a_label_or_the_heading():
+    def read(blocks):
+        return rules.read_advisory(advisory_page(G1, blocks=blocks))
+    code = "@anthropic-ai/claude-code"
+    # "Description" as a version does not end the box: the row after it is still read.
+    got = read([(code, "npm", "< 1", "Description"), ("some-other-package", "npm", "< 9", "9")])
+    assert [(b.name, b.patched) for b in got.blocks] == [(code, "Description"), ("some-other-package", "9")]
+    # A label's words in a later row are not taken as that row's label: the page is not read.
+    assert read([("x", "npm", "< 1", "1"), (code, "npm", "Affected versions", "9")]) is None
+    assert read([("x", "npm", "< 1", "1"), (code, "npm", "< 9", "Patched versions")]) is None
+    assert read([("x", "npm", "< 1", "1"), ("Software", "npm", "< 9", "9"), (code, "npm", "< 2", "2")]) is None
+    assert read([("Package", "npm", "< 1", "1")]) is None  # the first row's name too
+    # After the name comes "(registry)" or nothing.
+    page = advisory_page(G1)
+    for junk in ("<span>beta</span>", "<span>(npm)</span><span>(pip)</span>"):
+        broken = page.replace("<span>(<a>npm</a>)</span>", junk)
+        assert broken != page and rules.read_advisory(broken) is None, junk
 
 
 def test_ranges_of_one_package_pair_with_their_patched_versions_by_place():
@@ -443,6 +468,13 @@ def test_ranges_of_one_package_pair_with_their_patched_versions_by_place():
                                      ("@anthropic-ai/claude-code", "npm", "< 1.5", "1.5")])
     bare = page.replace(f"{CELL}2.0</div>{CELL}1.5</div>", "")
     assert bare != page and [(b.affected, b.patched) for b in rules.read_advisory(bare).blocks] == [("< 2.0", None), ("< 1.5", None)]
+    # An empty element keeps its place: the range beside it has no patch, and is not given the next one's.
+    gaps = page.replace(f"{CELL}&lt; 1.5</div>", f"{CELL}</div>").replace(f"{CELL}2.0</div>", f"{CELL}</div>")
+    assert [(b.affected, b.patched) for b in rules.read_advisory(gaps).blocks] == [("< 2.0", None), (None, "1.5")]
+    assert rules.evidence(ghsa_cand(), CLAUDE, served({REPO + G1: (200, gaps)})).fixed is None
+    # One element is one value, whatever tags are inside it.
+    wrapped = page.replace(f"{CELL}&lt; 2.0</div>", f"{CELL}&gt;= 1.6,<br>&lt; 2.0</div>")
+    assert [b.affected for b in rules.read_advisory(wrapped).blocks] == [">= 1.6, < 2.0", "< 1.5"]
 
 
 def test_a_package_box_in_an_unknown_shape_is_not_read_in_part():
@@ -469,6 +501,17 @@ def test_a_package_box_in_an_unknown_shape_is_not_read_in_part():
             f'{CELL}&lt; 9</div></div><div class="float-left col-6 col-md-3 py-2 py-md-0">{CELL}9</div></div>',
             f'<div class="float-left col-6 col-md-3 py-2 py-md-0">{CELL}&lt; 9</div></div></div>'),
         "text between the rows": two.replace(later, "<span>and also</span>" + later),
+        # a package laid out another way before the first row: the box holds text no row accounts for
+        "a leading row laid out another way": two.replace(
+            '<div class="Box-body">', '<div class="Box-body"><div class="Box-row"><span>left-pad</span><div>&lt; 1</div></div>'),
+        "a row outside the box": two.replace('</div>\n<h2>Description</h2>', '</div>\n' + later + "</div><h2>Description</h2>"),
+        "a row inside a row": two.replace(later, later + later + "</div>"),
+        "a row one level down in the box": two.replace(later, "<div>" + later).replace("</div>\n</div>\n<h2>Description", "</div></div>\n</div>\n<h2>Description"),
+        "a row in a second box": two.replace("</div>\n<h2>Description</h2>", '</div>\n<div class="Box-body">'
+                                             + two[two.index(later):two.index("</div>\n<h2>Description")] + "</div><h2>Description</h2>"),
+        "the heading's word inside a row": two.replace(later, later + "<span>Description</span>"),
+        "labels in a later row": two.replace(later + '<div class="float-left col-12 col-md-6 pr-md-2">',
+                                             later + '<div class="float-left col-12 col-md-6 pr-md-2"><h2>Package</h2>'),
         "no rows": two.replace("Bow-row", "Box-row"),
     }
     for why, page in broken.items():
@@ -485,8 +528,9 @@ def test_rows_written_in_a_description_are_not_package_rows():
              f'<div class="float-left col-6 col-md-3 py-2 py-md-0"><h2>Patched versions</h2>{CELL}99.0.0</div></div></div><p>')
     page = advisory_page(G1, package="some-other-package").replace("Details.", spoof)
     assert spoof in page and [b.name for b in rules.read_advisory(page).blocks] == ["some-other-package"]
-    # The same markup before the heading is a row: the reading is by markup, and only GitHub writes it there.
-    assert len(rules.read_advisory(page.replace('<div class="Box-body">', '<div class="Box-body">' + spoof[4:-3])).blocks) == 2
+    # The same markup in the box is a row, by markup alone; only GitHub writes it there. Here it is
+    # a second row with labels, a shape GitHub does not print, so the page is not read.
+    assert rules.read_advisory(page.replace('<div class="Box-body">', '<div class="Box-body">' + spoof[4:-3])) is None
 
 
 def served(pages):
