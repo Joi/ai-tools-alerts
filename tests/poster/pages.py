@@ -14,17 +14,38 @@ def advisory_page(ghsa, package="@anthropic-ai/claude-code", ecosystem="npm", af
                   patched="2.1.0", cve=None, severity="High", title="A flaw", repo="anthropics/claude-code",
                   description="Details.", blocks=None):
     """A repository security advisory page in GitHub's shape. ``ecosystem`` None renders
-    the "Software" label; ``blocks`` (name, ecosystem, affected, patched) replaces the one block."""
+    the "Software" label; ``blocks`` (name, ecosystem, affected, patched) replaces the one block.
+
+    The package box is laid out as GitHub does (xkbf): one row per package, the three
+    labels in the first row only, and a package with several ranges as one row with one
+    element per range and per patched version. Consecutive ``blocks`` with one name and
+    registry make such a row when each states a range; otherwise each is its own row."""
     out = [f"<html><head><title>{html.escape(title)} · Advisory · {repo} · GitHub</title></head><body>",
            f"<h1>{html.escape(title)}</h1><span>{severity}</span><span>published</span>",
-           f"<div>{ghsa}</div><relative-time>Nov 5, 2026</relative-time>"]
+           f"<div>{ghsa}</div><relative-time>Nov 5, 2026</relative-time>", '<div class="Box-body">']
+    rows = []
     for name, eco, aff, fix in blocks or [(package, ecosystem, affected, patched)]:
-        label = "Software" if eco is None else "Package"
+        if rows and rows[-1][:2] == [name, eco] and aff and all(a for a, _ in rows[-1][2]):
+            rows[-1][2].append((aff, fix))
+        else:
+            rows.append([name, eco, [(aff, fix)]])
+    for n, (name, eco, ranges) in enumerate(rows):
         registry = "" if eco is None else f"<span>(<a>{eco}</a>)</span>"
-        out.append(f'<h2>{label}</h2><span>{html.escape(name)}</span>{registry}'
-                   f'<h2>Affected versions</h2><div>{html.escape(aff or "")}</div>'
-                   f'<h2>Patched versions</h2><div>{html.escape(fix or "None")}</div>')
-    out += [f'<h2>Description</h2><div><p>{html.escape(description)}</p></div>',
+
+        def head(label):
+            return "" if n else f'<h2 class="text-small color-fg-muted mb-1">{label}</h2>'
+
+        def cells(values):
+            return "".join(f'<div class="f4 color-fg-default" >{html.escape(v)}</div>' for v in values)
+
+        out.append(f'<div class="Bow-row border-0 clearfix {"pt-2" if n else ""}" >'
+                   f'<div class="float-left col-12 col-md-6 pr-md-2">{head("Software" if eco is None else "Package")}'
+                   f'<div ><span >{html.escape(name)}</span>{registry}</div></div>'
+                   f'<div class="float-left col-6 col-md-3 py-2 py-md-0 pr-2">{head("Affected versions")}'
+                   f'{cells(a or "" for a, _ in ranges)}</div>'
+                   f'<div class="float-left col-6 col-md-3 py-2 py-md-0">{head("Patched versions")}'
+                   f'{cells(f or "None" for _, f in ranges)}</div></div>')
+    out += ['</div>', f'<h2>Description</h2><div><p>{html.escape(description)}</p></div>',
             f"<h3>Severity</h3><span>{severity}</span>",
             f'<h3 data-view-component="true" class="mb-2 f6">CVE ID</h3> <div class="color-fg-muted"> '
             f'{cve or "No known CVE"} </div><h3>Weaknesses</h3></body></html>']

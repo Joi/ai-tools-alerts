@@ -422,6 +422,127 @@ def _after(lines, label, want: re.Pattern | None = None) -> str | None:
     return None if i is None else lines[i + 1]
 
 
+_PART = re.compile(r"(<[^>]*>)")
+_DIV = re.compile(r"(?is)<div\b[^>]*?\bclass\s*=\s*\"([^\"]*)\"")
+_DIV_OPEN = re.compile(r"(?i)<div\b")
+_DIV_CLOSE = re.compile(r"(?i)</div\b")
+_REGISTRY = re.compile(r"(?:\(([^()]+)\))?")  # what follows a package name: nothing, or "(npm)"
+
+
+def _package_rows(text: str) -> list[list[list[list[str]]]] | None:
+    """The package box before the "Description" heading as GitHub lays it out: rows
+    (a ``div`` whose class list has ``Bow-row``, GitHub's spelling), each a list of
+    columns (a ``div`` inside the row whose class list has ``float-left``), each a
+    list of entries. An entry is one ``div`` directly in the column, with the text
+    nodes inside it as ``_lines`` gives them, possibly none (GitHub puts each range
+    and each patched version in its own, and an empty one keeps its place); or one
+    text node that is in the column and in no such ``div`` (a label). A column ends
+    where its ``div`` closes and a row where its does.
+
+    The box is the ``div`` the first row opens in, and it must be rows of columns and
+    nothing else, or a package row laid out another way would be left out and the rest
+    read as the whole. None when: the box holds text before its first row; a row opens
+    anywhere but directly in the box, or after the box closed; a column opens inside
+    a column; from the first row to the heading, any text lies outside a column. The
+    heading is a "Description" text node outside every row: inside one the word is a
+    value, or text out of place, like any other."""
+    rows: list[list[list[list[str]]]] = []
+    seen = [False]  # per open div, the page itself first: text met in it outside a column
+    row = col = cell = box = None  # the depth each was opened at; the box is the first row's parent
+    closed = False  # the box has closed
+    for n, part in enumerate(_PART.split(_NOT_TEXT.sub("\n", text))):
+        depth = len(seen) - 1
+        if n % 2:  # a tag
+            if _DIV_CLOSE.match(part):
+                if depth == 0:
+                    continue  # a close with no open: not counted
+                if cell == depth:
+                    cell = None
+                if col == depth:
+                    col = cell = None
+                if row == depth:
+                    row = col = cell = None
+                closed |= box == depth
+                inner = seen.pop()
+                seen[-1] |= inner
+            elif _DIV_OPEN.match(part):
+                m = _DIV.match(part)
+                classes = m.group(1).split() if m else ()
+                if "Bow-row" in classes:
+                    if closed or (box is not None and depth != box) or seen[-1]:  # in a column: another depth
+                        return None
+                    box = depth
+                    rows.append([])
+                    row = depth + 1
+                elif "float-left" in classes and row is not None:
+                    if col is not None:
+                        return None
+                    rows[-1].append([])
+                    col = depth + 1
+                elif col == depth:  # directly in the column: an entry
+                    rows[-1][-1].append([])
+                    cell = depth + 1
+                seen.append(False)
+            continue
+        for node in (" ".join(html.unescape(x).split()) for x in part.split("\n")):
+            if not node:
+                continue
+            if node == "Description" and row is None:
+                return rows
+            if cell is not None:
+                rows[-1][-1][-1].append(node)
+            elif col is not None:
+                rows[-1][-1].append([node])
+            elif rows:
+                return None  # text after the first row and in no column: a row this does not know
+            else:
+                seen[-1] = True
+    return rows
+
+
+def _blocks(text: str) -> tuple[Block, ...] | None:
+    """Every package, range and patched version of the package box (xkbf), or None when
+    the box is not in the shape below: a page is read whole or not at all.
+
+    GitHub prints the labels "Package" (or "Software"), "Affected versions" and
+    "Patched versions" in the first row only; a later row is another package and has
+    none, so a label anywhere else is not read as one and the page is not read. After
+    the name comes the registry in parentheses, or nothing. One package with several
+    ranges is one row: each range is its own element under "Affected versions" and
+    each patched version its own under "Patched versions", in the same order. So a row
+    is three columns, and a block is one range with the patched version at its place.
+    An element is one value whatever tags are inside it; an empty one states nothing
+    at its place, and a column with none states nothing for every block of its row.
+    Two columns holding different numbers of elements cannot be paired, and the page
+    is not read."""
+    rows = _package_rows(text)
+    if not rows:
+        return None
+    blocks = []
+    for n, row in enumerate(rows):
+        if len(row) != 3:
+            return None
+        package = [node for entry in row[0] for node in entry]
+        affected, patched = ([" ".join(entry) or None for entry in column] for column in row[1:])
+        software = False
+        if n == 0:  # the labels, each required, and nowhere else
+            if package[:1] not in (["Package"], ["Software"]) or affected[:1] != ["Affected versions"] \
+                    or patched[:1] != ["Patched versions"]:
+                return None
+            software = package.pop(0) == "Software"
+            affected.pop(0)
+            patched.pop(0)
+        if not package or any(x in _LABELS for x in package + affected + patched):
+            return None
+        registry = _REGISTRY.fullmatch("".join(package[1:]))
+        if registry is None or (affected and patched and len(affected) != len(patched)):
+            return None
+        eco = "" if software else (registry.group(1) or "").strip().lower()
+        for i in range(max(len(affected), len(patched), 1)):
+            blocks.append(Block(package[0], eco, affected[i] if affected else None, patched[i] if patched else None))
+    return tuple(blocks)
+
+
 def read_advisory(text: str) -> AdvisoryPage | None:
     """The labelled fields GitHub renders on a repository security advisory, or None
     when the page does not have that shape. The id and the package blocks are read
@@ -431,7 +552,8 @@ def read_advisory(text: str) -> AdvisoryPage | None:
     a page that is not whole (no closing ``</html>``: cut short, or not a page), or
     whose sidebar CVE ID field is missing or is neither a CVE id nor "No known CVE", is
     not read at all: a description cannot supply the id of a page that lost its sidebar.
-    Only labels and the text node after each are read."""
+    The package blocks are read by row and column (``_blocks``): every package, every
+    range and its patched version."""
     if not isinstance(text, str) or not _WHOLE.search(text):
         return None
     lines = _lines(text)
@@ -445,20 +567,7 @@ def read_advisory(text: str) -> AdvisoryPage | None:
         return None
     head = lines[:lines.index("Description")]
     ghsa = next((x for x in head if _GHSA.fullmatch(x)), None)
-    blocks = []
-    for i, label in enumerate(head):
-        if label not in ("Package", "Software"):
-            continue
-        j = next((k for k in range(i + 2, min(i + 8, len(head))) if head[k] == "Affected versions"), None)
-        if j is None:
-            continue
-        eco = "".join(head[i + 2:j]).strip("() ").lower() if label == "Package" else ""
-        k, affected, patched = j + 1, None, None
-        if k < len(head) and head[k] not in _LABELS:  # an empty field renders no text node
-            affected, k = head[k], k + 1
-        if head[k:k + 1] == ["Patched versions"] and k + 1 < len(head) and head[k + 1] not in _LABELS:
-            patched = head[k + 1]
-        blocks.append(Block(head[i + 1], eco, affected, patched))
+    blocks = _blocks(text)
     if ghsa is None or not blocks:
         return None
     severity = (_after(lines, "Severity") or "").lower()
@@ -470,7 +579,7 @@ def read_advisory(text: str) -> AdvisoryPage | None:
     d = lines.index("Description")
     end = max((k for k in range(d + 1, len(lines)) if lines[k] == "Severity"), default=len(lines))
     description = " ".join(lines[d + 1:end])[:MAX_SOURCE_TEXT].strip()
-    return AdvisoryPage(ghsa=ghsa, cve=cve if _CVE.fullmatch(cve) else None, blocks=tuple(blocks),
+    return AdvisoryPage(ghsa=ghsa, cve=cve if _CVE.fullmatch(cve) else None, blocks=blocks,
                         severity=severity if severity in _SEVERITIES else None, title=title or None,
                         description=description or None)
 
