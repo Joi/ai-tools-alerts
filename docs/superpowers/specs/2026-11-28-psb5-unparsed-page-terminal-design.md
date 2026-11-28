@@ -25,60 +25,74 @@ deferred"` finds no other attempt and no rejected experiment.
 ## Success criteria
 
 - A candidate whose repository advisory page answers 200 and never parses
-  leaves the deferred list at the first run `RETRY_DAYS` (7 days) or more after
-  its first sight. No later run fetches its page again for that sighting.
-- At that run, when the page's visible text names the candidate's id and the
-  product's name, the candidate is held as a notice: id and product only, no
-  fix, no range, no action, the page as its one source. This is what a vendor
-  site page gives today.
-- At that run, when the page names neither, the candidate is dropped and counted
-  in the run's `skipped:` line as "advisory page not parsed, dropped".
+  leaves the deferred list at the first run that reads its page `RETRY_DAYS`
+  (7 days) or more after its first sight, and never goes back on it for that
+  page, also when the collector's later records list the same finding.
+- At that run the candidate is held as a notice (id and product only, no fix,
+  no range, no action, the page as its one source: what a vendor site page gives
+  today) when all of these hold:
+  - `read_advisory` cannot read the page at all. A page that parses as another
+    advisory than its URL names is a known mismatch and confirms nothing.
+  - the candidate's base id is the GHSA id in the page's own URL. The vendor's
+    repository then ties the id to the page; a CVE named in the page's text is a
+    sentence, not the advisory's CVE ID field.
+  - the page's repository is the advisory location (`authority`) of this
+    product and of no other product in the scope file.
+  - the page's visible text names that id and the product's name.
+- Otherwise the candidate is dropped at that run and counted in the run's
+  `skipped:` line as "advisory page not parsed, dropped".
 - Before `RETRY_DAYS`, behaviour is unchanged: deferred, counted, nothing
-  signed. A page that parses on any run before the end is read as now.
-- A candidate with no first sight on record (the `waiting` map was half full
-  when it was first deferred) is at its end at once: with no record there is no
-  bound, and 3qyq already rules "none, no retry".
+  signed. A page that parses on any run, before the end or after it, is read by
+  its fields as now.
+- First sight is recorded at the first run that finds the page unparsed, if no
+  earlier one is on record. A candidate for which none can be recorded (`saw`
+  keeps none in a `waiting` map half full) is at its end in that same run: with
+  no record there is no bound, and 3qyq already rules "none, no retry".
 - A failed fetch (0, 403, 408, 429, 5xx) and a spent page budget defer as now,
   also past `RETRY_DAYS`. They are not this issue (see Out of scope).
 - `scripts/test-gate.sh` passes.
 
 ## Approach
 
-Two changes, both small.
-
 **`rules.evidence(c, scope, page, entries=None, lapsed=False)`.** `lapsed` says
 the candidate's retry time is over. Unchanged when it is False. When it is
-True, a repository advisory page that answers 200 and does not parse as the
-advisory its URL names is read by the rule every other authoritative page
-already gets: it confirms the candidate when its visible text (`_lines`: no
-tag, attribute or script) names the candidate's base id and the scope's name,
-each as a whole token (`_names`). It then gives rank 1: the base id alone, no
-fix, range, title or severity, `structured` False. A repository page that
-parses, on another source of the same candidate, still wins (rank 2). The
-existing name test moves into one helper that both branches call.
+True, a repository advisory page that answers 200 and that `read_advisory`
+returns `None` for gives rank 1 (the base id alone; no fix, range, title or
+severity; `structured` False) under the four conditions above. The name test
+is the existing one (`_lines`: no tag, attribute or script; `_names`: whole
+tokens), moved into one helper both branches call. `_sole(url, scope)` is the
+new test that no other scope entry's authority covers the URL. Nothing that
+confirmed the candidate before it is replaced (rank 0 only).
 
 `Evidence` gains `failed`: a fetch failed in a way that can pass, and nothing
 confirmed the candidate. `retry` stays the union it is now.
 
-**`Run.admit`.** Before reading, it computes `lapsed`: the candidate has no
-first sight on record after `saw` would have refused one (the map is half
-full), or `now - first sight >= RETRY_DAYS * 86400`. It calls
-`evidence(..., lapsed=lapsed)` only for a candidate that came from the deferred
-list or has a first sight on record, so a fresh candidate's first read is never
-the lapsed one. When the evidence is not ok:
+**`Run.admit`.** It reads the evidence as now. When that is not ok and the one
+reason is `unparsed` (neither `failed` nor `budget`), it asks `_lapsed`: this
+records first sight through `saw` if none is on record, and answers True when
+there is still none or it is `RETRY_DAYS` old. Then:
 
-- `unparsed`, `lapsed`, and neither `failed` nor `budget`: counted as "advisory
-  page not parsed, dropped", not deferred. The end.
-- anything else that asks for a retry: deferred and counted as now.
+- lapsed: `evidence` is read again with `lapsed=True`. No page is fetched for
+  this: every source was read a moment before and a run fetches a URL once.
+  Confirmed, the candidate goes on as a vendor site page's does (`trusted`
+  False, a notice, held for the weekly summary and the catalog). Not confirmed,
+  it is counted as dropped. Either way it is not deferred.
+- not lapsed: deferred and counted as now.
 
-When the evidence is ok through the lapsed rule, the candidate goes on as a
-vendor site page's does: `trusted` is False, the level rule makes it a notice,
-`plan_new` holds it for the digest and the catalog. It is not deferred again.
+**Remembering the end.** The collector's record is replaced each hour and lists
+largely the same findings, so an ended candidate comes back as a fresh one. Its
+`waiting` entry is the memory: at the end `admit` notes the key in `Run.ended`
+(writing an entry `RETRY_DAYS` old if the candidate has none and the map is
+under its cap), and `run` keeps a key in `ended` when it prunes the map. So
+while any input still names the candidate, each run ends it again at once, by
+the same two reads of pages already fetched: the notice is held once (`hold`
+knows its ids) and the drop is counted each run, as "no authoritative source"
+is. When no input names it any more, the entry is pruned with the rest. If the
+page parses on a later run it is read by its fields and the candidate posts as
+the page states; `plan_new` dates it from the first sight on record.
 
-First sight is `state["waiting"]`, written by `saw` on the first deferral and
-kept while the candidate is on the deferred list (`run` prunes a key only when
-it is neither live nor younger than `AGE_LIMIT`). No new state field, no change
-to the state file's shape, no change to any post's wording.
+No new state field, no change to the state file's shape, no change to any
+post's wording. `run` changes by one condition in the prune.
 
 ## Why (a), and why not the others
 
@@ -86,20 +100,22 @@ The issue offers three ends. This builds (a) with a residue of (b).
 
 - **(a) a notice from the page's id and product name, after `RETRY_DAYS`.**
   Chosen. Members hear of the advisory and are sent to the source. The notice
-  rests on the test a vendor site page already passes, so no new trust is
-  introduced: the page is on the vendor's own repository (`authoritative`), and
-  its text must name the id and the product.
+  needs more than a vendor site page's does: the id comes from the page's own
+  URL on the vendor's repository, the repository must be one product's alone,
+  and the text must name both.
 - **Why not the notice at first sight, with retries after.** A notice that the
   catalog lane has sent is not re-read today (ai-tools-alerts#n2yj). A page that
   fails to parse for one run would then leave a notice with no range and no fix
   in the catalog for good, where an hour's wait gives the real one.
 - **(b) drop and say so in the digest.** Only for the residue: a page that
-  after seven days still names neither the id nor the product is not a
-  statement about this advisory (a sign-in wall, an error page served with 200).
-  A candidate whose page says nothing is dropped silently today ("no
-  authoritative source"); this one is counted under its own name. No digest
-  line: the digest's wording is approved text in two languages, and a count of
-  pages that said nothing tells a member nothing they can act on.
+  after seven days does not meet the four conditions is not a statement this
+  service can sign about this advisory for this product (a sign-in wall, an
+  error page served with 200, a page under a CVE its text alone names, a
+  repository shared by several products). A candidate whose page says nothing
+  is dropped silently today ("no authoritative source"); this one is counted
+  under its own name. No digest line: the digest's wording is approved text in
+  two languages, and a count of pages that could not be read tells a member
+  nothing they can act on.
 - **(c) a digest line when more than N are deferred in one run.** Not built. It
   is a sign for a person, and the ruling is that none is watching. With (a) the
   members are told of each advisory itself.
@@ -113,61 +129,91 @@ action, one source.
 
 ## Alternatives considered
 
-- **Bind the product by the URL's repository alone, without the name test.**
-  Rejected: `github.com/modelcontextprotocol/servers/` is the authority of seven
-  products. The name test is what keeps an advisory for one out of another's
-  notice.
+- **The vendor-site rule as it is (text names the id and the product).** The
+  first draft. Rejected after review: a description can name another advisory's
+  id or another product for comparison, and for a parsed page `evidence` already
+  refuses a CVE that is only in the description. Hence the id from the URL and
+  the one-product repository.
 - **Accept the package name as well as the product name.** Rejected for this
-  issue: it widens the vendor-site rule, which is not asked for. The cost is a
-  drop where a page names only `@anthropic-ai/claude-code` and never "Claude
-  Code"; it is counted.
-- **A back-off (read a deferred page less often).** Not needed: the page spend
-  per candidate is now bounded by `RETRY_DAYS` of runs.
+  issue: it widens the name test, which is not asked for. The cost is a drop
+  where a page names only `@anthropic-ai/claude-code` and never "Claude Code";
+  it is counted.
+- **A new state field for ended candidates.** Not needed: the `waiting` entry
+  already says when the candidate was first seen, and keeping it while an input
+  names the candidate is one condition.
+- **A back-off (read a deferred page less often).** Not needed: the deferred
+  list no longer grows with such candidates.
+
+## Residual risk, stated
+
+A notice under this rule can still name the wrong product in one case: the
+vendor's single-product repository publishes an advisory for another package
+(the suite has one: Claude Desktop in the Claude Code repository), the page
+does not parse for seven days, and its text names the product. The notice then
+says "<product>: security advisory (<id>)", no range, no fix, with the page as
+its source. It never becomes a root, never carries a level above notice, and a
+member's check matches nothing on it. A vendor site page has had the same
+residue since h340.
 
 ## Bounds
 
-- Deferred list: a candidate deferred only for an unparsed page leaves it within
-  `RETRY_DAYS` of first sight, at the first run that reads its page after that.
-  When more deferred candidates wait than the run has pages, `run` already
-  starts the deferred list one further each hour, so each is read within
-  `ceil(n / MAX_RUN_PAGES)` hours of its end.
-- Page budget: at most one page per run per such candidate, for `RETRY_DAYS`.
+- Deferred list: a candidate deferred only for an unparsed page leaves it at
+  the first run that reads its page at or after `RETRY_DAYS` from first sight.
+  Which run reads it is decided by the run's page budget, as for every
+  candidate: fresh candidates are read first, then the deferred list, which
+  starts one further each hour. With n candidates on the deferred list a given
+  one is at its head within n hours, and is read then unless the fresh
+  candidates alone spend the run's `MAX_RUN_PAGES`. That starvation is the
+  existing order of reads (ai-tools-alerts#vszx) and not changed here. In
+  production the collector's record lists the candidate again each hour, so it
+  is usually read as a fresh one.
+- Page budget: such a candidate costs what any candidate an input names costs,
+  one fetch of its page a run. What ends is the cost of candidates no input
+  names any more, which the deferred list used to keep for good.
 
 ## Tests
 
 In `tests/poster/test_rules.py`:
 
-- `evidence(..., lapsed=True)` on an unparsed repository page that names the id
-  and the product: ok, rank 1 values (url, ids = base only, no fix, range,
-  title or severity, `structured` False, `unparsed` False).
-- the same page with `lapsed=False`: not ok, `unparsed`, `retry` (as today).
-- lapsed, page names the id and not the product; names the product and not the
-  id; names the id only inside a tag attribute or a script: not ok, `unparsed`.
-- lapsed, one source unparsed and one source that parses: rank 2 wins, whatever
-  the order.
-- lapsed, a page that parses for another advisory's GHSA and names this id and
-  product in its text: confirmed as rank 1 (the vendor-site rule), never with
-  that advisory's fields.
-- `failed` is set for 503 and not for an unparsed page.
+- `failed` is set for 503, not for an unparsed page, and for both together.
+- lapsed, an unparsed page that meets the four conditions: ok, rank 1 values.
+  The same page not lapsed: not ok, `unparsed`, `retry`.
+- lapsed, the text names the id and not the product; the product and not the
+  id; the id inside a longer token; both in attributes only; both in a script
+  only; another product's name that holds this one's words; an empty page: not
+  ok, `unparsed`.
+- lapsed, a page that parses as another advisory and names this id and product
+  in its description: not ok (the known mismatch stays one).
+- lapsed, a candidate under a CVE, or under another GHSA, that the unparsed
+  page's text names: not ok. The same CVE candidate with a page that parses: by
+  its fields, equal to the not-lapsed result.
+- lapsed, an unparsed page in `modelcontextprotocol/servers` naming two
+  products: not ok for either.
+- lapsed, a vendor site page that confirmed first is not replaced.
+- lapsed changes nothing for a page that parses, a 503 and a 404.
 
 In `tests/poster/test_main.py`:
 
-- the pinned test keeps its failed-fetch cases for nine days and loses the 200
-  case, which moves to the new tests.
-- repeated runs, hourly marks over eight days, a page that never parses and
-  names the id and product: deferred and counted each run before day 7 with
-  nothing held; at the first run at or past day 7 one held notice with the
-  vendor-site shape, the deferred list empty; a run after fetches nothing for
-  it. The pages fetched for it are counted: one a run before the end, none
-  after.
-- the same with a page that names nothing: at day 7 "advisory page not parsed,
-  dropped=1", nothing held, nothing signed, the deferred list empty, no fetch
-  after.
-- a page that starts parsing on day 3: posts as the page states, as now.
-- an unparsed page beside a source that answers 503, past day 7: still
-  deferred ("source fetch failed" is not this issue).
-- no first sight on record (a `waiting` map at half its cap): the end at the
-  second run, not never.
+- the pinned test keeps its failed-fetch cases for nine days; the 200 case
+  moves to the tests below.
+- 168 hourly runs with a page that never parses and meets the conditions: each
+  deferred and counted, one page a run, nothing held; at hour 168 one held
+  notice of the vendor-site shape, the deferred list empty; later runs with no
+  input naming it fetch nothing. Pages fetched in all: 169.
+- a page that names nothing: at day 7 "advisory page not parsed, dropped=1",
+  nothing held or signed, the deferred list empty, the `waiting` entry pruned
+  the run after.
+- the collector lists the finding again after the end, three times over
+  thirteen days: dropped each run, never deferred, the first sight kept; then
+  the page meets the conditions: held once over two runs; then it parses: one
+  root, as the page states.
+- a page that starts parsing on day 3: posts as the page states.
+- an unparsed page beside a source that answers 503, past day 7: deferred; when
+  that source answers 404, the end.
+- no first sight on record (the `waiting` map at half its cap): the end in the
+  first run, one held and one dropped, none deferred.
+- five such candidates with two pages a run: the deferred list only shrinks
+  after day 7 and empties within eight runs; five notices held in all.
 
 ## Blast radius and rollback
 
@@ -185,8 +231,8 @@ the poster with the next release; a comment on ai-tools-alerts#g9bv says so.
 
 - A fetch that fails for ever (403 from a block, 5xx). It defers with no end
   too. Whether an outage may end a candidate is the question D4 of the design
-  review answers "no" for lowering; it needs its own decision. Filed as a
-  follow-up.
+  review answers "no" for lowering; it needs its own decision:
+  ai-tools-alerts#ewh2.
 - Re-reading a notice the catalog lane has sent (ai-tools-alerts#n2yj).
 - The order of the admit lane's reads (ai-tools-alerts#vszx, in flight; it
   touches `run` near the same lines).

@@ -215,6 +215,7 @@ class Run:
         self.digest_now = digest_now  # run --digest-now: today's digest whatever the hour
         self.n = Counter()
         self.deferred: dict[tuple, dict] = {}  # (scope, id) -> candidate dict, for the next run
+        self.ended: set[str] = set()  # psb5: ``waiting`` keys of candidates at their end this run (admit)
         self.groups: dict[tuple, list] = {}  # faxq: (scope, id) -> a fix group's members (ledger.merge)
         # jsje: thread root -> (journal items, withheld groups) a raise of that thread will
         # replace (yields). They stay where they are until the raise is journaled (enqueue).
@@ -1118,6 +1119,22 @@ class Run:
             self.skipped["id shape"] += 1
             return None
         ev = rules.evidence(c, scope, self.page)
+        if not ev.ok and ev.unparsed and not ev.failed and not ev.budget and not self.is_synthetic(c) \
+                and self._lapsed(scope.name, c.id):
+            # psb5: its page answers and has not parsed for RETRY_DAYS. The end, with no
+            # person: a notice when the page binds the id to the product without its fields
+            # (rules.evidence, ``lapsed``), else the candidate is dropped and counted.
+            # No page is fetched for this: every source was read just above.
+            ev = rules.evidence(c, scope, self.page, lapsed=True)
+            # The end is remembered as a first sight that old, kept while an input still
+            # names the candidate (run): the next record listing it starts no new wait.
+            key, w = f"{scope.name}|{c.id.casefold()}", self.state["waiting"]
+            if key in w or len(w) < inputs.MAX_WAITING:
+                w.setdefault(key, self.now - RETRY_DAYS * 86400)
+                self.ended.add(key)
+            if not ev.ok:
+                self.skipped["advisory page not parsed, dropped"] += 1
+                return None
         if not ev.ok:
             if ev.retry:
                 self.skipped["advisory page not parsed, deferred" if ev.unparsed
@@ -1175,6 +1192,15 @@ class Run:
                        readings=readings,
                        advisory_severity=severity or (c.advisory_severity if trusted else None),
                        trojanized=c.trojanized is True and trusted, injection_exec=c.injection_exec is True and trusted)
+
+    def _lapsed(self, scope, cid) -> bool:
+        """psb5: the candidate's page has had its RETRY_DAYS from first sight, which is
+        recorded here when there is none. With no record (``saw`` keeps none in a map
+        half full) nothing would bound the wait, so it is over at once (3qyq: none, no
+        retry)."""
+        self.saw(scope, cid)
+        t = self.state["waiting"].get(f"{scope}|{cid.casefold()}")
+        return t is None or self.now - t >= RETRY_DAYS * 86400
 
     def level(self, c, scope):
         """``source_ok`` is "a page confirmed this advisory this run": KEV alone never
@@ -3250,8 +3276,10 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
             if merged is not None:
                 state["deferred"] = list(r.deferred.values())  # replaces last run's list only now
                 live = {f"{sc}|{i.casefold()}" for (sc, _), d in r.deferred.items() for i in [d["id"], *d["aliases"]]}
+                # psb5: a candidate at its end keeps its first sight while an input still
+                # names it, or the next run would start its RETRY_DAYS again
                 state["waiting"] = {k: t for k, t in state["waiting"].items()  # 0dvh
-                                    if k in live or now - t < AGE_LIMIT}
+                                    if k in live or k in r.ended or now - t < AGE_LIMIT}
             r.save()
             if english_ok:  # last, after marks and deferred are saved together
                 try:
