@@ -2190,8 +2190,9 @@ def test_a_page_that_never_parses_and_names_nothing_is_dropped_and_counted(env, 
     ((summary, err, fetched),) = _hourly(env, capsys, [24 * 7], relay)
     assert "advisory page not parsed, dropped=1" in err and "deferred" not in err and fetched == [GHSA]
     assert "held=0" in summary and env.state()["deferred"] == [] and env.state()["held"] == []
-    # the end is on record, dated the run that ended it, and the first sight is pruned
-    assert env.state()["waiting"] == {"Claude Code|ghsa-abcd-efgh-ijkl|end": T0 + 7 * DAY}
+    # the end is on record, dated the run that ended it, beside the first sight
+    assert env.state()["waiting"] == {"Claude Code|ghsa-abcd-efgh-ijkl": T0,
+                                      "Claude Code|ghsa-abcd-efgh-ijkl|end": T0 + 7 * DAY}
     ((summary, err, fetched),) = _hourly(env, capsys, [24 * 7 + 1], relay)
     assert fetched == [] and "not parsed" not in err
     _hourly(env, capsys, [24 * 14], relay)  # no input has named it for a week: forgotten
@@ -2207,14 +2208,15 @@ def test_an_input_that_still_names_an_ended_candidate_does_not_start_its_wait_ag
     env.pages.put(GHSA, "<html>Sign in to continue</html>")
     env.collector([finding()])
     _hourly(env, capsys, (0, 24 * 7))
-    assert env.state()["waiting"] == {end: T0 + 7 * DAY}
+    first = "Claude Code|ghsa-abcd-efgh-ijkl"
+    assert env.state()["waiting"] == {first: T0, end: T0 + 7 * DAY}
     for h in (24 * 7 + 3, 24 * 9, 24 * 15):
         _hourly(env, capsys, [h - 2, h - 1])  # runs with no newer record: the end is not forgotten
         assert end in env.state()["waiting"], h
         env.collector([finding()])
         ((summary, err, fetched),) = _hourly(env, capsys, [h])
         assert "advisory page not parsed, dropped=1" in err and "deferred" not in err and fetched == [GHSA], h
-        assert env.state()["deferred"] == [] and env.state()["waiting"] == {end: T0 + 3600 * h}
+        assert env.state()["deferred"] == [] and env.state()["waiting"] == {first: T0, end: T0 + 3600 * h}
     env.pages.put(GHSA, NEW_MARKUP)  # and the notice is held once, however often it is named
     for h in (24 * 16, 24 * 16 + 1):
         env.collector([finding()])
@@ -2296,6 +2298,37 @@ def test_a_full_waiting_map_still_records_the_end(env, capsys):
     env.collector([finding()])
     ((summary, err, _),) = _hourly(env, capsys, [1])
     assert "advisory page not parsed, dropped=1" in err and "deferred" not in err and env.state()["deferred"] == []
+
+
+def test_a_full_waiting_map_never_gives_up_the_ended_candidates_own_first_sight(env, capsys):
+    st = inputs.new_state(T0, 3)
+    own = "Claude Code|ghsa-abcd-efgh-ijkl"
+    st["waiting"] = {own: T0 - 7 * DAY, **{f"Claude Code|cve-2020-{n:04d}": T0 - n for n in range(inputs.MAX_WAITING - 1)}}
+    env.config.state.parent.mkdir(parents=True, exist_ok=True)
+    inputs.save_state(env.config.state, st)
+    env.pages.put(GHSA, "<html>Sign in</html>")
+    env.collector([finding()])
+    ((summary, err, _),) = _hourly(env, capsys, [0])
+    w = env.state()["waiting"]  # its own first sight is the oldest entry, and stays
+    assert "advisory page not parsed, dropped=1" in err and w[own] == T0 - 7 * DAY and w[own + "|end"] == T0
+    assert len(w) == inputs.MAX_WAITING and f"Claude Code|cve-2020-{inputs.MAX_WAITING - 2:04d}" not in w
+
+
+def test_a_page_that_parses_after_the_end_is_judged_from_its_real_first_sight(env, capsys):
+    """Delta review: the advisory was a day old when first seen. Dropped at day seven, its
+    page parses an hour later. The age limit counts from the first sight, which the end
+    keeps, so it posts its root; counted from the recovery it would be old news, a notice."""
+    f = finding()
+    f["sources"][0]["published_at"] = "2026-11-04T00:00:00Z"
+    env.pages.put(GHSA, "<html>Sign in</html>")
+    env.collector([f])
+    _hourly(env, capsys, (0, 24 * 7))
+    assert env.state()["waiting"]["Claude Code|ghsa-abcd-efgh-ijkl"] == T0
+    del env.pages.fixed[GHSA]
+    env.collector([f])
+    _, summary, relay = env.run(now=T0 + 7 * DAY + 3600)
+    assert "roots=1" in summary and "aged=0" in summary, summary
+    assert "Do: upgrade Claude Code to 2.1.0 or later." in relay.calls[0][2]
 
 
 def test_an_end_with_no_first_sight_invents_none(env, capsys):

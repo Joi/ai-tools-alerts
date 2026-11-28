@@ -1207,11 +1207,12 @@ class Run:
         under its key with ENDED, dated now. ``run`` prunes it like any entry, AGE_LIMIT
         after the last run that ended the candidate: so the end holds while an input
         names the candidate, across runs that read no new record, and is forgotten a
-        week after the inputs stop naming it. It is written whatever the map holds: in
+        week after the inputs stop naming it. The candidate's first sight is kept as
+        long (``run``), for the age limit of a page that parses after all. It is written whatever the map holds: in
         a full map the oldest entry makes way (the one nearest its own pruning)."""
         w, key = self.state["waiting"], f"{scope}|{cid.casefold()}{ENDED}"
         if key not in w and len(w) >= inputs.MAX_WAITING:
-            del w[min(w, key=lambda k: (w[k], k))]
+            del w[min((k for k in w if k + ENDED != key), key=lambda k: (w[k], k))]  # never its own first sight
         w[key] = self.now
 
     def level(self, c, scope):
@@ -3288,8 +3289,11 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
             if merged is not None:
                 state["deferred"] = list(r.deferred.values())  # replaces last run's list only now
                 live = {f"{sc}|{i.casefold()}" for (sc, _), d in r.deferred.items() for i in [d["id"], *d["aliases"]]}
+                # psb5: an ended candidate's first sight stays while its end is on record, so
+                # a page that parses then is still judged from the day it was first seen
+                ends = {k for k, t in state["waiting"].items() if k.endswith(ENDED) and now - t < AGE_LIMIT}
                 state["waiting"] = {k: t for k, t in state["waiting"].items()  # 0dvh
-                                    if k in live or now - t < AGE_LIMIT}
+                                    if k in live or k + ENDED in ends or now - t < AGE_LIMIT}
             r.save()
             if english_ok:  # last, after marks and deferred are saved together
                 try:

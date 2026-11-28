@@ -33,16 +33,16 @@ One chunk, one commit. About 330 changed lines, most of them tests.
       first sight is missing or `RETRY_DAYS * 86400` old.
 - [x] `Run._end(scope, cid)`: write the end entry dated now. In a map at
       `inputs.MAX_WAITING` that lacks it, the oldest entry (by date, then key)
-      is deleted first, so the state stays one `load_state` accepts.
+      other than the candidate's own first sight is deleted first, so the state stays one `load_state` accepts.
 - [x] `Run.admit`: after the first `rules.evidence`, when `not ev.ok and
       ev.unparsed and not ev.failed and not ev.budget`
       and `self._lapsed(...)`: read `rules.evidence(..., lapsed=True)`, call
       `self._end(...)`; when still not ok, count "advisory page not parsed,
       dropped" and return None. Otherwise fall through to the existing code
       with the new evidence.
-- [x] `run` is not changed: its prune of `waiting` keeps an end entry for
-      `AGE_LIMIT` after the last run that ended the candidate, which is the
-      memory wanted (a run with no new collector record does not forget it).
+- [x] `run`: the prune of `waiting` keeps an end entry for `AGE_LIMIT` after
+      the last run that ended the candidate (a run with no new collector record
+      does not forget it), and keeps a first sight whose end entry is kept.
 
 ### 3. Tests
 
@@ -85,7 +85,7 @@ an end entry as a `waiting` entry no candidate names and prunes it within
 ### Order with ai-tools-alerts#vszx
 
 vszx is in flight and edits `run` near the lines that build `pairs`. This
-change does not touch `run`. Merge `origin/main` before the review
+change touches `run` only in the prune. Merge `origin/main` before the review
 and again before the merge.
 
 ### Rollout

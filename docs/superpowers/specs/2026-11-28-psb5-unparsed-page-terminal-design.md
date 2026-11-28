@@ -85,8 +85,11 @@ fresh one, sometimes after runs that read no new record. The memory is an
 entry of the `waiting` map under the candidate's key with the suffix `|end`,
 dated the run that ended it (`Run._end`). `_lapsed` answers True at once for a
 candidate that has one. `run` prunes the map as it always has (an entry no
-deferred candidate names goes `AGE_LIMIT`, seven days, after its date), and
-each run that ends the candidate again dates the entry anew. So the end holds
+deferred candidate names goes `AGE_LIMIT`, seven days, after its date), with
+one addition: a candidate's first sight stays as long as its end entry does,
+so a page that parses after the end is judged by the age limit from the day
+the candidate was first seen, not from the day it recovered. Each run that
+ends the candidate again dates the end entry anew. So the end holds
 for as long as an input names the candidate and for a week after the last run
 that met it; then it is forgotten, and a later sighting is a new one. While it
 holds, each run that meets the candidate ends it by the same two reads of pages
@@ -95,14 +98,15 @@ counted each run, as "no authoritative source" is. If the page parses on a
 later run it is read by its fields and the candidate posts as the page states.
 
 The entry is written whatever the map holds. In a map at its cap
-(`inputs.MAX_WAITING`, which `load_state` enforces) the oldest entry makes way:
+(`inputs.MAX_WAITING`, which `load_state` enforces) the oldest entry, other
+than the candidate's own first sight, makes way:
 it is the one nearest its own pruning, and the candidate it stood for is at
 worst seen as new once more.
 
 No new state field and no change to the state file's shape (`waiting` keys are
 strings holding a `|`, values integers, as before), so an older poster reads a
 newer state and prunes the entries it does not know. No change to any post's
-wording. `run` does not change.
+wording. `run` changes in the prune only.
 
 ## Why (a), and why not the others
 
@@ -215,12 +219,16 @@ In `tests/poster/test_main.py`:
   input naming it fetch nothing. Pages fetched in all: 169.
 - a page that names nothing: at day 7 "advisory page not parsed, dropped=1",
   nothing held or signed, the deferred list empty, the `waiting` map holding
-  the end entry alone; a week with no input naming it later, the map empty.
+  the first sight and the end entry; a week with no input naming it later, the map empty.
 - the collector lists the finding again after the end, three times over eight
   days, with two runs that read no new record before each: the end entry is
   still there, the candidate is dropped each time and never deferred; then the
   page meets the conditions: held once over two runs; then it parses: one root,
   as the page states.
+- an advisory a day old at first sight, dropped at day 7, whose page parses an
+  hour later: one root, not aged.
+- a full map in which the candidate's own first sight is the oldest entry: it
+  stays.
 - a `waiting` map at its cap: the end in the first run, the end entry written,
   the oldest entry gone, the map still at the cap; with the map emptied of the
   rest, the next record naming the candidate is ended at once.
