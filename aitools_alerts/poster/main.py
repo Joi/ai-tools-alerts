@@ -2364,6 +2364,21 @@ class Run:
                and _base(i) not in bases]
         return sorted(ids, key=lambda i: not i.upper().startswith("GHSA"))
 
+    @staticmethod
+    def _beside(adv: dict, ids) -> list[dict]:
+        """9je7: for each GHSA id of ``ids`` no source of the notice is named for, its page
+        in every repository whose advisory page the notice does keep. A notice held
+        before it kept a joining member's source (and one past the 20-source cap) has
+        no page for that member; an advisory of the same product is most often in the
+        same repository, and the page itself decides (``_judge_id``)."""
+        urls = [s["url"] for s in adv.get("sources") or () if isinstance(s, dict) and isinstance(s.get("url"), str)]
+        named = {_base(u.rstrip("/").rsplit("/", 1)[-1]) for u in urls}
+        repos = list(dict.fromkeys(u.rstrip("/").rsplit("/", 1)[0] for u in urls
+                                   if (q := urlsplit(u)).netloc == "github.com" and not q.query
+                                   and rules._REPO_ADVISORY.fullmatch(q.path)))
+        return [{"url": f"{r}/{i}", "published_at": None} for i in ids
+                if i.upper().startswith("GHSA") and _base(i) not in named for r in repos]
+
     def _retire_held(self, bases) -> None:
         """9je7: split every held notice the manifest's retraction strikes.
 
@@ -2374,7 +2389,8 @@ class Run:
         thread's (``_judge_id``): released as a pointer candidate in the state's
         deferred list, which this run plans and holds as a notice of its own; kept with
         the notice when a page answers otherwise or no source confirms it; left in the
-        notice for the next run when a page could not be read. A notice with nothing
+        notice for the next run when a page could not be read. A member the notice kept
+        no page for is read beside the pages it did keep (``_beside``). A notice with nothing
         left to decide is dropped, the ids it still has marked digested (what the
         digest did with all of them). New pages are capped at RETIRE_PAGES a run and
         the work starts at a different notice, and in it a different id, each hour. A notice a journaled digest
@@ -2390,8 +2406,9 @@ class Run:
         start, changed = len(self.pages), False
         for h in struck[k:] + struck[:k]:
             a = h["adv"]
-            shim = SimpleNamespace(scope=h["scope"], advisory=a, learned_sources=None)  # what _judge_id reads
             survivors, released, kept, pointers, undecided = self._survivors(a, bases), [], [], [], False
+            # what _judge_id reads; a member whose page the notice did not keep is read beside the others'
+            shim = SimpleNamespace(scope=h["scope"], advisory=a, learned_sources=self._beside(a, survivors))
             # A different id first each hour, GHSA ids still ahead of CVEs (a CVE is often
             # decided with its GHSA): pages that keep failing never starve the ids behind.
             n = sum(i.upper().startswith("GHSA") for i in survivors)

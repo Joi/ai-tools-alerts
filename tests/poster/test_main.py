@@ -3396,3 +3396,21 @@ def test_a_held_group_that_posted_is_not_acknowledged_whole_by_the_digest_that_s
     code, _, _ = env.run(now=at(5, 10))
     st = env.state()
     assert code == 0 and st["held"] == [] and KEY_A in st["digested"] and KEY_Z not in st["digested"]
+
+
+def test_a_member_a_notice_kept_no_source_for_is_read_beside_the_others(env):
+    """Review: a notice held by an earlier version took a joining member's id without its
+    source. The member is read at its own page in the repository the notice does name."""
+    env.collector([finding(severity=None)])
+    env.run()
+    env.collector([finding(severity=None), finding(fid=GHSA_Z, severity=None)])
+    env.run(now=T0 + 3600)
+    st = env.state()
+    (h,) = st["held"]
+    h["adv"]["sources"] = [s for s in h["adv"]["sources"] if s["url"] != ZURL]  # as the earlier version left it
+    env.config.state.write_text(json.dumps(st))
+    _strike(env, ["GHSA-abcd-efgh-ijkl"])
+    code, _, _ = env.run(now=at(5, 10))
+    st = env.state()
+    assert code == 0 and _held_ids(env) == [[GHSA_Z]] and KEY_Z not in st["digested"]
+    assert [s["url"] for s in st["held"][0]["adv"]["sources"]] == [ZURL]
