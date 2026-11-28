@@ -107,6 +107,7 @@ import time
 from collections import Counter
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -1527,6 +1528,8 @@ class Run:
             for h in self.state["held"]:
                 if h["scope"] != scope or not set(self._notice_keys(scope, h["adv"])) & set(self._notice_keys(scope, a)):
                     continue
+                if self._struck(h):  # 9je7: it waits to be split (retire); what it took would go with it
+                    continue
                 if title and not h.get("source_title"):  # a title learned while held reaches the digest
                     h["source_title"] = title
                     self.save()
@@ -1556,14 +1559,16 @@ class Run:
                     if p["affected"] != a["products"][0]["affected"]:
                         p["affected"] = None if None in (p["affected"], a["products"][0]["affected"]) \
                             or not p["fixed"] else f"<{p['fixed']}"
-                    h["adv"] = {**h["adv"], "aliases": ids, "products": [p]}
+                    # 9je7: with their sources, by which a member is judged if another is retracted
+                    src = [asdict(s) for s in compose._sources([*h["adv"]["sources"], *adv.sources])]
+                    h["adv"] = {**h["adv"], "aliases": ids, "products": [p], "sources": src}
                     self.save()
             # Members, not ids: an id new to a listed advisory (a CVE assigned later) is not news.
             fresh = [i for m in self.groups.get((scope, a["id"].casefold()), ())
                      if not any(f"{scope}|{k.casefold()}" in known for k in (m.id, *m.aliases))
                      for i in compose._ids([m.id, *m.aliases], None)]
             fresh = list(dict.fromkeys(fresh))
-            if fresh and not any(h["scope"] == scope and set(self._notice_keys(scope, h["adv"]))
+            if fresh and not any(h["scope"] == scope and not self._struck(h) and set(self._notice_keys(scope, h["adv"]))
                                  & set(self._notice_keys(scope, a)) for h in self.state["held"]):
                 # faxq: a fix group met a member a digest already listed: the members it has
                 # not listed are held under their own ids, so each is listed once.
@@ -2271,6 +2276,10 @@ class Run:
         self.gone = frozenset(i.casefold() for i in m.retracted)
         bases = self.gone | {_base(i) for i in self.gone}
         try:
+            self._retire_held(bases)  # 9je7: whatever the threads below give
+        except Exception as e:  # noqa: BLE001 - a notice never stops the run
+            _say(f"held notices not split: {type(e).__name__}")
+        try:
             events = list(self._own(st.events_for(root), m).values())  # 9cch: never a post it did not sign
             hidden = {t.root_id for t in pull.threads_from(events, m) if pull.standing(t, self.now).retracted}
             hidden -= {t.root_id for t in pull.threads_from(events, replace(m, retracted=()))
@@ -2328,6 +2337,98 @@ class Run:
             _say(f"{e.root_event_id[:12]} retired: released {', '.join(released) or '-'};"
                  f" kept {', '.join(kept) or '-'}")
         self._released = None
+
+    def _struck(self, h) -> bool:
+        """9je7: a held notice one of whose ids the stored manifest retracts (``gone``, set
+        by ``retire``): the test ``compose.withdrawn`` applies, so a digest leaves it out."""
+        return not _fold([h["adv"].get("id"), *h["adv"].get("aliases", ())]).isdisjoint(self.gone)
+
+    def _part_retracted(self, h, gone) -> bool:
+        """9je7: a held notice the digest would leave out only because ``gone`` (case-folded
+        retracted ids) names one of its ids, and that has an id the retraction may leave
+        true (``_survivors``). Not a synthetic or an expired one: nothing of those is listed."""
+        try:
+            a = schema.validate(h["adv"])
+        except ValueError:
+            return False
+        return compose.withdrawn(a, gone, self.now) and not compose.withdrawn(a, (), self.now) \
+            and bool(self._survivors(h["adv"], set(gone) | {_base(i) for i in gone}))
+
+    @staticmethod
+    def _survivors(adv: dict, bases) -> list[str]:
+        """9je7: the ids of a held notice that a retraction of ``bases`` may leave true:
+        bot ids, not synthetic, whose base is not retracted (a bare id under a scoped
+        retraction is not one: on doubt the retraction wins). GHSA ids first, as z360."""
+        ids = [i for i in dict.fromkeys([adv.get("id"), *adv.get("aliases", ())])
+               if isinstance(i, str) and candidates.BOT_ID.fullmatch(i) and not compose.is_synthetic(i)
+               and _base(i) not in bases]
+        return sorted(ids, key=lambda i: not i.upper().startswith("GHSA"))
+
+    def _retire_held(self, bases) -> None:
+        """9je7: split every held notice the manifest's retraction strikes.
+
+        A fix group that rates notice is one held notice whose ids are every member's
+        (faxq). The digest leaves out a notice with a retracted id and acknowledges every
+        id of it, so the other members were never counted. Here each surviving id
+        (``_survivors``) is judged by its own repository advisory page, as a retired
+        thread's (``_judge_id``): released as a pointer candidate in the state's
+        deferred list, which this run plans and holds as a notice of its own; kept with
+        the notice when a page answers otherwise or no source confirms it; left in the
+        notice for the next run when a page could not be read. A notice with nothing
+        left to decide is dropped, the ids it still has marked digested (what the
+        digest did with all of them). New pages are capped at RETIRE_PAGES a run and
+        the work starts at a different notice, and in it a different id, each hour. A notice a journaled digest
+        already acknowledges is that digest's. One save: the pointers, the held list
+        and the digested keys are one file."""
+        pending = [set(it["adv"]["held"]) for it in self.state["outbox"] + self._withheld_items()
+                   if it["kind"] == "digest"]
+        struck = [h for h in self.state["held"] if self._struck(h)
+                  and not any(set(self._notice_keys(h["scope"], h["adv"])) <= s for s in pending)]
+        if not struck:
+            return
+        k = (self.now // 3600) % len(struck)
+        start, changed = len(self.pages), False
+        for h in struck[k:] + struck[:k]:
+            a = h["adv"]
+            shim = SimpleNamespace(scope=h["scope"], advisory=a, learned_sources=None)  # what _judge_id reads
+            survivors, released, kept, pointers, undecided = self._survivors(a, bases), [], [], [], False
+            # A different id first each hour, GHSA ids still ahead of CVEs (a CVE is often
+            # decided with its GHSA): pages that keep failing never starve the ids behind.
+            n = sum(i.upper().startswith("GHSA") for i in survivors)
+            turn = [x for part in (survivors[:n], survivors[n:]) if part
+                    for x in part[(self.now // 3600) % len(part):] + part[:(self.now // 3600) % len(part)]]
+            for i in turn:
+                if i in released + kept:
+                    continue  # decided with another id of its advisory
+                verdict = None if len(self.pages) - start >= RETIRE_PAGES else self._judge_id(shim, i, bases)
+                if verdict is None:
+                    undecided = True  # no page read: the next run tries again
+                    continue
+                ok, assigned, pointer = verdict
+                (released if ok else kept).extend(x for x in survivors if _base(x) in assigned | {_base(i)}
+                                                  and x not in released + kept)
+                if ok:
+                    pointers.append(pointer)
+            if undecided and not released:
+                continue
+            for c in pointers:  # in place of a row for the same id: its sources are proven
+                self.state["deferred"] = [d for d in self.state["deferred"] if not (
+                    d["product_text"] == c.product_text and d["id"].casefold() == c.id.casefold())] + [c.to_dict()]
+            out = _fold(released)
+            rest = [i for i in dict.fromkeys([a["id"], *a["aliases"]]) if i.casefold() not in out]  # never empty: the retracted id
+            if undecided:
+                title = a["title"].replace(f"({compose.public_form(a['id'])})", f"({compose.public_form(rest[0])})")
+                h["adv"] = {**a, "id": rest[0], "aliases": rest[1:], "title": title}
+            else:
+                self.state["held"] = [x for x in self.state["held"] if x is not h]
+                keys = self._notice_keys(h["scope"], {"id": rest[0], "aliases": rest[1:]})
+                self.state["digested"] = (self.state["digested"]
+                                          + [x for x in keys if x not in self.state["digested"]])[-MAX_DIGESTED:]
+            changed = True
+            _say(f"held notice {a['id']} split: released {', '.join(released) or '-'}; kept {', '.join(kept) or '-'}"
+                 + ("; the rest wait" if undecided else "; dropped"))
+        if changed:
+            self.save()
 
     def released(self) -> set[str]:
         """The base ids retired threads released (z360), read once a run."""
@@ -2447,6 +2548,10 @@ class Run:
         # (retracted, expired) never; both leave the held list with this digest (retire).
         notices, unlisted, retire = [], [], []
         for h in self.state["held"]:
+            if self._part_retracted(h, gone):
+                # 9je7: it stays held, unlisted, until retire has judged the rest. Before
+                # ``_posted``: a group that posted since is acknowledged with every id too.
+                continue
             if self._posted(h):
                 retire.append(h)
                 continue

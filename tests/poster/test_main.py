@@ -3268,3 +3268,131 @@ def test_an_advisory_that_joined_a_retired_thread_is_posted(env):
     assert code == 0 and "roots=1" in summary and GHSA_Z in relay.calls[0][2], summary
     old = env.ledger()[0][0]
     assert "joined" not in old and GHSA_Z not in old["aliases"]
+
+
+# ------------------------------------- 9je7: retracting one member of a held fix-group notice
+
+GHSA_Y = "GHSA-yyyy-yyyy-yyyy"
+KEY_A, KEY_Y, KEY_Z = ("Claude Code|" + i.casefold() for i in ("GHSA-abcd-efgh-ijkl", GHSA_Y, GHSA_Z))
+
+
+def _held_ids(env):
+    return sorted(sorted([h["adv"]["id"], *h["adv"]["aliases"]]) for h in env.state()["held"])
+
+
+def _strike(env, ids):
+    """The manifest retracts ``ids``; the daily digest is the first to see it, and its pull
+    leaves the manifest in the poster's copy for the next run's ``retire``."""
+    env.mirror.publish_manifest(retracted=ids)
+    code, summary, relay = env.run(now=at(5, 9))
+    assert code == 0 and "digest=1" in summary, summary
+    return relay
+
+
+def test_retracting_one_member_of_a_held_notice_keeps_the_other(env):
+    """Acceptance: a held notice of A and B, A retracted: B is held on its own and the
+    next weekly summary counts it."""
+    env.collector([finding(severity=None), finding(fid=GHSA_Z, severity=None)])
+    code, summary, _ = env.run()
+    assert "held=1" in summary and _held_ids(env) == [["GHSA-abcd-efgh-ijkl", GHSA_Z]], summary
+    relay = _strike(env, ["ghsa-ABCD-efgh-ijkl"])
+    st = env.state()  # the digest that sees the retraction first acknowledges nothing of it
+    assert "0 notices" in relay.calls[0][2] and len(st["held"]) == 1 and not {KEY_A, KEY_Z} & set(st["digested"])
+    code, summary, relay = env.run(now=at(5, 10))
+    assert code == 0 and relay.calls == [], summary
+    st = env.state()
+    assert _held_ids(env) == [[GHSA_Z]] and KEY_A in st["digested"] and KEY_Z not in st["digested"]
+    assert "abcd" not in json.dumps(st["held"]).casefold()
+    code, summary, relay = env.run(now=at(9, 9))  # Monday: the weekly summary counts the survivor
+    assert code == 0 and "- Claude Code: 1" in relay.calls[0][2], relay.calls
+    st = env.state()
+    assert st["held"] == [] and KEY_Z in st["digested"]
+
+
+def test_a_held_notice_retracted_by_its_ghsa_is_dropped_with_its_cve(env):
+    """Its own page assigns the CVE with the retracted GHSA: nothing of it is held or counted."""
+    env.collector([finding(severity=None, aliases=("CVE-2026-0001",))])
+    env.run()
+    _strike(env, ["GHSA-abcd-efgh-ijkl"])
+    assert len(env.state()["held"]) == 1  # the CVE is judged by the next run, not assumed
+    code, summary, _ = env.run(now=at(5, 10))
+    st = env.state()
+    assert code == 0 and st["held"] == [] and st["deferred"] == [], summary
+    assert {KEY_A, "Claude Code|cve-2026-0001"} <= set(st["digested"])
+
+
+def test_a_held_survivor_whose_page_fails_is_released_by_a_later_run(env):
+    env.collector([finding(severity=None), finding(fid=GHSA_Z, severity=None)])
+    env.run()
+    _strike(env, ["GHSA-abcd-efgh-ijkl"])
+    env.pages.put(ZURL, "", status=503)
+    code, _, _ = env.run(now=at(5, 10))
+    assert code == 0 and _held_ids(env) == [["GHSA-abcd-efgh-ijkl", GHSA_Z]]
+    code, summary, relay = env.run(now=at(6, 9))  # a digest in between lists and acknowledges nothing of it
+    assert "digest=1" in summary and "0 notices" in relay.calls[0][2] and KEY_Z not in env.state()["digested"]
+    del env.pages.fixed[ZURL]
+    code, _, _ = env.run(now=at(6, 10))
+    assert code == 0 and _held_ids(env) == [[GHSA_Z]] and KEY_Z not in env.state()["digested"]
+
+
+def test_a_member_that_joined_a_held_notice_later_is_released(env):
+    """The joining member's source is kept with the notice: it is what the member is judged by."""
+    env.collector([finding(severity=None)])
+    env.run()
+    env.collector([finding(severity=None), finding(fid=GHSA_Z, severity=None)])
+    env.run(now=T0 + 3600)
+    (h,) = env.state()["held"]
+    assert ZURL in [s["url"] for s in h["adv"]["sources"]] and h["adv"]["sources"][0]["url"] == GHSA
+    _strike(env, ["GHSA-abcd-efgh-ijkl"])
+    code, _, _ = env.run(now=at(5, 10))
+    assert code == 0 and _held_ids(env) == [[GHSA_Z]]
+
+
+def test_a_released_member_is_not_taken_back_by_the_notice_it_left(env, monkeypatch):
+    """One page a run: one survivor is released while the other waits in the struck notice.
+    A sighting of both must not put the released one back; a run later both are out."""
+    monkeypatch.setattr(main, "RETIRE_PAGES", 1)
+    group = [finding(severity=None), finding(fid=GHSA_Y, severity=None), finding(fid=GHSA_Z, severity=None)]
+    env.collector(group)
+    env.run()
+    assert _held_ids(env) == [sorted(["GHSA-abcd-efgh-ijkl", GHSA_Y, GHSA_Z])]
+    _strike(env, ["GHSA-abcd-efgh-ijkl"])
+    env.collector(group)
+    code, _, _ = env.run(now=at(5, 10))
+    held = _held_ids(env)
+    assert code == 0 and len(held) == 2 and sorted(len(h) for h in held) == [1, 2], held
+    assert sorted(i for h in held for i in h) == sorted(["GHSA-abcd-efgh-ijkl", GHSA_Y, GHSA_Z])
+    env.collector(group)
+    code, _, _ = env.run(now=at(5, 11))
+    st = env.state()
+    assert code == 0 and {i for h in _held_ids(env) for i in h} == {GHSA_Y, GHSA_Z}
+    assert KEY_A in st["digested"] and not {KEY_Y, KEY_Z} & set(st["digested"])
+
+
+def test_a_failing_page_never_starves_the_survivor_behind_it(env, monkeypatch):
+    """Review: one member's page fails every run and spends the run's pages. The id the
+    work starts at turns each hour, so the other member is still released."""
+    monkeypatch.setattr(main, "RETIRE_PAGES", 1)
+    env.collector([finding(severity=None), finding(fid=GHSA_Y, severity=None), finding(fid=GHSA_Z, severity=None)])
+    env.run()
+    _strike(env, ["GHSA-abcd-efgh-ijkl"])
+    env.pages.put(REPO + GHSA_Y, "", status=503)
+    env.run(now=at(5, 10))
+    env.run(now=at(5, 11))
+    assert _held_ids(env) == [["GHSA-abcd-efgh-ijkl", GHSA_Y], [GHSA_Z]]
+
+
+def test_a_held_group_that_posted_is_not_acknowledged_whole_by_the_digest_that_sees_the_retraction(env):
+    """Review: the held notice's group posted as a root before any digest. The digest that
+    first sees one member retracted must not mark the other digested: once its thread
+    releases it, a notice for it would never be held."""
+    env.collector([finding(severity=None), finding(fid=GHSA_Z, severity=None)])
+    env.run()
+    env.collector([finding(), finding(fid=GHSA_Z)])
+    code, summary, _ = env.run(now=T0 + 3600)
+    assert "roots=1" in summary and len(env.state()["held"]) == 1, summary
+    _strike(env, ["GHSA-abcd-efgh-ijkl"])
+    assert KEY_Z not in env.state()["digested"] and len(env.state()["held"]) == 1
+    code, _, _ = env.run(now=at(5, 10))
+    st = env.state()
+    assert code == 0 and st["held"] == [] and KEY_A in st["digested"] and KEY_Z not in st["digested"]
