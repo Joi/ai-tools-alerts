@@ -1,6 +1,6 @@
 # Run: yd1y-fix-group-outlives-first-id
 Instruction: Read TASK-ai-tools-alerts#yd1y.md in this worktree root, then run `kata show ai-tools-alerts#yd1y` and follow the brief and the dispatch rules (do-it, start rung floored at medium; pull-request landing; one independent review).
-Stage: verifying
+Stage: done
 Rung: medium (start-floor medium: dispatch floor; no hard trigger in scope: no secrets, auth or deploy path)
 Spec: docs/superpowers/specs/2026-11-28-yd1y-fix-group-outlives-first-id-design.md   Plan: docs/superpowers/plans/2026-11-28-yd1y-fix-group-outlives-first-id.md
 Agency project: —
@@ -20,7 +20,7 @@ Pass 2 [code:delta]: 1B/1S/0C/0R · fixed 6/6 prior · velocity ↓ (6→2, esca
 code: passes: 2 · elapsed: ~40 min
 
 ## Chunks
-- [x] release and repost the members of a fix group whose first id fell — df86283; review fixes 59a55f8; delta fixes 2a-commit below; main merged (z360, changelog under Unreleased)
+- [x] release and repost the members of a fix group whose first id fell — df86283; review fixes 59a55f8; delta fixes 99a49ce; main merged (z360, changelog under Unreleased)
 
 ## Notes
 - Start-floor evaluator not dispatched: the dispatch floors the run at medium and no hard trigger is in scope; as z360, faxq.
@@ -38,6 +38,10 @@ code: passes: 2 · elapsed: ~40 min
 - Code review dispositions, Stage 1: fixed (1) an exploited mark lent by merge to a released id's candidate: dropped in one() when no KEV reading stands behind it (no test); (2) member rotation aliased with the thread rotation: the turn is the hour divided by the lane's size; (3) docs said every read member leaves: changelog and spec corrected; (4) the stopped-run test caught its own error: it now raises through the run; (5) missing tests: added, with a mixed group and a group whose advisories each have a CVE. Rebutted: (6) two threads holding one retracted id after a take-back: both are hidden and a candidate naming a retracted id is never planned; (7) a z360 retired thread can now be judged known: it is hidden on every reader and z360 already leaves its replies as they are. Cosmetic 8: page_cap set in __init__, unused variable dropped; the other two noted, unchanged.
 - Delta dispositions (fixed in the commit after 59a55f8, no further pass per the Review Cycle): (B) an id released in an earlier run, still named by the root, made a later member whose page assigns it "kept" for good: ids the thread released are not its own ids (test_an_id_released_before_does_not_keep_a_later_member; mutation-checked); (S) no test for the page cap or for the exploited mark: test_a_members_pages_stop_at_the_release_budget, test_a_released_ids_candidate_keeps_only_a_kev_mark_of_its_own (the mark's rule moved into Run._own_mark to be testable).
 - Unreviewed after the delta's head 59a55f8: the delta-fix commit and the merge of origin/main (z360's own merge, changelog moved under Unreleased; conflict in CHANGELOG.md resolved by moving the yd1y entry there). `git diff 59a55f8..HEAD -- aitools_alerts tests` shows the code part.
+- Gate (scripts/test-gate.sh in a clone of the branch alone): 59a55f8 3867 passed; 70b75a0 3870 passed; 6606e82 (main with xkbf merged) 3876 passed; 1259056 (main with aqtf merged) 3920 passed, 1 skipped. One run was void: it re-ran 6606e82 after a merge of main had stopped on a conflict that a piped command hid.
+- Merge of main at 1259056: aqtf made `Entry.gone` the test for a withdrawn thread; `_fix_thread` (the conflict) and `recompute.lead` follow it. Unreviewed, with the delta-fix commit: `git diff 59a55f8..1259056 -- aitools_alerts/poster/recompute.py tests/poster/test_fix_group_split.py` and the yd1y lines of main.py.
+- Size: 259 lines in aitools_alerts, the rest tests and documents; not split (one deliverable).
+- Release note posted on ai-tools-alerts#z3fs. Pull request 73.
 - Rung: stayed medium by the dispatch's rule (no surviving unfixed finding, no hard trigger); the one delta is the Review Cycle's for a behaviour-changing BLOCKER fix.
 - Review rounds used: spec+plan 1, code 1, delta 1 (limit three).
 - The acceptance test and the code were drafted before the spec review, to find out what the release mechanism needed; the review's findings apply to both.
