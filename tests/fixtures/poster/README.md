@@ -22,3 +22,10 @@ as GitHub served it on 2026-11-23: the title, the header, the package block, the
 description, the severity and the CVE ID, with scripts, images and the author link
 removed. `rules.read_advisory` reads these labels; the fixture pins the markup it
 depends on (ai-tools-alerts#h340).
+
+`advisory-page-rows.html`: the same parts of
+https://github.com/modelcontextprotocol/inspector/security/advisories/GHSA-v2gx-m79c-pvxj
+as GitHub served it on 2026-11-28, with scripts, styles, icons, images and the
+author link removed. One package with two ranges (one row, an element per range
+and per patched version) and a second package in a row without labels: the shape
+`rules.read_advisory` read one range and no fix from (ai-tools-alerts#xkbf).
