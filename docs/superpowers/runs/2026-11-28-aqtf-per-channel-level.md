@@ -65,6 +65,8 @@ Not reviewed again: the review cycle allows one delta. `git diff b5577f5..HEAD` 
 - exit 0 at 6f71da7 (main at 862b497 merged, 65xv and 1qy4): 3876 passed.
 Main then moved once more, to the 0.4.0 release commit (version strings, README, the changelog's heading, the mirror exporter; no file of the poster). On that merge the public scan and every test outside `tests/poster` were run, not the whole gate; the result is in the close-out comment on the issue.
 
+Main moved twice more before the pull request could merge. With z360 and two changelog commits merged (conflicts in the ledger's fields, `Run.__init__` and the changelog, both sides kept), `scripts/test-gate.sh` exit 0 at d83bff0: 3891 passed. Then xkbf (the rules module, its tests and the changelog): on that merge, d6513cc, the public scan and 283 tests of the six poster test files nearest the two changes passed; the whole gate was not run again.
+
 Reviewed shas: the whole branch at d664e67, the delta at b5577f5. Not reviewed by a second model: 2587e6d (the two fixes the delta asked for), and the four merges of main. In those merges, by hand: both changelog entries kept each time; `Entry.joined` and `Entry.ended` beside this branch's fields in the ledger and its validator; btqg's join by fix and 65xv's `plan_known` guard read the thread's state from `Entry.gone`; the aqtf changelog entry moved back under a new Unreleased heading after 0.4.0 was cut without it.
 
 ## Notes
