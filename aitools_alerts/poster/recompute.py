@@ -33,6 +33,12 @@ evidence moves a level:
   than ``TRIP_MIN`` threads or ``TRIP_SHARE`` of the threads judged fall due
   within a day (``select``).
 
+A fix group's thread (faxq, btqg) carries advisories no source ties to its first id.
+When the first id's sources, read whole, state less than the thread's level and
+another member's own response supports more, the members leave the thread
+(``outlived``, ai-tools-alerts#yd1y; ``Run.part`` posts them anew) and it is judged by
+its first id alone: an id a thread released is no longer one of its ids (``released``).
+
 A thread the poster has stopped renewing (the ledger's ``ended``, ai-tools-alerts#65xv)
 is raised only above the level it ended at: its sources still state that level, and
 that is no news.
@@ -217,6 +223,16 @@ def bare_ids(entry) -> set[str] | None:
     return out
 
 
+def released(entry) -> set[str]:
+    """The ids the thread released (``Entry.split``; z360, yd1y), as lookups write them,
+    never its first id: they are another thread's now, or will be. Its published
+    advisory still lists them, so ``support`` leaves one out only while no source ties
+    it to the first id: one that id's response comes to name is read by every member's
+    check, and counts here again."""
+    out = {lookup_id(i) for i in (getattr(entry, "split", None) or {}).get("released", ())}
+    return out - {None, lookup_id(entry.advisory.get("id"))}
+
+
 def floor(entry, rs) -> str:
     """The level the recompute never goes below: what readings of prose alone gave
     the thread, as the ledger recorded it when the thread was planned (``Entry.floor``).
@@ -250,7 +266,8 @@ def published_aliases(entry) -> list:
     return [x for x in (lookup_id(a) for a in entry.advisory.get("aliases") or ()) if x is not None]
 
 
-def support(entry, scope, copy: Copy | None, rs, read=None, counted: list | None = None) -> tuple[str, bool, set, set, bool]:
+def support(entry, scope, copy: Copy | None, rs, read=None, counted: list | None = None,
+            skip=frozenset()) -> tuple[str, bool, set, set, bool]:
     """(found, known, listed, gone, stop): the level the thread's sources state for its
     product by their fields (``ruleset.NONE`` when none does); whether every source
     was read whole; the CVEs the copy lists as this product, and those it does not
@@ -279,6 +296,11 @@ def support(entry, scope, copy: Copy | None, rs, read=None, counted: list | None
     (a withdrawal too), and each KEV entry read as this product's. They are what a
     level change of this run rests on (hh5s: its claim).
 
+    An id the thread released (``released``) that no source ties to its first id is
+    left out: it is another thread's, and a member's check of this one does not count
+    it. ``skip``: more ids to leave out (yd1y, ``lead``: what the thread's sources state
+    without the members no source ties to its first id).
+
     ``scope.name`` may be a former name (aabw): "this product" is then each scope
     product the name stands for (``Ruleset.stands_for``). A response counts only when
     its support for every one of them it names may lower, and the highest of them is
@@ -299,7 +321,8 @@ def support(entry, scope, copy: Copy | None, rs, read=None, counted: list | None
     aliases = published_aliases(entry)
     picked, known = sources.chosen(first, aliases, read)
     first_kev = ruleset.source_of(first) == "kev"
-    for i in sorted(ids | set(picked)):
+    left = {i for i in released(entry) if not sources.tied(first, i, read, aliases)} | set(skip)
+    for i in sorted((ids | set(picked)) - left):
         if ruleset.source_of(i) != "kev":
             # tied first: an id a member's check does not read is not asked for either
             r = read(i) if sources.tied(first, i, read, aliases) else None
@@ -369,6 +392,8 @@ def _rises(entry, found: str, rs) -> bool:
     ended (65xv), above the level it ended at."""
     ended = getattr(entry, "ended", None)
     return rs.rank(found) > rs.rank(entry.level) and (ended is None or rs.rank(found) > rs.rank(ended))
+
+
 def _stated(counted) -> list:
     """For each advisory reading counted, whether it states the withdrawal."""
     return [fields.get("withdrawn_at" if source == "ghsa" else "withdrawn") is not None
@@ -483,6 +508,103 @@ def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int, read=None, in
     if rec["held"] >= DWELL and (not kev or version_of(version) > version_of(rec["version"])):
         return "due", level  # a later catalog than the one the wait began with still says so
     return None
+
+
+def loose(entry, read=None, turn: int = 0) -> tuple[list, set]:
+    """(members, cves) of the thread that no source ties to its first id (yd1y):
+    the advisory ids a member's check does not count (``sources.tied``), sorted, which
+    are the other advisories of a fix group (faxq) and those that joined by the fix
+    (btqg); and, beside an advisory first id, the CVEs its response does not name,
+    which are theirs. Either keeps ``support`` unknown for as long as the thread has
+    it. Not the ids the thread has released. ``turn``: the members start one further
+    on with each turn, so a read share that ends before the last of them reaches
+    every one in as many turns as there are members."""
+    ids = bare_ids(entry)
+    first = lookup_id(entry.advisory.get("id"))
+    if ids is None or first is None:
+        return [], set()
+    read = read or (lambda i: None)
+    aliases = published_aliases(entry)
+    ids = ids - released(entry)
+    members = [i for i in sorted(ids) if ruleset.source_of(i) != "kev" and i != first
+               and not sources.tied(first, i, read, aliases)]
+    picked = sources.chosen(first, aliases, read)[0]
+    cves = {i for i in ids if ruleset.source_of(i) == "kev" and i not in picked} \
+        if ruleset.source_of(first) != "kev" else set()
+    k = turn % len(members) if members else 0
+    return members[k:] + members[:k], cves
+
+
+def lead(entry, scope, copy: Copy | None, rs, st: dict, read=None, turn: int = 0) -> tuple[str, list, set] | None:
+    """(level, members, cves): what the sources of the thread's first id state by their
+    fields, every one read whole this run, for a thread that has ``members`` no source
+    ties to that id (``loose``); None when it has none or a source was not read whole
+    (yd1y). ``level`` is as the thread can carry it (``held``), ``ruleset.NONE`` when
+    they state nothing, and takes no account of the prose floor: a member's check reads
+    fields. Known is ``support``'s without the loose ids, under ``judge``'s rules about
+    a CVE's absence from KEV. It keeps no wait. One thing it records, as ``judge``
+    does for a thread it knows: the CVEs a complete copy lists for the first id
+    (``st["listed"]``), since ``judge`` never knows a thread that has loose members and
+    a later absence proves nothing unless the listing was seen. None for a withdrawn
+    thread and for one that has ended (65xv: it runs down by its age)."""
+    if entry.gone or getattr(entry, "ended", None) is not None:  # aqtf: the standing reply is the withdrawal
+        return None
+    members, cves = loose(entry, read, turn)
+    if not members:
+        return None
+    found, known, listed, gone, stop = support(entry, scope, copy, rs, read, skip={*members, *cves})
+    root = entry.root_event_id
+    ever = set(st["exploited"].get(root, ())) | listed
+    kev = entry.exploited is True or bool(ever)
+    if kev and (copy is None or not copy.complete or ever - (listed | gone) or not (listed | gone)):
+        known = False
+    seen = set(st["listed"].get(root, ()))
+    if known and listed - seen:
+        seen |= listed
+        st["listed"][root] = sorted(seen)
+    if not known or (kev and gone - seen):
+        return None
+    return held(entry, scope, found, rs, stop, infer=False), members, cves
+
+
+def outlived(entry, scope, copy: Copy | None, rs, st: dict, read=None, turn: int = 0) -> tuple[list, set]:
+    """([(member, level)], cves): the members that leave a thread whose first id supports
+    less than they do (yd1y), each with the level its own advisory response supports
+    for the thread's product, as this thread could carry it (``held``); and the CVEs
+    that may be theirs.
+
+    Empty unless the first id's sources were read whole (``lead``). A member leaves when
+    its own response was read, may lower (``Support.lowers``, as a counted reading) and
+    supports more than those sources state. Its alert rests on a first id that does not
+    carry it: lost when the first id is withdrawn or lowers, and never as loud as its
+    own source when it comes to say more than the first id does. A member whose response
+    was not read, or is one its subject's attacker can write, stays. So does one that
+    supports no more than the first id (a withdrawn one too): it loses nothing by
+    staying, and what else its own sources may support (a KEV listing of a CVE it
+    names) is not asked here. Nor does an id the thread keeps (``Entry.split``'s
+    ``kept``): its own page assigns an id of the thread's, so it is no other advisory
+    but an id of this one that the source does not tie. While any member stays the
+    thread stays unknown, as before. ``turn``: ``loose``'s, so no member is unread for
+    good."""
+    top = lead(entry, scope, copy, rs, st, read, turn)
+    if top is None or read is None:
+        return [], set()
+    level, members, cves = top
+    names = sorted(rs.stands_for(scope.name))
+    kept = {lookup_id(i) for i in (getattr(entry, "split", None) or {}).get("kept", ())}
+    out = []
+    for i in members:
+        r = read(i) if i not in kept else None
+        if r is None:
+            continue
+        owns = [r.support[n] for n in names if n in r.support]
+        if all(own[1] for own in owns) if owns else r.lowers:
+            best = max((own[0] for own in owns), key=rs.rank, default=ruleset.NONE)
+            stop = any(own[0] == best and own[2] for own in owns)
+            mine = held(entry, scope, best, rs, stop, infer=False)
+            if rs.rank(mine) > rs.rank(level):
+                out.append((i, mine))
+    return (out, cves) if out else ([], set())
 
 
 def note(st: dict, root: str, now: int) -> None:
