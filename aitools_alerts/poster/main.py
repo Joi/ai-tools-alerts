@@ -1297,6 +1297,7 @@ class Run:
         mine = _fold([c.id, *c.aliases])
         found = [e for e in self.led.entries()
                  if e.scope in names and not e.withdrawn and e.ended is None
+                 and not (e.split or {}).get("released")  # yd1y: what left it does not come back by its fix
                  and not compose.is_synthetic(e.advisory.get("id"))
                  and ledger.fix_key_of((e.advisory.get("products") or [{}])[0].get("fixed")) == key
                  and len(_fold(e.aliases) | mine) <= ledger.BLOCK_IDS]
@@ -1807,7 +1808,10 @@ class Run:
         st["exploited"] = {r: v for r, v in st["exploited"].items() if r in self.observed}
         self.verdicts, self.judged, self.known = {}, set(), set()
         self.readings: dict[str, list] = {}  # hh5s: root -> the readings its verdict rested on
-        self._judge(self._in_turn(entries), rs)
+        pages = len(self.pages)
+        for e in self._in_turn(entries):  # yd1y: each thread, then its members, in the thread's own turn
+            self._judge([e], rs)
+            self.part(e, rs, pages)
         if self.api.unread:
             _say(f"advisory reads: {len(self.api.unread)} id(s) not read this run (the lane's share was spent); "
                  "their threads are unknown and nothing of theirs moves")
@@ -1847,6 +1851,86 @@ class Run:
             self.readings[root] = info.get("readings") or []
             if verdict is not None:
                 self.verdicts[root] = (e, *verdict)
+
+    def part(self, e, rs, pages: int) -> None:
+        """Release the members of thread ``e`` whose own source supports more than its
+        first id does (ai-tools-alerts#yd1y; ``recompute.outlived``).
+
+        A thread's level and claim rest on its first id (3qyq), and the other advisories
+        of a fix group (faxq, btqg) are ids no source ties to it. When the first id's
+        source is withdrawn or lowers while another member's own advisory still supports
+        more, that member's alert falls with the thread on every member's machine, and
+        the member keeps the thread unknown here, so not even the lowering completes.
+        So, for a thread just judged: every member whose own response was read leaves the
+        thread's identity (``Ledger.release``, as z360's retired threads do), with the
+        ids its response or its page assigns. One that still supports the product leaves
+        only with a pointer candidate, built from its own repository advisory page
+        (``_judge_id``), which the next run plans like any deferred candidate: admitted
+        from its page, grouped by fix with the others, posted as a root whose first id a
+        member's check reads. One whose page is not read this run, or is not a structured
+        page naming it, stays and is tried again next run; at most RETIRE_PAGES new pages
+        a run are read for this (``pages``: how many the run had read before).
+
+        The members' responses are read in the thread's own lane right after its own
+        (``observe``), so the thread that is first in its lane this hour has its members
+        read too: reads spent on other threads cannot keep them unread for good.
+
+        The pointer is saved first, then the ledger: a run that stops between the two
+        plans the pointer onto the old thread, as a sighting of the member is planned
+        today, and releases again. The thread is then judged again, now by its first id
+        alone, so a wait for a lower level starts in this run. A thread the manifest's
+        retraction hides is ``retire``'s. A released id returns only if the first id's
+        source comes to name it; if that source comes back there are two threads, and
+        both are true. Never raises."""
+        root = e.root_event_id
+        bases = self.gone | {_base(i) for i in self.gone}
+        if root not in self.judged or not bases.isdisjoint(_base(a) for a in e.aliases):
+            return
+        scope = rules.scope_named(e.scope, former=True)
+        if scope is None:
+            return
+        lane = "wait" if root in self.rc["dwell"] else "rest"
+
+        def read(i):
+            return self.api.read(i, lane)
+        out, cves = recompute.outlived(e, scope, self.copy, rs, self.rc, read)
+        theirs = {_base(i) for i, _ in out} | {_base(i) for i in cves}
+        known = [e.advisory.get("id"), *(e.advisory.get("aliases") or ()), *e.aliases]
+        released, pointers = [], []
+        for i, level in out:
+            own = next((x for x in known if recompute.lookup_id(x) == i), None)
+            r = read(i)
+            if own is None or r is None or own in released:
+                continue
+            assigned = {_base(n) for n in r.names}
+            if level != ruleset.NONE:
+                if len(self.pages) - pages >= RETIRE_PAGES:
+                    continue  # the rest wait for the next run
+                verdict = self._judge_id(e, own, bases)
+                if verdict is None or not verdict[0]:
+                    continue  # no page read, or none that proves the id: the next run tries again
+                assigned |= verdict[1]
+                pointers.append(verdict[2])
+            same = [a for a in e.aliases if _base(a) in assigned & theirs and a != own]
+            released.extend(x for x in [own, *same] if x not in released)
+        if not released:
+            return
+        for c in pointers:  # in place of a row for the same id, and kept past this run's end
+            self.state["deferred"] = [d for d in self.state["deferred"] if not (
+                d["product_text"] == c.product_text and d["id"].casefold() == c.id.casefold())] + [c.to_dict()]
+            named = rules.scope_of(c.product_text)
+            if named is not None:
+                self.defer([(c, named)])
+        self.save()  # the pointers first: a run that stops before the ledger write repeats it
+        try:
+            now = self.led.release(root, released, [])
+        except LedgerError as err:  # one thread's record never stops the run
+            _say(f"{root[:12]}: members not released: {err}")
+            return
+        self._released = None
+        _say(f"{compose.public_form(e.advisory.get('id'))}: its first id supports less than a member's own source; "
+             f"released {', '.join(released)}")
+        self._judge([now], rs)  # by its first id alone from here on
 
     def _in_turn(self, entries):
         """The order threads are read in (3qyq): those with a wait running, then the

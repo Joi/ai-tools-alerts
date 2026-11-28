@@ -101,6 +101,8 @@ class Entry:
     # z360: the thread is hidden by a manifest retraction of one of its ids. Its other ids,
     # each judged once by its own advisory page: "released" (left this thread's identity,
     # to be posted anew) or "kept" (still this thread's). Absent until a run judged one.
+    # yd1y: "released" also holds the members that left because the thread's first id no
+    # longer supports its level (``Run.part``); the recompute no longer reads them as its ids.
     split: dict | None = None
     # btqg: the advisories a later run saw with this thread's fixed version, which joined it
     # with no root of their own: one list of case-folded ids each. They are never published,

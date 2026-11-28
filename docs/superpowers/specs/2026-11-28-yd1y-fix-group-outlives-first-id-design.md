@@ -32,22 +32,28 @@ time"; in the code that is the 44-day step of `Run._renew`. The rest holds at 4d
 The issue's first option, with the release mechanism z360 built for a retracted member.
 Poster only.
 
-1. **When a thread falls** (`recompute.falls`). For a thread judged this run that has
-   members no source ties to its first id (`recompute.loose`: untied advisory ids, and
-   beside an advisory first id the CVEs its response does not name), the poster asks
-   what the thread's sources state without them. If every remaining source was read
-   whole (the `known` of `support`, under `judge`'s KEV rules) and the level they give,
-   as the thread can carry it and never below its prose floor or notice, is below the
-   thread's level, the thread falls to that level. This reads only; no wait is kept.
-   A withdrawn thread and an ended one (65xv) never fall here.
-2. **Who leaves** (`recompute.outlived`). Each member's own advisory response is read
-   (`rest` lane), only for a thread that falls. A member counts when its response was
-   read and may lower (reviewed, or the vendor's own: the class a counted reading
-   needs). If some counted member supports more than the level the thread falls to,
-   every counted member leaves. Otherwise none does: nothing is lost by the lowering.
-   A member whose response was not read, or is one its subject's attacker can write,
-   stays, and the thread stays unknown, as today.
-3. **How it leaves** (`Run.part`, called in `observe` after the threads are judged). A
+1. **What the first id states** (`recompute.lead`). For a thread judged this run that
+   has members no source ties to its first id (`recompute.loose`: untied advisory ids,
+   and beside an advisory first id the CVEs its response does not name), the poster
+   asks what the thread's sources state by their fields without them. It has an answer
+   only when every remaining source was read whole (the `known` of `support`, under
+   `judge`'s KEV rules). The level is as the thread can carry it (`held`), `none` when
+   the sources state nothing, and takes no account of the prose floor: a member's check
+   reads fields. This reads only; no wait is kept. A withdrawn thread and an ended one
+   (65xv) are left alone.
+2. **Who leaves** (`recompute.outlived`). Each member's own advisory response is then
+   read, in the thread's own lane and in the thread's own turn (below). A member counts
+   when its response was read and may lower (reviewed, or the vendor's own: the class a
+   counted reading needs). If some counted member supports more than the first id's
+   sources state, every counted member leaves. Otherwise none does: nothing a member's
+   check could confirm is lost. A member whose response was not read, or is one its
+   subject's attacker can write, stays, and the thread stays unknown, as today. The
+   rule does not ask what level the thread stands at: a thread already stepped down to
+   notice releases its member all the same, and so does one whose member has come to
+   support more than a first id that still supports the thread's level (as a joined
+   advisory already leaves, btqg `_leaves`).
+3. **How it leaves** (`Run.part`, called in `observe` for each thread right after it is
+   judged, so the thread first in its lane this hour has its members read too). A
    member that still supports the product leaves only with a pointer candidate built
    from its own repository advisory page (`Run._judge_id`, z360: the page must be
    structured and name the id). A member whose response supports nothing (a withdrawal
@@ -63,9 +69,10 @@ Poster only.
    member's check reads that root's first id. z360's exemption from the seven-day age
    limit covers it (`Run.released`). A thread that has released an id takes no join by
    fix (`_fix_thread`), so the member does not return to the thread it left (btqg).
-5. **The old thread.** `recompute.bare_ids` and `support` no longer count a released id
-   (`recompute.released`), so the thread is judged by its first id alone from the same
-   run on: its lowering or withdrawal completes under every ny5g rule (24 hours held,
+5. **The old thread.** `support` leaves out a released id (`recompute.released`) while
+   no source ties it to the first id, so the thread is judged by its first id alone
+   from the same run on. A released id the first id's response comes to name is read by
+   every member's check, and counts again. So: its lowering or withdrawal completes under every ny5g rule (24 hours held,
    seven quiet days, the breaker). Its published advisory still lists the member; no
    reply narrows it (tyje).
 
@@ -76,20 +83,22 @@ are true.
 
 ### Assumes
 
-- The level compared is the one the poster would lower the thread to, prose floor
-  included. A thread held at its level by its prose floor does not fall, so its members
-  stay; what a member's check makes of such a thread is not changed here.
+- The old thread of a group held at its level by a prose floor stays there after its
+  members leave; the poster lowers nothing below a prose floor, as before.
 - A survivor's level is what its own evidence gives now. `exploited` is not carried to
   a pointer (as z360).
-- A run that stops between the state save and the ledger write plans the pointer onto
-  the old thread, which changes nothing, or (when the release is repeated first, as it
-  is: `observe` runs before planning) posts the root one run earlier.
+- A run that stops between the state save and the ledger write leaves a pointer whose
+  member is still the old thread's. `observe` runs before planning, so the next run
+  repeats the release first when its reads allow, and the pointer then starts the root.
+  When they do not, the pointer is planned onto the old thread exactly as a sighting of
+  that member is planned today. That can raise the old thread's prose floor, which is
+  why the rule above does not read the floor.
 
 ### Out of scope
 
-- A thread whose members all support no more than the first id's new level still
-  cannot lower by recompute while it carries them: it steps down at 44 days, as today.
-  Follow-up issue.
+- A thread whose members all support no more than the first id still cannot lower by
+  recompute while it carries them: it steps down at 44 days, as today
+  (ai-tools-alerts#759h).
 - A member whose own page is not a structured advisory page naming it is tried every
   run and never leaves. Rare; said in the run's output only when it does leave.
 - Held fix-group notices (ai-tools-alerts#9je7).
@@ -103,11 +112,24 @@ are true.
 - The same when A lowers to a notice.
 - No release while A supports the level, when A's read fails, when B's read fails or
   cannot lower, or when B supports no more than A now does.
+- Twelve other threads spending the lane's reads do not keep the member unread.
+- A thread stepped down to notice after 45 days still releases its member.
+- A thread held by a prose floor still releases its member.
+- A released id that the first id's response comes to name counts again.
 - Members that leave together post as one root.
 - A page that cannot be read delays the release by a run.
 - A released member sighted again does not join the old thread.
 - A run that stops before the ledger write releases again.
 - `scripts/test-gate.sh` passes.
+
+## Changed by the spec review
+
+The first draft released a member only when the thread would fall below its level,
+prose floor included, read the members after every thread was judged, and left a
+released id out for good. The review (fresheyes, gpt-6.1-sol high) showed four ways an
+alert was still lost: other threads spending the lane before any member was read; a
+thread already at notice; a floor raised by the member's own prose after a stopped run;
+and a released id the first id's response later names. The rule is now the one above.
 
 ## Alternatives rejected
 
@@ -124,7 +146,6 @@ are true.
 `aitools_alerts/poster/recompute.py`, `main.py`; a comment in `ledger.py`. No wire,
 schema, manifest, ruleset, scope or reader change. The ledger's `split` key is z360's.
 On the first run after install, every open fix-group thread whose first id already
-supports less than the thread's level, and that has a member supporting more, releases
-that member: at most `RETIRE_PAGES` pages, so at most ten new roots a run. Rollback:
+supports less by its fields than one of its members releases its members: at most `RETIRE_PAGES` pages, so at most ten new roots a run. Rollback:
 revert; a `split` already written is z360's to read, and a released member keeps its
 own thread. Release: the poster must be reinstalled; noted on ai-tools-alerts#z3fs.
