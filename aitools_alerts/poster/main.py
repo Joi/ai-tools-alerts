@@ -221,6 +221,7 @@ class Run:
         self.n = Counter()
         self.deferred: dict[tuple, dict] = {}  # (scope, id) -> candidate dict, for the next run
         self.groups: dict[tuple, list] = {}  # faxq: (scope, id) -> a fix group's members (ledger.merge)
+        self.boxed: set[str] = set()  # 6wy8: scope|id of each candidate admit read a repository advisory page for
         # jsje: thread root -> (journal items, withheld groups) a raise of that thread will
         # replace (yields). They stay where they are until the raise is journaled (enqueue).
         self.passed: dict[str, tuple] = {}
@@ -1204,6 +1205,9 @@ class Run:
         # A record's own level inputs count only when the vendor's advisory page bound the id
         # to the product by its fields and the record cites nothing but what is kept here.
         trusted = ev.structured and len(kept) == len(c.sources)
+        if ev.structured:  # 6wy8: the package box was read, whatever it states (a box may state no range and no fix)
+            # The candidate's own id only: another record that the page's ids name read no box itself.
+            self.boxed.add(f"{scope.name}|{c.id.casefold()}")
         title = candidates._title(ev.title, candidates._Hosts(candidates.FLEET_HOSTS)) if ev.title \
             else c.source_title if ev.kev else None
         severity = "; ".join(x for x in (ev.severity, title if ev.url else None) if x) or None
@@ -1567,7 +1571,8 @@ class Run:
         if level == "notice":
             if test:  # the digest would list it without its marker
                 raise ValueError("a synthetic entry is never held for the digest")
-            self.hold(scope.name, adv, title)
+            self.hold(scope.name, adv, title,
+                      read=any(f"{scope.name}|{i.casefold()}" in self.boxed for i in (c.id, *c.aliases)))
             return []
         chans = CHANNELS_FOR[level]
         claim = self._claim(rules._readings(c), [adv.id, *adv.aliases], scope.name) if ROOT_CLAIMS else None
@@ -1594,7 +1599,37 @@ class Run:
     def _notice_keys(scope, adv: dict) -> list[str]:
         return [f"{scope}|{i.casefold()}" for i in [adv.get("id"), *adv.get("aliases", [])] if isinstance(i, str)]
 
-    def hold(self, scope, adv, title=None):
+    @staticmethod
+    def _cover(was: dict, new: dict) -> dict:
+        """6wy8: the fix and range of a held notice after a read of some of its ids:
+        what covers both blocks, never narrower than either. The fix is the higher of
+        the two, and none when either states none or one cannot be compared: no version
+        is then known safe for every member, and a held notice with no fix may be one
+        whose other member lost its fix, so a later member's read never gives it one
+        back (only a read of every id does). The range is theirs when they agree, else
+        everything before the fix, else none stated, as a fix group's is
+        (``ledger.merge``). The result does not depend on the order of the reads."""
+        fixes = [was["fixed"], new["fixed"]]
+        fixed = max(fixes, key=versions.parse) if all(
+            v and versions.parse(v) is not None for v in fixes) else None
+        if was["affected"] == new["affected"]:
+            affected = new["affected"]
+        else:
+            affected = f"<{fixed}" if fixed and was["affected"] and new["affected"] else None
+        return {"fixed": fixed, "affected": affected}
+
+    def hold(self, scope, adv, title=None, read=False):
+        """Hold a notice for the digest, or merge this sighting into the one held.
+
+        ``read`` (6wy8): the sighting's fix and range are what a repository advisory
+        page's package box states this run (``admit``, ``boxed``), null included: in the
+        block a null range beside a fix is "several ranges, see the source" (xkbf), and
+        a box may state neither. A sighting that read no box states nothing and changes
+        neither field of a held notice. A read of every id the held notice holds
+        replaces both together: one read's fix is never paired with another's range.
+        A read of some of its ids (one member of a held fix group, faxq, or a group that
+        shares a member with it) is not a read of the notice, and only widens it
+        (``_cover``): no member is left with a fix or a range narrower than its own."""
         a = asdict(adv)
         known = set(self.state["digested"])
         for h in self.state["held"]:
@@ -1615,8 +1650,10 @@ class Run:
                     h["adv"] = {**h["adv"], "sources": [asdict(s) for s in compose._sources([*adv.sources, *was_src])]}
                     self.save()
                 new, was = a["products"][0], h["adv"]["products"][0]
-                got = {**was, **{k: new[k] for k in ("fixed", "affected") if new[k]}}
-                if got != was:  # 0dvh: a fix or range read later reaches the digest; none is lost
+                whole = set(self._notice_keys(scope, h["adv"])) <= set(self._notice_keys(scope, a))
+                got = was if not read else {**was, "fixed": new["fixed"], "affected": new["affected"]} if whole \
+                    else {**was, **self._cover(was, new)}
+                if got != was:  # 0dvh: a fix or range read later reaches the digest; 6wy8: as one read gave them
                     h["adv"] = {**h["adv"], "products": [got], "actions": [
                         {"verb": "upgrade", "target": got["name"], "value": got["fixed"]}] if got["fixed"] else []}
                     self.save()
