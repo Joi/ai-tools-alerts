@@ -59,9 +59,10 @@ advisory database and of OSV (``sources``, ai-tools-alerts#3qyq): a failed read 
 unknown and moves nothing. A new candidate's ``ghsa`` reading is that API's answer
 too (``Run.admit``); one whose advisory could not be read is admitted again each
 run for RETRY_DAYS. At most 30 advisory requests a run, in three lanes. Admission's
-ten go to the candidates in turn (``Run.admit_all``, ai-tools-alerts#vszx): each run
-goes on where the last one's requests ended, so with n candidates to read and ten
-requests made a run, each is asked for within ceil(n / 10) runs.
+ten go to the candidates in turn (``Run.admit_all``, ai-tools-alerts#vszx): first to
+one never asked for, then on from where the last run's requests ended, so with n
+standing candidates and ten requests made a run, each is asked for within
+ceil(n / 10) runs.
 
 A reply that changes a thread's level carries the claim tag of the reading the change
 rests on (``Run._claim``, ``rules.claim_text``; ai-tools-alerts#hh5s, spec/wire.md); the
@@ -1118,23 +1119,32 @@ class Run:
         others were never read. So every candidate's evidence is read first (the pages,
         in the order ``admit`` would fetch them: ``rules.evidence`` knows the
         candidate, its scope and the page cache, nothing an admission changes), then
-        the advisories those pages confirm are asked for from where the last run's
-        requests ended (``sources.in_turn``), and only then is each candidate admitted,
-        from the evidence already read. ``admit`` finds its read made, or not made this
-        run. The last id a request was made for is kept (``Config.admit_turn``) before
-        anything is admitted; a file that cannot be written is said and costs the next
-        run its place, never this run its work."""
+        the advisories those pages confirm are asked for, those never asked for first
+        and the rest from where the last run's requests ended (``sources.in_turn``), and
+        only then is each candidate admitted, from the evidence already read. ``admit``
+        finds its read made, or not made this run. The turn is kept (``Config.admit_turn``) before
+        anything is admitted; a file that cannot be written, or whose path is another
+        file's (``Config.admit_turn_free``), is said and costs the next run its place,
+        never this run its work."""
         evs = [rules.evidence(c, scope, self.page) for c, scope in pairs]
         asks = [i for ev in evs if ev.structured and ev.ghsa and (i := rules.ghsa_lookup(ev.ghsa)) is not None]
-        last = None
-        for i in sources.in_turn(asks, sources.load_turn(self.config.admit_turn)):
-            made = self.api.requests
+        self.asked = set(asks)  # for the line about unread ids: these came from pages, through ghsa_lookup
+        path = self.config.admit_turn if self.config.admit_turn_free() else None
+        after, seen = sources.load_turn(path) if path is not None else (None, frozenset())
+        made, place = set(), after
+        for i in sources.in_turn(asks, after, seen):
+            before = self.api.requests
             self._admit_read(i)
-            if self.api.requests > made:
-                last = i
-        if last is not None:
+            if self.api.requests > before:
+                made.add(i)
+                if i in seen:
+                    place = i  # the ring's place; a first request is ahead of the ring and moves nothing
+        if made:
             try:
-                sources.save_turn(self.config.admit_turn, last)
+                if path is None:
+                    raise ValueError("its path is another file's")
+                # only today's candidates are remembered: one that left and comes back is news again
+                sources.save_turn(path, place, (seen | made) & self.asked)
             except (OSError, TypeError, ValueError) as e:
                 _say(f"admission's place among the advisory reads not kept ({type(e).__name__}): "
                      "the next run asks for the same ids first")
@@ -1945,12 +1955,15 @@ class Run:
             self._judge([e], rs)
             self.part(e, rs, pages, self.now // 3600 // max(1, lane))
         if self.api.unread:
-            # vszx: named, so two runs' lines show that the ids take turns. Public advisory
-            # ids from the input records and the ledger; nothing a response said.
-            ids = sorted(self.api.unread)
+            # vszx: admission's are named, so two runs' lines show that they take turns. Only
+            # those: ids a vendor's page stated, in the one shape ``rules.ghsa_lookup`` gives.
+            # A thread lane can also be asked for an id a response named (``sources.chosen``),
+            # and nothing a response says is printed.
+            ids = sorted(self.api.unread & getattr(self, "asked", set()))
             more = f" and {len(ids) - UNREAD_NAMED} more" if len(ids) > UNREAD_NAMED else ""
-            _say(f"advisory reads: {len(ids)} id(s) not read this run (the lane's share was spent); "
-                 f"their threads are unknown and nothing of theirs moves: {', '.join(ids[:UNREAD_NAMED])}{more}")
+            named = f"; of admission's: {', '.join(ids[:UNREAD_NAMED])}{more}" if ids else ""
+            _say(f"advisory reads: {len(self.api.unread)} id(s) not read this run (the lane's share was spent); "
+                 f"their threads are unknown and nothing of theirs moves{named}")
         st["open"] = None  # the observation is whole and saved: the next run may count from it
         self.save_rc()
 

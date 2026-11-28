@@ -15,9 +15,9 @@ A run makes at most ``LANE_READS`` requests, in at most ``LANE_SECONDS`` spent i
 them, in each of three
 lanes, which cannot spend each other's share: ``admit`` (new candidates), ``wait``
 (threads with a wait for a lowering running) and ``rest`` (every other thread).
-No lane asks in one fixed order: admission goes on each run where the last run's
-requests ended (``in_turn``, ai-tools-alerts#vszx), and the threads take turns by
-the hour (``main.Run._in_turn``).
+No lane asks in one fixed order: admission asks first for what it never asked for
+and then goes on where the last run's requests ended (``in_turn``,
+ai-tools-alerts#vszx), and the threads take turns by the hour (``main.Run._in_turn``).
 """
 
 from __future__ import annotations
@@ -59,37 +59,49 @@ def advisory_id(i) -> str | None:
     return i
 
 
-def in_turn(ids, after=None) -> list:
+MAX_SEEN = 2000  # the ids the turn file remembers having asked for; a record holds far fewer
+
+
+def in_turn(ids, after=None, seen=()) -> list:
     """The order the ``admit`` lane asks for ``ids`` in (ai-tools-alerts#vszx): every
-    distinct id once, whatever order they came in. Sorted, they are a ring, and this
-    run starts with the first id past ``after``, the last id the run before asked for
-    (``load_turn``): each run goes on where the last one's requests ended, however
-    many it could make. So with n ids, no ten are asked for twice before every other
-    one has been asked for once, and a request that is slow or fails keeps no other
-    id waiting for good: it is behind the next run's start like any other. ``after``
+    distinct id once, whatever order they came in.
+
+    First the ids never asked for (those not in ``seen``), sorted: a new advisory is
+    news, and waits for no turn. One request makes an id seen, whatever the answer,
+    so none stays ahead of the rest. Then the others, sorted, as a ring that starts
+    with the first id past ``after``, the last of them the run before made a request
+    for (``load_turn``): each run goes on where the last one's requests ended,
+    however many it could make. So no id is asked for twice before every other one
+    has been asked for once, and a request that is slow or fails keeps no other id
+    waiting for good: it is behind the next run's start like any other. ``after``
     need not be one of ``ids`` (its candidate may be gone); None or anything that is
     not a string starts the ring at its first id."""
-    ids = sorted(set(ids))
-    k = bisect.bisect_right(ids, after) if isinstance(after, str) else 0
-    return ids[k:] + ids[:k]
+    ids, seen = set(ids), set(seen)
+    new, ring = sorted(ids - seen), sorted(ids & seen)
+    k = bisect.bisect_right(ring, after) if isinstance(after, str) else 0
+    return new + ring[k:] + ring[:k]
 
 
-def load_turn(path) -> str | None:
-    """The last id the ``admit`` lane asked for, from the file ``save_turn`` wrote, or
-    None: no file, one that does not read, or one that holds anything but a lookup
-    id. Losing it costs one round its order and nothing else, so it is never an error."""
+def load_turn(path) -> tuple[str | None, frozenset]:
+    """(the last id of the ring the ``admit`` lane made a request for, the ids it has
+    asked for) from the file ``save_turn`` wrote; (None, no ids) for no file, one that
+    is not a regular file or does not read, or one that holds anything but lookup
+    ids. Losing it costs one round its order and nothing else, so it is never an error."""
     try:
-        got = inputs.read_json(path, 4096)
-        after = got["after"] if isinstance(got, dict) and set(got) == {"after"} else None
-        return advisory_id(after)
-    except Exception:  # noqa: BLE001 - whatever the file holds, the ring starts at its first id
-        return None
+        got = inputs.read_regular_json(path, 1 << 18)  # never blocks: a FIFO at the path is not a file
+        if not (isinstance(got, dict) and set(got) == {"after", "seen"} and isinstance(got["seen"], list)
+                and len(got["seen"]) <= MAX_SEEN and all(advisory_id(i) is not None for i in got["seen"])
+                and (got["after"] is None or advisory_id(got["after"]) is not None)):
+            return None, frozenset()
+        return got["after"], frozenset(got["seen"])
+    except Exception:  # noqa: BLE001 - whatever the file holds, the turn starts over
+        return None, frozenset()
 
 
-def save_turn(path, after: str) -> None:
-    """Keep the last id asked for. A file of its own, never the journal: a release
-    that does not know it leaves it alone, so installing an earlier one needs nothing."""
-    inputs.write_json(path, {"after": after})
+def save_turn(path, after, seen) -> None:
+    """Keep the turn. A file of its own, never the journal: a release that does not
+    know it leaves it alone, so installing an earlier one needs nothing."""
+    inputs.write_json(path, {"after": after, "seen": sorted(seen)[:MAX_SEEN]})
 
 
 class Reader:

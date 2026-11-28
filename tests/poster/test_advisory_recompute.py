@@ -732,7 +732,7 @@ def test_the_admissions_are_in_the_records_order_whatever_the_turn(env, requests
     assert [i for i, _ in admitted] == ids and {n for _, n in admitted} == {10}
     assert [u.rsplit("/", 1)[1] for u in env.pages.calls] == ids
     assert _admitted(requests, 0) == sorted(ids)[:10]  # the ring from its first id, not the record's first ten
-    assert sources.load_turn(env.config.admit_turn) == sorted(ids)[9]
+    assert sources.load_turn(env.config.admit_turn) == (None, frozenset(sorted(ids)[:10]))
 
 
 def test_the_line_about_unread_ids_names_them(env, capsys, monkeypatch):
@@ -747,12 +747,46 @@ def test_the_line_about_unread_ids_names_them(env, capsys, monkeypatch):
     line = next(ln for ln in capsys.readouterr().err.splitlines() if "advisory reads:" in ln)
     unread = ids[10:]
     assert len(unread) == 20 and "20 id(s) not read this run (the lane's share was spent)" in line
-    assert line.endswith(": " + ", ".join(unread[:15]) + " and 5 more")
+    assert line.endswith("; of admission's: " + ", ".join(unread[:15]) + " and 5 more")
     monkeypatch.setattr(main, "UNREAD_NAMED", 40)
     _record(env, ids)
     run(env, 1)
     line = next(ln for ln in capsys.readouterr().err.splitlines() if "advisory reads:" in ln)
-    assert line.endswith("nothing of theirs moves: " + ", ".join(ids[:10] + ids[20:]))  # other ids, all named
+    assert line.endswith("nothing of theirs moves; of admission's: " + ", ".join(ids[:10] + ids[20:]))  # other ids
+
+
+def test_an_unread_id_that_a_response_named_is_counted_and_not_printed(env, capsys, monkeypatch):
+    """A thread lane also asks for the ids a first id's response names. One of those the
+    lane could not afford is unread like any other, and its text is the response's."""
+    ids = [f"GHSA-aaaa-bbbb-ee{k:02d}" for k in range(12)]
+    for i in ids:
+        env.api.put(i, ghsa_json(i, **WEAK))
+    real = sources.Reader.read
+
+    def read(self, lookup_id, lane="rest"):
+        self.unread.add("MAL-2026-what-a-response-said")
+        return real(self, lookup_id, lane)
+    monkeypatch.setattr(sources.Reader, "read", read)
+    _record(env, ids)
+    run(env, 0)
+    line = next(ln for ln in capsys.readouterr().err.splitlines() if "advisory reads:" in ln)
+    assert "3 id(s) not read this run" in line and "MAL-" not in line
+    assert line.endswith("; of admission's: " + ", ".join(ids[10:]))
+
+
+def test_a_turn_path_that_is_another_files_is_not_read_or_written(env, requests, capsys):
+    ids = [f"GHSA-aaaa-bbbb-ee{k:02d}" for k in range(12)]
+    for i in ids:
+        env.api.put(i, ghsa_json(i, **WEAK))
+    env.config = inputs.Config(**{**{f: getattr(env.config, f) for f in env.config.__dataclass_fields__},
+                                  "kev_cache": env.config.admit_turn})
+    for h in (0, 1):
+        _record(env, ids)
+        since = len(requests)
+        run(env, h)
+        assert _admitted(requests, since) == ids[:10]  # no place kept: the ring's first ten, and the run is whole
+        assert "admission's place among the advisory reads not kept" in capsys.readouterr().err
+        assert sources.load_turn(env.config.admit_turn) == (None, frozenset())  # what is there is the KEV cache's
 
 
 def test_a_slow_api_and_a_missed_hour_cost_no_candidate_its_turn(env, requests, monkeypatch):
@@ -782,12 +816,13 @@ def test_a_turn_file_that_is_lost_or_cannot_be_written_stops_nothing(env, reques
         env.api.put(i, ghsa_json(i, **WEAK))
     _record(env, ids)
     run(env, 0)
-    assert sources.load_turn(env.config.admit_turn) == ids[9]
+    assert sources.load_turn(env.config.admit_turn) == (None, frozenset(ids[:10]))
     env.config.admit_turn.write_text("{not json")
     _record(env, ids)
     since = len(requests)
-    run(env, 1)
-    assert _admitted(requests, since) == ids[:10] and sources.load_turn(env.config.admit_turn) == ids[9]
+    run(env, 1)  # the turn starts over: the same ten, where the file would have sent it to the other two
+    assert _admitted(requests, since) == ids[:10]
+    assert sources.load_turn(env.config.admit_turn) == (None, frozenset(ids[:10]))
     env.config.admit_turn.unlink()
     env.config.admit_turn.mkdir()  # nothing can be written over it
     capsys.readouterr()
@@ -796,3 +831,31 @@ def test_a_turn_file_that_is_lost_or_cannot_be_written_stops_nothing(env, reques
     run(env, 2)  # run() asserts the exit code: the run is whole
     assert _admitted(requests, since) == ids[:10]
     assert "admission's place among the advisory reads not kept" in capsys.readouterr().err
+
+
+def test_a_new_candidate_is_read_in_its_first_run_wherever_the_turn_stands(env, requests):
+    """Thirty-four standing candidates, all asked for before. A new advisory joins the
+    record, one in its first place with an id that sorts behind the turn's place, one
+    in its last: each is asked for in that run and posts at once, not a round later."""
+    ids = [f"GHSA-aaaa-bbbb-ee{k:02d}" for k in range(34)]
+    for i in ids:
+        env.api.put(i, ghsa_json(i, **WEAK))
+    for h in range(5):
+        _record(env, ids)
+        run(env, h)
+    place, seen = sources.load_turn(env.config.admit_turn)
+    assert seen == frozenset(ids) and place in ids
+    new = ["GHSA-aaaa-bbbb-ed99", "GHSA-zzzz-zzzz-zz00"]  # one sorts behind the place, one ahead of it
+    assert new[0] < place < new[1]
+    env.api.put(new[0], ghsa_json(new[0], type="malware"))
+    env.api.put(new[1], ghsa_json(new[1]))
+    env.collector([finding(fid=new[0], severity="moderate", fixed="3.0.0"),
+                   *(finding(fid=i, severity="moderate", fixed=f"2.4.{k}") for k, i in enumerate(ids)),
+                   finding(fid=new[1], severity="moderate", fixed="3.0.1")])
+    since = len(requests)
+    relay = run(env, 5)
+    asked = _admitted(requests, since)
+    assert asked[:2] == new and len(asked) == 10
+    assert sorted(c[2].split(":")[0] for c in relay.calls if c[0] == "feed" and c[1] is None) == ["CRITICAL", "HIGH"]
+    after, seen = sources.load_turn(env.config.admit_turn)
+    assert seen == frozenset(ids + new) and after == sources.in_turn(ids, place, ids)[7]  # the ring moved by eight

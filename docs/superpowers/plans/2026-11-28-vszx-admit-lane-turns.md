@@ -113,3 +113,19 @@ Independent review of the first draft (fresheyes, gpt-6.1-sol, high) at 25df706:
    measured the deferred list's rotation and the thread lanes' requests. Fixed:
    a new record per measured run, requests counted per lane, and the quiet-cycle
    test asserts ten `admit` requests in each of its runs.
+
+## Amendment after the code review (89e51d2)
+
+The spec's dispositions 6 to 12. Changes to the steps above:
+
+- `sources.in_turn(ids, after, seen)`: never-asked ids first, then the ring.
+  `load_turn` returns `(after, seen)` and reads with `inputs.read_regular_json`;
+  `save_turn(path, after, seen)`; `MAX_SEEN = 2000`.
+- `Config.admit_turn` leaves `check_paths` and `check_catalog_paths`;
+  `Config.admit_turn_free()` is asked by `Run.admit_all`.
+- `Run.admit_all` keeps `self.asked`, the place (last ring id a request was made
+  for) and the ids asked for; `Run.observe` names only `unread & asked`.
+- Tests added: a FIFO at the path; a clashing path (config and a whole run); a
+  link at the path; an unread id a response named; a new candidate read in its
+  first run (unit and `main.run`).
+- Mutations: fifteen, listed with their results in the run record.

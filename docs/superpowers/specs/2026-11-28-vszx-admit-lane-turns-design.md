@@ -53,17 +53,22 @@ collector does.
 5. A candidate that was read in one run and is not read in the next sends nothing:
    no reply, no lowering.
 6. The run's log line names the ids that were not read, so two runs can be compared.
-7. A turn file that is missing, damaged or cannot be written never stops a run and
-   never needs a person.
+7. A turn file that is missing, damaged, not a regular file, unwritable, or at a
+   path configured as another file's never stops or holds a run.
+8. A candidate never asked for before is asked for in its first run, wherever the
+   turn stands, so a new advisory waits for no round.
 
 ## Approach
 
-### The order: `sources.in_turn(ids, after)`
+### The order: `sources.in_turn(ids, after, seen)`
 
-A pure function. The distinct ids, sorted, are a ring. The order starts at the
-first id greater than `after` (the last id the run before made a request for) and
-wraps. `after` need not be one of the ids: a candidate that has gone leaves its
-place in the sort order behind. None starts the ring at its first id.
+A pure function. First the ids not in `seen` (never asked for), sorted: criterion
+8. One request makes an id seen, whatever the answer, so none stays ahead. Then
+the seen ids, sorted, as a ring that starts at the first id greater than `after`
+(the last ring id the run before made a request for) and wraps. `after` need not
+be one of the ids: a candidate that has gone leaves its place in the sort order
+behind. None starts the ring at its first id. A first request does not move the
+ring's place.
 
 Each run goes on where the last run's requests ended, however many it made. That
 gives criterion 1 (ten a run: consecutive runs ask for consecutive arcs of the
@@ -72,12 +77,21 @@ assumption about the clock.
 
 ### The place: `<ledger>.admit-turn.json`
 
-`{"after": "<lookup id>"}`, at `Config.admit_turn`, beside the poster's other
-per-concern files (`.recompute.json`, `.translate.json`, `.sent.json`) and in
-`check_paths`. `sources.load_turn` gives the id, or None for a file that is
-missing, does not read, has another shape, or holds anything that is not a lookup
-id (`sources.advisory_id`). `sources.save_turn` writes it with `inputs.write_json`
-(atomic). It is written under the ledger lock, like every other state file of a run.
+`{"after": "<lookup id>" or null, "seen": [<lookup ids>]}`, at `Config.admit_turn`,
+beside the poster's other per-concern files (`.recompute.json`, `.translate.json`,
+`.sent.json`). `sources.load_turn` gives `(after, seen)`, or `(None, nothing)` for
+a file that is missing, is not a regular file (read with
+`inputs.read_regular_json`, which never blocks on a FIFO), does not read, has
+another shape, or holds anything that is not a lookup id (`sources.advisory_id`).
+`sources.save_turn` writes it with `inputs.write_json` (atomic; a link at the path
+is replaced, never followed). `seen` holds only ids that are candidates in the run
+that writes it, at most 2000. It is written under the ledger lock, like every
+other state file of a run.
+
+The path is not in `check_paths`: a clash there is a configuration error that
+stops every run until a person repairs it. `Config.admit_turn_free()` says whether
+the path is none of the poster's other files; when it is not, the run neither
+reads nor writes the turn, says so, and goes on.
 
 A file of its own, not a key in the run state or the recompute state: both of those
 check their key set exactly, so a new key would make an earlier release refuse the
@@ -96,13 +110,13 @@ a file it does not know.
 2. Collect `rules.ghsa_lookup(ev.ghsa)` for each `ev.structured and ev.ghsa`: the
    same condition under which `rules.readings_for` asks.
 3. Ask `self._admit_read(i)` for each id of
-   `sources.in_turn(ids, sources.load_turn(self.config.admit_turn))`, noting the
-   last id for which the reader's request count rose. The reader memoises a granted
+   `sources.in_turn(ids, after, seen)`, noting each id for which the reader's
+   request count rose, and the last such id that was in `seen` (the ring's place). The reader memoises a granted
    request and records an id the lane could not afford in `Reader.unread`, as today.
-4. Save that last id, if any request was made. A write that fails is said on
-   stderr and the run goes on: the next run starts from the old place, which is
-   the old behaviour for as long as the disk refuses, and the ledger's own writes
-   would be failing too.
+4. Save the place and the ids asked for, if any request was made. A write that
+   fails is said on stderr and the run goes on: the next run starts from the old
+   place, which is the old behaviour for as long as the disk refuses, and the
+   ledger's own writes would be failing too.
 5. For each pair in the original order: `self.admit(c, scope, ev)`. `admit` takes
    the evidence it is given, and computes it when given none. Its call to
    `rules.readings_for` finds the answer memoised, or gets None for an id whose
@@ -115,9 +129,11 @@ after admission as they do today.
 ### The log line
 
 `advisory reads: N id(s) not read this run (the lane's share was spent); their
-threads are unknown and nothing of theirs moves` gains the ids, sorted, the first 40
-(`UNREAD_NAMED`) and then `and N more`. They are public advisory ids, already in
-the input records and the ledger; nothing a response says is printed. The release
+threads are unknown and nothing of theirs moves` gains `; of admission's:` and
+the unread ids admission asked for, sorted, the first 40 (`UNREAD_NAMED`) and then
+`and N more`. Only those: they are ids a vendor's page stated, in the one shape
+`rules.ghsa_lookup` gives. A thread lane can be asked for an id that a response
+named, and nothing a response says is printed; such an id is counted only. The release
 session (ai-tools-alerts#g9bv) is asked to confirm that the ids differ from run to
 run, which the count alone cannot show.
 
@@ -129,8 +145,8 @@ run, which the count alone cannot show.
   on regardless. And with twenty ids and a run only every other hour, every run
   starts at the same place: ten are never read. A service nobody watches must not
   depend on its own schedule being kept.
-- **Least recently read first.** A map of every id's last read is more state than
-  one id, for an order that differs only in putting a new candidate first.
+- **Least recently read first.** A map of every id's last read time, for an order
+  that differs from this one only in what a set of ids already gives: new first.
 - **Start one further each hour, as `_in_turn` does.** With a window of ten that
   bounds the wait at n - 9 hours, not ceil(n / 10): 25 hours for today's 34
   candidates in place of 4.
@@ -150,11 +166,12 @@ run, which the count alone cannot show.
   `ceil(n / 4)` runs. A run that makes none (the API unreachable before the first
   byte still counts as a request made; a lane with no seconds left does not) keeps
   the place.
-- A candidate that joins the record takes its place in the sorted ring and waits at
-  most one round.
-- A new candidate waits up to `ceil(n / 10) - 1` runs for its reading (three, for
-  34 candidates). Until then it goes on as its page rates it, which is what a
-  failed API request already does (3qyq), and is admitted again each run.
+- A new candidate is asked for in its first run and takes one request from the
+  ring in that run. More than ten new candidates at once are read ten a run, and
+  the ring waits while they are.
+- A turn that cannot be kept (an unwritable file, a clashing path) leaves every run
+  asking for the same ten first: the old defect, said on stderr every run. The
+  poster cannot repair its own state directory.
 - A request that fails still moves the place past its id: the id waits one round,
   and no failing id holds the others back.
 
@@ -179,7 +196,7 @@ named in the close-out. This run changes nothing about it.
 ## Blast radius and rollback
 
 Poster only: `aitools_alerts/poster/sources.py` (the order and the file),
-`inputs.py` (the path), `main.py` (the pre-pass, `admit`'s optional argument, the
+`inputs.py` (the path and its clash check), `main.py` (the pre-pass, `admit`'s optional argument, the
 log line), tests, changelog. One new file beside the ledger. No ledger, journal,
 recompute state, wire format, schema, manifest, ruleset or scope file changes
 shape. An earlier release ignores the new file; rollback is installing it.
@@ -217,3 +234,26 @@ Independent review of the first draft (fresheyes, gpt-6.1-sol, high) at 25df706:
    criterion 2 and the rollout note say "as the existing rules allow", and the test
    sets up a case those rules let through.
 5. COSMETIC, the poster's and the member's slug patterns differ. Fixed in the text.
+
+Whole-branch code review at 89e51d22b48cf37c260b53f1883a75022f71d902 (fresheyes,
+gpt-6.1-sol, high): 1 blocker, 2 substantive. Same-model review of the same
+commit: 2 substantive, 3 cosmetic.
+
+6. BLOCKER (both reviews), `load_turn` opened the file with a blocking read, so a
+   FIFO at the path would hold the run and the ledger lock for good. Fixed:
+   `inputs.read_regular_json`; a test with a FIFO.
+7. SUBSTANTIVE, the path in `check_paths` made a clash a configuration error that
+   stops every run. Fixed: out of `check_paths`; `Config.admit_turn_free()` turns
+   off the keeping of the turn alone. A link at the path heals on the next write.
+8. SUBSTANTIVE, the log line printed every unread id, and a thread lane's unread
+   ids can come from a response. Fixed: only admission's are named.
+9. SUBSTANTIVE (same-model), a new candidate that the old order happened to read
+   at once waited up to a round. Fixed: never-asked ids go first (criterion 8).
+10. COSMETIC, the changelog said a slow API changes nothing about the bound.
+    Fixed in the text.
+11. COSMETIC, an unwritable turn file falls back to the old defect with one stderr
+    line a run. Kept, and stated in the changelog and under "Limits".
+12. COSMETIC, criterion 4 is tested for order and not for the page budget. Left:
+    the pre-pass calls `rules.evidence` in the same order with the same page
+    cache, and `test_many_candidates_leave_the_threads_their_reads` and the page
+    budget's own tests pass unchanged.
