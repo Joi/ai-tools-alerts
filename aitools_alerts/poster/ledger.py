@@ -98,6 +98,52 @@ class Entry:
     # show. By channel, so that a channel the reply that ends the state never reached is
     # still known to lack it. Absent when no channel is.
     withdrawn: list | None = None
+    # aqtf: the channels that have not acknowledged the thread's standing level reply (the
+    # last the ledger recorded, from whichever channel took it first), each with the word
+    # it stands at: a level, or ``withdrawn``. That may be the standing reply's own level,
+    # held from an older event: the reply's date is what a reader counts the level from.
+    # Absent when every channel holds the standing reply, which is how every run whose
+    # sends were all acknowledged leaves it.
+    lacks: dict | None = None
+    # aqtf: {channel: level} for a root posted in a further channel that states a level the
+    # thread did not stand at when it was recorded (a candidate's raise posts the copy
+    # before the reply). The reply that brings the thread there finds the channel has it.
+    # Removed by the next level reply recorded.
+    copied: dict | None = None
+    # aqtf: a reply sent again to a channel that lacked it was recorded (``Run.reconcile``).
+    # That reply names the level alone, and the one the channel lost may have carried
+    # aliases, so the channels are never again known to hold the same ids (``Run._stated``).
+    uneven: bool | None = None
+
+    @property
+    def gone(self) -> bool:
+        """The thread's standing reply is the withdrawal (aqtf): some channel that took it
+        does not lack a later one. An entry kk2q wrote with some channels withdrawn and no
+        ``lacks`` did not say which side stands; it reads as the recompute acted on it
+        then, the level standing and those channels lacking it, which shows the alert."""
+        held = set(self.withdrawn or ())
+        if self.lacks is None:
+            return bool(held) and held >= set(self.channel_ids)
+        return bool(held - set(self.lacks))
+
+    @property
+    def standing(self) -> str:
+        """The word of the thread's standing level reply: ``withdrawn``, or its level."""
+        return wire.WITHDRAWN if self.gone else self.level
+
+    def word(self, channel: str) -> str:
+        """The word ``channel`` stands at: what its last acknowledged level reply, or its
+        root, said."""
+        if channel in (self.withdrawn or ()):
+            return wire.WITHDRAWN
+        return (self.lacks or {}).get(channel) or (self.copied or {}).get(channel) or self.level
+
+    @property
+    def lacking(self) -> dict:
+        """{channel: its word} for each channel that lacks the standing reply (aqtf)."""
+        if self.lacks is None and not self.gone:  # an entry kk2q wrote: see ``gone``
+            return {ch: wire.WITHDRAWN for ch in self.withdrawn or () if ch in self.channel_ids}
+        return {ch: self.word(ch) for ch in self.lacks or ()}
     # z360: the thread is hidden by a manifest retraction of one of its ids. Its other ids,
     # each judged once by its own advisory page: "released" (left this thread's identity,
     # to be posted anew) or "kept" (still this thread's). Absent until a run judged one.
@@ -163,6 +209,11 @@ def _entry_ok(e) -> bool:
             and ("withdrawn" not in e or (_strs(e["withdrawn"]) and bool(e["withdrawn"])
                                           and e["withdrawn"] == sorted(set(e["withdrawn"]))
                                           and set(e["withdrawn"]) <= set(e["channel_ids"])))
+            and ("lacks" not in e or _lacks_ok(e))
+            and ("copied" not in e or (isinstance(e["copied"], dict) and bool(e["copied"])
+                                       and set(e["copied"]) <= set(e["channel_ids"])
+                                       and all(w in schema.LEVELS for w in e["copied"].values())))
+            and ("uneven" not in e or e["uneven"] is True)
             and ("joined" not in e or (isinstance(e["joined"], list) and bool(e["joined"])
                                        and all(_strs(g) and g and g == sorted({i.casefold() for i in g})
                                                for g in e["joined"])))
@@ -172,6 +223,18 @@ def _entry_ok(e) -> bool:
 def _split_ok(v) -> bool:
     return isinstance(v, dict) and set(v) == {"released", "kept"} \
         and all(isinstance(v[k], list) and all(isinstance(i, str) and i for i in v[k]) for k in v)
+
+
+def _lacks_ok(e) -> bool:
+    """``lacks`` names some of the thread's channels, never all (one took the standing
+    reply), each with the word it stands at: ``withdrawn`` exactly for a channel the
+    ``withdrawn`` list names, and never under a standing withdrawal (a withdrawn channel
+    lacks no withdrawal)."""
+    lacks, held = e["lacks"], set(e.get("withdrawn", ()))
+    return (isinstance(lacks, dict) and bool(lacks) and set(lacks) < set(e["channel_ids"])
+            and all(w in schema.LEVELS or w == wire.WITHDRAWN for w in lacks.values())
+            and all((w == wire.WITHDRAWN) == (ch in held) for ch, w in lacks.items())
+            and not (held - set(lacks) and held & set(lacks)))
 
 
 def _pending_ok(p) -> bool:
@@ -328,11 +391,21 @@ class Ledger:
         self._save()
         return Entry(**e)
 
-    def add_channel(self, root_event_id: str, channel: str, event_id: str) -> Entry:
-        """Record the root in one more channel (a critical posts to two, one at a time)."""
+    def add_channel(self, root_event_id: str, channel: str, event_id: str, level: str | None = None) -> Entry:
+        """Record the root in one more channel (a critical posts to two, one at a time).
+        ``level`` (aqtf): the level that root states, when the caller knows it."""
         if not (isinstance(channel, str) and isinstance(event_id, str)):
             raise LedgerError("channel and event_id must be strings")
         e = self._entry(root_event_id)
+        said = level if level in schema.LEVELS else e["level"]
+        if channel in e["channel_ids"]:
+            pass
+        elif Entry(**e).gone:
+            # a copy journaled before the withdrawal: this channel lacks the withdrawal
+            # (``copies`` plans none for a withdrawn thread)
+            e["lacks"] = {**e.get("lacks", {}), channel: said}
+        elif said != e["level"]:
+            e["copied"] = {**e.get("copied", {}), channel: said}
         e["channel_ids"][channel] = event_id
         self._save()
         return Entry(**e)
@@ -486,22 +559,37 @@ class Ledger:
 
     def record_reply(self, root_event_id: str, adv: schema.Advisory, reply_ids: dict, *,
                      now: int, exploited: bool = False, ids=(), changed_at: int | None = None,
-                     withdrawn: bool | None = None) -> Entry:
+                     withdrawn: bool | None = None, again: bool = False) -> Entry:
         """``withdrawn`` (kk2q): True for the withdrawal reply, which puts its channels
         (``reply_ids``) in the state and leaves ``adv`` (the caller passes the thread's
         own) as it was; False for a reply whose block names a level, which ends the state
         in its channels as it does on their readers; None for any other reply. Entering
         is a level change counted by the first channel's reply. Leaving is one too, also
         at an equal level, counted once for one time: a second channel's reply of the
-        same run adds none, and one a later run had to send again adds its own."""
+        same run adds none, and one a later run had to send again adds its own (not one
+        the reconciliation sent, ``again``: that reply changes no level of the thread, and
+        the ledger's count of its life stays the lower one).
+
+        aqtf: a reply whose word is not the thread's standing word is its standing reply
+        from now on, and every other channel lacks it (``lacks``) until its own reply is
+        recorded, whatever level it stands at: the reply's date is what a reader counts
+        the level from. Two exceptions: a channel already withdrawn lacks no withdrawal,
+        and a channel whose root states the level (``copied``) has it. A reply with the
+        standing word is that reply reaching one more channel. ``again``: the
+        reconciliation sent it (``uneven``)."""
         if not _ids_map(reply_ids):
             raise LedgerError("reply_ids must map channel to event id")
         e = self._entry(root_event_id)
         was, new = e["advisory"], asdict(adv)
+        before = Entry(**e)
+        words = {ch: before.word(ch) for ch in e["channel_ids"]}
         held = set(e.get("withdrawn", ()))
         stamp = min(now, changed_at or now)
-        entered = withdrawn is True and not held
-        left = withdrawn is False and bool(held & set(reply_ids)) and stamp not in e.get("changed", [])[-1:]
+        entered = withdrawn is True and not before.gone
+        # aqtf: also when the channel that takes the reply first never took the withdrawal:
+        # the thread leaves the state with it, whichever channel that is
+        left = withdrawn is False and (before.gone or bool(held & set(reply_ids))) and not again \
+            and stamp not in e.get("changed", [])[-1:]
         if "root_fixed" not in e and not e["replies"]:  # 9kgk: a legacy entry's root, kept before it changes
             e["root_fixed"] = Entry(**e).fix_at_root or ""
         if adv.level != e["level"] or entered or left:  # ny5g: counted once; a second channel's copy finds it equal
@@ -513,10 +601,22 @@ class Ledger:
             else:  # 65xv: a raise makes an ended thread an ordinary one; its clock starts from here
                 e.pop("ended", None)
         if withdrawn is not None:
-            held = (held | set(reply_ids)) if withdrawn else (held - set(reply_ids))
-            e.pop("withdrawn", None)
-            if held & set(e["channel_ids"]):
-                e["withdrawn"] = sorted(held & set(e["channel_ids"]))
+            said = wire.WITHDRAWN if withdrawn else adv.level
+            if said != before.standing:
+                has = {ch for ch, w in words.items() if w == said
+                       and (withdrawn or e.get("copied", {}).get(ch) == said)}
+                lack = set(words) - set(reply_ids) - has
+            else:
+                lack = set(before.lacking) - set(reply_ids)
+            words.update({ch: said for ch in reply_ids if ch in words})
+            for k in ("withdrawn", "lacks", "copied"):
+                e.pop(k, None)
+            if any(w == wire.WITHDRAWN for w in words.values()):
+                e["withdrawn"] = sorted(ch for ch, w in words.items() if w == wire.WITHDRAWN)
+            if lack:
+                e["lacks"] = {ch: words[ch] for ch in sorted(lack)}
+            if again:
+                e["uneven"] = True
         if _listed_fields(was) != _listed_fields(new):
             e["listed_at"] = now  # a digest lists it again
         else:  # frozen, a legacy entry's too, before last_change moves

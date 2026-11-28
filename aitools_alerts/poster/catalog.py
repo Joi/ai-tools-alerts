@@ -100,7 +100,7 @@ def snapshot(led, held) -> dict[str, dict | None]:
     for e in led.entries():
         scope = _scope(e.scope)
         a = _valid(e.advisory)
-        if a is not None and getattr(e, "withdrawn", None):
+        if a is not None and getattr(e, "gone", False):
             # before the filter for what may start: a thread that started at high and
             # stands lower now still has its earlier block in the inventory
             out[key(e.scope, a["id"])] = None

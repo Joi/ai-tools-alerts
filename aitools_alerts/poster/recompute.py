@@ -409,7 +409,7 @@ def withdrawal(counted) -> bool:
 
 
 def leaving(entry, found: str, known: bool, counted, rs) -> str | None:
-    """The level a withdrawn thread (``Entry.withdrawn``) returns to on this read, or
+    """The level a withdrawn thread (``Entry.gone``) returns to on this read, or
     None while it stays withdrawn (kk2q). Its level reads as ``none``, so each way out
     is a raise and needs no wait: a read supports a level (``found``, as ``held`` gave
     it); its prose floor is above notice (a candidate taught it since); or every source
@@ -432,7 +432,7 @@ def raised(entry, scope, copy: Copy | None, rs, read=None) -> str | None:
     on ``judge``'s own account of what was read whole."""
     found, known, _, _, stop = support(entry, scope, copy, rs, read)
     found = held(entry, scope, found, rs, stop, infer=not known)
-    if entry.withdrawn:
+    if entry.gone:
         return leaving(entry, found, False, (), rs)
     return found if _rises(entry, found, rs) else None
 
@@ -473,7 +473,7 @@ def judge(entry, scope, copy: Copy | None, rs, st: dict, now: int, read=None, in
         info.update(known=known, listed=listed, readings=counted)
     off = found == ruleset.NONE and not listed and withdrawal(counted)  # before ``held``: what the sources state
     found = held(entry, scope, found, rs, stop, infer=not known)
-    if entry.withdrawn:
+    if entry.gone:
         dwell.pop(root, None)
         level = leaving(entry, found, known, counted, rs)
         return ("raise", level) if level is not None else None
@@ -547,7 +547,7 @@ def lead(entry, scope, copy: Copy | None, rs, st: dict, read=None, turn: int = 0
     (``st["listed"]``), since ``judge`` never knows a thread that has loose members and
     a later absence proves nothing unless the listing was seen. None for a withdrawn
     thread and for one that has ended (65xv: it runs down by its age)."""
-    if entry.withdrawn or getattr(entry, "ended", None) is not None:
+    if entry.gone or getattr(entry, "ended", None) is not None:  # aqtf: the standing reply is the withdrawal
         return None
     members, cves = loose(entry, read, turn)
     if not members:
