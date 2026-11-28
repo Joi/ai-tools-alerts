@@ -1,6 +1,8 @@
 # The admit lane's advisory reads take turns (ai-tools-alerts#vszx)
 
-Date: 2026-11-28. Base: main at d2dd492 (release v0.5.0).
+Date: 2026-11-28. Base: main at d2dd492 (release v0.5.0). Revised after the
+independent review of the first draft (see "Review dispositions"): the turn is kept
+in a file, not counted by the clock.
 
 ## Problem
 
@@ -8,9 +10,9 @@ Each poster run may make ten advisory API requests for new candidates (the `admi
 lane, `sources.LANE_READS`). `Run.admit` spends them as it goes: for each candidate
 whose repository advisory page confirms it, `rules.readings_for` asks
 `sources.Reader.read(<its GHSA id>, "admit")`. Candidates are admitted in the
-collector record's order (`main.run`, the `pairs` list), and the collector keeps
-that order from hour to hour. So the same ten candidates get the ten reads on every
-run and the others get none, for good.
+collector record's order (`main.run`, the `pairs` list). The collector writes a new
+record every hour with the same findings in the same order. So the same ten
+candidates get the ten reads on every run and the others get none, for good.
 
 Measured on ai-tools-alerts#vszx: 34 candidates ask, the same 10 are read in all of
 48 replayed hourly runs, the same 24 never. The live poster prints
@@ -18,52 +20,70 @@ Measured on ai-tools-alerts#vszx: 34 candidates ask, the same 10 are read in all
 
 Effect: a candidate never read has no `ghsa` reading. It is rated from its vendor
 page and prose alone. A level its advisory's fields support (a reviewed weakness, a
-malware entry) is never reached, and a root posted from it carries no claim. The
-seven-day retry (`RETRY_DAYS`) meets the same order every time.
+malware entry) is never reached, and a root posted from it carries no claim.
 
-The thread lanes (`wait`, `rest`) do not have this defect: `Run._in_turn` starts one
-thread further on every hour.
+Two things already rotate and are not the defect: the thread lanes (`Run._in_turn`
+starts one thread further on every hour), and candidates that come only from the
+deferred list (`later` in `main.run`, sorted and rotated by the hour). The defect
+needs the candidates to arrive fresh from a record each run, which is what the
+collector does.
 
 ## Success criteria
 
-1. With n page-confirmed GHSA candidates, n greater than `LANE_READS`, in a fixed
-   record order, and an API that answers, every one of them is asked for within
-   `ceil(n / LANE_READS)` consecutive hourly runs, starting from any hour. A test
-   runs `main.run` hourly and checks it for n = 34.
-2. A candidate past the tenth place whose advisory comes to support more (a malware
-   entry) is raised within that many runs.
-3. A read that is slow or fails cannot keep another candidate unread for good: over
-   time every candidate is the first one asked in a run. A unit test checks it for
-   every n from 1 to 45.
+1. With n page-confirmed GHSA candidates, n greater than `LANE_READS`, arriving in
+   the same record order every hour, and ten requests made a run, every one of them
+   is asked for in any `ceil(n / LANE_READS)` consecutive runs. A test runs
+   `main.run` with a new record each hour and checks it for n = 34, counting the
+   `admit` lane's requests apart from the thread lanes'.
+2. A candidate in the record's last place whose advisory comes to be a malware
+   entry is posted at the level the existing rules give that reading, within that
+   many runs. (The rules that cap a level are unchanged: a thread whose root stated
+   no fix is not raised to critical, and a reading the thread's first id does not
+   tie raises nothing. The test uses a held notice with a stated fix, which posts
+   at critical.)
+3. A run that makes fewer than ten requests (a slow API ends the lane's twenty
+   seconds first), a run that makes none, and a run that is missed lose no
+   candidate its turn: every candidate is asked for once before any is asked for
+   twice. A unit test over mixed request counts, and a `main.run` test with a slow
+   clock and missing hours.
 4. Nothing else about admission changes: the candidates admitted, their order going
    into `ledger.merge`, the pages fetched and their order, the page budget, the
-   counters. The existing suite passes unchanged except where a test pinned the
-   old order of advisory requests.
+   counters. The existing suite passes; the only edits to existing tests are two
+   wrappers of `Run.admit` that must pass the new argument on.
 5. A candidate that was read in one run and is not read in the next sends nothing:
-   no reply, no lowering. A test runs a full cycle over a steady set and checks
-   that no post goes out.
+   no reply, no lowering.
 6. The run's log line names the ids that were not read, so two runs can be compared.
+7. A turn file that is missing, damaged or cannot be written never stops a run and
+   never needs a person.
 
 ## Approach
 
-### The order: `sources.in_turn(ids, hour)`
+### The order: `sources.in_turn(ids, after)`
 
-A pure function. `ids` are lookup ids; `hour` is `now // 3600`.
+A pure function. The distinct ids, sorted, are a ring. The order starts at the
+first id greater than `after` (the last id the run before made a request for) and
+wraps. `after` need not be one of the ids: a candidate that has gone leaves its
+place in the sort order behind. None starts the ring at its first id.
 
-- Sort the distinct ids. With n of them and a share of `LANE_READS` (10), start at
-  `k = (hour * LANE_READS) % n` and wrap. The first ten in that order are this
-  hour's window. Consecutive hours' windows are consecutive arcs of the sorted
-  ring, so any `ceil(n / 10)` consecutive hours cover every id (criterion 1).
-- Inside the window, start `j` places in, where
-  `j = (hour // ceil(n / 10)) % len(window)`: one place further each time the ring
-  has been covered once. So when the lane's seconds (`LANE_SECONDS`) run out
-  before its ten requests do, the id that goes without changes from cycle to cycle
-  (criterion 3). Without this, a set whose size divides evenly into windows (or
-  has ten ids or fewer) would ask in the same order for good, and four reads that
-  time out at the head would spend the lane before the rest every hour.
-- The ids outside the window follow, in ring order. They are asked too, after the
-  window: a request another lane already made this run costs the lane nothing, so
-  a share the window does not use reaches them.
+Each run goes on where the last run's requests ended, however many it made. That
+gives criterion 1 (ten a run: consecutive runs ask for consecutive arcs of the
+ring) and criterion 3 (the place moves by exactly the requests made) with no
+assumption about the clock.
+
+### The place: `<ledger>.admit-turn.json`
+
+`{"after": "<lookup id>"}`, at `Config.admit_turn`, beside the poster's other
+per-concern files (`.recompute.json`, `.translate.json`, `.sent.json`) and in
+`check_paths`. `sources.load_turn` gives the id, or None for a file that is
+missing, does not read, has another shape, or holds anything that is not a lookup
+id (`sources.advisory_id`). `sources.save_turn` writes it with `inputs.write_json`
+(atomic). It is written under the ledger lock, like every other state file of a run.
+
+A file of its own, not a key in the run state or the recompute state: both of those
+check their key set exactly, so a new key would make an earlier release refuse the
+run state ("malformed; refusing to send", which waits for a person) or drop the
+recompute state (every wait for a lowering starts over). An earlier release ignores
+a file it does not know.
 
 ### The pre-pass: `Run.admit_all(pairs)`
 
@@ -75,13 +95,18 @@ A pure function. `ids` are lookup ids; `hour` is `now // 3600`.
    evidence before any candidate is admitted changes no result.
 2. Collect `rules.ghsa_lookup(ev.ghsa)` for each `ev.structured and ev.ghsa`: the
    same condition under which `rules.readings_for` asks.
-3. Ask `self._admit_read(i)` for each id of `sources.in_turn(ids, self.now // 3600)`.
-   The reader memoises a granted request and records an id the lane could not
-   afford in `Reader.unread`, as today.
-4. For each pair in the original order: `self.admit(c, scope, ev)`. `admit` takes
-   the evidence it is given (and computes it when given none, so its other callers
-   and tests keep working). Its call to `rules.readings_for` now finds the answer
-   memoised, or gets None for an id whose turn it was not.
+3. Ask `self._admit_read(i)` for each id of
+   `sources.in_turn(ids, sources.load_turn(self.config.admit_turn))`, noting the
+   last id for which the reader's request count rose. The reader memoises a granted
+   request and records an id the lane could not afford in `Reader.unread`, as today.
+4. Save that last id, if any request was made. A write that fails is said on
+   stderr and the run goes on: the next run starts from the old place, which is
+   the old behaviour for as long as the disk refuses, and the ledger's own writes
+   would be failing too.
+5. For each pair in the original order: `self.admit(c, scope, ev)`. `admit` takes
+   the evidence it is given, and computes it when given none. Its call to
+   `rules.readings_for` finds the answer memoised, or gets None for an id whose
+   turn it was not.
 
 Reads made later in the `admit` lane by `Run._tied` and `Run._rate` (a thread's
 first id, to check that a source ties a reading to it) are unchanged. They come
@@ -91,21 +116,21 @@ after admission as they do today.
 
 `advisory reads: N id(s) not read this run (the lane's share was spent); their
 threads are unknown and nothing of theirs moves` gains the ids, sorted, the first 40
-and then `and N more`. They are public advisory ids, already in the collector
-record; nothing a response says is printed. The release session (ai-tools-alerts#g9bv)
-is asked to confirm that the ids differ from run to run, which the count alone
-cannot show.
+(`UNREAD_NAMED`) and then `and N more`. They are public advisory ids, already in
+the input records and the ledger; nothing a response says is printed. The release
+session (ai-tools-alerts#g9bv) is asked to confirm that the ids differ from run to
+run, which the count alone cannot show.
 
 ## Why not
 
-- **Least recently read first, kept in the state file.** It is the better order: a
-  candidate never read goes first, and a failed request does not cost a turn. But
-  both state files check their key set exactly (`inputs.load_state`,
-  `recompute._ok`). A new key in the run state makes every earlier release refuse
-  the file ("malformed; refusing to send"), so rolling back the poster would need a
-  person to edit state. That is not acceptable with no human in the loop. A new key
-  in the recompute state makes an earlier release drop the file and start every
-  wait for a lowering over.
+- **A turn counted by the clock** (the first draft: start at `hour * 10 mod n`).
+  It needs no file, but the review showed two ways it leaves ids unread. A slow API
+  makes a run ask for fewer than ten, and the next hour's window starts ten further
+  on regardless. And with twenty ids and a run only every other hour, every run
+  starts at the same place: ten are never read. A service nobody watches must not
+  depend on its own schedule being kept.
+- **Least recently read first.** A map of every id's last read is more state than
+  one id, for an order that differs only in putting a new candidate first.
 - **Start one further each hour, as `_in_turn` does.** With a window of ten that
   bounds the wait at n - 9 hours, not ceil(n / 10): 25 hours for today's 34
   candidates in place of 4.
@@ -120,28 +145,32 @@ cannot show.
 
 ## Limits, stated
 
-- The bound of criterion 1 is for a steady set of candidates read on the hour. A
-  candidate that joins or leaves moves the windows; a run that is missed skips one.
-  Every candidate is still reached, because the ring keeps turning; the bound then
-  is longer by the runs missed.
+- The bound of criterion 1 is for ten requests a run. A run makes at least four
+  (twenty seconds, five a request), so the bound under a slow API is
+  `ceil(n / 4)` runs. A run that makes none (the API unreachable before the first
+  byte still counts as a request made; a lane with no seconds left does not) keeps
+  the place.
+- A candidate that joins the record takes its place in the sorted ring and waits at
+  most one round.
 - A new candidate waits up to `ceil(n / 10) - 1` runs for its reading (three, for
   34 candidates). Until then it goes on as its page rates it, which is what a
   failed API request already does (3qyq), and is admitted again each run.
-- Two runs inside one clock hour ask for the same window.
+- A request that fails still moves the place past its id: the id waits one round,
+  and no failing id holds the others back.
 
 ## The other question in the issue: the MCP Inspector threads
 
 The issue asks why the `rest` lane does not read the ids of five open MCP Inspector
 threads on 0.4.0. Found, from the public feed and the code: their roots were posted
 on 2026-11-07 under ids of the form
-`GHSA-4fc4-wcmh-4g86:modelcontextprotocol/inspector`. The slug holds a slash.
-`candidates.BOT_ID` and the member's `verify.norm_id` both read a thread key's slug
-as `[a-z0-9][a-z0-9.-]{0,31}`, so neither reads this id: `recompute.lookup_id` gives
-None, `recompute.bare_ids` gives None for the thread, `recompute.judged` is False
-and no lane asks for it. It is not a former-name scope and not an alias. A member's
-check answers `unknown` for the same reason, so the poster and the member agree.
-Two MCP TypeScript SDK threads of the same day (`CVE-...:modelcontextprotocol/typescript-sdk`)
-have the same shape.
+`GHSA-4fc4-wcmh-4g86:modelcontextprotocol/inspector`. The slug holds a slash. The
+poster reads a thread key's slug as `[a-z0-9][a-z0-9.-]{0,31}` (`candidates.BOT_ID`)
+and the member's check as `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` (`verify._LEDGER_KEY`);
+neither allows a slash. So `recompute.lookup_id` gives None, `recompute.bare_ids`
+gives None for the thread, `recompute.judged` is False and no lane asks for it. It
+is not a former-name scope and not an alias. A member's check answers `unknown` for
+the same reason, so the poster and the member agree. Two MCP TypeScript SDK threads
+of the same day (`CVE-...:modelcontextprotocol/typescript-sdk`) have the same shape.
 
 Reading such an id needs the same change in the member's reader, which is a wire
 question (released readers) and is not this issue. It is filed as a follow-up and
@@ -149,16 +178,17 @@ named in the close-out. This run changes nothing about it.
 
 ## Blast radius and rollback
 
-Poster only: `aitools_alerts/poster/sources.py` (one function), `main.py` (the
-pre-pass, `admit`'s optional argument, the log line), tests, changelog. No state
-file, ledger, wire format, schema, manifest, ruleset or scope file changes shape.
-An earlier release reads what this one writes; rollback is installing it.
+Poster only: `aitools_alerts/poster/sources.py` (the order and the file),
+`inputs.py` (the path), `main.py` (the pre-pass, `admit`'s optional argument, the
+log line), tests, changelog. One new file beside the ledger. No ledger, journal,
+recompute state, wire format, schema, manifest, ruleset or scope file changes
+shape. An earlier release ignores the new file; rollback is installing it.
 
 First runs after install: candidates never read before are read over the first
-`ceil(n / 10)` runs. One whose fields support more than its thread's level is
-raised then, and a held notice whose fields support a level posts. That is the
-fix, and it is new traffic the release session should expect (noted on
-ai-tools-alerts#g9bv).
+`ceil(n / 10)` runs. One whose reading supports more than its thread's level is
+raised as the existing rules allow, and a held notice whose reading supports a
+level posts. That is the fix, and it is new traffic the release session should
+expect (noted on ai-tools-alerts#g9bv).
 
 ## Prior work
 
@@ -170,4 +200,20 @@ earlier attempt at ordering the admit lane.
 
 ## Review dispositions
 
-(filled in after the review)
+Independent review of the first draft (fresheyes, gpt-6.1-sol, high) at 25df706:
+1 blocker, 3 substantive, 1 cosmetic.
+
+1. BLOCKER, the planned test used one collector record, which is consumed once, so
+   later runs would have tested the deferred list's own rotation. Fixed: every
+   measured run gets a new record with the same findings in the same order, and the
+   tests count the `admit` lane's requests apart from the other lanes'.
+2. SUBSTANTIVE, an API that answers slowly ends the lane's seconds before ten
+   requests, and a clock-counted window moves on by ten regardless. Fixed by the
+   redesign: the place moves by the requests made (criterion 3).
+3. SUBSTANTIVE, missed runs could starve ids for good (twenty ids, every other
+   hour). Fixed by the redesign: no clock.
+4. SUBSTANTIVE, reading a malware advisory does not always raise (a root with no
+   fix is capped; an untied reading counts for nothing). Fixed in the text:
+   criterion 2 and the rollout note say "as the existing rules allow", and the test
+   sets up a case those rules let through.
+5. COSMETIC, the poster's and the member's slug patterns differ. Fixed in the text.

@@ -154,9 +154,9 @@ def test_a_withdrawal_and_the_raise_after_it_each_carry_their_claim_in_every_cha
 def test_a_lowering_that_rests_on_an_absence_carries_no_claim_and_the_raise_back_claims_kev(env, monkeypatch):
     import test_recompute as tr
     real = main.Run.admit  # test_recompute's fixture: an admitted KEV candidate states its fix
-    monkeypatch.setattr(main.Run, "admit", lambda self, c, scope: (
+    monkeypatch.setattr(main.Run, "admit", lambda self, c, scope, *ev: (
         lambda a: main.replace(a, fixed=a.fixed or "2.1.0") if a is not None and a.exploited is True else a)(
-            real(self, c, scope)))
+            real(self, c, scope, *ev)))
     tr.post(env)
     for h in range(1, 25):
         assert level_claims(tr.one(env, h)) == []

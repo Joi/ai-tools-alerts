@@ -410,6 +410,15 @@ def test_the_recompute_state_is_a_file_of_its_own(tmp_path):  # ny5g
         inputs.Config(ledger=led, kev_cache=cfg.recompute_state).check_paths()
 
 
+def test_admissions_turn_is_a_file_of_its_own(tmp_path):  # vszx
+    led = tmp_path / "ledger.json"
+    cfg = inputs.Config(ledger=led, kev_cache=tmp_path / "kev.json")
+    assert cfg.admit_turn == tmp_path / "ledger.json.admit-turn.json"
+    cfg.check_paths()
+    with pytest.raises(inputs.ConfigError, match="must differ"):
+        inputs.Config(ledger=led, kev_cache=cfg.admit_turn).check_paths()
+
+
 def test_a_root_item_may_carry_its_prose_floor(tmp_path):  # ny5g
     path = tmp_path / "s.json"
     st = inputs.new_state(1_800_000_000, 2)

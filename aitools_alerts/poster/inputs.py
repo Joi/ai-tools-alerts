@@ -179,6 +179,12 @@ class Config:
         return self.ledger.with_name(self.ledger.name + ".recompute.json")
 
     @property
+    def admit_turn(self) -> Path:
+        """The last advisory id admission asked for (vszx; never the journal: a release
+        that does not know the file leaves it alone)."""
+        return self.ledger.with_name(self.ledger.name + ".admit-turn.json")
+
+    @property
     def catalog_known(self) -> Path:
         """The catalog lane's inventory (q03f): written only under catalog_lock."""
         return self.ledger.with_name(self.ledger.name + ".catalog-known.json")
@@ -200,7 +206,8 @@ class Config:
     def check_paths(self) -> None:
         """The ledger, its lock, the journal and the KEV cache are four distinct files."""
         files = [self.ledger, self.ledger.with_name(self.ledger.name + ".lock"), self.state, self.kev_cache,
-                 self.translate_state, self.owed_state, self.recompute_state, self.sent_state, self.sent_lock]
+                 self.translate_state, self.owed_state, self.recompute_state, self.sent_state, self.sent_lock,
+                 self.admit_turn]
         if self.checkpoint_key_file is not None:  # a cache write must never land on the key
             files.append(self.checkpoint_key_file)
         files.append(self.mirror_dir)
@@ -208,7 +215,7 @@ class Config:
         real = [os.path.realpath(p).casefold() for p in files]
         mirror = real[-1] + os.sep  # the mirror directory holds its own state files and lock
         if len(set(real)) != len(real) or any(r.startswith(mirror) for r in real[:-1]):
-            raise ConfigError("ledger, ledger lock, state, kev_cache, the translation, checkpoint, recompute and sent files "
+            raise ConfigError("ledger, ledger lock, state, kev_cache, the translation, checkpoint, recompute, sent and turn files "
                               "and the checkpoint key file must differ")
 
 
@@ -219,7 +226,7 @@ class Config:
         own = [self.catalog_known, self.catalog_state, self.catalog_lock]
         others = [self.ledger, self.ledger.with_name(self.ledger.name + ".lock"), self.state, self.kev_cache,
                   self.translate_state, self.owed_state, self.recompute_state, self.sent_state, self.sent_lock,
-                  self.mirror_dir]
+                  self.admit_turn, self.mirror_dir]
         if self.checkpoint_key_file is not None:
             others.append(self.checkpoint_key_file)
         real = [os.path.realpath(p).casefold() for p in own + others]

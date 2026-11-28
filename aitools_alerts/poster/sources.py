@@ -15,16 +15,22 @@ A run makes at most ``LANE_READS`` requests, in at most ``LANE_SECONDS`` spent i
 them, in each of three
 lanes, which cannot spend each other's share: ``admit`` (new candidates), ``wait``
 (threads with a wait for a lowering running) and ``rest`` (every other thread).
+No lane asks in one fixed order: admission goes on each run where the last run's
+requests ended (``in_turn``, ai-tools-alerts#vszx), and the threads take turns by
+the hour (``main.Run._in_turn``).
 """
 
 from __future__ import annotations
 
+import bisect
 import time
 from dataclasses import dataclass
 
 from aitools_alerts import ruleset, verify
+from aitools_alerts.poster import inputs
 
-__all__ = ["LANES", "LANE_READS", "LANE_SECONDS", "TIMEOUT", "Read", "Reader", "advisory_id", "tied", "chosen"]
+__all__ = ["LANES", "LANE_READS", "LANE_SECONDS", "TIMEOUT", "Read", "Reader", "advisory_id", "in_turn", "load_turn",
+           "save_turn", "tied", "chosen"]
 
 LANES = ("admit", "wait", "rest")
 LANE_READS = 10  # GitHub allows one address 60 unauthenticated requests an hour; a run is hourly
@@ -51,6 +57,39 @@ def advisory_id(i) -> str | None:
     if not isinstance(i, str) or verify.norm_id(i) != i or ruleset.source_of(i) not in ("ghsa", "osv"):
         return None
     return i
+
+
+def in_turn(ids, after=None) -> list:
+    """The order the ``admit`` lane asks for ``ids`` in (ai-tools-alerts#vszx): every
+    distinct id once, whatever order they came in. Sorted, they are a ring, and this
+    run starts with the first id past ``after``, the last id the run before asked for
+    (``load_turn``): each run goes on where the last one's requests ended, however
+    many it could make. So with n ids, no ten are asked for twice before every other
+    one has been asked for once, and a request that is slow or fails keeps no other
+    id waiting for good: it is behind the next run's start like any other. ``after``
+    need not be one of ``ids`` (its candidate may be gone); None or anything that is
+    not a string starts the ring at its first id."""
+    ids = sorted(set(ids))
+    k = bisect.bisect_right(ids, after) if isinstance(after, str) else 0
+    return ids[k:] + ids[:k]
+
+
+def load_turn(path) -> str | None:
+    """The last id the ``admit`` lane asked for, from the file ``save_turn`` wrote, or
+    None: no file, one that does not read, or one that holds anything but a lookup
+    id. Losing it costs one round its order and nothing else, so it is never an error."""
+    try:
+        got = inputs.read_json(path, 4096)
+        after = got["after"] if isinstance(got, dict) and set(got) == {"after"} else None
+        return advisory_id(after)
+    except Exception:  # noqa: BLE001 - whatever the file holds, the ring starts at its first id
+        return None
+
+
+def save_turn(path, after: str) -> None:
+    """Keep the last id asked for. A file of its own, never the journal: a release
+    that does not know it leaves it alone, so installing an earlier one needs nothing."""
+    inputs.write_json(path, {"after": after})
 
 
 class Reader:

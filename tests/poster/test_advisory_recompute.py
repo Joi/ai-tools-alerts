@@ -630,3 +630,169 @@ def test_an_ended_thread_is_raised_only_above_the_level_it_ended_at():
     read = reads(**{G: ghsa_json(G, cve=CVE)})
     assert recompute.judge(e, CLAUDE, kc(catalog("v1", CVE), "ok", st, 0), RS, st, 0, read) == ("raise", "critical")
     assert recompute.raised(e, CLAUDE, kc(catalog("v1", CVE), "ok", st, 0), RS, read) == "critical"
+
+
+# ---------------------------------------------------------------- admission's reads take turns (vszx)
+
+
+@pytest.fixture
+def requests(monkeypatch):
+    """[(lane, id)] of the advisory requests made, in order, across the runs of a test."""
+    made, real = [], sources.Reader.read
+
+    def read(self, lookup_id, lane="rest"):
+        before = self.requests
+        got = real(self, lookup_id, lane)
+        if self.requests > before:
+            made.append((lane, lookup_id))
+        return got
+    monkeypatch.setattr(sources.Reader, "read", read)
+    return made
+
+
+def _admitted(requests, since):
+    return [i for lane, i in requests[since:] if lane == "admit"]
+
+
+def _record(env, ids):
+    """The collector's record for this hour: the same findings in the same order, as the
+    collector writes them hour after hour."""
+    env.collector([finding(fid=i, severity="moderate", fixed=f"2.4.{k}") for k, i in enumerate(ids)])
+
+
+def test_admissions_reads_reach_every_candidate_in_as_many_runs_as_could_hold_them(env, requests):
+    """Acceptance (ai-tools-alerts#vszx): 34 candidates whose pages confirm them, in one
+    record order, ten reads a run. A notice's worth each, so none becomes a thread and
+    no other lane reads: in any four consecutive runs every one is asked for. Asked in
+    record order, the first ten took every read and 24 were never read. Then the one
+    in the last place comes to be a malware entry, and posts at critical within four
+    more runs."""
+    ids = [f"GHSA-aaaa-bbbb-ee{k:02d}" for k in range(34)]
+    for i in ids:
+        env.api.put(i, ghsa_json(i, **WEAK))
+    per_run = []
+    for h in range(5, 12):  # from an hour that begins no round
+        _record(env, ids)
+        since = len(requests)
+        relay = run(env, h)
+        per_run.append(_admitted(requests, since))
+        assert [c for c in relay.calls if c[1] is None and c[2].startswith(("HIGH", "CRITICAL"))] == []
+    assert [len(p) for p in per_run] == [10] * 7 and {lane for lane, _ in requests} == {"admit"}
+    for k in range(len(per_run) - 3):
+        assert {i for p in per_run[k:k + 4] for i in p} == set(ids), k
+    assert entries(env) == []
+    env.api.put(ids[-1], ghsa_json(ids[-1], type="malware"))
+    posted = []
+    for h in range(12, 16):
+        _record(env, ids)
+        relay = run(env, h)
+        posted += [h for c in relay.calls if c[0] == "feed" and c[1] is None and c[2].startswith("CRITICAL")]
+    assert len(posted) == 1 and [e["level"] for e in entries(env)] == ["critical"]
+    assert entries(env)[0]["advisory"]["id"].startswith(ids[-1])
+
+
+def test_a_candidate_read_in_one_run_and_not_in_the_next_sends_nothing(env, requests):
+    """Fourteen candidates that post at high as their reads arrive. From then on each is
+    read by admission in some runs and not in others, and its thread by the thread
+    lanes in their own turn: over two rounds nothing is sent, and no level moves."""
+    ids = [f"GHSA-aaaa-bbbb-ee{k:02d}" for k in range(14)]
+    for i in ids:
+        env.api.put(i, ghsa_json(i))
+    h = 0
+    while len(entries(env)) < 14:
+        _record(env, ids)
+        run(env, h)
+        h += 1
+        assert h <= 2  # ten, then the other four
+    for k in range(h, h + 6):
+        _record(env, ids)
+        since = len(requests)
+        relay = run(env, k)
+        assert len(_admitted(requests, since)) == 10
+        assert [c for c in relay.calls if not c[2].startswith(("Daily digest", "lang: ja"))] == [], k
+    assert [e["level"] for e in entries(env)] == ["high"] * 14 and state(env)["dwell"] == {}
+
+
+def test_the_admissions_are_in_the_records_order_whatever_the_turn(env, requests, monkeypatch):
+    """The turn orders the advisory requests, nothing else: the pages are fetched and
+    the candidates admitted in the record's order, as before."""
+    from aitools_alerts.poster import main
+    ids = [f"GHSA-aaaa-bbbb-ee{k:02d}" for k in reversed(range(12))]
+    for i in ids:
+        env.api.put(i, ghsa_json(i, **WEAK))
+    admitted, real = [], main.Run.admit
+
+    def admit(self, c, scope, ev=None):
+        assert ev is not None  # its evidence was read before any request
+        admitted.append((c.id, len(requests)))
+        return real(self, c, scope, ev)
+    monkeypatch.setattr(main.Run, "admit", admit)
+    _record(env, ids)
+    run(env, 3)
+    assert [i for i, _ in admitted] == ids and {n for _, n in admitted} == {10}
+    assert [u.rsplit("/", 1)[1] for u in env.pages.calls] == ids
+    assert _admitted(requests, 0) == sorted(ids)[:10]  # the ring from its first id, not the record's first ten
+    assert sources.load_turn(env.config.admit_turn) == sorted(ids)[9]
+
+
+def test_the_line_about_unread_ids_names_them(env, capsys, monkeypatch):
+    from aitools_alerts.poster import main
+    assert main.UNREAD_NAMED == 40
+    monkeypatch.setattr(main, "UNREAD_NAMED", 15)
+    ids = [f"GHSA-aaaa-bbbb-ee{k:02d}" for k in range(30)]
+    for i in ids:
+        env.api.put(i, ghsa_json(i, **WEAK))
+    _record(env, ids)
+    run(env, 0)
+    line = next(ln for ln in capsys.readouterr().err.splitlines() if "advisory reads:" in ln)
+    unread = ids[10:]
+    assert len(unread) == 20 and "20 id(s) not read this run (the lane's share was spent)" in line
+    assert line.endswith(": " + ", ".join(unread[:15]) + " and 5 more")
+    monkeypatch.setattr(main, "UNREAD_NAMED", 40)
+    _record(env, ids)
+    run(env, 1)
+    line = next(ln for ln in capsys.readouterr().err.splitlines() if "advisory reads:" in ln)
+    assert line.endswith("nothing of theirs moves: " + ", ".join(ids[:10] + ids[20:]))  # other ids, all named
+
+
+def test_a_slow_api_and_a_missed_hour_cost_no_candidate_its_turn(env, requests, monkeypatch):
+    """Each request takes six of the lane's twenty seconds, so a run makes four; one hour
+    in three has no run. Twelve candidates are still each asked for once in every
+    three runs: the next run goes on where the last request was made."""
+    ids = [f"GHSA-aaaa-bbbb-ee{k:02d}" for k in range(12)]
+    for i in ids:
+        env.api.put(i, ghsa_json(i, **WEAK))
+    tick = iter(range(0, 10**9, 6))  # the clock is read before a request and after it: six seconds each
+    real = sources.Reader.__init__
+    monkeypatch.setattr(sources.Reader, "__init__",
+                        lambda self, fetch=None, clock=None, rs=None: real(self, fetch, lambda: float(next(tick)), rs))
+    asked = []
+    for h in (0, 1, 3, 4, 6, 7):
+        _record(env, ids)
+        since = len(requests)
+        run(env, h)
+        asked.append(_admitted(requests, since))
+    assert [len(a) for a in asked] == [4] * 6
+    assert sorted(asked[0] + asked[1] + asked[2]) == ids and sorted(asked[3] + asked[4] + asked[5]) == ids
+
+
+def test_a_turn_file_that_is_lost_or_cannot_be_written_stops_nothing(env, requests, capsys):
+    ids = [f"GHSA-aaaa-bbbb-ee{k:02d}" for k in range(12)]
+    for i in ids:
+        env.api.put(i, ghsa_json(i, **WEAK))
+    _record(env, ids)
+    run(env, 0)
+    assert sources.load_turn(env.config.admit_turn) == ids[9]
+    env.config.admit_turn.write_text("{not json")
+    _record(env, ids)
+    since = len(requests)
+    run(env, 1)
+    assert _admitted(requests, since) == ids[:10] and sources.load_turn(env.config.admit_turn) == ids[9]
+    env.config.admit_turn.unlink()
+    env.config.admit_turn.mkdir()  # nothing can be written over it
+    capsys.readouterr()
+    _record(env, ids)
+    since = len(requests)
+    run(env, 2)  # run() asserts the exit code: the run is whole
+    assert _admitted(requests, since) == ids[:10]
+    assert "admission's place among the advisory reads not kept" in capsys.readouterr().err

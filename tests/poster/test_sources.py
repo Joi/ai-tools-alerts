@@ -125,3 +125,76 @@ def test_only_the_ids_a_member_reads_are_chosen():
     last = sources.Reader(Api(**{aliases[3]: ghsa_json(aliases[3], cve=CVE)})).read(aliases[3])
     assert last.lowers and CVE in last.names and not sources.tied(CVE, aliases[3], {aliases[3]: last}.get, aliases)
     assert verify.MAX_ALIASES == 3
+
+
+# ---------------------------------------------------------------- the admit lane's turn (vszx)
+
+
+def _ids(n):
+    return [f"GHSA-aaaa-bbbb-{k:04d}" for k in range(n)]
+
+
+def test_in_turn_is_every_distinct_id_once_whatever_order_they_came_in():
+    ids = _ids(13)
+    for after in (None, 7, "", ids[0], ids[5], ids[-1], "GHSA-aaaa-bbbb-0005x", "zzzz", "CVE-2026-0001"):
+        got = sources.in_turn(ids, after)
+        assert sorted(got) == ids and got == sources.in_turn([*reversed(ids), *ids[:5]], after)
+    assert sources.in_turn([], ids[3]) == [] and sources.in_turn(iter(ids[:1]), ids[0]) == ids[:1]
+
+
+def test_the_ring_goes_on_past_the_last_id_asked_for():
+    ids = _ids(6)
+    assert sources.in_turn(ids) == ids and sources.in_turn(ids, ids[-1]) == ids  # round again
+    assert sources.in_turn(ids, ids[1]) == ids[2:] + ids[:2]
+    # the id it stopped at is gone, or others have come: the place is kept by the id's own order
+    assert sources.in_turn(ids[:3] + ids[4:], ids[3]) == ids[4:] + ids[:3]
+    assert sources.in_turn(ids, "GHSA-aaaa-bbbb-0002x") == ids[3:] + ids[:3]
+
+
+def _rounds(n, made):
+    """The ids asked for run by run when each run makes ``made(run)`` requests."""
+    ids, after, out = _ids(n), None, []
+    for run in range(4 * n + 8):
+        asked = sources.in_turn(ids, after)[:made(run)]
+        after = asked[-1] if asked else after
+        out.append(asked)
+    return ids, out
+
+
+@pytest.mark.parametrize("n", range(1, 46))
+def test_any_run_of_hours_that_could_hold_them_asks_for_every_id(n):
+    """Acceptance (vszx): with n ids and ten requests a run, every id is asked for in
+    any ceil(n / 10) consecutive runs, from whichever run."""
+    share = sources.LANE_READS
+    ids, runs = _rounds(n, lambda run: share)
+    need = -(-n // share)
+    for start in range(len(runs) - need):
+        assert {i for asked in runs[start:start + need] for i in asked} == set(ids), (n, start)
+
+
+@pytest.mark.parametrize("n", (1, 7, 10, 20, 34))
+def test_runs_that_make_fewer_requests_lose_no_id(n):
+    """A slow API ends the lane's seconds before its ten requests, some runs make
+    none at all, and a run that is missed makes none either: the next one goes on
+    where the last request was made. Every id is asked for once before any is asked
+    for twice. A turn counted by the clock left ten of twenty unread for good when
+    only every other hour ran."""
+    ids, runs = _rounds(n, lambda run: (4, 0, 10, 1, 0, 0, 7)[run % 7])
+    flat = [i for asked in runs for i in asked]
+    for k in range(0, len(flat) - n, n):
+        assert sorted(flat[k:k + n]) == ids, (n, k)
+
+
+def test_the_turn_is_kept_in_a_file_of_its_own(tmp_path):
+    path = tmp_path / "state" / "ledger.json.admit-turn.json"
+    assert sources.load_turn(path) is None
+    sources.save_turn(path, G)
+    assert sources.load_turn(path) == G and path.read_text().count(G) == 1
+    for bad in ("{", "[]", '{"after": 7}', '{"after": "GHSA-ABCD-efgh-ijkl"}', '{"after": "CVE-2026-0001"}',
+                '{"after": "%s", "more": 1}' % G, '{"after": "../x"}', '{"after": "%s", "after": "%s"}' % (G, G),
+                '{"after": "' + "x" * 5000 + '"}'):
+        path.write_text(bad)
+        assert sources.load_turn(path) is None, bad  # the ring starts at its first id: never an error
+    path.unlink()
+    path.mkdir()
+    assert sources.load_turn(path) is None
