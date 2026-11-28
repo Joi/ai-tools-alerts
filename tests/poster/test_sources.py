@@ -2,6 +2,7 @@
 reading; every failure is unknown; no id reaches a URL unless a lookup writes it so."""
 
 import os
+import threading
 
 import pytest
 
@@ -228,7 +229,13 @@ def test_the_turn_is_kept_in_a_file_of_its_own(tmp_path):
     assert sources.load_turn(path) == none
     path.rmdir()
     os.mkfifo(path)  # no writer: a blocking open would hold the run, and the ledger lock, for good
-    assert sources.load_turn(path) == none
+    got = []
+    reader = threading.Thread(target=lambda: got.append(sources.load_turn(path)), daemon=True)
+    reader.start()
+    reader.join(5)
+    if not got:
+        os.close(os.open(path, os.O_WRONLY | os.O_NONBLOCK))  # let the blocked open go
+    assert got == [none]
 
 
 def test_what_is_remembered_is_capped_in_favour_of_this_runs_candidates(monkeypatch):
