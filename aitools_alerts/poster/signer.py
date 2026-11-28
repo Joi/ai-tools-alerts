@@ -15,7 +15,10 @@ acknowledged (``owed``) until the poster has seen it on the mirror. A
 thread whose root carries a claim decays on readers unless it is renewed
 (ai-tools-alerts#gtw9), so its root is never listed without the renewals
 that keep it standing: see ``renewals_of``, ``settle_gone``, ``settle_owed``,
-``window`` and, for a level reply forgotten with a lost state file, ``answered``. It does not vouch for a curator's post the relay withheld before the poster ever saw
+``window`` and, for a level reply forgotten with a lost state file, ``answered``. A renewed
+thread grows by a reply every few days, so a thread is listed without the renewals
+another makes redundant (``slim``, ai-tools-alerts#65xv): a reader of the listed events
+builds the thread a reader of all of them builds. It does not vouch for a curator's post the relay withheld before the poster ever saw
 it.
 
 Nor for a relay-bot event this poster did not sign (ai-tools-alerts#m729): the key
@@ -33,6 +36,7 @@ import json
 import os
 import stat
 import sys
+from dataclasses import replace
 
 from aitools_alerts import TRUST_ROOT_PUBKEY
 from aitools_alerts import checkpoint as cpt
@@ -40,7 +44,7 @@ from aitools_alerts import manifest, nostr, pull
 from aitools_alerts.poster import sent
 from aitools_alerts.state import State, write_json
 
-__all__ = ["run_checkpoint", "KeyFileError", "read_key", "keygen", "init_owed", "load_owed", "save_owed", "record_sent", "settle_owed", "renewals_of", "lapsed", "answered",
+__all__ = ["run_checkpoint", "KeyFileError", "read_key", "keygen", "init_owed", "load_owed", "save_owed", "record_sent", "settle_owed", "renewals_of", "lapsed", "slim", "answered",
            "window", "next_seq", "MAX_LISTED", "MAX_LISTED_BYTES", "OWED_S", "MARGIN_S", "ENVELOPE"]
 
 # One checkpoint lists at most this much. The exporter must be able to serve
@@ -237,6 +241,85 @@ def _frontier(replies, m) -> list:
     return list({first[p]["id"]: first[p] for p in top}.values())
 
 
+def _alone(ev: dict, m) -> bool:
+    """A relay-bot reply that is a renewal and gives a reader nothing else: it has no
+    block and is no translation (``pull.threads_from`` takes its claim and reads no
+    more of it)."""
+    return (bool(renewals_of(ev, m)) and pull._patch(ev["content"]) is None
+            and not pull._first_line(ev["content"]).startswith("lang:"))
+
+
+def _tops(pairs) -> frozenset:
+    """The (confirmed_at, checked_at) pairs no other of them is at least equal to in both."""
+    pairs = set(pairs)
+    return frozenset(p for p in pairs if not any(q != p and q[0] >= p[0] and q[1] >= p[1] for q in pairs))
+
+
+def slim(events, m) -> list:
+    """One thread's events as a checkpoint lists them (65xv): without each reply that
+    is a renewal alone (``_alone``) and that another renewal of the thread makes
+    redundant (``_frontier``). A renewed thread gains such a reply every few days for
+    as long as it is renewed; listed whole, a year of threads would not fit.
+
+    Always kept: the thread's newest event, whatever it is, because a reader's
+    retention counts from the newest event it holds and a new reader holds only
+    what is listed. And the reader's code is the judge: the kept events are returned
+    only when ``pull.threads_from`` builds from them the thread it builds from all of
+    them, equal in every field but ``renewals`` and with the same renewals that no
+    other makes redundant. ``_frontier`` does not know which claims a reader counts
+    (one that names an id the thread never held is none); when it chose wrongly the
+    two threads differ and the thread is listed whole. So are events with no root
+    among them."""
+    events = list(events)
+    if not any(pull._thread_ref(e) is None for e in events):
+        return events
+    keep = {e["id"] for e in _frontier([e for e in events if pull._thread_ref(e) is not None], m)}
+    keep.add(max(events, key=lambda e: (e["created_at"], e["id"]))["id"])
+    kept = [e for e in events if e["id"] in keep or not _alone(e, m)]
+    if len(kept) == len(events):
+        return events
+    return kept if _reads_alike(kept, events, m) else events
+
+
+def _reads_alike(some, events, m) -> bool:
+    """Whether a reader builds from ``some`` the threads it builds from ``events``
+    (``pull.threads_from``): equal in every field but ``renewals`` (its products and
+    actions, what a source check is asked with, its translations), and with the same
+    renewals that no other makes redundant. False when the reader's code raises."""
+    def view(evs):
+        return [replace(t, renewals=tuple(sorted(_tops((c, k) for c, k, _ in t.renewals))))
+                for t in pull.threads_from(evs, m)]
+    try:
+        return view(some) == view(events)
+    except Exception:  # noqa: BLE001 - whatever the events hold, they do not read alike
+        return False
+
+
+def _core(events, key, m, old: bool) -> list:
+    """What a thread on the must-list is listed with at the least (65xv): its root,
+    every curator reply, every relay-bot reply that names a level, and the renewals no
+    other makes redundant; with its newest event when all of those are ``old`` (the
+    reader's retention sees only listed events). Since gtw9 it was the root, the
+    curator replies and the frontier, which left out a raise that a later renewal made
+    redundant by its date: a new reader showed the level before it. And it left out
+    every other relay-bot reply, a wider range or a translation among them. So this
+    set is used only when a reader builds from it the very thread it builds from all
+    the events (``_reads_alike``): what is left out is then replies a reader ignores
+    and renewals another covers. Otherwise the set is ``slim``'s, all of which must
+    fit, or nothing is signed."""
+    replies = [e for e in events if e["id"] != key]
+    core = {e["id"]: e for e in events if e["id"] == key}
+    for e in replies:
+        named = (pull._patch(e["content"]) or {}).get("level")
+        if manifest.role_of(m, e["pubkey"]) == "curator" or (isinstance(named, str) and named in pull._RANK):
+            core[e["id"]] = e
+    core.update((e["id"], e) for e in _frontier(replies, m))
+    if old(core.values()):
+        newest = max(events, key=lambda e: (e["created_at"], e["id"]))
+        core[newest["id"]] = newest
+    return list(core.values()) if _reads_alike(list(core.values()), events, m) else slim(events, m)
+
+
 def lapsed(events, m, now: int, channels=None) -> set:
     """The roots, among ``events``, of threads a reader of exactly these events
     would decay at ``now`` although the poster never said so (gtw9). The
@@ -378,10 +461,15 @@ def window(events, m, owed: list, now: int, channels=None, suppress=frozenset())
     case no checkpoint may be signed.
 
     Must be listed: the owed ids; and, for every eligible thread that has a
-    curator reply or an owed reply, its root and every curator reply (a
-    curator reply is how an alert is retracted, lowered or corrected: no
-    other traffic may push one out). Then whole threads, newest first; a
-    thread that does not fit whole is skipped and the next is tried. A plain
+    curator reply or an owed reply, what ``_core`` gives: its root, every
+    curator reply (a curator reply is how an alert is retracted, lowered or
+    corrected: no traffic a reader ignores may push one out), every reply
+    that names a level and the renewals that keep it standing, when a reader
+    builds the whole thread from those, else the thread as ``slim`` gives it.
+    Then threads as ``slim``
+    gives them (65xv: whole but for the renewals another makes redundant, a
+    set the reader's code builds the whole thread from), newest first; a
+    thread that does not fit so is skipped and the next is tried. A plain
     root with no correction is not in the must-list: a year of daily digests
     must not by itself fill it.
 
@@ -428,20 +516,15 @@ def window(events, m, owed: list, now: int, channels=None, suppress=frozenset())
         fixes = [e for e in threads[key] if e["id"] != key and manifest.role_of(m, e["pubkey"]) == "curator"]
         if not fixes and key not in owed_roots:
             continue
-        core = [e for e in threads[key] if e["id"] == key] + fixes
-        # gtw9: and the renewals that keep it standing. A root listed without them (the
-        # thread does not fit whole) would decay on a reader that the mirror serves in full.
-        core += [e for e in _frontier([e for e in threads[key] if e["id"] != key], m) if e not in core]
-        if all(e["created_at"] < cutoff for e in core) and key not in owed_roots:
-            # Root and corrections are all old, and only other replies keep the thread
-            # alive: its newest event is listed with them, or the reader's retention,
-            # which sees only listed events, would drop them.
-            core.append(newest(key))
+        # Root and corrections may all be old while other replies keep the thread alive:
+        # its newest event is then listed with them (``_core``), unless an owed reply will.
+        core = _core(threads[key], key, m,
+                     lambda evs, key=key: key not in owed_roots and all(e["created_at"] < cutoff for e in evs))
         must += sized(core)
     if not take(must):
         return None
     for key in order:
-        take(sized(threads[key]))  # whole, or (too large) only what is already listed
+        take(sized(slim(threads[key], m)))  # or (too large) only what is already listed
     return list(out)
 
 

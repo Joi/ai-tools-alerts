@@ -681,6 +681,7 @@ def reply_post(prev: schema.Advisory, c, changes: dict, *, reason: str | None = 
 
 RENEWAL = "Sources checked. No change to this alert."
 UNCONFIRMED = "No source has confirmed the higher level for {days} days."
+AGED = "This alert is {days} days old and is no longer renewed."  # 65xv: the step of a thread that has ended
 
 
 def renewal_post() -> str:
