@@ -7,7 +7,7 @@ from dataclasses import replace
 
 import pytest
 
-from aitools_alerts import schema
+from aitools_alerts import schema, versions
 from pathlib import Path
 
 from aitools_alerts.poster import inputs, main, transport
@@ -1744,10 +1744,10 @@ def test_an_old_source_posts_no_root_and_reaches_the_digest_notices(env):  # 0dv
     env.collector([fixed])
     _, summary, ssh = env.run(now=T0 + 3600)
     assert "aged=1" in summary and ssh.calls == []
-    env.collector([bare_high(fixed=None, affected="<2.1.0")])  # no fix: the fix stays
+    env.collector([bare_high(fixed=None, affected="<2.1.0")])  # 6wy8: the page now states a range and no fix
     env.run(now=T0 + 7200)
-    p = env.state()["held"][0]["adv"]["products"][0]
-    assert (p["fixed"], p["affected"]) == ("2.1.0", "<2.1.0")
+    h = env.state()["held"][0]["adv"]
+    assert (h["products"][0]["fixed"], h["products"][0]["affected"]) == (None, "<2.1.0") and h["actions"] == []
     _, _, ssh = env.run(now=at(6, 9))  # qwpw: the daily counts the notice; it stays held
     assert "no new alerts. 1 notice added" in ssh.calls[0][2] and len(env.state()["held"]) == 1
     _, _, ssh = env.run(now=at(9, 9))  # Monday's weekly summary lists it, as a count
@@ -1870,6 +1870,111 @@ def test_a_fieldless_sighting_keeps_the_notice_fix_and_first_sight(env, capsys):
     h = h["adv"]
     assert h["products"][0]["fixed"] == "2.1.0" and h["products"][0]["affected"] == "<2.1.0"
     assert h["actions"] and h["posted_at"] == stamp and h["sources"][0]["url"] == GHSA
+
+
+INSPECTOR_PKG = "@modelcontextprotocol/inspector"
+
+
+def inspector_finding(env, ghsa="GHSA-4fc4-wcmh-4g86", **page):
+    """A finding of an Inspector advisory whose page states ``page`` (6wy8)."""
+    url = INSPECTOR.rsplit("/", 1)[0] + "/" + ghsa
+    env.pages.put(url, advisory_page(ghsa, package=INSPECTOR_PKG, severity="Low",
+                                     repo="modelcontextprotocol/inspector", **page))
+    return finding(fid=ghsa, product="npm:" + INSPECTOR_PKG, severity=None, fixed=None, sources=(url,))
+
+
+def inspector_notice(env, **page):
+    env.collector([inspector_finding(env, **page)])
+
+
+def held_fields(env):
+    (h,) = env.state()["held"]
+    return h["adv"]["products"][0]["fixed"], h["adv"]["products"][0]["affected"]
+
+
+B_ID, C_ID = "GHSA-2222-3333-4444", "GHSA-5555-6666-7777"
+
+
+def held_group(env):
+    """A held fix group of two (faxq), fixed in 1.0.3: the first member and ``B_ID``."""
+    inspector_notice(env, affected="< 1.0.3", patched="1.0.3")
+    env.run()
+    st = env.state()
+    st["held"][0]["adv"]["aliases"].append(B_ID)
+    env.config.state.write_text(json.dumps(st))
+
+
+# The package box of GHSA-v2gx-m79c-pvxj: one package with two ranges and two patched versions, and a second package.
+TWO_RANGES = [(INSPECTOR_PKG, "npm", ">= 2.0.0, <= 2.16.0", "2.17.0"), (INSPECTOR_PKG, "npm", "<= 1.0.6", "1.0.7"),
+              (INSPECTOR_PKG + "-server", "npm", "<= 1.0.6", "1.0.7")]
+
+
+def test_a_several_range_read_replaces_a_held_range_and_fix_together(env):  # 6wy8
+    """A read of several ranges gives the highest fix and no range. The held notice takes
+    both from that read: the earlier read's one range is not kept beside the new fix."""
+    inspector_notice(env, affected=">= 2.0.0, <= 2.16.0", patched=None)
+    assert "held=1" in env.run()[1]
+    (h,) = env.state()["held"]
+    assert h["adv"]["products"][0]["affected"] == ">=2.0.0,<=2.16.0" and h["adv"]["products"][0]["fixed"] is None
+    stamp = h["adv"]["posted_at"]
+    inspector_notice(env, blocks=TWO_RANGES)
+    _, summary, _ = env.run(now=T0 + 3600)
+    assert "roots=0" in summary
+    (h,) = env.state()["held"]
+    p = h["adv"]["products"][0]
+    assert (p["fixed"], p["affected"]) == ("2.17.0", None) and h["adv"]["posted_at"] == stamp
+    assert h["adv"]["actions"] == [{"verb": "upgrade", "target": INSPECTOR_PKG, "value": "2.17.0"}]
+    assert versions.check("1.0.5", p["affected"], p["fixed"]) is True  # a member on 1.0.x is matched
+
+
+def test_a_read_with_a_range_and_no_patch_clears_a_held_fix(env):  # 6wy8: one read, both fields
+    inspector_notice(env, affected="< 1.0.3", patched="1.0.3")
+    env.run()
+    assert env.state()["held"][0]["adv"]["products"][0]["fixed"] == "1.0.3"
+    inspector_notice(env, affected="< 1.0.5", patched=None)
+    env.run(now=T0 + 3600)
+    (h,) = env.state()["held"]
+    assert (h["adv"]["products"][0]["fixed"], h["adv"]["products"][0]["affected"]) == (None, "<1.0.5")
+    assert h["adv"]["actions"] == []
+
+
+def test_a_box_that_states_no_range_and_no_patch_clears_both(env):  # 6wy8: a read, though it states nothing
+    inspector_notice(env, affected="< 1.0.3", patched="1.0.3")
+    env.run()
+    inspector_notice(env, affected=None, patched=None)
+    env.run(now=T0 + 3600)
+    assert held_fields(env) == (None, None) and env.state()["held"][0]["adv"]["actions"] == []
+
+
+@pytest.mark.parametrize("page, want", [
+    (dict(affected=">= 1.0.0, < 1.0.2", patched="1.0.2"), ("1.0.3", "<1.0.3")),  # narrower: the group's stay
+    (dict(affected="< 1.0.5", patched="1.0.5"), ("1.0.5", "<1.0.5")),  # its fix rose: the group's widens to it
+    (dict(affected="< 1.0.3", patched="1.0.4"), ("1.0.4", "<1.0.3")),  # the same range: kept
+    (dict(affected="< 1.0.5", patched=None), (None, None)),  # no fix for it now: no version is safe for all
+    (dict(blocks=TWO_RANGES), ("2.17.0", None)),  # several ranges: none stated
+])
+def test_one_members_read_only_widens_a_held_group(env, page, want):  # 6wy8, faxq
+    """A held fix group's fix and range cover every member. A read of one member is not a
+    read of the group: it never narrows them, and never leaves that member narrower than
+    its own page states."""
+    held_group(env)
+    inspector_notice(env, **page)
+    env.run(now=T0 + 3600)
+    assert held_fields(env) == want and env.state()["held"][0]["adv"]["aliases"] == [B_ID]
+    assert bool(env.state()["held"][0]["adv"]["actions"]) is (want[0] is not None)
+
+
+def test_a_group_that_shares_one_member_joins_under_a_fix_that_covers_it(env):  # 6wy8, faxq
+    """Held A and B fixed in 1.0.3; A and C then state 1.0.5. C joins the held notice
+    (faxq) under 1.0.5 and everything before it: never under the earlier fix."""
+    held_group(env)
+    env.collector([inspector_finding(env, affected="< 1.0.5", patched="1.0.5"),
+                   inspector_finding(env, ghsa=C_ID, affected=">= 1.0.4, < 1.0.5", patched="1.0.5")])
+    env.run(now=T0 + 3600)
+    assert held_fields(env) == ("1.0.5", "<1.0.5")
+    (h,) = env.state()["held"]
+    assert set(h["adv"]["aliases"]) == {B_ID, C_ID}
+    assert h["adv"]["actions"] == [{"verb": "upgrade", "target": INSPECTOR_PKG, "value": "1.0.5"}]
 
 
 def test_a_spaced_timestamp_dates_the_age_limit(env):  # 0dvh
