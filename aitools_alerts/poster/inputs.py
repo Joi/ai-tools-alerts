@@ -465,10 +465,11 @@ def _claim_ok(text) -> bool:
 def _item_ok(it) -> bool:
     """A journal item that a later run can finish: every field its kind needs is there
     and well formed, so nothing fails after the post is public."""
-    if not (isinstance(it, dict) and _ITEM_KEYS <= set(it) <= _ITEM_KEYS | {"ja", "source_title", "floor", "tried", "retried", "claim"}  # rd8t, r7hr, ny5g, jsje, hh5s
+    if not (isinstance(it, dict) and _ITEM_KEYS <= set(it) <= _ITEM_KEYS | {"ja", "source_title", "floor", "tried", "retried", "claim", "again"}  # rd8t, r7hr, ny5g, jsje, hh5s, aqtf
             and ("claim" not in it or (it.get("kind") in ("root", "copy", "reply") and _claim_ok(it["claim"])))
             and ("tried" not in it or type(it["tried"]) is int)  # its first attempt with an unknown outcome, expired
             and ("retried" not in it or (it["retried"] is True and it["kind"] == "reply"))  # refused once, sent once more
+            and ("again" not in it or (it["again"] is True and it["kind"] == "reply"))  # aqtf: Run.reconcile planned it
             and ("floor" not in it or (it["kind"] == "root" and it["floor"] in schema.LEVELS))
             and all(it.get(k) is None or isinstance(it[k], str) and it[k] for k in ("ja", "source_title"))
             and isinstance(it["kind"], str)
