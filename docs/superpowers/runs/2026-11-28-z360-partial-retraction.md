@@ -1,6 +1,6 @@
 # Run: z360-partial-retraction
 Instruction: Read TASK-ai-tools-alerts#z360.md in this worktree root, then run `kata show ai-tools-alerts#z360` and follow the brief and the dispatch rules (do-it, start rung floored at medium; PR landing; one independent review).
-Stage: code-review
+Stage: committing
 Rung: medium (start-floor medium: dispatch floor; no hard trigger in scope: no secrets, auth or deploy path)
 Spec: docs/superpowers/specs/2026-11-28-z360-partial-retraction-design.md   Plan: docs/superpowers/plans/2026-11-28-z360-partial-retraction.md
 Agency project: —
@@ -13,9 +13,10 @@ Pass 1 [spec+plan]: 0B/13S/0C/0R · fixed -/- · velocity = (—→13, escalatio
 spec: passes: 1 · elapsed: ~20 min
 Pass 1 [code:branch, Stage 1]: 1B/3S/3C/0R · fixed -/- · velocity = (—→7, escalation no)   # same-model subagent at 25f7243
 Pass 1 [code:branch]: 6B/0S/0C/0R · fixed -/- · velocity = (—→6, escalation no)   # fresheyes whole branch, gpt-6.1-sol high, REASON=-; 'critical' and 'major' read as BLOCKER (behaviour defects); two overlap Stage 1 (curator alias, its 'BLOCKER')
+Pass 2 [code:delta]: 2B/0S/0C/0R · fixed 6/6 prior · velocity ↓ (6→2, escalation no)   # fresheyes --since 25f7243 --rebuttals at 44eec31, REASON=-; no standing rebuttal overturned
 
 ## Chunks
-- [x] poster reposts the survivors of a retracted fix group — 25f7243; review fixes 44eec31
+- [x] poster reposts the survivors of a retracted fix group — 25f7243; review fixes 44eec31; delta fixes 8175703; main merged b979285 (btqg, cftg, 9cch) and 5c4d964 (65xv)
 
 ## Notes
 - Start-floor evaluator not dispatched: the dispatch floors the run at medium and no hard trigger is in scope; as faxq.
@@ -28,3 +29,7 @@ Pass 1 [code:branch]: 6B/0S/0C/0R · fixed -/- · velocity = (—→6, escalatio
 - Landed code vs issue text: the issue says the poster "finds them in the existing ledger entry and posts no replacement"; true at 3d376b8 (ledger.lookup has no notion of retraction).
 - Whole-branch dispositions (fixed in 44eec31, each with a test unless noted): scoped retraction released the bare ids (fresheyes critical; base comparison; mutation-checked); scoped survivor kept (fresheyes; same fix, same test); failing pages starve later threads (fresheyes; hourly rotation; mutation-checked); curator-only alias wedges every run (both; skip a thread whose ledger ids hold no retracted id, and catch one thread's LedgerError; mutation-checked); an older deferred row drops the proven pointer (fresheyes; the pointer replaces the row; no test); an expired curator hold masks the manifest's retraction (fresheyes; pull.standing at now, as _withdrawn; no test); learned ids left behind (Stage 1 S; mutation-checked); one CVE retried forever (Stage 1 S; GHSA first, retracted id's page first, per-candidate cap is an answer); test gaps (Stage 1 S; stop-before-ledger-write and idempotence tests added); age exemption spreads (Stage 1 C; lead id only, read once a run). Rebutted (rebuttals file of the delta): a 404 or capped source keeps an id; two threads after an un-retraction; journaled work of a retired thread; held notices (9je7); former-name path untested.
 - The first gate run (gate1) overlapped the review-fix edits and is void; the gate is run on 44eec31.
+- Delta dispositions (fixed in 8175703, no further pass per the Review Cycle): (1) a fetch failure past the per-candidate cap kept an id for good: any retry is a retry again (test_a_survivors_page_that_fails_once_is_retried_in_a_large_group; mutation-checked); (2) the hourly rotation could put a CVE ahead of its GHSA: threads rotate, ids within a thread keep GHSA first.
+- Merge of main (b979285): btqg joins later advisories into a thread unpublished; retirement now judges joined ids too, reading the thread's learned_sources, and a release drops them from joined (test_an_advisory_that_joined_a_retired_thread_is_posted; mutation-checked). 9cch: the mirror copy is read through Run._own. These integration changes and the delta fixes landed after the last reviewed sha 44eec31 without a further pass: git diff 44eec31..8175703 and the merge commit b979285 hold them.
+- Gate: scripts/test-gate.sh at 8175703: 3632 passed; at b979285: 3747 passed; at the final head: see the close-out comment.
+- Release note posted on ai-tools-alerts#5fry. Follow-up filed: ai-tools-alerts#9je7.
