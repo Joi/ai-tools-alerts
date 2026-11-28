@@ -140,6 +140,7 @@ WORDING_SECONDS = 60  # no wording call starts after this many seconds of them i
 MAX_RUN_PAGES = 40  # authoritative pages fetched per run; a candidate past it waits for the next
 RETIRE_PAGES = 10  # z360: new pages a run may read judging a retired thread's ids; the rest wait
 RETRY_DAYS = 7  # 3qyq: a candidate whose advisory the API did not give is admitted again this long
+ENDED = "|end"  # psb5: suffix of the ``waiting`` key that says a candidate reached its end (_end)
 # jsje: a run settles what used to wait for `resolve`.
 SETTLE_SKEW = 600  # an event dated this long before the attempt is still its delivery (a clock step)
 MIRROR_FRESH = 3600  # a channel file generated longer ago proves no absence
@@ -1119,6 +1120,16 @@ class Run:
             self.skipped["id shape"] += 1
             return None
         ev = rules.evidence(c, scope, self.page)
+        if not ev.ok and ev.unparsed and not ev.failed and not ev.budget and self._lapsed(scope, c.id):
+            # psb5: its page answers and has not parsed for RETRY_DAYS. The end, with no
+            # person: a notice when the page binds the id to the product without its fields
+            # (rules.evidence, ``lapsed``), else the candidate is dropped and counted.
+            # No page is fetched for this: every source was read just above.
+            ev = rules.evidence(c, scope, self.page, lapsed=True)
+            self._end(scope.name, c.id)
+            if not ev.ok:
+                self.skipped["advisory page not parsed, dropped"] += 1
+                return None
         if not ev.ok:
             if ev.retry:
                 self.skipped["advisory page not parsed, deferred" if ev.unparsed
@@ -1179,6 +1190,34 @@ class Run:
                        readings=readings,
                        advisory_severity=severity or (c.advisory_severity if trusted else None),
                        trojanized=c.trojanized is True and trusted, injection_exec=c.injection_exec is True and trusted)
+
+    def _lapsed(self, scope, cid) -> bool:
+        """psb5: the candidate's page has had its RETRY_DAYS from first sight, which is
+        recorded here when there is none; or the candidate was ended before (``_end``).
+        A first sight under a name the product had before counts (wa6n). With no record
+        (``saw`` keeps none in a map half full) nothing would bound the wait, so it is
+        over at once (3qyq: none, no retry)."""
+        w = self.state["waiting"]
+        keys = [f"{n}|{cid.casefold()}" for n in (scope.name, *getattr(scope, "formerly", ()))]
+        if any(k + ENDED in w for k in keys):
+            return True
+        if not any(k in w for k in keys):
+            self.saw(scope.name, cid)
+        seen = [w[k] for k in keys if k in w]
+        return not seen or self.now - min(seen) >= RETRY_DAYS * 86400
+
+    def _end(self, scope, cid) -> None:
+        """psb5: remember that the candidate reached its end, as an entry of ``waiting``
+        under its key with ENDED, dated now. ``run`` prunes it like any entry, AGE_LIMIT
+        after the last run that ended the candidate: so the end holds while an input
+        names the candidate, across runs that read no new record, and is forgotten a
+        week after the inputs stop naming it. The candidate's first sight is kept as
+        long (``run``), for the age limit of a page that parses after all. It is written whatever the map holds: in
+        a full map the oldest entry makes way (the one nearest its own pruning)."""
+        w, key = self.state["waiting"], f"{scope}|{cid.casefold()}{ENDED}"
+        if key not in w and len(w) >= inputs.MAX_WAITING:
+            del w[min((k for k in w if k + ENDED != key), key=lambda k: (w[k], k))]  # never its own first sight
+        w[key] = self.now
 
     def level(self, c, scope):
         """``source_ok`` is "a page confirmed this advisory this run": KEV alone never
@@ -3287,8 +3326,11 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
             if merged is not None:
                 state["deferred"] = list(r.deferred.values())  # replaces last run's list only now
                 live = {f"{sc}|{i.casefold()}" for (sc, _), d in r.deferred.items() for i in [d["id"], *d["aliases"]]}
+                # psb5: an ended candidate's first sight stays while its end is on record, so
+                # a page that parses then is still judged from the day it was first seen
+                ends = {k for k, t in state["waiting"].items() if k.endswith(ENDED) and now - t < AGE_LIMIT}
                 state["waiting"] = {k: t for k, t in state["waiting"].items()  # 0dvh
-                                    if k in live or now - t < AGE_LIMIT}
+                                    if k in live or k + ENDED in ends or now - t < AGE_LIMIT}
             r.save()
             if english_ok:  # last, after marks and deferred are saved together
                 try:
