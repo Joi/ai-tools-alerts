@@ -551,6 +551,37 @@ def test_the_standing_claim_and_the_roots_ids_are_optional_keys(tmp_path):
         Ledger(p).__enter__()
 
 
+# ---------------------------------------------------------------- z360: a retired thread's release
+
+
+def test_release_moves_ids_out_and_never_back(tmp_path):
+    p = tmp_path / "ledger.json"
+    with Ledger(p) as led:
+        adv = adv_for(cand(id="GHSA-abcd-efgh-ijkl", aliases=("CVE-2026-0001", "GHSA-zzzz-zzzz-zzzz")), "high")
+        led.record_root(adv, "r1", {"feed": "r1"}, scope="Claude Code", exploited=False, now=T0)
+        e = led.release("r1", ["ghsa-ZZZZ-zzzz-zzzz"], ["CVE-2026-0001"])
+        assert "GHSA-zzzz-zzzz-zzzz" not in e.aliases and "CVE-2026-0001" in e.aliases
+        assert e.split == {"released": ["ghsa-ZZZZ-zzzz-zzzz"], "kept": ["CVE-2026-0001"]}
+        assert led.lookup(["GHSA-zzzz-zzzz-zzzz"]) is None and led.released_ids() == {"ghsa-zzzz-zzzz-zzzz"}
+        led.record_reply("r1", adv, {"feed": "a1"}, now=T0 + 9)  # its advisory still names it
+        led.add_ids("r1", ["GHSA-zzzz-zzzz-zzzz"])
+        assert led.lookup(["GHSA-zzzz-zzzz-zzzz"]) is None  # a released id never rejoins the hidden thread
+        with pytest.raises(LedgerError, match="at least one id"):
+            led.release("r1", led.thread("r1").aliases, [])
+    with Ledger(p) as led:  # saved, and read back
+        assert led.thread("r1").split["released"] == ["ghsa-ZZZZ-zzzz-zzzz"]
+
+
+def test_a_malformed_split_is_refused(tmp_path):
+    p = tmp_path / "ledger.json"
+    with Ledger(p) as led:
+        led.record_root(adv_for(cand(), "high"), "r1", {"feed": "r1"}, scope="Claude Code", exploited=False, now=T0)
+    data = json.loads(p.read_text())
+    data["entries"][0]["split"] = {"released": ["x"]}
+    p.write_text(json.dumps(data))
+    with pytest.raises(LedgerError, match="malformed"):
+        with Ledger(p):
+            pass
 def test_a_thread_ends_once_and_a_recorded_raise_makes_it_an_ordinary_thread_again(tmp_path):
     """65xv: ``end`` keeps the level a thread ended at, once, and only for a thread with a
     standing claim; a lowering recorded later keeps the key, a raise removes it."""

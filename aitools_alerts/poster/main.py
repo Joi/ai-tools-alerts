@@ -134,6 +134,7 @@ PASS_DEADLINE = 300  # seconds of curator translation per run (the ledger lock i
 WORDING_CALLS = 4  # model calls for headlines a run (c6ak): roots are high or critical, about one a day
 WORDING_SECONDS = 60  # no wording call starts after this many seconds of them in a run
 MAX_RUN_PAGES = 40  # authoritative pages fetched per run; a candidate past it waits for the next
+RETIRE_PAGES = 10  # z360: new pages a run may read judging a retired thread's ids; the rest wait
 RETRY_DAYS = 7  # 3qyq: a candidate whose advisory the API did not give is admitted again this long
 # jsje: a run settles what used to wait for `resolve`.
 SETTLE_SKEW = 600  # an event dated this long before the attempt is still its delivery (a clock step)
@@ -179,6 +180,12 @@ def _complete(adv) -> bool:
                for a in acts)
 
 
+def _base(i) -> str:
+    """An id without a thread key's slug, case-folded (z360): what an advisory page assigns."""
+    m = candidates.BOT_ID.fullmatch(i) if isinstance(i, str) else None
+    return m.group(1).casefold() if m else i.casefold() if isinstance(i, str) else ""
+
+
 def _fold(ids) -> set[str]:
     return {i.casefold() for i in ids if isinstance(i, str)}
 
@@ -211,6 +218,8 @@ class Run:
         # kk2q: thread roots whose withdrawal this run recorded in some channel. No reply
         # that ends the state follows in the same run: the two could carry one second.
         self.withdrew: set[str] = set()
+        self.gone: frozenset = frozenset()  # z360: the stored manifest's retracted ids, case-folded
+        self._released = None  # z360: the base ids retired threads released (``released``)
         # btqg: the mirror a join by fix reads (``_gone``): (trust root, fetch), set by ``run``.
         self.mirror = (TRUST_ROOT_PUBKEY, None)
 
@@ -1455,7 +1464,8 @@ class Run:
         w, key = self.state["waiting"], self._seen_key(scope.name, ids, f"{scope.name}|{c.id.casefold()}")
         # A KEV entry is exempt: the day CISA lists it is the news, whatever the advisory's age.
         if level != "notice" and not test and c.exploited is not True and published is not None \
-                and seen - published > AGE_LIMIT:
+                and seen - published > AGE_LIMIT and _base(c.id) not in self.released():
+            # z360: not for a root led by an id a retired thread released: news when its group posted
             level = "notice"  # 0dvh: old news when first seen goes to the digest, never a root
             self.n["aged"] += 1
             if not rules.starts(scope, level):  # wa6n: an out product's old news goes nowhere
@@ -2223,6 +2233,140 @@ class Run:
                 roots.add(t.root_id)
         return {i.casefold() for i in m.retracted}, roots
 
+    # ------------------------------------------------------------ partial retraction (z360)
+
+    def retire(self, root=TRUST_ROOT_PUBKEY) -> None:
+        """Release the still-valid ids of every thread the manifest's retraction hides.
+
+        A fix group (faxq) is one root: retracting one member hides the others with it,
+        and their sightings find the hidden thread. From the poster's own copy of the
+        mirror as the last pull left it (no fetch here), a thread is retired when the
+        reader hides it now because of the manifest: retracted under the stored manifest
+        and not under the same one with no retracted ids, each as ``pull.standing`` has
+        it now (the reader's own rule; a curator's retraction, while it holds, is not
+        one). Only a thread whose ledger ids include a retracted one is judged: one
+        hidden by a curator's alias is left as it is. Each other id the thread's
+        advisory publishes is judged once, by its own repository advisory page: released
+        when that page is structured, names the id and assigns no retracted id, kept
+        when a page answers otherwise (the retracted advisory's own CVE) or no source
+        confirms it, and left for the next run when a page could not be read (with the
+        ids of advisories that joined the thread by fix, btqg, never published). On doubt
+        the retraction wins. Ids are compared by their base (a thread key's slug
+        dropped), so a retracted ``CVE-...:slug`` keeps its bare CVE and GHSA.
+
+        A released id goes into the state's deferred list as a pointer candidate (saved,
+        in place of any row for the same id), then leaves the thread's identity in the
+        ledger with every learned id its page assigns (``Ledger.release``), so the run
+        plans it like any deferred candidate: admitted from its own page, grouped by
+        fix with the other survivors, and posted as a new root. The work starts at a
+        different thread each hour, so ids whose pages keep failing never starve the
+        rest of the RETIRE_PAGES budget. Sets ``gone`` for the run. Never raises."""
+        try:
+            st = State.load(self.config.mirror_dir)
+            m = st.accepted(root)
+        except (ValueError, OSError):
+            return
+        if m is None or not m.retracted:
+            return
+        self.gone = frozenset(i.casefold() for i in m.retracted)
+        bases = self.gone | {_base(i) for i in self.gone}
+        try:
+            events = list(self._own(st.events_for(root), m).values())  # 9cch: never a post it did not sign
+            hidden = {t.root_id for t in pull.threads_from(events, m) if pull.standing(t, self.now).retracted}
+            hidden -= {t.root_id for t in pull.threads_from(events, replace(m, retracted=()))
+                       if pull.standing(t, self.now).retracted}
+        except Exception as e:  # noqa: BLE001 - a damaged copy never stops the run
+            _say(f"retired threads not read: {type(e).__name__}")
+            return
+        work = []  # per retired thread, its undecided ids, GHSA ids first (a CVE is often decided with its GHSA)
+        for e in self.led.entries():
+            if hidden.isdisjoint({e.root_event_id, *e.channel_ids.values()}):
+                continue
+            if bases.isdisjoint(_base(a) for a in e.aliases):
+                continue  # hidden by an id the poster never held (a curator's alias): not judged
+            done = {_base(x) for k in ("released", "kept") for x in (e.split or {}).get(k, ())}
+            mine = {_base(a) for a in e.aliases}
+            joined = [i.upper() if i.startswith("cve-") else "GHSA" + i[4:] for g in e.joined or () for i in g]
+            ids = [i for i in [e.advisory.get("id"), *(e.advisory.get("aliases") or ()), *joined]  # btqg: joined too
+                   if isinstance(i, str) and candidates.BOT_ID.fullmatch(i) and not compose.is_synthetic(i)
+                   and _base(i) in mine and _base(i) not in bases | done]
+            if ids:
+                work.append([(e, i) for i in sorted(dict.fromkeys(ids), key=lambda i: not i.upper().startswith("GHSA"))])
+        if not work:
+            return
+        k = (self.now // 3600) % len(work)  # threads, not ids, rotate: a GHSA stays ahead of its CVE
+        work = [x for thread in work[k:] + work[:k] for x in thread]
+        start, verdicts = len(self.pages), {}  # root -> (entry, released, kept, pointers)
+        for e, i in work:
+            _, released, kept, _ = verdicts.setdefault(e.root_event_id, (e, [], [], []))
+            if _base(i) in {_base(x) for x in released + kept}:
+                continue  # decided with another id of its advisory
+            if len(self.pages) - start >= RETIRE_PAGES:
+                continue  # the rest wait for the next run
+            verdict = self._judge_id(e, i, bases)
+            if verdict is None:
+                continue  # no page read: the next run tries again
+            ok, assigned, pointer = verdict
+            same = [a for a in e.aliases if _base(a) in assigned | {_base(i)} and _base(a) not in bases]  # learned ids too
+            (released if ok else kept).extend(x for x in [i, *same] if x not in released + kept)
+            if ok:
+                verdicts[e.root_event_id][3].append(pointer)
+        judged = [v for v in verdicts.values() if v[1] or v[2]]
+        if not judged:
+            return
+        for _, _, _, pointers in judged:
+            for c in pointers:  # in place of a row for the same id: its sources are proven
+                self.state["deferred"] = [d for d in self.state["deferred"] if not (
+                    d["product_text"] == c.product_text and d["id"].casefold() == c.id.casefold())] + [c.to_dict()]
+        self.save()  # the pointers first: a run that stops before the ledger write repeats it
+        for e, released, kept, _ in judged:
+            try:
+                self.led.release(e.root_event_id, released, kept)
+            except LedgerError as err:  # one thread's record never stops the run
+                _say(f"{e.root_event_id[:12]} retired, not recorded: {err}")
+                continue
+            _say(f"{e.root_event_id[:12]} retired: released {', '.join(released) or '-'};"
+                 f" kept {', '.join(kept) or '-'}")
+        self._released = None
+
+    def released(self) -> set[str]:
+        """The base ids retired threads released (z360), read once a run."""
+        if getattr(self, "_released", None) is None:
+            self._released = {_base(i) for i in self.led.released_ids()}
+        return self._released
+
+    def _judge_id(self, e, i, bases):
+        """(released, the base ids the page assigns, the pointer) for id ``i`` of retired
+        thread ``e``, or None when a page could not be read. The thread's product, under
+        its name or a former one; a former name several entries share tries each. The
+        sources that name ``i`` are read first, then those that name a retracted id
+        (whose page assigns its CVE), then the rest. Any retry ``rules.evidence`` reports
+        leaves the id undecided: a page that failed this run may answer the next."""
+        names = rules._default_index().values()
+        scopes = [s for s in names if s.name == e.scope] or [s for s in names if e.scope in getattr(s, "formerly", ())]
+
+        def order(s):
+            last = _base(urlsplit(s["url"]).path.rstrip("/").rsplit("/", 1)[-1])
+            return 0 if last == _base(i) else 1 if last in bases else 2
+        urls = sorted({s["url"]: s for s in [*(e.advisory.get("sources") or ()), *(e.learned_sources or ())]
+                       if isinstance(s, dict) and isinstance(s.get("url"), str)}.values(), key=order)  # btqg: learned
+        retry, answered = False, None
+        for scope in scopes:
+            text = next((x for x in scope.match if (r := rules.scope_of(x)) is not None and r.name == scope.name), None)
+            if text is None:
+                continue
+            c = candidates.Candidate(
+                id=i, aliases=(), product_text=text, advisory_severity=None, local_level_hint=None,
+                exploited=False, trojanized=False, injection_exec=False, fixed=None, affected=None,
+                sources=tuple(candidates.Source(s["url"], s.get("published_at")) for s in urls), observed_at=None)
+            ev = rules.evidence(c, scope, self.page)
+            assigned = frozenset(_base(x) for x in ev.ids)
+            if ev.ok and ev.structured and _base(i) in assigned and assigned.isdisjoint(bases):
+                return True, assigned, c
+            if ev.ok:
+                answered = answered or (False, assigned, None)
+            retry = retry or ev.retry  # a fetch that may pass, a page not parsed, a budget spent
+        return None if answered is None and retry else answered or (False, frozenset(), None)
     def _own(self, events: dict, m, strict: bool = False) -> dict:
         """9cch: the mirror copy's events without the relay-bot events this poster did
         not sign (``sent.own``), for every read of the copy outside the signer. The
@@ -2670,6 +2814,7 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
             merged, english_ok = None, False  # merged: set once the old deferred list is folded in
             try:
                 r.expire_withheld()  # jsje: first, so nothing below waits behind what a person used to settle
+                r.retire(translate_kw.get("root", TRUST_ROOT_PUBKEY))  # z360: before deferred is read
                 r.settle(root=translate_kw.get("root", TRUST_ROOT_PUBKEY), fetch=mirror_fetch)
                 kev_out: dict = {}
                 cands, marks, status = gather(config, state, now, kev_fetch, skipped, kev_catalog, kev_out)
@@ -2698,6 +2843,11 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                 # h340: only what an authoritative source states goes on, each candidate
                 # judged alone, before a merge could lend it another's sources.
                 pairs = [(a, scope) for c, scope in pairs if (a := r.admit(c, scope)) is not None]
+                if r.gone:  # z360: a root naming a retracted id is hidden by every reader
+                    kept = [(a, scope) for a, scope in pairs if r.gone.isdisjoint(_fold([a.id, *a.aliases]))]
+                    if len(kept) < len(pairs):
+                        skipped["retracted, not planned"] += len(pairs) - len(kept)
+                    pairs = kept
                 if review:
                     led.add_review(review, now=now)
                 # faxq: in flight, an id joins no fix group (that send would record the group's ids)
