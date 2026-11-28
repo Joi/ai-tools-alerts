@@ -381,17 +381,22 @@ class Ledger:
             self._save()
         return Entry(**e)
 
-    def release(self, root_event_id: str, released, kept) -> Entry:
+    def release(self, root_event_id: str, released, kept, back=()) -> Entry:
         """z360: record the judgement of a retired thread's ids. ``released`` leave its
         identity (never its last id), so a candidate naming one finds no thread and starts
-        its own; ``kept`` stay. Both are remembered in ``split``, so no id is judged twice."""
+        its own; ``kept`` stay. Both are remembered in ``split``, so no id is judged twice.
+        ``back`` (yd1y): ids the thread released earlier that are its own again (retracted
+        since, and still in its root): they return to its identity and leave ``released``."""
         e = self._entry(root_event_id)
         out = _keys(released)
-        rest = [a for a in e["aliases"] if a.casefold() not in out]
+        old = e.get("split") or {"released": [], "kept": []}
+        again = _keys(back) & _keys(old["released"]) - out
+        rest = [a for a in _union(e["aliases"], (i for i in old["released"] if i.casefold() in again))
+                if a.casefold() not in out]
         if not rest:
             raise LedgerError(f"{root_event_id}: a thread keeps at least one id")
-        old = e.get("split") or {"released": [], "kept": []}
-        new = {"released": _union(old["released"], released), "kept": _union(old["kept"], kept)}
+        new = {"released": _union([i for i in old["released"] if i.casefold() not in again], released),
+               "kept": _union(old["kept"], kept)}
         groups = [g for g in ([i for i in g if i not in out] for g in e.get("joined", [])) if g]  # btqg
         if rest != e["aliases"] or new != old or groups != e.get("joined", []):
             e["aliases"], e["split"] = rest, new

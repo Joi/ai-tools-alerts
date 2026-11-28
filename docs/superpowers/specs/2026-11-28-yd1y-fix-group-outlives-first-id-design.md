@@ -44,25 +44,30 @@ Poster only.
 2. **Who leaves** (`recompute.outlived`). Each member's own advisory response is then
    read, in the thread's own lane and in the thread's own turn (below). A member counts
    when its response was read and may lower (reviewed, or the vendor's own: the class a
-   counted reading needs). If some counted member supports more than the first id's
-   sources state, every counted member leaves. Otherwise none does: nothing a member's
-   check could confirm is lost. A member whose response was not read, or is one its
-   subject's attacker can write, stays, and the thread stays unknown, as today. The
+   counted reading needs). Each counted member that supports more than the first id's
+   sources state leaves. One that supports no more stays: nothing a member's check
+   could confirm is lost, and what else its sources may support (a KEV listing of a
+   CVE it names) is not asked. A member whose response was not read, or is one its
+   subject's attacker can write, stays too. While any member stays the thread stays
+   unknown, as today (ai-tools-alerts#759h). The members are read starting one further
+   on each time the thread is first in its lane, so a lane that ends before the last
+   member reaches every one. The
    rule does not ask what level the thread stands at: a thread already stepped down to
    notice releases its member all the same, and so does one whose member has come to
    support more than a first id that still supports the thread's level (as a joined
    advisory already leaves, btqg `_leaves`).
 3. **How it leaves** (`Run.part`, called in `observe` for each thread right after it is
    judged, so the thread first in its lane this hour has its members read too). A
-   member that still supports the product leaves only with a pointer candidate built
-   from its own repository advisory page (`Run._judge_id`, z360: the page must be
-   structured and name the id). A member whose response supports nothing (a withdrawal
-   too) leaves with no pointer. The ids that go with a member are those of the thread's
-   loose ids that its response or its page assigns. The pointers are saved to the
+   member leaves only with a pointer candidate built from its own repository advisory
+   page (`Run._judge_id`, z360: the page must be structured and name the id). If that
+   page assigns an id of the thread's own (a vendor's GHSA whose API answer does not
+   name its CVE), the id is no other advisory: it is recorded as `kept` and not asked
+   again. The ids that go with a member are those of the thread's loose ids that its
+   response or its page assigns. The pointers are saved to the
    state's deferred list and kept past this run's end, then the ids leave the thread's
    identity in the ledger (`Ledger.release`, the `split` record). A page not read this
    run, or not proving the id, leaves the member for the next run; at most
-   `RETIRE_PAGES` new pages a run.
+   `RETIRE_PAGES` new pages a run, counted at each fetch.
 4. **The new root.** The next run plans the pointer like any deferred candidate:
    admitted from its own page, grouped by fix with the other members that left, posted
    as a root at the level their own evidence gives, under the loudest of them. A
@@ -70,8 +75,8 @@ Poster only.
    limit covers it (`Run.released`). A thread that has released an id takes no join by
    fix (`_fix_thread`), so the member does not return to the thread it left (btqg).
 5. **The old thread.** `support` leaves out a released id (`recompute.released`) while
-   no source ties it to the first id, so the thread is judged by its first id alone
-   from the same run on. A released id the first id's response comes to name is read by
+   no source ties it to the first id, so once every member has left the thread is
+   judged by its first id alone, from the same run on. A released id the first id's response comes to name is read by
    every member's check, and counts again. So: its lowering or withdrawal completes under every ny5g rule (24 hours held,
    seven quiet days, the breaker). Its published advisory still lists the member; no
    reply narrows it (tyje).
@@ -96,8 +101,8 @@ are true.
 
 ### Out of scope
 
-- A thread whose members all support no more than the first id still cannot lower by
-  recompute while it carries them: it steps down at 44 days, as today
+- A thread with a member that supports no more than the first id still cannot lower by
+  recompute while it carries it: it steps down at 44 days, as today
   (ai-tools-alerts#759h).
 - A member whose own page is not a structured advisory page naming it is tried every
   run and never leaves. Rare; said in the run's output only when it does leave.
@@ -130,6 +135,24 @@ released id out for good. The review (fresheyes, gpt-6.1-sol high) showed four w
 alert was still lost: other threads spending the lane before any member was read; a
 thread already at notice; a floor raised by the member's own prose after a stopped run;
 and a released id the first id's response later names. The rule is now the one above.
+
+## Changed by the code review
+
+- Only a member that supports more than the first id leaves. The draft also released
+  every other member that was read, one that supports nothing with no pointer; a
+  withdrawn member can still name a CVE that KEV lists, and btqg's rule that joined
+  advisories leave one at a time would have been broken.
+- `lead` records the first CVE's KEV listing (`st["listed"]`), which `judge` never does
+  for a thread with members; without it a later absence proved nothing for ever.
+- Members rotate; the page budget is enforced at each fetch.
+- A member retracted after it left hides the old root, which still names it. `retire`
+  (z360) now judges such a thread, and `Ledger.release(back=)` returns the retracted id
+  to the hidden thread so it keeps an id when its first advisory is released.
+- An id whose own page assigns an id of the thread's is `kept`
+  (`test_a_candidate_on_the_run_a_lowering_falls_due_is_seen_before_anything_is_lowered`
+  found it: a vendor's GHSA learned beside a KEV-listed CVE).
+- A candidate for a released id drops an `exploited` mark that came with no KEV
+  reading: `ledger.merge` runs before the release and lends the old thread's mark.
 
 ## Alternatives rejected
 

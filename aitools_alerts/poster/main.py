@@ -206,6 +206,7 @@ class Run:
         self.channels, self.send, self.fetch_page = channels, send, page
         self.skipped = Counter() if skipped is None else skipped
         self.pages: dict[str, tuple] = {}  # url -> (status, body), one fetch a run
+        self.page_cap = MAX_RUN_PAGES  # yd1y: lower while ``part`` reads a member's pages
         self.confirmed: dict[str, set] = {}  # url -> the advisory ids its page confirmed
         self.digest_now = digest_now  # run --digest-now: today's digest whatever the hour
         self.n = Counter()
@@ -1084,7 +1085,7 @@ class Run:
     def page(self, url, allow):
         """One fetch per URL per run, MAX_RUN_PAGES in all (the ledger lock is held)."""
         if url not in self.pages:
-            if len(self.pages) >= MAX_RUN_PAGES:
+            if len(self.pages) >= min(MAX_RUN_PAGES, self.page_cap):
                 raise rules.PageBudget
             self.pages[url] = self.fetch_page(url, allow, rules.FETCH_TIMEOUT)
         return self.pages[url]
@@ -1363,6 +1364,11 @@ class Run:
 
     def one(self, c, named):
         ids = [c.id, *c.aliases]
+        if c.exploited is True and not any(r[0] == "kev" for r in c.readings) \
+                and not self.released().isdisjoint(_base(i) for i in ids):
+            # yd1y: a mark lent by the thread it left (``ledger.merge`` ran before the
+            # release) is not its own: KEV's word comes with a KEV reading, or not at all.
+            c = replace(c, exploited=False)
         scope = own = self._former(named, ids)
         entry = self.led.lookup(ids, scope=scope.name)
         # btqg: a joined advisory's ids are never learned by the thread's work, whose send
@@ -1809,9 +1815,13 @@ class Run:
         self.verdicts, self.judged, self.known = {}, set(), set()
         self.readings: dict[str, list] = {}  # hh5s: root -> the readings its verdict rested on
         pages = len(self.pages)
+        waits = sum(e.root_event_id in st["dwell"] for e in entries)
         for e in self._in_turn(entries):  # yd1y: each thread, then its members, in the thread's own turn
+            # A thread is first in its lane once in as many hours as the lane has threads:
+            # its members' turn moves on once in that time, not with the hour.
+            lane = waits if e.root_event_id in st["dwell"] else len(entries) - waits
             self._judge([e], rs)
-            self.part(e, rs, pages)
+            self.part(e, rs, pages, self.now // 3600 // max(1, lane))
         if self.api.unread:
             _say(f"advisory reads: {len(self.api.unread)} id(s) not read this run (the lane's share was spent); "
                  "their threads are unknown and nothing of theirs moves")
@@ -1852,7 +1862,7 @@ class Run:
             if verdict is not None:
                 self.verdicts[root] = (e, *verdict)
 
-    def part(self, e, rs, pages: int) -> None:
+    def part(self, e, rs, pages: int, turn: int = 0) -> None:
         """Release the members of thread ``e`` whose own source supports more than its
         first id does (ai-tools-alerts#yd1y; ``recompute.outlived``).
 
@@ -1861,19 +1871,23 @@ class Run:
         source is withdrawn or lowers while another member's own advisory still supports
         more, that member's alert falls with the thread on every member's machine, and
         the member keeps the thread unknown here, so not even the lowering completes.
-        So, for a thread just judged: every member whose own response was read leaves the
-        thread's identity (``Ledger.release``, as z360's retired threads do), with the
-        ids its response or its page assigns. One that still supports the product leaves
+        So, for a thread just judged: each member whose own response supports more than
+        the first id's sources state leaves the thread's identity (``Ledger.release``, as
+        z360's retired threads do), with the ids its response or its page assigns, and
         only with a pointer candidate, built from its own repository advisory page
         (``_judge_id``), which the next run plans like any deferred candidate: admitted
         from its page, grouped by fix with the others, posted as a root whose first id a
-        member's check reads. One whose page is not read this run, or is not a structured
-        page naming it, stays and is tried again next run; at most RETIRE_PAGES new pages
-        a run are read for this (``pages``: how many the run had read before).
+        member's check reads. One whose page assigns an id of the thread's own is no other
+        advisory: it stays for good (``split``'s ``kept``). One whose page is not read this
+        run, or is not a structured page naming it, stays and is tried again next run; at most RETIRE_PAGES new pages
+        a run are fetched for this (``pages``: how many the run had read before), counted
+        at each fetch.
 
         The members' responses are read in the thread's own lane right after its own
         (``observe``), so the thread that is first in its lane this hour has its members
-        read too: reads spent on other threads cannot keep them unread for good.
+        read too, and the members start one further on with each ``turn`` (once in as
+        many hours as the lane has threads): reads spent on other threads, or on the
+        members ahead, cannot keep one unread for good.
 
         The pointer is saved first, then the ledger: a run that stops between the two
         plans the pointer onto the old thread, as a sighting of the member is planned
@@ -1893,27 +1907,33 @@ class Run:
 
         def read(i):
             return self.api.read(i, lane)
-        out, cves = recompute.outlived(e, scope, self.copy, rs, self.rc, read)
+        out, cves = recompute.outlived(e, scope, self.copy, rs, self.rc, read, turn)
         theirs = {_base(i) for i, _ in out} | {_base(i) for i in cves}
         known = [e.advisory.get("id"), *(e.advisory.get("aliases") or ()), *e.aliases]
-        released, pointers = [], []
-        for i, level in out:
+        own_ids = {_base(x) for x in known if isinstance(x, str)} - theirs  # the first id and what its source ties
+        released, kept, pointers = [], [], []
+        for i, _ in out:
             own = next((x for x in known if recompute.lookup_id(x) == i), None)
             r = read(i)
             if own is None or r is None or own in released:
                 continue
-            assigned = {_base(n) for n in r.names}
-            if level != ruleset.NONE:
-                if len(self.pages) - pages >= RETIRE_PAGES:
-                    continue  # the rest wait for the next run
+            self.page_cap = pages + RETIRE_PAGES  # at each fetch: one id's evidence can read several pages
+            try:
                 verdict = self._judge_id(e, own, bases)
-                if verdict is None or not verdict[0]:
-                    continue  # no page read, or none that proves the id: the next run tries again
-                assigned |= verdict[1]
-                pointers.append(verdict[2])
+            finally:
+                self.page_cap = MAX_RUN_PAGES
+            if verdict is not None and verdict[1] & own_ids:
+                # Its own page assigns an id of the thread's (a vendor's GHSA whose API answer
+                # does not name its CVE): no other advisory, and not asked again (``kept``).
+                kept.append(own)
+                continue
+            if verdict is None or not verdict[0]:
+                continue  # no page read, or none that proves the id: the next run tries again
+            assigned = {_base(n) for n in r.names} | verdict[1]
+            pointers.append(verdict[2])
             same = [a for a in e.aliases if _base(a) in assigned & theirs and a != own]
             released.extend(x for x in [own, *same] if x not in released)
-        if not released:
+        if not released and not kept:
             return
         for c in pointers:  # in place of a row for the same id, and kept past this run's end
             self.state["deferred"] = [d for d in self.state["deferred"] if not (
@@ -1923,9 +1943,11 @@ class Run:
                 self.defer([(c, named)])
         self.save()  # the pointers first: a run that stops before the ledger write repeats it
         try:
-            now = self.led.release(root, released, [])
+            now = self.led.release(root, released, kept)
         except LedgerError as err:  # one thread's record never stops the run
             _say(f"{root[:12]}: members not released: {err}")
+            return
+        if not released:
             return
         self._released = None
         _say(f"{compose.public_form(e.advisory.get('id'))}: its first id supports less than a member's own source; "
@@ -2366,7 +2388,8 @@ class Run:
         for e in self.led.entries():
             if hidden.isdisjoint({e.root_event_id, *e.channel_ids.values()}):
                 continue
-            if bases.isdisjoint(_base(a) for a in e.aliases):
+            back = [i for i in (e.split or {}).get("released", ()) if _base(i) in bases]
+            if bases.isdisjoint(_base(a) for a in [*e.aliases, *back]):
                 continue  # hidden by an id the poster never held (a curator's alias): not judged
             done = {_base(x) for k in ("released", "kept") for x in (e.split or {}).get(k, ())}
             mine = {_base(a) for a in e.aliases}
@@ -2405,7 +2428,11 @@ class Run:
         self.save()  # the pointers first: a run that stops before the ledger write repeats it
         for e, released, kept, _ in judged:
             try:
-                self.led.release(e.root_event_id, released, kept)
+                # yd1y: a retracted id the thread released while it stood (``part``) is still in
+                # its root, so it hides the thread, and it is the thread's again: the hidden
+                # thread keeps an id when its last other one is released.
+                back = [i for i in (e.split or {}).get("released", ()) if _base(i) in bases]
+                self.led.release(e.root_event_id, released, kept, back=back)
             except LedgerError as err:  # one thread's record never stops the run
                 _say(f"{e.root_event_id[:12]} retired, not recorded: {err}")
                 continue

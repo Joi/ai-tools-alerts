@@ -173,9 +173,10 @@ def test_a_run_that_stops_before_the_ledger_write_releases_next_run(env, monkeyp
     real = main.Ledger.release
 
     def boom(self, *a, **kw):
-        raise main.LedgerError("disk")
+        raise KeyboardInterrupt  # the run stops here: nothing after this line of it happens
     monkeypatch.setattr(main.Ledger, "release", boom)
-    env.run(now=T0 + 3600)
+    with pytest.raises(KeyboardInterrupt):
+        env.run(now=T0 + 3600)
     monkeypatch.setattr(main.Ledger, "release", real)
     assert "split" not in entries(env)[0]
     assert env.state()["deferred"][0]["id"] == G2  # the pointer was saved before the ledger write
@@ -262,3 +263,106 @@ def test_a_released_id_the_first_id_comes_to_name_counts_again():
     assert support(e, named)[:2] == ("high", True)
     assert recompute.loose(e, apart) == ([], set())
     assert recompute.released(thread(ids=(G, G2), split={"released": [G, G2], "kept": []})) == {G2}  # never its first id
+
+
+# ---------------------------------------------------------------- from the code review
+
+
+def test_a_member_retracted_after_it_left_does_not_strand_the_first_advisory(env):
+    """The old root still names the member that left, so a retraction of that member hides
+    it on every reader. z360's retirement then judges the thread though its ledger ids no
+    longer hold the retracted one: the first advisory is released to be posted again, and
+    the hidden thread takes the retracted id back as its own."""
+    from test_main import _on_mirror, _retract, at
+    for i in (G, G2):
+        env.api.put(i, ghsa_json(i))
+    env.collector([finding(fid=G, severity="moderate"), finding(fid=G2, severity="moderate")])
+    _, _, first = env.run(now=T0)
+    env.api.put(G, ghsa_json(G, **WEAK))
+    run(env, 1)
+    _, _, second = env.run(now=T0 + 2 * 3600)
+    assert len(roots(second)) == 1 and entries(env)[0]["split"] == {"released": [G2], "kept": []}
+    _on_mirror(env, first, T0 + 60)
+    _retract(env, second, [G2], at_=T0 + 2 * 3600 + 60)
+    code, summary, _ = env.run(now=at(5, 10))
+    assert code == 0, summary
+    old = entries(env)[0]
+    assert old["split"]["released"] == [G] and old["aliases"] == [G2]
+
+
+def test_the_listing_of_a_first_cve_is_remembered_for_a_thread_with_members():
+    """``judge`` never knows a thread that has a loose member, so it never records that a
+    complete copy listed the first CVE; without that, the CVE's later absence would prove
+    nothing for ever and the member could never leave."""
+    from aitools_alerts.poster import recompute
+    from test_advisory_recompute import CLAUDE, CVE, RS, reads, thread
+    from test_recompute import catalog, kc
+    e = thread(ids=(CVE, G2), level="critical", exploited=True)
+    read = reads(**{G2: ghsa_json(G2)})  # names no CVE: no source ties it
+    st = recompute.new_state()
+    listed = kc(catalog("v1", CVE), "ok", st, 0)
+    assert recompute.lead(e, CLAUDE, listed, RS, st, read)[1:] == ([G2], set())
+    assert st["listed"] == {e.root_event_id: [CVE]}
+    absent = kc(catalog("v2"), "ok", st, 3600)
+    level, members, _ = recompute.lead(e, CLAUDE, absent, RS, st, read)
+    assert level == "none" and members == [G2]
+    assert recompute.outlived(e, CLAUDE, absent, RS, st, read)[0] == [(G2, "high")]
+    fresh = recompute.new_state()
+    assert recompute.lead(e, CLAUDE, kc(catalog("v2"), "ok", fresh, 0), RS, fresh, read) is None  # never seen listed
+
+
+def test_a_member_past_the_lanes_share_is_read_in_a_later_turn():
+    """Eleven members, ten reads: the members start one further on each turn, so the one
+    that still supports high is read within eleven turns whichever place it holds."""
+    from aitools_alerts.poster import recompute, sources
+    from advisories import Api
+    from test_advisory_recompute import CLAUDE, RS, thread
+    others = [f"GHSA-aaaa-bbbb-cc{k:02d}" for k in range(10)]
+    last = "GHSA-zzzz-zzzz-zzzz"
+    e = thread(ids=(G, *others, last))
+    answers = {G: ghsa_json(G, withdrawn_at=WHEN), last: ghsa_json(last),
+               **{i: ghsa_json(i, withdrawn_at=WHEN) for i in others}}
+    found = []
+    for turn in range(11):
+        reader = sources.Reader(Api(**answers))
+        out, _ = recompute.outlived(e, CLAUDE, None, RS, recompute.new_state(), lambda i: reader.read(i, "rest"), turn)
+        found.append(out == [(last, "high")])
+    assert not found[0] and any(found)
+
+
+def test_in_a_mixed_group_only_the_member_that_supports_more_leaves(env):
+    """A lowers to a notice, B still supports high, C a notice. B leaves; C loses nothing
+    by staying and stays, and the old thread stays unknown (ai-tools-alerts#759h)."""
+    group(env, G, G2, G3)
+    env.api.put(G, ghsa_json(G, **WEAK))
+    env.api.put(G3, ghsa_json(G3, **WEAK))
+    run(env, 1)
+    assert len(roots(run(env, 2))) == 1
+    old, new = entries(env)
+    assert old["split"] == {"released": [G2], "kept": []} and sorted(old["aliases"]) == sorted([G, G3])
+    assert new["aliases"] == [G2] and hours(env, 3, 40) == [] and entries(env)[0]["level"] == "high"
+
+
+def test_a_member_takes_its_own_cve_and_leaves_the_first_ids(env):
+    """Each advisory has a CVE. The member that leaves takes the one its own response
+    names; the first id's CVE, which that id's response names, stays. A thread with a
+    CVE is known only beside a complete KEV copy, so every run has one."""
+    from test_main import FakeKEV
+    from test_recompute import catalog
+
+    def go(h):
+        return run(env, h, kev=FakeKEV(catalog=catalog(f"v{h + 1}")))
+    mine, theirs = "CVE-2026-0101", "CVE-2026-0202"
+    env.api.put(G, ghsa_json(G, cve=mine))
+    env.api.put(G2, ghsa_json(G2, cve=theirs))
+    env.collector([finding(fid=G, severity="moderate", aliases=[mine]),
+                   finding(fid=G2, severity="moderate", aliases=[theirs])])
+    go(0)
+    (e,) = entries(env)
+    assert e["advisory"]["id"].upper() == G.upper() and len(e["aliases"]) == 4
+    env.api.put(G, ghsa_json(G, cve=mine, withdrawn_at=WHEN))
+    go(1)
+    old = entries(env)[0]
+    assert sorted(old["split"]["released"]) == sorted([G2, theirs]) and sorted(old["aliases"]) == sorted([G, mine])
+    assert len(roots(go(2))) == 1
+    assert sorted(entries(env)[1]["aliases"]) == sorted([G2, theirs])
