@@ -687,6 +687,95 @@ def test_a_failed_fetch_or_an_unparsed_page_asks_for_a_retry():
     assert ev.ok and not ev.retry
 
 
+def test_a_failed_fetch_is_told_apart_from_a_page_that_did_not_parse():  # psb5
+    assert rules.evidence(ghsa_cand(), CLAUDE, served({REPO + G1: (503, "")})).failed
+    ev = rules.evidence(ghsa_cand(), CLAUDE, served({REPO + G1: (200, "<html>new markup</html>")}))
+    assert ev.unparsed and not ev.failed and not ev.budget
+    both = ghsa_cand(sources=(Source(REPO + G1, None), Source(VENDOR, None)))
+    ev = rules.evidence(both, CLAUDE, served({REPO + G1: (200, "<html>new markup</html>"), VENDOR: (503, "")}))
+    assert ev.unparsed and ev.failed and not ev.ok
+
+
+NEW_MARKUP = f"<html><main><h1>A flaw in Claude Code</h1><p>{G1}</p><section>packages, another way</section></main></html>"
+
+
+def test_a_lapsed_unparsed_page_is_read_as_a_vendor_site_page_is():  # psb5
+    """Past its retry time, the repository page that never parsed confirms by naming the id
+    and the product in its visible text, and gives the id alone. Before, it confirms nothing."""
+    page = served({REPO + G1: (200, NEW_MARKUP)})
+    ev = rules.evidence(ghsa_cand(), CLAUDE, page)
+    assert not ev.ok and ev.unparsed and ev.retry
+    ev = rules.evidence(ghsa_cand(), CLAUDE, page, lapsed=True)
+    assert ev.ok and ev.url == REPO + G1 and ev.ids == frozenset({G1.lower()})
+    assert (ev.fixed, ev.affected, ev.title, ev.severity, ev.ghsa, ev.packages) == (None,) * 5 + ((),)
+    assert not ev.structured and not ev.unparsed and not ev.retry and not ev.kev
+
+
+@pytest.mark.parametrize("body", [
+    f"<html><p>{G1}</p><p>another product</p></html>",  # the id, not the product
+    "<html><p>Claude Code</p><p>GHSA-zzzz-zzzz-zzzz</p></html>",  # the product, not the id
+    f"<html><p>Claude Code</p><p>{G1}-x and x-{G1}</p></html>",  # the id inside a longer token
+    f'<html><a href="/{G1}" title="Claude Code">Sign in</a></html>',  # both in attributes only
+    f"<html><script>var a = '{G1} Claude Code'</script><p>Sign in</p></html>",  # both in a script only
+    f"<html><p>{G1}</p><p>claude-code-router</p></html>",  # another product's name holding this one's words
+    ""])
+def test_a_lapsed_unparsed_page_that_does_not_name_both_confirms_nothing(body):  # psb5
+    ev = rules.evidence(ghsa_cand(), CLAUDE, served({REPO + G1: (200, body)}), lapsed=True)
+    assert not ev.ok and ev.unparsed and ev.retry and not ev.failed
+
+
+def test_a_lapsed_page_that_parses_as_another_advisory_confirms_nothing():  # psb5
+    """The URL names G1 and the page served is G2's, complete, and its description names
+    G1 and the product. A known mismatch is never read by its text, whatever the time."""
+    theirs = advisory_page(G2, patched="9.9.9", description=f"Claude Code. Related to {G1}.")
+    for lapsed in (False, True):
+        ev = rules.evidence(ghsa_cand(), CLAUDE, served({REPO + G1: (200, theirs)}), lapsed=lapsed)
+        assert not ev.ok and ev.unparsed and ev.retry, lapsed
+
+
+def test_a_lapsed_unparsed_page_confirms_only_the_id_its_own_url_names():  # psb5
+    """A CVE the page's text names is a sentence, not the advisory's CVE ID field (which only
+    a parsed page gives): a candidate under that CVE is not confirmed by an unparsed page."""
+    text = NEW_MARKUP.replace("</main>", "<p>CVE-2026-0007</p></main>")
+    c = ghsa_cand(id="CVE-2026-0007")
+    assert not rules.evidence(c, CLAUDE, served({REPO + G1: (200, text)}), lapsed=True).ok
+    c = ghsa_cand(id=G2)  # nor another GHSA the text names, at G1's URL
+    text = NEW_MARKUP.replace("</main>", f"<p>{G2}</p></main>")
+    assert not rules.evidence(c, CLAUDE, served({REPO + G1: (200, text)}), lapsed=True).ok
+    # the CVE candidate whose page parses is read by its fields, lapsed or not
+    good = served({REPO + G1: (200, advisory_page(G1, cve="CVE-2026-0007", patched="2.1.5"))})
+    ev = rules.evidence(ghsa_cand(id="CVE-2026-0007"), CLAUDE, good, lapsed=True)
+    assert ev.structured and ev.fixed == "2.1.5" and ev == rules.evidence(ghsa_cand(id="CVE-2026-0007"), CLAUDE, good)
+
+
+def test_a_lapsed_unparsed_page_in_a_repository_of_several_products_confirms_nothing():  # psb5
+    """github.com/modelcontextprotocol/servers/ is the advisory location of seven products.
+    An unparsed page there names no one of them by its URL, and a product's name in its
+    text can be a comparison: the fetch server's advisory is not the git server's notice."""
+    git, fetch = rules.scope_of("mcp-server-git"), rules.scope_of("mcp-server-fetch")
+    assert git is not None and fetch is not None and git.authority == fetch.authority
+    url = "https://github.com/modelcontextprotocol/servers/security/advisories/" + G1
+    text = f"<html><h1>mcp-server-fetch: a flaw</h1><p>{G1}</p><p>Unlike mcp-server-git, it follows redirects.</p></html>"
+    for scope, product in ((git, "mcp-server-git"), (fetch, "mcp-server-fetch")):
+        c = ghsa_cand(product_text=product, sources=(Source(url, None),))
+        ev = rules.evidence(c, scope, served({url: (200, text)}), lapsed=True)
+        assert not ev.ok and ev.unparsed, product
+    assert rules._sole(REPO + G1, CLAUDE) and not rules._sole(url, git)
+
+
+def test_a_site_page_that_confirmed_first_is_not_replaced_by_a_lapsed_unparsed_page():  # psb5
+    site = f"<html>Claude Code {G1}</html>"
+    c = ghsa_cand(sources=(Source(VENDOR, None), Source(REPO + G1, None)))
+    ev = rules.evidence(c, CLAUDE, served({VENDOR: (200, site), REPO + G1: (200, NEW_MARKUP)}), lapsed=True)
+    assert ev.ok and ev.url == VENDOR and not ev.structured
+
+
+def test_lapsed_changes_nothing_for_a_page_that_parses_or_a_fetch_that_fails():  # psb5
+    for pages in ({REPO + G1: (200, advisory_page(G1))}, {REPO + G1: (503, "")}, {REPO + G1: (404, "")}):
+        assert rules.evidence(ghsa_cand(), CLAUDE, served(pages), lapsed=True) \
+            == rules.evidence(ghsa_cand(), CLAUDE, served(pages))
+
+
 # ------------------------------------------- the page fetch
 
 class FakeResp:

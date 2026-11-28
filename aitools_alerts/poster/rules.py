@@ -632,9 +632,9 @@ class Evidence:
     exploited. ``url``: the page that confirmed it, or None. ``ids``: the advisory's
     ids as that source assigns them (lowercase). ``fixed``, ``affected``, ``title``,
     ``severity``: read from the page, never from the candidate. ``retry``: nothing
-    confirmed it, and a fetch failed in a way that can pass, a repository page did
-    not parse (``unparsed``) or the run's page budget ran out before every source was
-    read (``budget``)."""
+    confirmed it, and a fetch failed in a way that can pass (``failed``), a repository
+    page did not parse (``unparsed``) or the run's page budget ran out before every
+    source was read (``budget``)."""
     kev: bool = False
     url: str | None = None
     ids: frozenset = frozenset()
@@ -645,6 +645,7 @@ class Evidence:
     retry: bool = False
     unparsed: bool = False
     budget: bool = False
+    failed: bool = False
     structured: bool = False  # confirmed by a repository advisory page's own fields
     ghsa: str | None = None  # that page's GHSA id
     repository: str | None = None  # owner/repo of the page, lowercase
@@ -657,7 +658,20 @@ class Evidence:
         return self.kev or self.url is not None
 
 
-def evidence(c: Candidate, scope, page, entries=None) -> Evidence:
+def _says(text: str, base: str, scope) -> bool:
+    """A page's visible text (no tag, attribute or script) names the id and the product."""
+    low = " ".join(_lines(text)).lower()
+    return _names(low, base) and _names(low, scope.name)
+
+
+def _sole(url, scope, entries=None) -> bool:
+    """url is the advisory location of this product and of no other in the scope file:
+    ``github.com/modelcontextprotocol/servers/`` is seven products', and names none."""
+    index = _default_index() if entries is None else _index(tuple(entries))
+    return all(s.name == scope.name for s in index.values() if authoritative(url, s))
+
+
+def evidence(c: Candidate, scope, page, entries=None, lapsed: bool = False) -> Evidence:
     """The authoritative statement behind c, read by fetching c's own sources (h340).
 
     ``page(url, allow) -> (status, text)``; the production one is ``http_page``
@@ -676,6 +690,16 @@ def evidence(c: Candidate, scope, page, entries=None) -> Evidence:
     page (never one with a query string, which a site can echo back) confirms c when
     its visible text names c's base id and the product's name; it gives the base id
     alone, and main rates it a notice. A repository page wins over another page.
+
+    ``lapsed`` (psb5): the candidate's time to be retried is over. A repository
+    advisory page that answers 200 and that ``read_advisory`` cannot read then
+    confirms c, for the base id alone, as a site page does (a notice), when all of
+    these hold: c's base id is the GHSA id in the page's own URL, so the vendor's
+    repository, not a sentence, ties the id to the page; that repository is the
+    advisory location of this product and no other (``_sole``); and the page's
+    visible text names that id and the product. A page that parses is never read
+    this way: one that parses as another advisory than its URL names stays
+    unconfirmed, and one that parses as its own is read by its fields.
     """
     m = BOT_ID.fullmatch(c.id) if isinstance(c.id, str) else None
     if m is None or scope is None:
@@ -711,6 +735,9 @@ def evidence(c: Candidate, scope, page, entries=None) -> Evidence:
             p = read_advisory(text)
             if p is None or p.ghsa.lower() != repo.group(1).lower():
                 unparsed = True
+                if lapsed and rank == 0 and p is None and base == repo.group(1).lower() \
+                        and _sole(u, scope, entries) and _says(text, base, scope):
+                    rank, found = 1, dict(url=u, ids={base})
                 continue
             own = {p.ghsa.lower()} | ({p.cve.lower()} if p.cve else set())
             mine = [b for b in p.blocks if _is_product(b, scope, entries)]
@@ -726,10 +753,7 @@ def evidence(c: Candidate, scope, page, entries=None) -> Evidence:
                                   repository="/".join(urlsplit(u).path.split("/")[1:3]).lower(),
                                   packages=tuple((b.ecosystem if b.ecosystem in _REGISTRIES else "", b.name,
                                                   b.affected, _stated_patch(b.patched)) for b in mine))
-        elif rank == 0:
-            low = " ".join(_lines(text)).lower()  # what a reader sees: no tag, attribute or script
-            if not (_names(low, base) and _names(low, scope.name)):
-                continue
+        elif rank == 0 and _says(text, base, scope):
             rank, found = 1, dict(url=u, ids={base})
     ids = frozenset(found.get("ids", set()) | ({base} if kev else set()))
     return Evidence(kev=kev, url=found.get("url"), ids=ids, fixed=found.get("fixed"),
@@ -737,6 +761,7 @@ def evidence(c: Candidate, scope, page, entries=None) -> Evidence:
                     severity=found.get("severity"),
                     retry=(retry or unparsed or budget) and not found and not kev,
                     unparsed=unparsed and not found, budget=budget and not found,
+                    failed=retry and not found and not kev,
                     structured=rank == 2, other_package=other and not found, ghsa=found.get("ghsa"),
                     repository=found.get("repository"), packages=found.get("packages", ()))
 
