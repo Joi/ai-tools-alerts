@@ -90,8 +90,8 @@ CHAT_KIND = 9  # NIP-29 group chat message: the only kind posters and curators s
 REPO_URL = "https://github.com/Joi/ai-tools-alerts"
 # The release the README pins: a signed tag and the commit it must resolve to. A release commit
 # cannot name its own hash, so these name the latest release that existed when they were written.
-RELEASE_TAG = "v0.4.0"
-RELEASE_COMMIT = "6f418efb84b7a741a1248c2477d181d2afbc7ad1"
+RELEASE_TAG = "v0.5.0"
+RELEASE_COMMIT = "f6a545c1b88101050d7a874c2817c64e25834fda"
 PIPX_LINE = f"pipx install git+{REPO_URL}@{RELEASE_COMMIT}"  # README's, verbatim
 VERIFY_URL = REPO_URL + "#verify-the-release"
 RELEASE_SIGNER_FP = "SHA256:DS1FNZqf0HglC1QEQ50LS4AJny8P8MxvrHRj4vPEqaA"  # the key in trust/allowed_signers
