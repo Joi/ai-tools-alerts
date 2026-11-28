@@ -1,6 +1,6 @@
 # Run: aqtf-per-channel-level
 Instruction: Read TASK-ai-tools-alerts#aqtf.md in this worktree root, then run `kata show ai-tools-alerts#aqtf` and follow the brief and the dispatch rules pasted after this sentence. (The brief: ai-tools-alerts#aqtf, a channel that refused a level reply twice is sent the thread's standing level again; run as /do-it, starting rung floored at medium.)
-Stage: code-review:whole-branch
+Stage: done
 Rung: medium (start-floor medium: constraint-lens, BR1 REV2 NOV1 INT1 FC1 = 6; no hard trigger; the dispatch floors it at medium too)
 Lens: "Nothing you build may wait for a person to act"; "no reply is sent twice to a channel that has it"; "Stay inside this issue"; "No rollout" (in every review pass)
 Last reviewed: spec 1cda4d00d6f44c4284b69a4eba7ba1ff84d406fd
@@ -58,6 +58,15 @@ Not reviewed again: the review cycle allows one delta. `git diff b5577f5..HEAD` 
 - [x] ledger: `lacks`, `copied` and `uneven`, the thread's standing by channel; the journal item's `again`
 - [x] poster: `Run.reconcile`, the state read from the standing reply, tests, `spec/wire.md`, changelog
 
+## Gate
+`scripts/test-gate.sh`, each time in a clone holding this branch alone:
+- exit 0 at ffedc27 (the delta fixes, main at 30ab415 merged): the public scan, then 3739 passed.
+- exit 0 at 8a69772 (main at 4b4aea9 merged, btqg): 3776 passed.
+- exit 0 at 6f71da7 (main at 862b497 merged, 65xv and 1qy4): 3876 passed.
+Main then moved once more, to the 0.4.0 release commit (version strings, README, the changelog's heading, the mirror exporter; no file of the poster). On that merge the public scan and every test outside `tests/poster` were run, not the whole gate; the result is in the close-out comment on the issue.
+
+Reviewed shas: the whole branch at d664e67, the delta at b5577f5. Not reviewed by a second model: 2587e6d (the two fixes the delta asked for), and the four merges of main. In those merges, by hand: both changelog entries kept each time; `Entry.joined` and `Entry.ended` beside this branch's fields in the ledger and its validator; btqg's join by fix and 65xv's `plan_known` guard read the thread's state from `Entry.gone`; the aqtf changelog entry moved back under a new Unreleased heading after 0.4.0 was cut without it.
+
 ## Notes
 - Prior work read: the issue; the kk2q run record and its code finding 5 (which filed this issue); jsje's retry (`Run._withhold`, `Run.expire_withheld`); `spec/wire.md` "A withdrawal". `kata search "per-channel reconciliation level reply refused"` returns this issue only: no earlier attempt, no dead end.
 - Main is at 3d376b8 (m729 merged). The issue text matches the landed code: kk2q keeps `Entry.withdrawn` by channel and the recompute sends the reply that ends the state to the channels still listed.
@@ -65,3 +74,6 @@ Not reviewed again: the review cycle allows one delta. `git diff b5577f5..HEAD` 
 - I edited the spec once with a script after its review (one replaced section and four exact-match replacements, each asserted to occur once), not with the Edit tool the skill names.
 - Mutation checks, each against `tests/poster/test_reconcile.py`: `reconcile` made to do nothing fails the four acceptance tests; possession by word alone fails the older-notice test; without the ledger scan in `renew` the checkpoint test fails; `_stated` without `uneven` fails its test.
 - `tests/poster` before the commit: 1286 passed, 1 failed; the failure was the kk2q expectation this change replaces (`test_a_reply_that_ends_the_state_passes_the_withdrawal_one_channel_still_lacks`), corrected and passing since.
+- 65xv on main added the `ended` state after this branch's reviews. A reply sent again to a channel of an ended thread names the thread's level, as its step downs do; that pairing has had no review of its own. Follow-up filed (see the issue).
+- Wall clock: about five hours of work, a third of it in five gate runs of 19 to 25 minutes; main moved four times while the branch was being landed.
+- Skip temptations: running only part of the gate after the last merge of main (taken, for the reason and with the scope stated under Gate); nothing else.
