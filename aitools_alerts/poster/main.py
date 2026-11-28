@@ -1143,8 +1143,10 @@ class Run:
             try:
                 if path is None:
                     raise ValueError("its path is another file's")
-                # only today's candidates are remembered: one that left and comes back is news again
-                sources.save_turn(path, place, (seen | made) & self.asked)
+                # Every id asked for stays remembered, in this run's record or not: a candidate
+                # whose page fails for a run is not news when it answers again, or two groups
+                # taking turns at failing would be first for good and the ring never move.
+                sources.save_turn(path, place, sources.remembered(seen | made, self.asked))
             except (OSError, TypeError, ValueError) as e:
                 _say(f"admission's place among the advisory reads not kept ({type(e).__name__}): "
                      "the next run asks for the same ids first")

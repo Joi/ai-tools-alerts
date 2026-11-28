@@ -84,13 +84,15 @@ a file that is missing, is not a regular file (read with
 `inputs.read_regular_json`, which never blocks on a FIFO), does not read, has
 another shape, or holds anything that is not a lookup id (`sources.advisory_id`).
 `sources.save_turn` writes it with `inputs.write_json` (atomic; a link at the path
-is replaced, never followed). `seen` holds only ids that are candidates in the run
-that writes it, at most 2000. It is written under the ledger lock, like every
+is replaced, never followed). `seen` holds every id asked for, in the current
+record or not, at most 2000 (`sources.remembered`: over that, this run's
+candidates are kept before the rest). It is written under the ledger lock, like every
 other state file of a run.
 
 The path is not in `check_paths`: a clash there is a configuration error that
 stops every run until a person repairs it. `Config.admit_turn_free()` says whether
-the path is none of the poster's other files; when it is not, the run neither
+the path is none of the poster's other files, each taken as named and as
+resolved (a lock file that is a link to the turn file is the turn file); when it is not, the run neither
 reads nor writes the turn, says so, and goes on.
 
 A file of its own, not a key in the run state or the recompute state: both of those
@@ -257,3 +259,16 @@ commit: 2 substantive, 3 cosmetic.
     the pre-pass calls `rules.evidence` in the same order with the same page
     cache, and `test_many_candidates_leave_the_threads_their_reads` and the page
     budget's own tests pass unchanged.
+
+Delta review of 91915b5503694f113259af7defc07f29a19855fb (fresheyes `--since
+89e51d2`, gpt-6.1-sol, high): 1 blocker, 1 substantive. The last pass; what
+follows was seen by no independent review.
+
+13. BLOCKER, `admit_turn_free` compared paths with their last part unresolved on
+    both sides, so a ledger lock that is a link to the turn file passed, and a
+    write would replace the inode a running poster holds locked. Fixed: the other
+    files are compared resolved as well; a test with the lock linked to the turn file.
+14. SUBSTANTIVE, the ids remembered were cut to the current run's candidates, so a
+    candidate whose page failed for a run was news again, and two groups failing
+    by turns stayed first for good. Fixed: every id asked for is remembered
+    (capped at 2000); a `main.run` test with pages failing in alternate runs.

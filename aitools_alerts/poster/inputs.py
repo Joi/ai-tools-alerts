@@ -188,8 +188,10 @@ class Config:
         """Whether ``admit_turn`` may be read and written: it is none of the poster's
         other files (a ``kev_cache`` or a key file configured at that very path). Not a
         ``check_paths`` error: the turn is a convenience, and a clash turns off the
-        keeping of it alone, never a run. The path's own last part is not resolved: a
-        link left there is replaced by the next write, which never follows it."""
+        keeping of it alone, never a run. The turn path's own last part is not resolved: a
+        link left there is replaced by the next write, which never follows it. Every other
+        file is taken both as named and as resolved: one that is a link to the turn file
+        (the ledger's lock, say) is that file, and a write would replace what it holds open."""
         def at(p):
             p = Path(p)
             return os.path.join(os.path.realpath(p.parent), p.name).casefold()
@@ -198,7 +200,7 @@ class Config:
                   self.catalog_known, self.catalog_state, self.catalog_lock, self.mirror_dir]
         if self.checkpoint_key_file is not None:
             others.append(self.checkpoint_key_file)
-        return at(self.admit_turn) not in {at(p) for p in others}
+        return at(self.admit_turn) not in {at(p) for p in others} | {os.path.realpath(p).casefold() for p in others}
 
     @property
     def catalog_known(self) -> Path:

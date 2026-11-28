@@ -426,6 +426,11 @@ def test_admissions_turn_is_a_file_of_its_own_and_a_clash_is_no_config_error(tmp
     assert cfg.admit_turn_free()
     inputs.write_json(cfg.admit_turn, {"after": "x"})
     assert not cfg.admit_turn.is_symlink() and led.read_text() == "{}"
+    lock = led.with_name(led.name + ".lock")
+    lock.symlink_to(cfg.admit_turn)  # the other way round: the lock IS the turn file, and a write would replace
+    assert not cfg.admit_turn_free()  # the inode a running poster holds locked
+    lock.unlink()
+    assert cfg.admit_turn_free()
 
 
 def test_a_root_item_may_carry_its_prose_floor(tmp_path):  # ny5g

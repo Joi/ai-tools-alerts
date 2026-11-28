@@ -30,7 +30,7 @@ from aitools_alerts import ruleset, verify
 from aitools_alerts.poster import inputs
 
 __all__ = ["LANES", "LANE_READS", "LANE_SECONDS", "TIMEOUT", "Read", "Reader", "advisory_id", "in_turn", "load_turn",
-           "save_turn", "tied", "chosen"]
+           "remembered", "save_turn", "tied", "chosen"]
 
 LANES = ("admit", "wait", "rest")
 LANE_READS = 10  # GitHub allows one address 60 unauthenticated requests an hour; a run is hourly
@@ -59,7 +59,7 @@ def advisory_id(i) -> str | None:
     return i
 
 
-MAX_SEEN = 2000  # the ids the turn file remembers having asked for; a record holds far fewer
+MAX_SEEN = 2000  # the ids the turn file remembers having asked for; a record holds far fewer at a time
 
 
 def in_turn(ids, after=None, seen=()) -> list:
@@ -98,10 +98,19 @@ def load_turn(path) -> tuple[str | None, frozenset]:
         return None, frozenset()
 
 
+def remembered(seen, now=()) -> list:
+    """At most ``MAX_SEEN`` of ``seen``, sorted: all of them while they fit, else those
+    among this run's candidates (``now``) before the rest."""
+    seen, now = set(seen), set(now)
+    if len(seen) <= MAX_SEEN:
+        return sorted(seen)
+    return sorted((sorted(seen & now) + sorted(seen - now))[:MAX_SEEN])
+
+
 def save_turn(path, after, seen) -> None:
     """Keep the turn. A file of its own, never the journal: a release that does not
     know it leaves it alone, so installing an earlier one needs nothing."""
-    inputs.write_json(path, {"after": after, "seen": sorted(seen)[:MAX_SEEN]})
+    inputs.write_json(path, {"after": after, "seen": remembered(seen)})
 
 
 class Reader:

@@ -169,7 +169,7 @@ def _rounds(n, made, arrive=lambda run: ()):
         asked = sources.in_turn(ids, after, seen)[:made(run)]
         ring = [i for i in asked if i in seen]
         after = ring[-1] if ring else after
-        seen = (seen | set(asked)) & set(ids)
+        seen = seen | set(asked)
         out.append(asked)
     return ids, out
 
@@ -229,3 +229,10 @@ def test_the_turn_is_kept_in_a_file_of_its_own(tmp_path):
     path.rmdir()
     os.mkfifo(path)  # no writer: a blocking open would hold the run, and the ledger lock, for good
     assert sources.load_turn(path) == none
+
+
+def test_what_is_remembered_is_capped_in_favour_of_this_runs_candidates(monkeypatch):
+    ids = _ids(9)
+    assert sources.remembered(reversed(ids), ids[:2]) == ids  # all of them while they fit
+    monkeypatch.setattr(sources, "MAX_SEEN", 5)
+    assert sources.remembered(ids, [ids[8], ids[6], "GHSA-zzzz-zzzz-zzzz"]) == [*ids[:3], ids[6], ids[8]]

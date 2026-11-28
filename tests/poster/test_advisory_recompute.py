@@ -859,3 +859,27 @@ def test_a_new_candidate_is_read_in_its_first_run_wherever_the_turn_stands(env, 
     assert sorted(c[2].split(":")[0] for c in relay.calls if c[0] == "feed" and c[1] is None) == ["CRITICAL", "HIGH"]
     after, seen = sources.load_turn(env.config.admit_turn)
     assert seen == frozenset(ids + new) and after == sources.in_turn(ids, place, ids)[7]  # the ring moved by eight
+
+
+def test_candidates_whose_pages_fail_by_turns_do_not_keep_the_rest_unread(env, requests):
+    """Thirty-four candidates. The first ten are asked for; from then on the first ten's
+    pages and the next ten's fail in alternate runs. An id whose page failed for a run
+    is not news when it answers again: forgotten, each group would be first in its
+    runs for good and the other fourteen never read."""
+    from test_main import REPO
+    ids = [f"GHSA-aaaa-bbbb-ee{k:02d}" for k in range(34)]
+    for i in ids:
+        env.api.put(i, ghsa_json(i, **WEAK))
+    _record(env, ids)
+    run(env, 0)
+    asked = set()
+    for h in range(1, 9):
+        down = ids[:10] if h % 2 else ids[10:20]
+        env.pages.fixed.clear()
+        for i in down:
+            env.pages.put(REPO + i, "", 503)
+        _record(env, ids)
+        since = len(requests)
+        run(env, h)
+        asked |= set(_admitted(requests, since))
+    assert set(ids[20:]) <= asked
