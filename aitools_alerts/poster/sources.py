@@ -15,16 +15,22 @@ A run makes at most ``LANE_READS`` requests, in at most ``LANE_SECONDS`` spent i
 them, in each of three
 lanes, which cannot spend each other's share: ``admit`` (new candidates), ``wait``
 (threads with a wait for a lowering running) and ``rest`` (every other thread).
+No lane asks in one fixed order: admission asks first for what it never asked for
+and then goes on where the last run's requests ended (``in_turn``,
+ai-tools-alerts#vszx), and the threads take turns by the hour (``main.Run._in_turn``).
 """
 
 from __future__ import annotations
 
+import bisect
 import time
 from dataclasses import dataclass
 
 from aitools_alerts import ruleset, verify
+from aitools_alerts.poster import inputs
 
-__all__ = ["LANES", "LANE_READS", "LANE_SECONDS", "TIMEOUT", "Read", "Reader", "advisory_id", "tied", "chosen"]
+__all__ = ["LANES", "LANE_READS", "LANE_SECONDS", "TIMEOUT", "Read", "Reader", "advisory_id", "in_turn", "load_turn",
+           "remembered", "save_turn", "tied", "chosen"]
 
 LANES = ("admit", "wait", "rest")
 LANE_READS = 10  # GitHub allows one address 60 unauthenticated requests an hour; a run is hourly
@@ -51,6 +57,60 @@ def advisory_id(i) -> str | None:
     if not isinstance(i, str) or verify.norm_id(i) != i or ruleset.source_of(i) not in ("ghsa", "osv"):
         return None
     return i
+
+
+MAX_SEEN = 2000  # the ids the turn file remembers having asked for; a record holds far fewer at a time
+
+
+def in_turn(ids, after=None, seen=()) -> list:
+    """The order the ``admit`` lane asks for ``ids`` in (ai-tools-alerts#vszx): every
+    distinct id once, whatever order they came in.
+
+    First the ids never asked for (those not in ``seen``), sorted: a new advisory is
+    news, and waits for no turn. One request makes an id seen, whatever the answer,
+    so none stays ahead of the rest. Then the others, sorted, as a ring that starts
+    with the first id past ``after``, the last of them the run before made a request
+    for (``load_turn``): each run goes on where the last one's requests ended,
+    however many it could make. So no id is asked for twice before every other one
+    has been asked for once, and a request that is slow or fails keeps no other id
+    waiting for good: it is behind the next run's start like any other. ``after``
+    need not be one of ``ids`` (its candidate may be gone); None or anything that is
+    not a string starts the ring at its first id."""
+    ids, seen = set(ids), set(seen)
+    new, ring = sorted(ids - seen), sorted(ids & seen)
+    k = bisect.bisect_right(ring, after) if isinstance(after, str) else 0
+    return new + ring[k:] + ring[:k]
+
+
+def load_turn(path) -> tuple[str | None, frozenset]:
+    """(the last id of the ring the ``admit`` lane made a request for, the ids it has
+    asked for) from the file ``save_turn`` wrote; (None, no ids) for no file, one that
+    is not a regular file or does not read, or one that holds anything but lookup
+    ids. Losing it costs one round its order and nothing else, so it is never an error."""
+    try:
+        got = inputs.read_regular_json(path, 1 << 18)  # never blocks: a FIFO at the path is not a file
+        if not (isinstance(got, dict) and set(got) == {"after", "seen"} and isinstance(got["seen"], list)
+                and len(got["seen"]) <= MAX_SEEN and all(advisory_id(i) is not None for i in got["seen"])
+                and (got["after"] is None or advisory_id(got["after"]) is not None)):
+            return None, frozenset()
+        return got["after"], frozenset(got["seen"])
+    except Exception:  # noqa: BLE001 - whatever the file holds, the turn starts over
+        return None, frozenset()
+
+
+def remembered(seen, now=()) -> list:
+    """At most ``MAX_SEEN`` of ``seen``, sorted: all of them while they fit, else those
+    among this run's candidates (``now``) before the rest."""
+    seen, now = set(seen), set(now)
+    if len(seen) <= MAX_SEEN:
+        return sorted(seen)
+    return sorted((sorted(seen & now) + sorted(seen - now))[:MAX_SEEN])
+
+
+def save_turn(path, after, seen) -> None:
+    """Keep the turn. A file of its own, never the journal: a release that does not
+    know it leaves it alone, so installing an earlier one needs nothing."""
+    inputs.write_json(path, {"after": after, "seen": remembered(seen)})
 
 
 class Reader:

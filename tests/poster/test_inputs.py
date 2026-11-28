@@ -410,6 +410,29 @@ def test_the_recompute_state_is_a_file_of_its_own(tmp_path):  # ny5g
         inputs.Config(ledger=led, kev_cache=cfg.recompute_state).check_paths()
 
 
+def test_admissions_turn_is_a_file_of_its_own_and_a_clash_is_no_config_error(tmp_path):  # vszx
+    led = tmp_path / "ledger.json"
+    cfg = inputs.Config(ledger=led, kev_cache=tmp_path / "kev.json")
+    assert cfg.admit_turn == tmp_path / "ledger.json.admit-turn.json" and cfg.admit_turn_free()
+    cfg.check_paths()
+    clash = inputs.Config(ledger=led, kev_cache=cfg.admit_turn)
+    clash.check_paths()  # the turn stops no run: it is only not kept
+    assert not clash.admit_turn_free()
+    assert not inputs.Config(ledger=led, kev_cache=tmp_path / "kev.json",
+                             checkpoint_key_file=tmp_path / "LEDGER.json.admit-turn.JSON").admit_turn_free()
+    led.write_text("{}")
+    cfg.admit_turn.symlink_to(led)  # damage at the path itself: the next write replaces the link, not the ledger
+    cfg.check_paths()
+    assert cfg.admit_turn_free()
+    inputs.write_json(cfg.admit_turn, {"after": "x"})
+    assert not cfg.admit_turn.is_symlink() and led.read_text() == "{}"
+    lock = led.with_name(led.name + ".lock")
+    lock.symlink_to(cfg.admit_turn)  # the other way round: the lock IS the turn file, and a write would replace
+    assert not cfg.admit_turn_free()  # the inode a running poster holds locked
+    lock.unlink()
+    assert cfg.admit_turn_free()
+
+
 def test_a_root_item_may_carry_its_prose_floor(tmp_path):  # ny5g
     path = tmp_path / "s.json"
     st = inputs.new_state(1_800_000_000, 2)

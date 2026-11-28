@@ -34,9 +34,9 @@ def _kev_with_its_fix(monkeypatch, request):
         return
     from aitools_alerts.poster import main
     real = main.Run.admit
-    monkeypatch.setattr(main.Run, "admit", lambda self, c, scope: (
+    monkeypatch.setattr(main.Run, "admit", lambda self, c, scope, *ev: (
         lambda a: main.replace(a, fixed=a.fixed or _fix_for(a.id)) if a is not None and a.exploited is True else a)(
-            real(self, c, scope)))
+            real(self, c, scope, *ev)))
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "poster"
 CVE = "CVE-2026-0001"
 FIVE = [f"CVE-2026-000{i}" for i in range(1, 6)]

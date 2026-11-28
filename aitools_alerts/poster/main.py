@@ -58,7 +58,11 @@ So it does for each thread that carries a GHSA id, from this run's reads of GitH
 advisory database and of OSV (``sources``, ai-tools-alerts#3qyq): a failed read is
 unknown and moves nothing. A new candidate's ``ghsa`` reading is that API's answer
 too (``Run.admit``); one whose advisory could not be read is admitted again each
-run for RETRY_DAYS. At most 30 advisory requests a run, in three lanes.
+run for RETRY_DAYS. At most 30 advisory requests a run, in three lanes. Admission's
+ten go to the candidates in turn (``Run.admit_all``, ai-tools-alerts#vszx): first to
+one never asked for, then on from where the last run's requests ended, so with n
+standing candidates and ten requests made a run, each is asked for within
+ceil(n / 10) runs.
 
 A reply that changes a thread's level carries the claim tag of the reading the change
 rests on (``Run._claim``, ``rules.claim_text``; ai-tools-alerts#hh5s, spec/wire.md); the
@@ -140,6 +144,7 @@ WORDING_SECONDS = 60  # no wording call starts after this many seconds of them i
 MAX_RUN_PAGES = 40  # authoritative pages fetched per run; a candidate past it waits for the next
 RETIRE_PAGES = 10  # z360: new pages a run may read judging a retired thread's ids; the rest wait
 RETRY_DAYS = 7  # 3qyq: a candidate whose advisory the API did not give is admitted again this long
+UNREAD_NAMED = 40  # vszx: the ids one run's "not read" line names; the rest are counted
 ENDED = "|end"  # psb5: suffix of the ``waiting`` key that says a candidate reached its end (_end)
 # jsje: a run settles what used to wait for `resolve`.
 SETTLE_SKEW = 600  # an event dated this long before the attempt is still its delivery (a clock step)
@@ -1106,7 +1111,50 @@ class Run:
             self.pages[url] = self.fetch_page(url, allow, rules.FETCH_TIMEOUT)
         return self.pages[url]
 
-    def admit(self, c, scope):
+    def admit_all(self, pairs) -> list:
+        """``admit`` for each (candidate, scope) of ``pairs``, in their order, with the
+        lane's advisory reads given out in turn (ai-tools-alerts#vszx).
+
+        ``admit`` asks for a candidate's advisory as it reaches it, and the collector
+        keeps its order from hour to hour: asked that way, the first ``LANE_READS``
+        candidates whose page confirms them took every read of every run, and the
+        others were never read. So every candidate's evidence is read first (the pages,
+        in the order ``admit`` would fetch them: ``rules.evidence`` knows the
+        candidate, its scope and the page cache, nothing an admission changes), then
+        the advisories those pages confirm are asked for, those never asked for first
+        and the rest from where the last run's requests ended (``sources.in_turn``), and
+        only then is each candidate admitted, from the evidence already read. ``admit``
+        finds its read made, or not made this run. The turn is kept (``Config.admit_turn``) before
+        anything is admitted; a file that cannot be written, or whose path is another
+        file's (``Config.admit_turn_free``), is said and costs the next run its place,
+        never this run its work."""
+        evs = [rules.evidence(c, scope, self.page) for c, scope in pairs]
+        asks = [i for ev in evs if ev.structured and ev.ghsa and (i := rules.ghsa_lookup(ev.ghsa)) is not None]
+        self.asked = set(asks)  # for the line about unread ids: these came from pages, through ghsa_lookup
+        path = self.config.admit_turn if self.config.admit_turn_free() else None
+        after, seen = sources.load_turn(path) if path is not None else (None, frozenset())
+        made, place = set(), after
+        for i in sources.in_turn(asks, after, seen):
+            before = self.api.requests
+            self._admit_read(i)
+            if self.api.requests > before:
+                made.add(i)
+                if i in seen:
+                    place = i  # the ring's place; a first request is ahead of the ring and moves nothing
+        if made:
+            try:
+                if path is None:
+                    raise ValueError("its path is another file's")
+                # Every id asked for stays remembered, in this run's record or not: a candidate
+                # whose page fails for a run is not news when it answers again, or two groups
+                # taking turns at failing would be first for good and the ring never move.
+                sources.save_turn(path, place, sources.remembered(seen | made, self.asked))
+            except (OSError, TypeError, ValueError) as e:
+                _say(f"admission's place among the advisory reads not kept ({type(e).__name__}): "
+                     "the next run asks for the same ids first")
+        return [(a, scope) for (c, scope), ev in zip(pairs, evs) if (a := self.admit(c, scope, ev)) is not None]
+
+    def admit(self, c, scope, ev=None):
         """c as an authoritative source states it, or None (h340). The candidate is a
         pointer (an id, a product, URLs); what goes on to the merge, a level, the held
         list and a post is what ``rules.evidence`` read from CISA's catalog or from the
@@ -1115,11 +1163,13 @@ class Run:
         KEV entry and the global page of the vendor's own GHSA. A record's own severity
         text and model-read flags count only when a repository advisory page confirmed
         it and the record cites nothing else; a vendor site page alone makes a notice. Nothing confirmed and a fetch failed, a page did not parse or
-        the page budget ran out: deferred to the next run, never dropped for that."""
+        the page budget ran out: deferred to the next run, never dropped for that.
+        ``ev``: the candidate's evidence when it was read already (``admit_all``)."""
         if not candidates.BOT_ID.fullmatch(c.id):
             self.skipped["id shape"] += 1
             return None
-        ev = rules.evidence(c, scope, self.page)
+        if ev is None:
+            ev = rules.evidence(c, scope, self.page)
         if not ev.ok and ev.unparsed and not ev.failed and not ev.budget and self._lapsed(scope, c.id):
             # psb5: its page answers and has not parsed for RETRY_DAYS. The end, with no
             # person: a notice when the page binds the id to the product without its fields
@@ -1983,8 +2033,15 @@ class Run:
             self._judge([e], rs)
             self.part(e, rs, pages, self.now // 3600 // max(1, lane))
         if self.api.unread:
+            # vszx: admission's are named, so two runs' lines show that they take turns. Only
+            # those: ids a vendor's page stated, in the one shape ``rules.ghsa_lookup`` gives.
+            # A thread lane can also be asked for an id a response named (``sources.chosen``),
+            # and nothing a response says is printed.
+            ids = sorted(self.api.unread & getattr(self, "asked", set()))
+            more = f" and {len(ids) - UNREAD_NAMED} more" if len(ids) > UNREAD_NAMED else ""
+            named = f"; of admission's: {', '.join(ids[:UNREAD_NAMED])}{more}" if ids else ""
             _say(f"advisory reads: {len(self.api.unread)} id(s) not read this run (the lane's share was spent); "
-                 "their threads are unknown and nothing of theirs moves")
+                 f"their threads are unknown and nothing of theirs moves{named}")
         st["open"] = None  # the observation is whole and saved: the next run may count from it
         self.save_rc()
 
@@ -3277,7 +3334,7 @@ def run(now: int, config, *, send=None, ssh=None, kev_fetch=inputs.urllib_fetch,
                 n["in_scope"] = len(pairs)
                 # h340: only what an authoritative source states goes on, each candidate
                 # judged alone, before a merge could lend it another's sources.
-                pairs = [(a, scope) for c, scope in pairs if (a := r.admit(c, scope)) is not None]
+                pairs = r.admit_all(pairs)  # vszx: the advisory reads in turn, the admissions in order
                 if r.gone:  # z360: a root naming a retracted id is hidden by every reader
                     kept = [(a, scope) for a, scope in pairs if r.gone.isdisjoint(_fold([a.id, *a.aliases]))]
                     if len(kept) < len(pairs):
